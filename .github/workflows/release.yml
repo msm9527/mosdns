@@ -3,7 +3,7 @@ name: Release mosdns
 on:
   push:
     tags:
-      - 'v*'
+      - 'msm-v*'
   workflow_dispatch:
 
 jobs:
@@ -25,15 +25,29 @@ jobs:
           python-version: '3.13'
           check-latest: true
 
+      - name: Read version from .version
+        run: |
+          BASE=$(tr -d '\r\n' < .version)
+          if [ -z "$BASE" ]; then
+            echo ".version is empty" >&2
+            exit 1
+          fi
+          echo "VERSION=$BASE" >> $GITHUB_ENV
+
       - name: Build
         run: python ./release.py
         env:
           CGO_ENABLED: '0'
+          VERSION: ${{ env.VERSION }}
 
       - name: Publish
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.VERSION }}
+          name: "Release ${{ env.VERSION }} | 来源: mosdns-v5 + yyysuo/ph-v5"
           files: './release/mosdns*.zip'
           prerelease: false
+          body: |
+            副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

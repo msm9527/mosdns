@@ -32,6 +32,16 @@ go env GOROOT GOPATH GOTOOLCHAIN
 
 如果你已经安装了 Go 1.26.0，但命令行仍不是该版本，请先修正 PATH 或 toolchain 配置。
 
+## 1.1 发布版本号管理（`.version`）
+
+项目根目录新增 `.version` 文件，发布版本统一从该文件读取，例如：
+
+```text
+msm-v5.0.7
+```
+
+发版时只需要修改 `.version`，无需再改 workflow 或 `main.go` 里的版本常量。
+
 ## 2. 拉取依赖
 
 ```bash

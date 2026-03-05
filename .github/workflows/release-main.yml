@@ -40,20 +40,18 @@ jobs:
       - name: Compute version strings
         id: ver
         run: |
-          BASE=$(sed -n 's/^\s*version\s*=\s*"\(.*\)"/\1/p' main.go | head -n1)
-          DATE=$(date +%Y%m%d)
-          SHA=$(git rev-parse --short=7 HEAD)
-          FULL="$BASE-$DATE-$SHA"
+          BASE=$(tr -d '\r\n' < .version)
+          if [ -z "$BASE" ]; then
+            echo ".version is empty" >&2
+            exit 1
+          fi
           echo "VERSION=$BASE" >> $GITHUB_ENV
-          echo "BUILD_DATE=$DATE" >> $GITHUB_ENV
-          echo "FULL_VERSION=$FULL" >> $GITHUB_ENV
 
       - name: Build one target
         run: python ./release.py -i ${{ matrix.index }}
         env:
           CGO_ENABLED: '0'
           VERSION: ${{ env.VERSION }}
-          BUILD_DATE: ${{ env.BUILD_DATE }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
@@ -70,10 +68,12 @@ jobs:
 
       - name: Prepare tag name
         run: |
-          BASE=$(sed -n 's/^\s*version\s*=\s*"\(.*\)"/\1/p' main.go | head -n1)
-          DATE=$(date +%Y%m%d)
-          SHA=$(git rev-parse --short=7 HEAD)
-          echo "TAG_NAME=$BASE-$DATE-$SHA" >> $GITHUB_ENV
+          BASE=$(tr -d '\r\n' < .version)
+          if [ -z "$BASE" ]; then
+            echo ".version is empty" >&2
+            exit 1
+          fi
+          echo "TAG_NAME=$BASE" >> $GITHUB_ENV
 
       - name: Read Go version from go.mod
         run: |
@@ -90,12 +90,14 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: "Release ${{ env.TAG_NAME }}"
+          name: "Release ${{ env.TAG_NAME }} | 来源: mosdns-v5 + yyysuo/ph-v5"
           files: './artifacts/mosdns*.zip'
           prerelease: false
           generate_release_notes: true
           append_body: true
-          body: "Built with Go ${{ env.GO_VERSION }}"
+          body: |
+            副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。
+            Built with Go ${{ env.GO_VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 

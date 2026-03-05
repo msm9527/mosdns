@@ -31,7 +31,9 @@ import (
 )
 
 var (
-	version = "v5-ph-srs"
+	// Injected by release build via ldflags: -X main.version=<version>.
+	version         = "msm-v5.0.7"
+	versionSubtitle = "来源：原版 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。"
 )
 
 func init() {
@@ -41,6 +43,7 @@ func init() {
 		Short: "Print out version info and exit.",
 		Run: func(cmd *cobra.Command, args []string) {
 			fmt.Println(version)
+			fmt.Println(versionSubtitle)
 		},
 	})
 }

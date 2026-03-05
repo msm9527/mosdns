@@ -4,12 +4,10 @@ ARG CGO_ENABLED=0
 COPY ./ /root/src/
 WORKDIR /root/src/
 ARG VERSION=""
-ARG BUILD_DATE=""
 RUN set -eux; \
-    base=${VERSION:-$(git describe --tags --abbrev=0 || echo dev)}; \
-    date=${BUILD_DATE:-$(date +%Y%m%d)}; \
-    sha=$(git rev-parse --short=7 HEAD || echo nogithash); \
-    v="$base-$date-$sha"; \
+    file_ver=$(tr -d '\r\n' < .version 2>/dev/null || true); \
+    base=${VERSION:-${file_ver:-$(git describe --tags --abbrev=0 || echo dev)}}; \
+    v="$base"; \
     go build -ldflags "-s -w -X main.version=$v" -trimpath -o mosdns
 
 FROM alpine:latest

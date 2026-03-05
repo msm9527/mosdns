@@ -31,7 +31,7 @@ import (
 const (
 	githubOwner          = "yyysuo"
 	githubRepo           = "mosdns"
-	releaseTag           = "v5-ph-srs"
+	defaultReleaseTag    = "msm-v5.0.7"
 	githubReleaseAPI     = "https://api.github.com/repos/%s/%s/releases/tags/%s"
 	githubLatestAPI      = "https://api.github.com/repos/%s/%s/releases/latest"
 	githubReleasePage    = "https://github.com/%s/%s/releases/tag/%s"
@@ -117,6 +117,20 @@ func (m *UpdateManager) fixedTagModeString() string {
 	default:
 		return "enabled"
 	}
+}
+
+func (m *UpdateManager) preferredReleaseTag() string {
+	m.mu.Lock()
+	current := strings.TrimSpace(m.currentVersion)
+	m.mu.Unlock()
+	if current != "" && !strings.EqualFold(current, "dev") {
+		return current
+	}
+	buildVer := strings.TrimSpace(GetBuildVersion())
+	if buildVer != "" && !strings.EqualFold(buildVer, "dev") {
+		return buildVer
+	}
+	return defaultReleaseTag
 }
 
 type githubAsset struct {
@@ -326,7 +340,7 @@ func (m *UpdateManager) CheckForUpdate(ctx context.Context, force bool) (UpdateS
 
 	tag := rel.tagName
 	if tag == "" {
-		tag = releaseTag
+		tag = m.preferredReleaseTag()
 	}
 	status := UpdateStatus{
 		CurrentVersion:   m.currentVersion,
@@ -622,7 +636,8 @@ func (m *UpdateManager) fetchLatestReleaseInfo(ctx context.Context) (releaseInfo
 
 // NOTE: This is the duplicated function from the original file, preserved as requested.
 func (m *UpdateManager) fetchReleaseInfoAPI(ctx context.Context) (releaseInfo, error) {
-	url := fmt.Sprintf(githubReleaseAPI, githubOwner, githubRepo, releaseTag)
+	preferredTag := m.preferredReleaseTag()
+	url := fmt.Sprintf(githubReleaseAPI, githubOwner, githubRepo, preferredTag)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return releaseInfo{}, err
@@ -661,7 +676,7 @@ func (m *UpdateManager) fetchReleaseInfoAPI(ctx context.Context) (releaseInfo, e
 
 	tag := payload.TagName
 	if tag == "" {
-		tag = releaseTag
+		tag = preferredTag
 	}
 	return releaseInfo{tagName: tag, publishedAt: payload.PublishedAt, assets: payload.Assets}, nil
 }
@@ -747,7 +762,7 @@ func (m *UpdateManager) fetchLatestReleaseInfoHTML(ctx context.Context) (release
 
 // NOTE: This is the duplicated function from the original file, preserved as requested.
 func (m *UpdateManager) fetchReleaseInfoHTML(ctx context.Context) (releaseInfo, error) {
-	assetsURL := fmt.Sprintf(githubExpandedAssets, githubOwner, githubRepo, releaseTag)
+	assetsURL := fmt.Sprintf(githubExpandedAssets, githubOwner, githubRepo, m.preferredReleaseTag())
 	body, err := m.fetchHTML(ctx, assetsURL)
 	if err != nil {
 		return releaseInfo{}, err

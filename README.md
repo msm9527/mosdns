@@ -1,4 +1,5 @@
 # mosdns
+副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。  
 fakeip分流大法总教程：https://drive.google.com/drive/u/1/folders/1ldD2XqIrREPgr_CKMSgvYomXgwknpApi  
 原版mosdns知识库: https://irine-sistiana.gitbook.io/mosdns-wiki/  
 下载: https://github.com/yyysuo/mosdns/releases  

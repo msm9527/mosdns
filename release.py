@@ -39,6 +39,20 @@ envs = [
     [['GOOS', 'linux'], ['GOARCH', 'mips64le'], ['GOMIPS64', 'softfloat']]
 ]
 
+VERSION_FILE = '../.version'
+
+
+def read_version_from_file(path: str) -> str:
+    try:
+        with open(path, 'r', encoding='utf-8') as f:
+            for line in f:
+                v = line.strip()
+                if v and not v.startswith('#'):
+                    return v
+    except OSError:
+        return ''
+    return ''
+
 
 def go_build():
     logger.info(f'building {PROJECT_NAME}')
@@ -47,27 +61,17 @@ def go_build():
     if args.i is not None:
         envs = [envs[args.i]]
 
-    # --- Compose version in the form: <base>-<yyyymmdd>-<shortsha>
-    # Priority order for base: $VERSION (env) -> latest tag -> 'dev'
+    # --- Compose version in the form: <base>, e.g. msm-v5.0.7
+    # Priority order for base: $VERSION (env) -> .version file -> latest tag -> 'dev'
     base = os.getenv('VERSION')
+    if not base:
+        base = read_version_from_file(VERSION_FILE)
     if not base:
         try:
             base = subprocess.check_output('git describe --tags --abbrev=0', shell=True).decode().strip()
         except subprocess.CalledProcessError:
             base = 'dev'
-
-    # yyyymmdd in local time (can override via BUILD_DATE)
-    build_date = os.getenv('BUILD_DATE')
-    if not build_date:
-        from time import strftime, localtime
-        build_date = strftime('%Y%m%d', localtime())
-
-    try:
-        short_sha = subprocess.check_output('git rev-parse --short=7 HEAD', shell=True).decode().strip()
-    except subprocess.CalledProcessError:
-        short_sha = 'nogithash'
-
-    VERSION = f"{base}-{build_date}-{short_sha}"
+    VERSION = base
 
     try:
         subprocess.check_call('go run ../ config gen config.yaml', shell=True, env=os.environ)
