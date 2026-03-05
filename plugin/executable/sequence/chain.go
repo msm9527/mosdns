@@ -21,7 +21,6 @@ package sequence
 
 import (
 	"context"
-	"fmt"
 	"strings"
 	"time"
 
@@ -31,7 +30,7 @@ import (
 
 type instruction struct {
 	isSimple   bool
-	isTerminal  bool
+	isTerminal bool
 	fastChecks []func(qCtx *query_context.Context) bool
 	fastExec   func(ctx context.Context, qCtx *query_context.Context) error
 
@@ -63,7 +62,7 @@ type ChainWalker struct {
 	logger   *zap.Logger
 }
 
-func NewChainWalker(ins []instruction, chain[]*ChainNode, jumpBack *ChainWalker, logger *zap.Logger) ChainWalker {
+func NewChainWalker(ins []instruction, chain []*ChainNode, jumpBack *ChainWalker, logger *zap.Logger) ChainWalker {
 	return ChainWalker{
 		ins:      ins,
 		chain:    chain,
