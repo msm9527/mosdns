@@ -5,3 +5,4 @@
 - [插件类型矩阵](./PLUGIN_TYPE_MATRIX.md)
 - [DNS 解析流程（精细节点编号版）](./DNS_FLOW_DETAILED.md)
 - [DNS 解析流程（图同序版）](./DNS_FLOW_VISUAL_ORDER.md)
+- [Switch1-15 功能对照](./SWITCH_1_15_FUNCTIONS.md)
