@@ -41,7 +41,7 @@ type MatchResult struct {
 
 type DomainMapper struct {
 	logger      *zap.Logger
-	matcher     atomic.Value 
+	matcher     atomic.Value
 	updateMu    sync.Mutex
 	updateTimer *time.Timer
 	ruleConfigs []RuleConfig
@@ -131,7 +131,7 @@ func NewMapper(bp *coremain.BP, args any) (any, error) {
 		for ruleStr, mask := range markMap {
 			tagsStr := tagMap[ruleStr]
 			sig := fmt.Sprintf("%d-%s", mask, tagsStr)
-			
+
 			res, exists := pool[sig]
 			if !exists {
 				res = &MatchResult{
@@ -194,7 +194,14 @@ func (dm *DomainMapper) FastMatch(qname string) ([]uint8, string, bool) {
 	return nil, "", false
 }
 
+func skipMapperForPreMatchedFastBypass(qCtx *query_context.Context) bool {
+	return len(qCtx.ServerMeta.PreFastDomainSet) > 0
+}
+
 func (dm *DomainMapper) Exec(ctx context.Context, qCtx *query_context.Context) error {
+	if skipMapperForPreMatchedFastBypass(qCtx) {
+		return nil
+	}
 	if qCtx.HasFastFlag(1) || qCtx.HasFastFlag(2) || qCtx.HasFastFlag(3) || qCtx.HasFastFlag(5) || qCtx.HasFastFlag(6) {
 		return nil
 	}
@@ -205,7 +212,7 @@ func (dm *DomainMapper) Exec(ctx context.Context, qCtx *query_context.Context) e
 	}
 
 	matcher := dm.matcher.Load().(*domain.MixMatcher[*MatchResult])
-	
+
 	result, ok := matcher.Match(q.Question[0].Name)
 	if ok && result != nil {
 		for _, mark := range result.Marks {
@@ -229,6 +236,9 @@ func (dm *DomainMapper) GetFastExec() func(ctx context.Context, qCtx *query_cont
 	defMark := dm.defaultMark
 	defTag := dm.defaultTag
 	return func(ctx context.Context, qCtx *query_context.Context) error {
+		if skipMapperForPreMatchedFastBypass(qCtx) {
+			return nil
+		}
 		if qCtx.HasFastFlag(1) || qCtx.HasFastFlag(2) || qCtx.HasFastFlag(3) || qCtx.HasFastFlag(5) || qCtx.HasFastFlag(6) {
 			return nil
 		}
