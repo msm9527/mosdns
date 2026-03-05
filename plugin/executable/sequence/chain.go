@@ -21,6 +21,7 @@ package sequence
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -37,7 +38,7 @@ type NamedMatcher struct {
 type ChainNode struct {
 	PluginName string
 	// Use the new struct to store matchers.
-	Matches []NamedMatcher 
+	Matches []NamedMatcher
 
 	// At least one of E or RE must not nil.
 	// In case both are set. E is preferred.
@@ -102,7 +103,7 @@ checkMatchesLoop:
 							if len(qCtx.Q().Question) > 0 && qCtx.Q().Question[0].Qtype == 28 { // 28 is dns.TypeAAAA
 								qCtx.StoreValue(query_context.KeyDomainSet, "BANAAAA")
 							}
-						// Priority 2: Check for switch5 match to identify BANSOA, BANPTR, BANHTTPS.
+							// Priority 2: Check for switch5 match to identify BANSOA, BANPTR, BANHTTPS.
 						} else if strings.HasPrefix(name, "anonymous_match(switch5:") {
 							if len(qCtx.Q().Question) > 0 {
 								qtype := qCtx.Q().Question[0].Qtype
@@ -119,7 +120,7 @@ checkMatchesLoop:
 									qCtx.StoreValue(query_context.KeyDomainSet, domainSetName)
 								}
 							}
-						// Priority 3: Original logic for qname match.
+							// Priority 3: Original logic for qname match.
 						} else {
 							var ruleName string
 							const suffix = ")"
@@ -186,7 +187,7 @@ checkMatchesLoop:
 			}
 			return n.RE.Exec(ctx, qCtx, next)
 		default:
-			panic("n cannot be executed")
+			return fmt.Errorf("sequence node #%d has no executable", p)
 		}
 	}
 

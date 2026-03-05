@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -54,6 +55,15 @@ var (
 	upstreamOverrides     GlobalUpstreamOverrides
 )
 
+func getUpstreamOverridesPath() (dir string, path string) {
+	dir = MainConfigBaseDir
+	if dir == "" {
+		dir = "."
+	}
+	path = filepath.Join(dir, upstreamOverridesFilename)
+	return dir, path
+}
+
 // RegisterUpstreamAPI 注册路由
 func RegisterUpstreamAPI(router *chi.Mux) {
 	router.Route("/api/v1/upstream", func(r chi.Router) {
@@ -65,38 +75,37 @@ func RegisterUpstreamAPI(router *chi.Mux) {
 
 // GetUpstreamOverrides 供 aliapi 插件初始化调用
 func GetUpstreamOverrides(pluginTag string) []UpstreamOverrideConfig {
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		mlog.L().Warn("[Debug UpstreamAPI] ensure load failed", zap.Error(err))
+		return nil
+	}
+
 	upstreamOverridesLock.RLock()
 	defer upstreamOverridesLock.RUnlock()
-
-	if upstreamOverrides == nil {
-		// 释放读锁，获取写锁加载 (简化处理)
-		upstreamOverridesLock.RUnlock()
-		_ = loadUpstreamOverrides()
-		upstreamOverridesLock.RLock()
-	}
 
 	entries, ok := upstreamOverrides[pluginTag]
 	if !ok || len(entries) == 0 {
 		return nil
 	}
-	return entries
+	copied := make([]UpstreamOverrideConfig, len(entries))
+	copy(copied, entries)
+	return copied
 }
 
 // loadUpstreamOverrides 内部加载函数
 func loadUpstreamOverrides() error {
 	upstreamOverridesLock.Lock()
 	defer upstreamOverridesLock.Unlock()
+	return loadUpstreamOverridesLocked()
+}
 
-	dir := MainConfigBaseDir
-	if dir == "" {
-		dir = "."
-	}
+func loadUpstreamOverridesLocked() error {
+	dir, path := getUpstreamOverridesPath()
 	// 获取绝对路径用于 Debug
 	absDir, _ := filepath.Abs(dir)
-	path := filepath.Join(dir, upstreamOverridesFilename)
-	
-	mlog.L().Info("[Debug UpstreamAPI] Loading overrides", 
-		zap.String("MainConfigBaseDir", dir), 
+
+	mlog.L().Info("[Debug UpstreamAPI] Loading overrides",
+		zap.String("MainConfigBaseDir", dir),
 		zap.String("AbsoluteDir", absDir),
 		zap.String("File", path))
 
@@ -116,25 +125,28 @@ func loadUpstreamOverrides() error {
 		mlog.L().Error("[Debug UpstreamAPI] JSON parse error", zap.Error(err))
 		return err
 	}
-	
+
 	// Count items for debug
 	count := 0
 	for _, v := range cfg {
 		count += len(v)
 	}
 	mlog.L().Info("[Debug UpstreamAPI] Loaded success", zap.Int("groups", len(cfg)), zap.Int("total_items", count))
-	
+
 	upstreamOverrides = cfg
 	return nil
 }
 
 // saveUpstreamOverrides 内部保存函数
 func saveUpstreamOverrides() error {
-	dir := MainConfigBaseDir
-	if dir == "" {
-		dir = "."
-	}
-	
+	upstreamOverridesLock.Lock()
+	defer upstreamOverridesLock.Unlock()
+	return saveUpstreamOverridesLocked()
+}
+
+func saveUpstreamOverridesLocked() error {
+	dir, path := getUpstreamOverridesPath()
+
 	// 确保配置目录存在
 	if dir != "." {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -143,7 +155,6 @@ func saveUpstreamOverrides() error {
 		}
 	}
 
-	path := filepath.Join(dir, upstreamOverridesFilename)
 	absPath, _ := filepath.Abs(path)
 
 	data, err := json.MarshalIndent(upstreamOverrides, "", "  ")
@@ -151,9 +162,9 @@ func saveUpstreamOverrides() error {
 		mlog.L().Error("[Debug UpstreamAPI] JSON marshal failed", zap.Error(err))
 		return err
 	}
-	
-	mlog.L().Info("[Debug UpstreamAPI] Writing to file", 
-		zap.String("path", path), 
+
+	mlog.L().Info("[Debug UpstreamAPI] Writing to file",
+		zap.String("path", path),
 		zap.String("abs_path", absPath),
 		zap.Int("bytes", len(data)))
 
@@ -164,6 +175,22 @@ func saveUpstreamOverrides() error {
 		mlog.L().Info("[Debug UpstreamAPI] WriteFile SUCCESS")
 	}
 	return err
+}
+
+func ensureUpstreamOverridesLoaded() error {
+	upstreamOverridesLock.RLock()
+	loaded := upstreamOverrides != nil
+	upstreamOverridesLock.RUnlock()
+	if loaded {
+		return nil
+	}
+
+	upstreamOverridesLock.Lock()
+	defer upstreamOverridesLock.Unlock()
+	if upstreamOverrides != nil {
+		return nil
+	}
+	return loadUpstreamOverridesLocked()
 }
 
 // handleGetAliAPITags 获取扫描到的插件 Tag
@@ -180,13 +207,20 @@ func handleGetAliAPITags(w http.ResponseWriter, r *http.Request) {
 
 // handleGetUpstreamConfig 获取当前所有配置
 func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
-	if upstreamOverrides == nil {
-		_ = loadUpstreamOverrides()
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
+		return
 	}
+
 	upstreamOverridesLock.RLock()
-	defer upstreamOverridesLock.RUnlock()
-	
-	safeData := upstreamOverrides
+	safeData := make(GlobalUpstreamOverrides, len(upstreamOverrides))
+	for pluginTag, entries := range upstreamOverrides {
+		copied := make([]UpstreamOverrideConfig, len(entries))
+		copy(copied, entries)
+		safeData[pluginTag] = copied
+	}
+	upstreamOverridesLock.RUnlock()
+
 	if safeData == nil {
 		safeData = make(GlobalUpstreamOverrides)
 	}
@@ -203,26 +237,30 @@ func handleSetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 		Upstreams []UpstreamOverrideConfig `json:"upstreams"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+	if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
+		if errors.Is(err, errJSONBodyTooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+			return
+		}
 		mlog.L().Error("[Debug UpstreamAPI] Invalid request body", zap.Error(err))
-		http.Error(w, `{"error": "Invalid request body"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
 		return
 	}
 
 	// DEBUG: 打印接收到的数据
-	mlog.L().Info("[Debug UpstreamAPI] Payload decoded", 
-		zap.String("plugin_tag", payload.PluginTag), 
+	mlog.L().Info("[Debug UpstreamAPI] Payload decoded",
+		zap.String("plugin_tag", payload.PluginTag),
 		zap.Int("items_count", len(payload.Upstreams)))
 
 	if payload.PluginTag == "" {
-		http.Error(w, `{"error": "plugin_tag is required"}`, http.StatusBadRequest)
+		writeAPIError(w, http.StatusBadRequest, "PLUGIN_TAG_REQUIRED", "plugin_tag is required")
 		return
 	}
 
 	for i, u := range payload.Upstreams {
 		if u.Tag == "" {
-			msg := fmt.Sprintf(`{"error": "Item #%d: tag (name) is required"}`, i+1)
-			http.Error(w, msg, http.StatusBadRequest)
+			msg := fmt.Sprintf("Item #%d: tag (name) is required", i+1)
+			writeAPIError(w, http.StatusBadRequest, "UPSTREAM_TAG_REQUIRED", msg)
 			return
 		}
 
@@ -232,37 +270,39 @@ func handleSetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 
 		if u.Protocol == "aliapi" {
 			if u.AccountID == "" || u.AccessKeyID == "" || u.AccessKeySecret == "" {
-				msg := fmt.Sprintf(`{"error": "Item #%d (%s): AliAPI requires account_id, access_key_id, and access_key_secret"}`, i+1, u.Tag)
-				http.Error(w, msg, http.StatusBadRequest)
+				msg := fmt.Sprintf("Item #%d (%s): AliAPI requires account_id, access_key_id, and access_key_secret", i+1, u.Tag)
+				writeAPIError(w, http.StatusBadRequest, "ALIAPI_CREDENTIALS_REQUIRED", msg)
 				return
 			}
 		} else {
 			if u.Addr == "" {
-				msg := fmt.Sprintf(`{"error": "Item #%d (%s): addr is required for DNS types"}`, i+1, u.Tag)
-				http.Error(w, msg, http.StatusBadRequest)
+				msg := fmt.Sprintf("Item #%d (%s): addr is required for DNS types", i+1, u.Tag)
+				writeAPIError(w, http.StatusBadRequest, "UPSTREAM_ADDR_REQUIRED", msg)
 				return
 			}
 		}
+	}
+
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		mlog.L().Error("[Debug UpstreamAPI] Failed to load config before save", zap.Error(err))
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load config file")
+		return
 	}
 
 	upstreamOverridesLock.Lock()
 	defer upstreamOverridesLock.Unlock()
 
 	if upstreamOverrides == nil {
-		_ = loadUpstreamOverrides()
-		if upstreamOverrides == nil {
-			upstreamOverrides = make(GlobalUpstreamOverrides)
-		}
+		upstreamOverrides = make(GlobalUpstreamOverrides)
 	}
 
 	upstreamOverrides[payload.PluginTag] = payload.Upstreams
 
-	if err := saveUpstreamOverrides(); err != nil {
+	if err := saveUpstreamOverridesLocked(); err != nil {
 		mlog.L().Error("[Debug UpstreamAPI] Save failed", zap.Error(err))
-		http.Error(w, `{"error": "Failed to save config file"}`, http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save config file")
 		return
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"message": "Upstream configuration saved."}`)
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved."})
 }

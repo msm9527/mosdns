@@ -3,6 +3,7 @@ package coremain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 
@@ -78,14 +79,18 @@ func handleSetAuditCapacity(w http.ResponseWriter, r *http.Request) {
 		Capacity int `json:"capacity"`
 	}
 
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+	if err := decodeJSONBodyStrict(w, r, &req, false); err != nil {
+		if errors.Is(err, errJSONBodyTooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body: "+err.Error())
 		return
 	}
-	
+
 	// <<< MODIFIED: Pass the MainConfigBaseDir to the SetCapacity function >>>
 	GlobalAuditCollector.SetCapacity(req.Capacity, MainConfigBaseDir)
-	
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Audit log capacity set to %d. Existing logs have been cleared.", req.Capacity)
 }

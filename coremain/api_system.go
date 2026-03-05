@@ -1,7 +1,7 @@
 package coremain
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -24,12 +24,24 @@ func RegisterSystemAPI(router *chi.Mux, m *Mosdns) {
 
 func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if m == nil {
+			writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "service unavailable")
+			return
+		}
+
 		type reqBody struct {
 			DelayMs int `json:"delay_ms"`
 		}
 		var body reqBody
 		if r.Body != nil && r.Body != http.NoBody {
-			_ = json.NewDecoder(r.Body).Decode(&body)
+			if err := decodeJSONBodyStrict(w, r, &body, true); err != nil {
+				if errors.Is(err, errJSONBodyTooLarge) {
+					writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "request body too large")
+					return
+				}
+				writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "invalid request body")
+				return
+			}
 		}
 		if body.DelayMs <= 0 {
 			body.DelayMs = 300
@@ -37,9 +49,7 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 
 		if isWindows() {
 			// 复用 api_update.go 中的 writeJSON
-			writeJSON(w, http.StatusNotImplemented, map[string]any{
-				"error": "self-restart is not supported on Windows",
-			})
+			writeAPIError(w, http.StatusNotImplemented, "RESTART_NOT_SUPPORTED_ON_WINDOWS", "self-restart is not supported on Windows")
 			return
 		}
 
@@ -48,7 +58,7 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 
 		go func(delay int) {
 			logger := m.Logger()
-			
+
 			// 2. 等待延迟
 			time.Sleep(time.Duration(delay) * time.Millisecond)
 
@@ -60,10 +70,18 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 
 			// 3. [核心逻辑] 定向关闭需要保存数据的插件
 			logger.Info("saving data for targeted plugins...")
-			
+
 			for tag, p := range m.plugins {
+				if p == nil {
+					continue
+				}
+
 				// 获取类型名称
-				typeName := reflect.TypeOf(p).String()
+				pluginType := reflect.TypeOf(p)
+				if pluginType == nil {
+					continue
+				}
+				typeName := pluginType.String()
 
 				// 只匹配 cache 和 domain_output
 				isCache := strings.Contains(typeName, "cache.Cache")
@@ -71,10 +89,10 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 
 				if isCache || isDomainOutput {
 					if closer, ok := p.(io.Closer); ok {
-						logger.Info("closing plugin to save data", 
-							zap.String("tag", tag), 
+						logger.Info("closing plugin to save data",
+							zap.String("tag", tag),
 							zap.String("type", typeName))
-						
+
 						// 这里会阻塞，直到文件写入操作完成 (Go bufio -> OS Cache)
 						if err := closer.Close(); err != nil {
 							logger.Warn("failed to close plugin", zap.String("tag", tag), zap.Error(err))
@@ -84,7 +102,7 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 			}
 			logger.Info("targeted data save completed")
 
-			// 4. [已移除] syscall.Sync() 
+			// 4. [已移除] syscall.Sync()
 			// 既然只是进程重启而非系统关机，Close() 将数据写入 OS Cache 已经足够安全且高效。
 			// 移除后也解决了 Windows 编译报错问题。
 
@@ -96,7 +114,7 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 			env := os.Environ()
 
 			err = syscall.Exec(exe, rawArgs, env)
-			
+
 			if err != nil {
 				fmt.Printf("[FATAL] syscall.Exec failed: %v\n", err)
 				os.Exit(1)

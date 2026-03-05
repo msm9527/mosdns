@@ -3,6 +3,7 @@ package coremain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"time"
@@ -29,14 +30,18 @@ func handleStartCapture() http.HandlerFunc {
 
 		// Decode request body if provided
 		if r.Body != http.NoBody {
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+			if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
+				if errors.Is(err, errJSONBodyTooLarge) {
+					writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+					return
+				}
+				writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body: "+err.Error())
 				return
 			}
 		}
 
 		if req.DurationSeconds <= 0 || req.DurationSeconds > 600 {
-			http.Error(w, "Duration must be between 1 and 600 seconds", http.StatusBadRequest)
+			writeAPIError(w, http.StatusBadRequest, "INVALID_DURATION_SECONDS", "Duration must be between 1 and 600 seconds")
 			return
 		}
 

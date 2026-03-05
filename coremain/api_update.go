@@ -2,9 +2,7 @@ package coremain
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"runtime"
 	"time"
@@ -76,9 +74,12 @@ func handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			Force    bool `json:"force"`
 			PreferV3 bool `json:"prefer_v3"`
 		}
-		dec := json.NewDecoder(r.Body)
-		if err := dec.Decode(&req); err != nil && !errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, err)
+		if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
+			if errors.Is(err, errJSONBodyTooLarge) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "request body too large")
+				return
+			}
+			writeAPIErrorFromErr(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", err)
 			return
 		}
 		force = req.Force
@@ -91,18 +92,8 @@ func handleApplyUpdate(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusOK, result)
 			return
 		}
-		writeError(w, http.StatusBadGateway, err)
+		writeAPIErrorFromErr(w, http.StatusBadGateway, "UPDATE_APPLY_FAILED", err)
 		return
 	}
 	writeJSON(w, http.StatusOK, result)
-}
-
-func writeJSON(w http.ResponseWriter, status int, payload any) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(payload)
-}
-
-func writeError(w http.ResponseWriter, status int, err error) {
-	writeJSON(w, status, map[string]string{"error": err.Error()})
 }

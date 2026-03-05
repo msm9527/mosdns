@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -107,8 +108,12 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 
 func handleSetOverrides(w http.ResponseWriter, r *http.Request) {
 	var payload GlobalOverrides
-	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-		http.Error(w, "Invalid request body: "+err.Error(), http.StatusBadRequest)
+	if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
+		if errors.Is(err, errJSONBodyTooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body: "+err.Error())
 		return
 	}
 
@@ -117,12 +122,12 @@ func handleSetOverrides(w http.ResponseWriter, r *http.Request) {
 	// We only save original/new/comment for replacements (via json tags in struct)
 	updatedData, err := json.MarshalIndent(payload, "", "  ")
 	if err != nil {
-		http.Error(w, "Failed to marshal settings: "+err.Error(), http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "MARSHAL_SETTINGS_FAILED", "Failed to marshal settings: "+err.Error())
 		return
 	}
 
 	if err := os.WriteFile(overridesPath, updatedData, 0644); err != nil {
-		http.Error(w, "Failed to write settings file: "+err.Error(), http.StatusInternalServerError)
+		writeAPIError(w, http.StatusInternalServerError, "WRITE_SETTINGS_FILE_FAILED", "Failed to write settings file: "+err.Error())
 		return
 	}
 
@@ -131,6 +136,7 @@ func handleSetOverrides(w http.ResponseWriter, r *http.Request) {
 		zap.String("ecs", payload.ECS),
 		zap.Int("replacements", len(payload.Replacements)))
 
-	w.Header().Set("Content-Type", "application/json")
-	fmt.Fprint(w, `{"message": "Global overrides saved. Please restart mosdns to apply changes."}`)
+	writeJSON(w, http.StatusOK, map[string]string{
+		"message": "Global overrides saved. Please restart mosdns to apply changes.",
+	})
 }
