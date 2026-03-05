@@ -7,6 +7,9 @@ fakeip分流大法总教程：https://drive.google.com/drive/u/1/folders/1ldD2Xq
 ### 更新日志
 https://github.com/yyysuo/firetv/blob/master/mosdnsconfigupdate/mosdns2026%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97
 
+### 开发与调试文档
+见：`docs/DEVELOPMENT.md`
+
 ### 本地启动命令
 
 在项目根目录下可直接使用：

@@ -26,3 +26,4 @@ testutils/
 demo/
 /.playwright-mcp/
 /.spec-workflow/
+/config/cache/*.dump
