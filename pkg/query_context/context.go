@@ -56,8 +56,8 @@ type Context struct {
 	upstreamOpt *dns.OPT // may be nil
 
 	// lazy init.
-	kv    map[uint32]any
-	marks map[uint32]struct{}
+	kv        map[uint32]any
+	marks     map[uint32]struct{}
 	fastFlags uint64
 
 	// Extreme Performance Patch: Cache for fast matching
@@ -313,6 +313,9 @@ func (ctx *Context) MarshalLogObject(encoder zapcore.ObjectEncoder) error {
 	encoder.AddString("qname", question.Name)
 	encoder.AddUint16("qtype", question.Qtype)
 	encoder.AddUint16("qclass", question.Qclass)
+	if ctx.fastFlags != 0 {
+		encoder.AddUint64("fast_flags", ctx.fastFlags)
+	}
 
 	if r := ctx.resp; r != nil {
 		encoder.AddInt("rcode", r.Rcode)
