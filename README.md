@@ -7,6 +7,22 @@ fakeip分流大法总教程：https://drive.google.com/drive/u/1/folders/1ldD2Xq
 ### 更新日志
 https://github.com/yyysuo/firetv/blob/master/mosdnsconfigupdate/mosdns2026%E6%9B%B4%E6%96%B0%E6%97%A5%E5%BF%97
 
+### 本地启动命令
+
+在项目根目录下可直接使用：
+
+```bash
+./mosdns start --dir config
+```
+
+说明：
+- `--dir config` 表示将 `config/` 作为工作目录。
+- 默认会读取 `config/config.yaml` 作为主配置文件。
+- 也可显式指定：
+  ```bash
+  ./mosdns start -c config/config.yaml --dir config
+  ```
+
 ### 手动保存个性化配置
 
 1. gen/top_domains.txt
@@ -152,4 +168,3 @@ MosDNS 本地工作目录填入自己的mosdns配置所在目录，比如/cus/mo
 - 自 2025-11-06 起，客户端仅使用 `releases/latest` 获取更新信息；不再回退到固定 tag（例如 `v5-ph-srs`）。
 - 发布侧无需再向固定 tag 上传资产；请使用版本化标签发布即可。
 - 
-

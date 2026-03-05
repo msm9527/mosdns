@@ -1,0 +1,19 @@
+domain:smtcdns.com
+domain:smtcdns.net
+domain:erer.homeborn.cn
+domain:ahdohpiechei.com
+domain:tt.x.bsgslb.cn
+domain:siomxity.net
+domain:siomxity.com
+# 事实证明这货v4 v6没规律 暂时放行白名单
+# domain:sealaly.net
+domain:hypercachenode.com
+domain:bytefcdnrd.com
+domain:tbcache.com
+domain:ndcpp.com
+# domain:vegslb.com
+domain:nexusedgeio.com
+domain:dlied1.cdntips.net
+domain:ldhy.click
+domain:free-lbv6.idouyinvod.com
+domain:free-lbv3.idouyinvod.com
