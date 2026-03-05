@@ -45,12 +45,12 @@
   },
   "status": {
     "task_state": "idle",
-    "last_run_start_time": "2025-12-25T03:48:32.025419844Z",
-    "last_run_end_time": "2025-12-25T04:17:31.41406155Z",
-    "last_run_domain_count": 17374,
+    "last_run_start_time": "2026-03-05T09:42:10.871249Z",
+    "last_run_end_time": "2026-03-05T09:42:12.910013Z",
+    "last_run_domain_count": 7,
     "progress": {
-      "processed": 17374,
-      "total": 17374
+      "processed": 7,
+      "total": 7
     }
   }
 }

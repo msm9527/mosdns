@@ -43,37 +43,23 @@ plugins:
         exec: reject 0
       - exec: $unified_matcher1             #匹配屏蔽域名表并设置相应的fast_mark
       - matches:                            #屏蔽黑名单域名
-        - switch1 'A'
         - fast_mark 1
-        exec: reject 0
+        - switch1 'A'
+        exec: reject 3
       - matches:                            #屏蔽没有v4地址的域名
+        - fast_mark 2
         - qtype 1
         - switch1 'A'
-        - fast_mark 2
         exec: reject 0
       - matches:                            #屏蔽没有v6地址的域名
-        - qtype 28
-        - switch1 'A'
         - fast_mark 3
-        exec: reject 0
-      - matches:                            #屏蔽pcdn v4
-        - qtype 1
-        - switch1 'A'
-        - fast_mark 4
-        - qname $pcdnregv4
-        exec: reject 0
-      - matches:                            #屏蔽pcdn v6
         - qtype 28
         - switch1 'A'
-        - fast_mark 4
-        - qname $pcdnregv6
         exec: reject 0
       - matches:                            #屏蔽广告
-        - switch7 'A'
         - fast_mark 5
-        exec: reject 0
-      - exec: $top_domains
-      - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
+        - switch7 'A'
+        exec: reject 3
       - matches: fast_mark 6                #向上游请求ddns域名，无过期缓存
         exec:
           - $domestic
@@ -109,6 +95,8 @@ plugins:
         - switch3 'B'                       #非泄露模式
         - switch13 'A'                      #缓存开关打开
         exec: $cache_all_noleak
+      - exec: $top_domains
+      - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
       - matches: qtype 1                    #处理A请求
         exec: $sequence_ipv4
       - matches: qtype 28                   #处理AAAA请求
@@ -145,36 +133,23 @@ plugins:
         exec: reject 0
       - exec: $unified_matcher1             #匹配屏蔽域名表并设置相应的fast_mark
       - matches:                            #屏蔽黑名单域名
-        - switch1 'A'
         - fast_mark 1
-        exec: reject 0
+        - switch1 'A'
+        exec: reject 3
       - matches:                            #屏蔽没有v4地址的域名
+        - fast_mark 2
         - qtype 1
         - switch1 'A'
-        - fast_mark 2
         exec: reject 0
       - matches:                            #屏蔽没有v6地址的域名
-        - qtype 28
-        - switch1 'A'
         - fast_mark 3
-        exec: reject 0
-      - matches:                            #屏蔽pcdn v4
-        - qtype 1
-        - switch1 'A'
-        - fast_mark 4
-        - qname $pcdnregv4
-        exec: reject 0
-      - matches:                            #屏蔽pcdn v6
         - qtype 28
         - switch1 'A'
-        - fast_mark 4
-        - qname $pcdnregv6
         exec: reject 0
       - matches:                            #屏蔽广告
-        - switch7 'A'
         - fast_mark 5
-        exec: reject 0
-      - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
+        - switch7 'A'
+        exec: reject 3
       - matches: fast_mark 6                #向上游请求ddns域名，无过期缓存
         exec:
           - $domestic
@@ -210,6 +185,7 @@ plugins:
         - switch3 'B'                       #非泄露模式
         - switch13 'A'                      #缓存开关打开
         exec: $cache_all_noleak
+      - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
       - matches: qtype 1                    #处理A请求
         exec: $sequence_ipv4
       - matches: qtype 28                   #处理AAAA请求

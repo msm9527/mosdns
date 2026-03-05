@@ -163,27 +163,6 @@ plugins:
       files:
         - "rule/ddnslist.txt"
 
-#pcdn域名列表
-  - tag: pcdnlist
-    type: domain_set_light
-    args:
-      files:
-        - "rule/pcdnlist.txt"
-
-#pcdn正则屏蔽v4请求
-  - tag: pcdnregv4
-    type: domain_set
-    args:
-      files:
-        - "rule/pcdnregv4.txt"
-
-#pcdn正则屏蔽v6请求
-  - tag: pcdnregv6
-    type: domain_set
-    args:
-      files:
-        - "rule/pcdnregv6.txt"
-
 #统一域名匹配,设置fast_mark和域名输出tag，屏蔽部分
   - tag: unified_matcher1
     type: domain_mapper
@@ -198,9 +177,6 @@ plugins:
         - tag: my_nov6rule
           mark: 3 
           output_tag: "记忆无V6"
-        - tag: pcdnlist
-          mark: 4 
-          output_tag: "PCDN"
         - tag: adguard
           mark: 5 
           output_tag: "广告屏蔽"
