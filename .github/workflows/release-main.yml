@@ -86,6 +86,49 @@ jobs:
           path: ./artifacts
           merge-multiple: true
 
+      - name: Delete existing release and tag
+        uses: actions/github-script@v7
+        env:
+          TAG_NAME: ${{ env.TAG_NAME }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = process.env.TAG_NAME;
+            const { owner, repo } = context.repo;
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: release.data.id,
+              });
+              core.info(`deleted existing release for tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`no existing release for tag ${tag}`);
+            }
+
+            try {
+              await github.rest.git.deleteRef({
+                owner,
+                repo,
+                ref: `tags/${tag}`,
+              });
+              core.info(`deleted existing tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`no existing tag ${tag}`);
+            }
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -94,7 +137,6 @@ jobs:
           files: './artifacts/mosdns*.zip'
           prerelease: false
           generate_release_notes: true
-          append_body: true
           body: |
             副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。
             Built with Go ${{ env.GO_VERSION }}
