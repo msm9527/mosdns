@@ -494,7 +494,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return `
                         <tr>
                             <td><strong>${profile.title}</strong></td>
-                            <td class="text-right" colspan="4" style="color: var(--color-text-secondary);">统计不可用</td>
+                            <td class="text-right" colspan="2" style="color: var(--color-text-secondary);">统计不可用</td>
                         </tr>
                     `;
                 }
@@ -503,9 +503,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <tr>
                         <td><strong>${profile.title}</strong></td>
                         <td class="text-right"><a href="#" class="control-item-link" data-list-type="${profile.key}" data-list-title="${profile.title}">${this.formatCount(stats.total_entries)}</a></td>
-                        <td class="text-right">${this.formatCount(stats.promoted_entries)}</td>
                         <td class="text-right">${this.formatCount(stats.published_rules)}</td>
-                        <td class="text-right">${this.formatCount(stats.dropped_observations)}</td>
                     </tr>
                 `;
             }).join('');
