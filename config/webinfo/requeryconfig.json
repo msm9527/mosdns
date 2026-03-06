@@ -23,8 +23,8 @@
     "flush_rules": []
   },
   "workflow": {
-    "mode": "hybrid",
     "flush_mode": "none",
+    "mode": "hybrid",
     "save_before_refresh": true,
     "save_after_refresh": true
   },
@@ -50,6 +50,11 @@
     "progress": {
       "processed": 7,
       "total": 7
-    }
+    },
+    "pending_queue": 0,
+    "on_demand_triggered": 0,
+    "on_demand_processed": 0,
+    "on_demand_skipped": 0,
+    "last_on_demand_at": "0001-01-01T00:00:00Z"
   }
 }
