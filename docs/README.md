@@ -7,4 +7,5 @@
 - [DNS 解析流程（图同序版）](./DNS_FLOW_VISUAL_ORDER.md)
 - [Switch1-15 功能对照](./SWITCH_1_15_FUNCTIONS.md)
 - [缓存系统重构与优化计划](./CACHE_REFACTOR_PLAN.md)
+- [分流记忆系统重构与优化方案](./SHUNT_MEMORY_REFACTOR_PLAN.md)
 - [Cache WAL 灰度发布与回滚手册](./CACHE_WAL_ROLLOUT.md)

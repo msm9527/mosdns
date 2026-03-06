@@ -405,6 +405,13 @@ PUT/POST JSON 示例：
 | POST | `/scheduler/config` | 更新调度配置 |
 | GET | `/stats/source_file_counts` | 统计源文件域名数量 |
 
+`requery` 新增配置口径：
+
+- `workflow.flush_mode`: `none`（推荐）或 `legacy`
+- `workflow.save_before_refresh` / `workflow.save_after_refresh`
+- `execution_settings.refresh_resolver_address`: 旁路刷新入口，推荐 `127.0.0.1:7767`
+- `execution_settings.query_mode`: `observed`（推荐）、`dual`、`a`、`aaaa`
+
 `POST /scheduler/config` 请求体：
 
 ```json
@@ -433,10 +440,19 @@ PUT/POST JSON 示例：
 
 | 方法 | 路径 | 说明 |
 |---|---|---|
-| GET | `/flush` | 刷新输出 |
-| GET | `/save` | 保存输出 |
+| GET | `/flush` | 清空内存态并立即刷新输出 |
+| GET | `/save` | 保存当前输出 |
 | GET | `/show` | 按计数倒序显示（`q/limit/offset`） |
+| GET | `/stats` | 查看晋升策略、已晋升条目和 dropped observations |
 | GET | `/restartall` | 触发 mosdns 自重启 |
+
+`domain_output` 新增 `policy` 配置块：
+
+- `kind`: `generic/realip/fakeip/nov4/nov6`
+- `promote_after`: 达到阈值后才进入规则文件和 `domain_set_url`
+- `decay_days`: 超过天数后不再继续发布旧记忆
+- `track_qtype`: 记录 `A/AAAA` 观察结果，用于 `nov4/nov6` 和 refresh 定向查询
+- `publish_mode`: `all` 或 `promoted_only`
 
 ## 4. UI 页面接口（非 JSON API）
 

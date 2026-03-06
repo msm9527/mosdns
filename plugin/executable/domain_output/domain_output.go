@@ -4,13 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"container/heap"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -22,11 +22,15 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
-	"github.com/go-chi/chi/v5"
 )
 
-const PluginType = "domain_output"
-const RecordBufferLimit = 10240
+const (
+	PluginType        = "domain_output"
+	RecordBufferLimit = 10240
+
+	qtypeMaskA    uint8 = 1 << 0
+	qtypeMaskAAAA uint8 = 1 << 1
+)
 
 func init() {
 	coremain.RegNewPluginFunc(PluginType, Init, func() any { return new(Args) })
@@ -34,28 +38,50 @@ func init() {
 }
 
 type Args struct {
-	FileStat       string `yaml:"file_stat"`
-	FileRule       string `yaml:"file_rule"`
-	GenRule        string `yaml:"gen_rule"`
-	Pattern        string `yaml:"pattern"`
-	AppendedString string `yaml:"appended_string"`
-	MaxEntries     int    `yaml:"max_entries"`
-	DumpInterval   int    `yaml:"dump_interval"`
-	DomainSetURL   string `yaml:"domain_set_url"`
-	EnableFlags    bool   `yaml:"enable_flags"`
+	FileStat       string      `yaml:"file_stat"`
+	FileRule       string      `yaml:"file_rule"`
+	GenRule        string      `yaml:"gen_rule"`
+	Pattern        string      `yaml:"pattern"`
+	AppendedString string      `yaml:"appended_string"`
+	MaxEntries     int         `yaml:"max_entries"`
+	DumpInterval   int         `yaml:"dump_interval"`
+	DomainSetURL   string      `yaml:"domain_set_url"`
+	EnableFlags    bool        `yaml:"enable_flags"`
+	Policy         *PolicyArgs `yaml:"policy"`
+}
+
+type PolicyArgs struct {
+	Kind         string `yaml:"kind"`
+	PromoteAfter int    `yaml:"promote_after"`
+	DecayDays    int    `yaml:"decay_days"`
+	TrackQType   bool   `yaml:"track_qtype"`
+	PublishMode  string `yaml:"publish_mode"`
+}
+
+type writePolicy struct {
+	kind         string
+	promoteAfter int
+	decayDays    int
+	trackQType   bool
+	publishMode  string
 }
 
 type statEntry struct {
-	Count    int
-	LastDate string
+	Count      int
+	LastDate   string
+	QTypeMask  uint8
+	Score      int
+	Promoted   bool
+	LastSource string
 }
 
-// logItem carries raw data from Exec to background worker
 type logItem struct {
-	name string
-	ad   bool
-	cd   bool
-	do   bool
+	name   string
+	qtype  uint16
+	source string
+	ad     bool
+	cd     bool
+	do     bool
 }
 
 type domainOutput struct {
@@ -66,16 +92,17 @@ type domainOutput struct {
 	appendedString string
 	maxEntries     int
 	dumpInterval   time.Duration
+	policy         writePolicy
 
-	stats        map[string]*statEntry
-	mu           sync.Mutex
-	
-	// Atomic counters for performance
-	totalCount   int64
-	entryCounter int64
+	stats map[string]*statEntry
+	mu    sync.Mutex
 
-	currentDate atomic.Value // stores string
-
+	totalCount      int64
+	entryCounter    int64
+	droppedCount    int64
+	promotedCount   int64
+	publishedCount  int64
+	currentDate     atomic.Value
 	recordChan      chan *logItem
 	writeSignalChan chan struct{}
 	stopChan        chan struct{}
@@ -83,8 +110,7 @@ type domainOutput struct {
 
 	domainSetURL string
 	enableFlags  bool
-
-	closeOnce sync.Once
+	closeOnce    sync.Once
 }
 
 type WriteMode int
@@ -96,31 +122,67 @@ const (
 	WriteModeShutdown
 )
 
+type writeSnapshot struct {
+	stats         map[string]*statEntry
+	rules         []string
+	promotedCount int
+}
+
 type outputRankItem struct {
 	Domain string
 	Count  int
 	Date   string
-}
-
-type outputRankHeap []outputRankItem
-
-func (h outputRankHeap) Len() int           { return len(h) }
-func (h outputRankHeap) Less(i, j int) bool { return h[i].Count < h[j].Count }
-func (h outputRankHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
-func (h *outputRankHeap) Push(x any)        { *h = append(*h, x.(outputRankItem)) }
-func (h *outputRankHeap) Pop() any {
-	old := *h
-	n := len(old)
-	x := old[n-1]
-	*h = old[0 : n-1]
-	return x
+	Score  int
+	QMask  uint8
+	Prom   bool
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
-	if cfg.DumpInterval <= 0 {
-		cfg.DumpInterval = 60
+	d := newDomainOutput(cfg)
+	d.loadFromFile()
+	go d.startWorker()
+	bp.RegAPI(d.Api())
+	return d, nil
+}
+
+func QuickSetup(_ sequence.BQ, s string) (any, error) {
+	params := strings.Split(s, ",")
+	if len(params) < 6 || len(params) > 7 {
+		return nil, errors.New("invalid quick setup arguments: need 6 or 7 fields")
 	}
+	maxEntries, err := strconv.Atoi(params[4])
+	if err != nil {
+		return nil, err
+	}
+	dumpInterval, err := strconv.Atoi(params[5])
+	if err != nil || dumpInterval <= 0 {
+		dumpInterval = 60
+	}
+	args := &Args{
+		FileStat:     params[0],
+		FileRule:     params[1],
+		GenRule:      params[2],
+		Pattern:      params[3],
+		MaxEntries:   maxEntries,
+		DumpInterval: dumpInterval,
+		Policy:       &PolicyArgs{},
+	}
+	if len(params) == 7 {
+		args.DomainSetURL = params[6]
+	}
+	d := newDomainOutput(args)
+	d.loadFromFile()
+	go d.startWorker()
+	return d, nil
+}
+
+func newDomainOutput(cfg *Args) *domainOutput {
+	dumpInterval := cfg.DumpInterval
+	if dumpInterval <= 0 {
+		dumpInterval = 60
+	}
+	policy := normalizePolicy(cfg)
 	d := &domainOutput{
 		fileStat:        cfg.FileStat,
 		fileRule:        cfg.FileRule,
@@ -128,7 +190,8 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		pattern:         cfg.Pattern,
 		appendedString:  cfg.AppendedString,
 		maxEntries:      cfg.MaxEntries,
-		dumpInterval:    time.Duration(cfg.DumpInterval) * time.Second,
+		dumpInterval:    time.Duration(dumpInterval) * time.Second,
+		policy:          policy,
 		stats:           make(map[string]*statEntry),
 		recordChan:      make(chan *logItem, RecordBufferLimit),
 		writeSignalChan: make(chan struct{}, 1),
@@ -138,102 +201,89 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		enableFlags:     cfg.EnableFlags,
 	}
 	d.currentDate.Store(time.Now().Format("2006-01-02"))
-	d.loadFromFile()
-
-	go d.startWorker()
-	bp.RegAPI(d.Api())
-
-	return d, nil
+	return d
 }
 
-func QuickSetup(_ sequence.BQ, s string) (any, error) {
-	params := strings.Split(s, ",")
-	if len(params) < 6 || len(params) > 7 {
-		return nil, errors.New("invalid quick setup arguments: need 6 or 7 fields")
-	}
-	fileStat := params[0]
-	fileRule := params[1]
-	genRule := params[2]
-	pattern := params[3]
-	maxEntries, err := strconv.Atoi(params[4])
-	if err != nil {
-		return nil, err
-	}
-	dumpInterval, err := strconv.Atoi(params[5])
-	if err != nil || dumpInterval <= 0 {
-		dumpInterval = 60
-	}
-	d := &domainOutput{
-		fileStat:        fileStat,
-		fileRule:        fileRule,
-		genRule:         genRule,
-		pattern:         pattern,
-		maxEntries:      maxEntries,
-		dumpInterval:    time.Duration(dumpInterval) * time.Second,
-		stats:           make(map[string]*statEntry),
-		recordChan:      make(chan *logItem, RecordBufferLimit),
-		writeSignalChan: make(chan struct{}, 1),
-		stopChan:        make(chan struct{}),
-		workerDoneChan:  make(chan struct{}),
-		currentDate:     atomic.Value{},
-	}
-	d.currentDate.Store(time.Now().Format("2006-01-02"))
-	if len(params) == 7 {
-		d.domainSetURL = params[6]
-	}
-	d.loadFromFile()
+func normalizePolicy(cfg *Args) writePolicy {
+	kind := "generic"
+	promoteAfter := 1
+	decayDays := 30
+	publishMode := "all"
+	trackQType := false
 
-	go d.startWorker()
+	infer := strings.ToLower(strings.Join([]string{cfg.FileStat, cfg.FileRule, cfg.GenRule, cfg.DomainSetURL}, " "))
+	switch {
+	case strings.Contains(infer, "realip"):
+		kind = "realip"
+		promoteAfter = 2
+		publishMode = "promoted_only"
+		trackQType = true
+	case strings.Contains(infer, "fakeip"):
+		kind = "fakeip"
+		promoteAfter = 2
+		publishMode = "promoted_only"
+		trackQType = true
+	case strings.Contains(infer, "nov4"):
+		kind = "nov4"
+		promoteAfter = 2
+		publishMode = "promoted_only"
+		trackQType = true
+	case strings.Contains(infer, "nov6"):
+		kind = "nov6"
+		promoteAfter = 2
+		publishMode = "promoted_only"
+		trackQType = true
+	}
 
-	return d, nil
+	if cfg.Policy != nil {
+		if cfg.Policy.Kind != "" {
+			kind = strings.ToLower(cfg.Policy.Kind)
+		}
+		if cfg.Policy.PromoteAfter > 0 {
+			promoteAfter = cfg.Policy.PromoteAfter
+		}
+		if cfg.Policy.DecayDays > 0 {
+			decayDays = cfg.Policy.DecayDays
+		}
+		if cfg.Policy.PublishMode != "" {
+			publishMode = strings.ToLower(cfg.Policy.PublishMode)
+		}
+		if cfg.Policy.TrackQType {
+			trackQType = true
+		}
+	}
+
+	if kind == "generic" && cfg.FileRule == "" && cfg.DomainSetURL == "" {
+		publishMode = "all"
+	}
+	return writePolicy{
+		kind:         kind,
+		promoteAfter: promoteAfter,
+		decayDays:    decayDays,
+		trackQType:   trackQType,
+		publishMode:  publishMode,
+	}
 }
 
 func (d *domainOutput) Exec(ctx context.Context, qCtx *query_context.Context) error {
-	q := qCtx.Q()
-	if q == nil || len(q.Question) == 0 {
-		return nil
-	}
-
-	for _, question := range q.Question {
-		item := &logItem{
-			name: question.Name,
-		}
-
-		if d.enableFlags {
-			item.ad = q.AuthenticatedData
-			item.cd = q.CheckingDisabled
-			if opt := q.IsEdns0(); opt != nil {
-				item.do = opt.Do()
-			}
-		}
-
-		// Non-blocking send. If channel is full, item is dropped to protect latency.
-		select {
-		case d.recordChan <- item:
-		default:
-		}
-	}
-
+	d.enqueueFromContext(qCtx, "live")
 	return nil
 }
 
-// GetFastExec implements sequence.fastExecutor
 func (d *domainOutput) GetFastExec() func(ctx context.Context, qCtx *query_context.Context) error {
-	// Pre-capture values for extreme performance and closure safety
-	enableFlags := d.enableFlags
 	rChan := d.recordChan
-
+	enableFlags := d.enableFlags
+	trackQType := d.policy.trackQType
 	return func(ctx context.Context, qCtx *query_context.Context) error {
 		q := qCtx.Q()
 		if q == nil || len(q.Question) == 0 {
 			return nil
 		}
-
 		for _, question := range q.Question {
-			item := &logItem{
-				name: question.Name,
+			item := &logItem{name: question.Name, source: "live"}
+			if trackQType {
+				item.qtype = question.Qtype
 			}
-
 			if enableFlags {
 				item.ad = q.AuthenticatedData
 				item.cd = q.CheckingDisabled
@@ -241,14 +291,38 @@ func (d *domainOutput) GetFastExec() func(ctx context.Context, qCtx *query_conte
 					item.do = opt.Do()
 				}
 			}
-
-			// Non-blocking send
 			select {
 			case rChan <- item:
 			default:
+				atomic.AddInt64(&d.droppedCount, 1)
 			}
 		}
 		return nil
+	}
+}
+
+func (d *domainOutput) enqueueFromContext(qCtx *query_context.Context, source string) {
+	q := qCtx.Q()
+	if q == nil || len(q.Question) == 0 {
+		return
+	}
+	for _, question := range q.Question {
+		item := &logItem{name: question.Name, source: source}
+		if d.policy.trackQType {
+			item.qtype = question.Qtype
+		}
+		if d.enableFlags {
+			item.ad = q.AuthenticatedData
+			item.cd = q.CheckingDisabled
+			if opt := q.IsEdns0(); opt != nil {
+				item.do = opt.Do()
+			}
+		}
+		select {
+		case d.recordChan <- item:
+		default:
+			atomic.AddInt64(&d.droppedCount, 1)
+		}
 	}
 }
 
@@ -261,15 +335,11 @@ func (d *domainOutput) startWorker() {
 		select {
 		case item := <-d.recordChan:
 			d.processRecord(item)
-
 		case <-ticker.C:
 			d.performWrite(WriteModePeriodic)
-
 		case <-d.writeSignalChan:
 			d.performWrite(WriteModePeriodic)
-
 		case <-d.stopChan:
-			// Drain remaining items before stopping
 			for {
 				select {
 				case item := <-d.recordChan:
@@ -283,45 +353,28 @@ func (d *domainOutput) startWorker() {
 }
 
 func (d *domainOutput) processRecord(item *logItem) {
-	// Move string operations to background worker
-	rawDomain := strings.TrimSuffix(item.name, ".")
-	storageKey := rawDomain
-
-	if d.enableFlags {
-		var flags []string
-		if item.ad {
-			flags = append(flags, "AD")
-		}
-		if item.cd {
-			flags = append(flags, "CD")
-		}
-		if item.do {
-			flags = append(flags, "DO")
-		}
-		if len(flags) > 0 {
-			storageKey = rawDomain + "|" + strings.Join(flags, "|")
-		}
-	}
+	storageKey := buildStorageKey(strings.TrimSuffix(item.name, "."), item, d.enableFlags)
+	qmask := qtypeToMask(item.qtype)
 
 	d.mu.Lock()
 	currDate := d.currentDate.Load().(string)
 	entry, exists := d.stats[storageKey]
 	if !exists {
-		entry = &statEntry{
-			Count:    0,
-			LastDate: currDate,
-		}
+		entry = &statEntry{}
 		d.stats[storageKey] = entry
 	}
 	entry.Count++
-	if entry.LastDate != currDate {
-		entry.LastDate = currDate
+	entry.Score++
+	entry.LastDate = currDate
+	entry.LastSource = item.source
+	if qmask != 0 {
+		entry.QTypeMask |= qmask
 	}
+	entry.Promoted = d.shouldPromote(entry)
 	d.mu.Unlock()
 
 	atomic.AddInt64(&d.totalCount, 1)
 	newCount := atomic.AddInt64(&d.entryCounter, 1)
-
 	if d.maxEntries > 0 && newCount >= int64(d.maxEntries) {
 		select {
 		case d.writeSignalChan <- struct{}{}:
@@ -330,90 +383,211 @@ func (d *domainOutput) processRecord(item *logItem) {
 	}
 }
 
+func buildStorageKey(rawDomain string, item *logItem, enableFlags bool) string {
+	storageKey := rawDomain
+	if !enableFlags {
+		return storageKey
+	}
+	flags := make([]string, 0, 3)
+	if item.ad {
+		flags = append(flags, "AD")
+	}
+	if item.cd {
+		flags = append(flags, "CD")
+	}
+	if item.do {
+		flags = append(flags, "DO")
+	}
+	if len(flags) == 0 {
+		return storageKey
+	}
+	return rawDomain + "|" + strings.Join(flags, "|")
+}
+
+func qtypeToMask(qtype uint16) uint8 {
+	switch qtype {
+	case 1:
+		return qtypeMaskA
+	case 28:
+		return qtypeMaskAAAA
+	default:
+		return 0
+	}
+}
+
 func (d *domainOutput) performWrite(mode WriteMode) {
-	// Update current date cache
 	d.currentDate.Store(time.Now().Format("2006-01-02"))
-
-	var statsToDump map[string]*statEntry
-
-	d.mu.Lock()
-	switch mode {
-	case WriteModePeriodic:
-		statsToDump = make(map[string]*statEntry, len(d.stats))
-		for k, v := range d.stats {
-			statsToDump[k] = &statEntry{Count: v.Count, LastDate: v.LastDate}
-		}
-		if len(statsToDump) == 0 {
-			d.mu.Unlock()
-			return
-		}
-		atomic.StoreInt64(&d.entryCounter, 0)
-	case WriteModeFlush:
-		statsToDump = make(map[string]*statEntry)
-		d.stats = make(map[string]*statEntry)
-		atomic.StoreInt64(&d.totalCount, 0)
-		atomic.StoreInt64(&d.entryCounter, 0)
-	case WriteModeSave, WriteModeShutdown:
-		statsToDump = make(map[string]*statEntry, len(d.stats))
-		for k, v := range d.stats {
-			statsToDump[k] = &statEntry{Count: v.Count, LastDate: v.LastDate}
-		}
-		atomic.StoreInt64(&d.entryCounter, 0)
-	}
-	d.mu.Unlock()
-
-	d.doWriteFiles(statsToDump)
-
+	snapshot := d.buildSnapshot(mode)
+	d.writeSnapshot(snapshot)
 	if mode != WriteModeShutdown {
-		d.pushToDomainSet(statsToDump)
+		d.pushToDomainSet(snapshot.rules)
 	}
-	statsToDump = nil
+	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
+	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
 	coremain.ManualGC()
 }
 
-func (d *domainOutput) doWriteFiles(statsData map[string]*statEntry) {
+func (d *domainOutput) buildSnapshot(mode WriteMode) writeSnapshot {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now()
+	evictBefore := now.AddDate(0, 0, -maxInt(d.policy.decayDays*3, d.policy.decayDays+7))
+	for k, v := range d.stats {
+		if v.LastDate == "" {
+			continue
+		}
+		ts, err := time.Parse("2006-01-02", v.LastDate)
+		if err == nil && ts.Before(evictBefore) {
+			delete(d.stats, k)
+		}
+	}
+
+	snapshotStats := make(map[string]*statEntry, len(d.stats))
+	for k, v := range d.stats {
+		cloned := *v
+		cloned.Promoted = d.shouldPromote(&cloned)
+		snapshotStats[k] = &cloned
+	}
+
+	switch mode {
+	case WriteModeFlush:
+		d.stats = make(map[string]*statEntry)
+		snapshotStats = map[string]*statEntry{}
+		atomic.StoreInt64(&d.totalCount, 0)
+		atomic.StoreInt64(&d.entryCounter, 0)
+	case WriteModePeriodic, WriteModeSave, WriteModeShutdown:
+		atomic.StoreInt64(&d.entryCounter, 0)
+	}
+
+	rules, promoted := d.collectRules(snapshotStats)
+	return writeSnapshot{stats: snapshotStats, rules: rules, promotedCount: promoted}
+}
+
+func (d *domainOutput) collectRules(stats map[string]*statEntry) ([]string, int) {
+	if len(stats) == 0 {
+		return nil, 0
+	}
+	type agg struct {
+		count    int
+		lastDate string
+		promoted bool
+	}
+	aggregated := make(map[string]agg)
+	promotedCount := 0
+	for key, entry := range stats {
+		domainOnly := strings.Split(key, "|")[0]
+		current := aggregated[domainOnly]
+		current.count += entry.Count
+		if entry.LastDate > current.lastDate {
+			current.lastDate = entry.LastDate
+		}
+		if entry.Promoted {
+			current.promoted = true
+		}
+		aggregated[domainOnly] = current
+	}
+
+	domains := make([]string, 0, len(aggregated))
+	for domain, item := range aggregated {
+		if d.policy.publishMode == "promoted_only" && !item.promoted {
+			continue
+		}
+		if d.isStale(item.lastDate) {
+			continue
+		}
+		domains = append(domains, domain)
+		if item.promoted {
+			promotedCount++
+		}
+	}
+	sort.Strings(domains)
+	return domains, promotedCount
+}
+
+func (d *domainOutput) shouldPromote(entry *statEntry) bool {
+	if d.policy.publishMode == "all" {
+		return true
+	}
+	if d.isStale(entry.LastDate) {
+		return false
+	}
+	if entry.Count < d.policy.promoteAfter {
+		return false
+	}
+	switch d.policy.kind {
+	case "nov4":
+		return entry.QTypeMask&qtypeMaskA != 0
+	case "nov6":
+		return entry.QTypeMask&qtypeMaskAAAA != 0
+	default:
+		return true
+	}
+}
+
+func (d *domainOutput) isStale(lastDate string) bool {
+	if d.policy.decayDays <= 0 || lastDate == "" {
+		return false
+	}
+	ts, err := time.Parse("2006-01-02", lastDate)
+	if err != nil {
+		return false
+	}
+	return time.Since(ts) > time.Duration(d.policy.decayDays)*24*time.Hour
+}
+
+func (d *domainOutput) writeSnapshot(snapshot writeSnapshot) {
 	writeFile := func(filePath string, writeContent func(io.Writer) error) {
 		if filePath == "" {
 			return
 		}
-		file, err := os.OpenFile(filePath, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0644)
+		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
+			return
+		}
+		tmpFile := filePath + ".tmp"
+		f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
 			return
 		}
-		defer file.Close()
-		_ = writeContent(file)
+		writer := bufio.NewWriter(f)
+		writeErr := writeContent(writer)
+		flushErr := writer.Flush()
+		closeErr := f.Close()
+		if writeErr != nil || flushErr != nil || closeErr != nil {
+			_ = os.Remove(tmpFile)
+			return
+		}
+		if err := os.Rename(tmpFile, filePath); err != nil {
+			_ = os.Remove(tmpFile)
+		}
 	}
 
-	type sortItem struct {
-		Key   string
-		Entry *statEntry
+	sortedItems := make([]outputRankItem, 0, len(snapshot.stats))
+	for k, v := range snapshot.stats {
+		sortedItems = append(sortedItems, outputRankItem{Domain: k, Count: v.Count, Date: v.LastDate, Score: v.Score, QMask: v.QTypeMask, Prom: v.Promoted})
 	}
-	sortedItems := make([]sortItem, 0, len(statsData))
-	for k, v := range statsData {
-		sortedItems = append(sortedItems, sortItem{Key: k, Entry: v})
-	}
-
 	sort.Slice(sortedItems, func(i, j int) bool {
-		return sortedItems[i].Entry.Count > sortedItems[j].Entry.Count
+		if sortedItems[i].Count == sortedItems[j].Count {
+			return sortedItems[i].Domain < sortedItems[j].Domain
+		}
+		return sortedItems[i].Count > sortedItems[j].Count
 	})
 
 	writeFile(d.fileStat, func(w io.Writer) error {
 		for _, item := range sortedItems {
-			line := fmt.Sprintf("%010d %s %s\n", item.Entry.Count, item.Entry.LastDate, item.Key)
-			_, _ = w.Write([]byte(line))
+			_, err := fmt.Fprintf(w, "%010d %s %s qmask=%d score=%d promoted=%d\n", item.Count, item.Date, item.Domain, item.QMask, item.Score, boolToInt(item.Prom))
+			if err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 
 	writeFile(d.fileRule, func(w io.Writer) error {
-		seen := make(map[string]bool)
-		for _, item := range sortedItems {
-			domainOnly := strings.Split(item.Key, "|")[0]
-			if seen[domainOnly] {
-				continue
+		for _, domain := range snapshot.rules {
+			if _, err := fmt.Fprintf(w, "full:%s\n", domain); err != nil {
+				return err
 			}
-			seen[domainOnly] = true
-			_, _ = w.Write([]byte(fmt.Sprintf("full:%s\n", domainOnly)))
 		}
 		return nil
 	})
@@ -423,94 +597,93 @@ func (d *domainOutput) doWriteFiles(statsData map[string]*statEntry) {
 			return nil
 		}
 		if d.appendedString != "" {
-			_, _ = w.Write([]byte(d.appendedString + "\n"))
-		}
-		seen := make(map[string]bool)
-		for _, item := range sortedItems {
-			domainOnly := strings.Split(item.Key, "|")[0]
-			if seen[domainOnly] {
-				continue
+			if _, err := fmt.Fprintln(w, d.appendedString); err != nil {
+				return err
 			}
-			seen[domainOnly] = true
-			line := strings.ReplaceAll(d.pattern, "DOMAIN", domainOnly)
-			_, _ = w.Write([]byte(line + "\n"))
+		}
+		for _, domain := range snapshot.rules {
+			line := strings.ReplaceAll(d.pattern, "DOMAIN", domain)
+			if _, err := fmt.Fprintln(w, line); err != nil {
+				return err
+			}
 		}
 		return nil
 	})
 }
 
 func (d *domainOutput) loadFromFile() {
-	file, err := os.Open(d.fileStat)
+	if d.fileStat == "" {
+		return
+	}
+	f, err := os.Open(d.fileStat)
 	if err != nil {
 		return
 	}
-	defer file.Close()
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	today := time.Now().Format("2006-01-02")
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
-
-	scanner := bufio.NewScanner(file)
-	today := time.Now().Format("2006-01-02")
-
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
 			continue
 		}
 		fields := strings.Fields(line)
-		
-		var count int
-		var domain string
-		var date string
-
-		if len(fields) == 2 {
-			c, _ := strconv.Atoi(fields[0])
-			count = c
-			domain = fields[1]
-			date = today
-		} else if len(fields) >= 3 {
-			c, _ := strconv.Atoi(fields[0])
-			count = c
-			date = fields[1]
-			domain = fields[2]
-		} else {
+		if len(fields) < 2 {
 			continue
 		}
-
-		d.stats[domain] = &statEntry{
-			Count:    count,
-			LastDate: date,
+		count, _ := strconv.Atoi(fields[0])
+		lastDate := today
+		domain := ""
+		startExtras := 2
+		if len(fields) >= 3 && strings.Count(fields[1], "-") == 2 {
+			lastDate = fields[1]
+			domain = fields[2]
+			startExtras = 3
+		} else {
+			domain = fields[1]
 		}
+		entry := &statEntry{Count: count, Score: count, LastDate: lastDate}
+		for _, field := range fields[startExtras:] {
+			k, v, ok := strings.Cut(field, "=")
+			if !ok {
+				continue
+			}
+			switch k {
+			case "qmask":
+				if parsed, err := strconv.Atoi(v); err == nil {
+					entry.QTypeMask = uint8(parsed)
+				}
+			case "score":
+				if parsed, err := strconv.Atoi(v); err == nil {
+					entry.Score = parsed
+				}
+			case "promoted":
+				entry.Promoted = v == "1"
+			}
+		}
+		entry.Promoted = d.shouldPromote(entry)
+		d.stats[domain] = entry
 		atomic.AddInt64(&d.totalCount, int64(count))
 	}
-	coremain.ManualGC()
 }
 
-func (d *domainOutput) pushToDomainSet(statsData map[string]*statEntry) {
+func (d *domainOutput) pushToDomainSet(rules []string) {
 	if d.domainSetURL == "" {
 		return
 	}
-
-	seen := make(map[string]bool)
-	vals := make([]string, 0, len(statsData))
-
-	for key := range statsData {
-		domainOnly := strings.Split(key, "|")[0]
-		if seen[domainOnly] {
-			continue
-		}
-		seen[domainOnly] = true
-		vals = append(vals, fmt.Sprintf("full:%s", domainOnly))
-	}
-
-	payload := struct{ Values []string `json:"values"` }{Values: vals}
+	payload := struct {
+		Values []string `json:"values"`
+	}{Values: make([]string, len(rules))}
+	copy(payload.Values, rules)
 	body, _ := json.Marshal(payload)
-
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-
-		req, err := http.NewRequestWithContext(ctx, "POST", d.domainSetURL, bytes.NewReader(body))
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.domainSetURL, bytes.NewReader(body))
 		if err != nil {
 			return
 		}
@@ -520,7 +693,7 @@ func (d *domainOutput) pushToDomainSet(statsData map[string]*statEntry) {
 			return
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}()
 }
 
@@ -539,81 +712,21 @@ func restartSelf() {
 	if err != nil {
 		os.Exit(0)
 	}
-	args := os.Args
-	env := os.Environ()
-	_ = syscall.Exec(bin, args, env)
+	_ = syscall.Exec(bin, os.Args, os.Environ())
 }
 
-func (d *domainOutput) Api() *chi.Mux {
-	r := chi.NewRouter()
+func boolToInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
+}
 
-	r.Get("/flush", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		d.performWrite(WriteModeFlush)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("domain_output flushed"))
-	}))
-
-	r.Get("/save", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		d.performWrite(WriteModeSave)
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("domain_output saved"))
-	}))
-
-	r.Get("/show", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		query := strings.ToLower(r.URL.Query().Get("q"))
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-
-		if limit <= 0 { limit = 100 }
-		if offset < 0 { offset = 0 }
-
-		h := &outputRankHeap{}
-		heap.Init(h)
-		maxHeapSize := offset + limit
-
-		d.mu.Lock()
-		totalFiltered := 0 
-		for domain, entry := range d.stats {
-			if query != "" && !strings.Contains(strings.ToLower(domain), query) {
-				continue
-			}
-			totalFiltered++ 
-			item := outputRankItem{Domain: domain, Count: entry.Count, Date: entry.LastDate}
-			if h.Len() < maxHeapSize {
-				heap.Push(h, item)
-			} else if item.Count > (*h)[0].Count {
-				heap.Pop(h)
-				heap.Push(h, item)
-			}
-		}
-		d.mu.Unlock()
-
-		w.Header().Set("X-Total-Count", strconv.Itoa(totalFiltered))
-		w.Header().Set("Access-Control-Expose-Headers", "X-Total-Count")
-
-		resultCount := h.Len()
-		sortedResult := make([]outputRankItem, resultCount)
-		for i := resultCount - 1; i >= 0; i-- {
-			sortedResult[i] = heap.Pop(h).(outputRankItem)
-		}
-
-		if offset < resultCount {
-			for i := offset; i < resultCount; i++ {
-				stat := sortedResult[i]
-				_, _ = fmt.Fprintf(w, "%010d %s %s\n", stat.Count, stat.Date, stat.Domain)
-			}
-		}
-	}))
-
-	r.Get("/restartall", func(w http.ResponseWriter, req *http.Request) {
-		_ = d.Close()
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("mosdns restarting"))
-		go restartSelf()
-	})
-
-	return r
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 var _ sequence.Executable = (*domainOutput)(nil)

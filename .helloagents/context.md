@@ -14,3 +14,9 @@
 ## 本次同步说明
 
 - 2026-03-06：完成缓存插件生产级重构，新增 snapshot + WAL、`/stats`、更细指标与测试基准
+- `plugin/executable/domain_output`: 分流记忆插件，现已支持晋升阈值、衰减和 `/stats`
+- `plugin/executable/requery`: 分流记忆刷新插件，现已支持旁路 refresh resolver 和 staged 刷新
+
+## 本次同步说明
+
+- 2026-03-06：完成分流记忆系统重构，默认启用旁路刷新链路、qtype 定向重查和规则晋升策略

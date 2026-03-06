@@ -25,6 +25,7 @@ include:
   - "sub_config/process_ot.yaml"            #主分流序列-其它类型dns请求
   - "sub_config/process_v4.yaml"            #主分流序列-IPV4类型dns请求
   - "sub_config/process_v6.yaml"            #主分流序列-IPV6类型dns请求
+  - "sub_config/requery_refresh.yaml"       #分流记忆旁路刷新专用链路
   - "sub_config/for_singbox.yaml"           #专供sing-box使用
   - "sub_config/webinfo.yaml"               #前端信息与配置存储
   - "sub_config/requery.yaml"               #分流与缓存刷新功能

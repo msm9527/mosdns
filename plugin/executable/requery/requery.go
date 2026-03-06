@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,11 @@ import (
 
 const (
 	PluginType = "requery"
+)
+
+const (
+	qtypeMaskA uint8 = 1 << iota
+	qtypeMaskAAAA
 )
 
 // ----------------------------------------------------------------------------
@@ -72,18 +78,17 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 	p.mu.Unlock()
 
-
 	// Start the scheduler's goroutine once. It will run forever.
 	p.scheduler.Start()
 	log.Println("[requery] Scheduler started.")
-	
+
 	// Now, add the initial job based on the loaded config.
 	if err := p.setupScheduler(); err != nil {
 		log.Printf("[requery] WARN: Failed to setup initial scheduler job, it will be disabled: %v", err)
 	}
-	
+
 	bp.RegAPI(p.api())
-	
+
 	log.Printf("[requery] plugin instance created for config file: %s", p.filePath)
 	return p, nil
 }
@@ -105,16 +110,17 @@ type Requery struct {
 
 // Config maps directly to the requeryconfig.json file structure.
 type Config struct {
-	DomainProcessing  DomainProcessing   `json:"domain_processing"`
-	URLActions        URLActions         `json:"url_actions"`
-	Scheduler         SchedulerConfig    `json:"scheduler"`
-	ExecutionSettings ExecutionSettings  `json:"execution_settings"`
-	Status            Status             `json:"status"`
+	DomainProcessing  DomainProcessing  `json:"domain_processing"`
+	URLActions        URLActions        `json:"url_actions"`
+	Workflow          WorkflowSettings  `json:"workflow"`
+	Scheduler         SchedulerConfig   `json:"scheduler"`
+	ExecutionSettings ExecutionSettings `json:"execution_settings"`
+	Status            Status            `json:"status"`
 }
 
 type DomainProcessing struct {
 	SourceFiles []SourceFile `json:"source_files"`
-    // OutputFile 已删除
+	// OutputFile 已删除
 }
 
 type SourceFile struct {
@@ -127,6 +133,12 @@ type URLActions struct {
 	FlushRules []string `json:"flush_rules"`
 }
 
+type WorkflowSettings struct {
+	FlushMode         string `json:"flush_mode"`
+	SaveBeforeRefresh *bool  `json:"save_before_refresh,omitempty"`
+	SaveAfterRefresh  *bool  `json:"save_after_refresh,omitempty"`
+}
+
 type SchedulerConfig struct {
 	Enabled         bool   `json:"enabled"`
 	StartDatetime   string `json:"start_datetime"` // ISO 8601 format
@@ -134,18 +146,20 @@ type SchedulerConfig struct {
 }
 
 type ExecutionSettings struct {
-	QueriesPerSecond int    `json:"queries_per_second"`
-	ResolverAddress  string `json:"resolver_address"`
-	URLCallDelayMS   int    `json:"url_call_delay_ms"`
-	DateRangeDays    int    `json:"date_range_days"` // 新增配置项：日期范围
+	QueriesPerSecond       int    `json:"queries_per_second"`
+	ResolverAddress        string `json:"resolver_address"`
+	RefreshResolverAddress string `json:"refresh_resolver_address,omitempty"`
+	QueryMode              string `json:"query_mode,omitempty"`
+	URLCallDelayMS         int    `json:"url_call_delay_ms"`
+	DateRangeDays          int    `json:"date_range_days"` // 新增配置项：日期范围
 }
 
 type Status struct {
-	TaskState           string    `json:"task_state"` // "idle", "running", "failed", "cancelled"
-	LastRunStartTime    time.Time `json:"last_run_start_time,omitempty"`
-	LastRunEndTime      time.Time `json:"last_run_end_time,omitempty"`
-	LastRunDomainCount  int       `json:"last_run_domain_count"`
-	Progress            Progress  `json:"progress"`
+	TaskState          string    `json:"task_state"` // "idle", "running", "failed", "cancelled"
+	LastRunStartTime   time.Time `json:"last_run_start_time,omitempty"`
+	LastRunEndTime     time.Time `json:"last_run_end_time,omitempty"`
+	LastRunDomainCount int       `json:"last_run_domain_count"`
+	Progress           Progress  `json:"progress"`
 }
 
 type Progress struct {
@@ -153,6 +167,10 @@ type Progress struct {
 	Total     int64 `json:"total"`
 }
 
+type domainCandidate struct {
+	Name      string
+	QTypeMask uint8
+}
 
 // ----------------------------------------------------------------------------
 // 3. Core Task Workflow
@@ -166,7 +184,7 @@ func (p *Requery) runTask(ctx context.Context) {
 		p.mu.Unlock()
 		return
 	}
-	
+
 	p.config.Status.TaskState = "running"
 	p.config.Status.LastRunStartTime = time.Now().UTC()
 	p.config.Status.LastRunEndTime = time.Time{} // Clear end time
@@ -187,25 +205,26 @@ func (p *Requery) runTask(ctx context.Context) {
 			log.Printf("[requery] FATAL: Task panicked: %v", r)
 			p.config.Status.TaskState = "failed"
 		}
-		
+
 		p.config.Status.LastRunEndTime = time.Now().UTC()
 		_ = p.saveConfigUnlocked()
 
 		p.taskCancel = nil
-                p.mu.Unlock()
+		p.mu.Unlock()
 		// [修改点] 调用核心包的通用内存清理函数
 		// 因为 ManualGC 内部是异步(go func)的，所以这里调用不会阻塞锁，非常安全
 		log.Println("[requery] Task finished, triggering background memory release...")
 		coremain.ManualGC()
-	} ()
+	}()
 
 	log.Println("[requery] Starting a new task.")
 
-	// Step 1: Save current rules
-	log.Println("[requery] Step 1: Saving rules...")
-	if err := p.callURLs(ctx, p.config.URLActions.SaveRules); err != nil {
-		p.setFailedState("failed during save_rules step: %v", err)
-		return
+	if workflowBool(p.config.Workflow.SaveBeforeRefresh, true) {
+		log.Println("[requery] Step 1: Saving current rule state...")
+		if err := p.callURLs(ctx, p.config.URLActions.SaveRules); err != nil {
+			p.setFailedState("failed during save_rules step: %v", err)
+			return
+		}
 	}
 
 	// Step 2 & 3: Consolidate domains (Merge only, no backup read/write)
@@ -219,12 +238,13 @@ func (p *Requery) runTask(ctx context.Context) {
 		log.Println("[requery] No domains found to process. Task finished.")
 		return
 	}
-	
-	// Step 4: Flush old rules
-	log.Println("[requery] Step 4: Flushing old rules...")
-	if err := p.callURLs(ctx, p.config.URLActions.FlushRules); err != nil {
-		p.setFailedState("failed during flush_rules step: %v", err)
-		return
+
+	if p.shouldFlushBeforeRefresh() {
+		log.Println("[requery] Step 4: Flushing old rules (legacy mode)...")
+		if err := p.callURLs(ctx, p.config.URLActions.FlushRules); err != nil {
+			p.setFailedState("failed during flush_rules step: %v", err)
+			return
+		}
 	}
 
 	// Update status with total domain count
@@ -242,11 +262,12 @@ func (p *Requery) runTask(ctx context.Context) {
 		return
 	}
 
-	// Step 7 (Final): Save rules again after requery
-	log.Println("[requery] Step 7: Performing final save of rules...")
-	if err := p.callURLs(ctx, p.config.URLActions.SaveRules); err != nil {
-		p.setFailedState("failed during final save_rules step: %v", err)
-		return
+	if workflowBool(p.config.Workflow.SaveAfterRefresh, true) {
+		log.Println("[requery] Step 7: Publishing refreshed rule state...")
+		if err := p.callURLs(ctx, p.config.URLActions.SaveRules); err != nil {
+			p.setFailedState("failed during final save_rules step: %v", err)
+			return
+		}
 	}
 
 	log.Println("[requery] Task completed successfully.")
@@ -254,10 +275,9 @@ func (p *Requery) runTask(ctx context.Context) {
 
 // mergeAndFilterDomains handles reading source files, parsing formats, and filtering by date.
 // It no longer reads or writes the backup file.
-func (p *Requery) mergeAndFilterDomains(ctx context.Context) ([]string, error) {
-	// 初始化域名集合，用于去重
-	domainSet := make(map[string]struct{})
-	
+func (p *Requery) mergeAndFilterDomains(ctx context.Context) ([]domainCandidate, error) {
+	domainSet := make(map[string]domainCandidate)
+
 	// 准备正则：匹配 full: 开头
 	domainPattern := regexp.MustCompile(`^full:(.+)`)
 
@@ -271,11 +291,11 @@ func (p *Requery) mergeAndFilterDomains(ctx context.Context) ([]string, error) {
 
 	for _, sourceFile := range p.config.DomainProcessing.SourceFiles {
 		select {
-		case <- ctx.Done():
+		case <-ctx.Done():
 			return nil, ctx.Err()
 		default:
 		}
-		
+
 		file, err := os.Open(sourceFile.Path)
 		if err != nil {
 			if os.IsNotExist(err) {
@@ -295,33 +315,33 @@ func (p *Requery) mergeAndFilterDomains(ctx context.Context) ([]string, error) {
 
 			// 判断格式
 			if strings.HasPrefix(line, "full:") {
-				// 格式 1: full:moxie.foxnews.com
 				matches := domainPattern.FindStringSubmatch(line)
 				if len(matches) > 1 {
 					domain := strings.TrimSpace(matches[1])
-					domainSet[domain] = struct{}{}
+					candidate := domainSet[domain]
+					candidate.Name = domain
+					if candidate.QTypeMask == 0 {
+						candidate.QTypeMask = qtypeMaskA | qtypeMaskAAAA
+					}
+					domainSet[domain] = candidate
 				}
 			} else if len(line) > 0 && line[0] >= '0' && line[0] <= '9' {
-				// 格式 2: 0000000004 2025-12-18 moxie.foxnews.com (数字开头)
-				// 解析字段：[0]=次数 [1]=日期 [2]=域名
 				fields := strings.Fields(line)
 				if len(fields) >= 3 {
 					dateStr := fields[1]
 					domain := fields[2]
-
-					// 检查日期是否过期
 					parsedTime, err := time.Parse("2006-01-02", dateStr)
 					if err == nil {
-						// 计算距离今天有多少天
-						// 如果 time.Since(parsedTime) > limitDays * 24h，则过期
 						daysDiff := time.Since(parsedTime).Hours() / 24
 						if daysDiff <= float64(limitDays) {
-							domainSet[domain] = struct{}{}
+							candidate := domainSet[domain]
+							candidate.Name = domain
+							candidate.QTypeMask |= parseQTypeMaskFromFields(fields[3:])
+							if candidate.QTypeMask == 0 {
+								candidate.QTypeMask = qtypeMaskA | qtypeMaskAAAA
+							}
+							domainSet[domain] = candidate
 						}
-						// 如果超过天数，则忽略不加载
-					} else {
-						// 日期解析失败，保守起见如果不是合法日期则忽略，或者选择记录日志
-						// 这里选择忽略该条目
 					}
 				}
 			}
@@ -332,25 +352,28 @@ func (p *Requery) mergeAndFilterDomains(ctx context.Context) ([]string, error) {
 			return nil, fmt.Errorf("error reading source file %s: %w", sourceFile.Path, err)
 		}
 	}
-	
+
 	log.Printf("[requery] Processed source files. Total unique domains loaded (within %d days): %d.", limitDays, len(domainSet))
 
 	if len(domainSet) == 0 {
-		return []string{}, nil
+		return []domainCandidate{}, nil
 	}
 
-	domains := make([]string, 0, len(domainSet))
-	for domain := range domainSet {
-		domains = append(domains, domain)
+	domains := make([]domainCandidate, 0, len(domainSet))
+	for _, candidate := range domainSet {
+		if candidate.QTypeMask == 0 {
+			candidate.QTypeMask = qtypeMaskA | qtypeMaskAAAA
+		}
+		domains = append(domains, candidate)
 	}
-        domainSet = nil 
+	domainSet = nil
 	// 此时不再写入 output_file (requery_backup.txt)
-	
+
 	return domains, nil
 }
 
 // resendDNSQueries handles step 6 of the workflow.
-func (p *Requery) resendDNSQueries(ctx context.Context, domains []string) error {
+func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidate) error {
 	var wg sync.WaitGroup
 	// 确保 QueriesPerSecond 大于 0，防止除以零 panic
 	qps := p.config.ExecutionSettings.QueriesPerSecond
@@ -359,14 +382,15 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []string) error 
 	}
 	ticker := time.NewTicker(time.Second / time.Duration(qps))
 	defer ticker.Stop()
-	
+
 	dnsClient := new(dns.Client)
 	// 设置超时，防止请求挂起
-	dnsClient.Timeout = 2 * time.Second 
+	dnsClient.Timeout = 2 * time.Second
 
+	resolverAddr := p.refreshResolverAddress()
 	for i := 0; i < len(domains); i++ {
-		rawDomainStr := domains[i] // 这里的字符串可能带后缀，也可能不带
-		
+		rawDomainStr := domains[i].Name
+
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
@@ -379,7 +403,7 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []string) error 
 		// 1. 分割字符串
 		parts := strings.Split(rawDomainStr, "|")
 		realDomain := parts[0] // 始终是域名部分
-		
+
 		// 2. 解析 Flags
 		var useAD, useCD, useDO bool
 		if len(parts) > 1 {
@@ -399,34 +423,36 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []string) error 
 		createMsg := func(qtype uint16) *dns.Msg {
 			m := new(dns.Msg)
 			m.SetQuestion(dns.Fqdn(realDomain), qtype)
-			
+
 			// 还原原始请求的 Flags
 			m.AuthenticatedData = useAD
 			m.CheckingDisabled = useCD
 			if useDO {
-				m.SetEdns0(4096, true) 
+				m.SetEdns0(4096, true)
 			}
 			// 建议开启递归查询，模拟普通客户端行为
-			m.RecursionDesired = true 
+			m.RecursionDesired = true
 			return m
 		}
 		// ----------------------------------
 
-		wg.Add(2)
-		
-		// 发送 A 记录
-		go func() {
-			defer wg.Done()
-			msg := createMsg(dns.TypeA)
-			_, _, _ = dnsClient.ExchangeContext(ctx, msg, p.config.ExecutionSettings.ResolverAddress)
-		}()
-		
-		// 发送 AAAA 记录
-		go func() {
-			defer wg.Done()
-			msg := createMsg(dns.TypeAAAA)
-			_, _, _ = dnsClient.ExchangeContext(ctx, msg, p.config.ExecutionSettings.ResolverAddress)
-		}()
+		qmask := p.effectiveQueryMask(domains[i].QTypeMask)
+		if qmask&qtypeMaskA != 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				msg := createMsg(dns.TypeA)
+				_, _, _ = dnsClient.ExchangeContext(ctx, msg, resolverAddr)
+			}()
+		}
+		if qmask&qtypeMaskAAAA != 0 {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				msg := createMsg(dns.TypeAAAA)
+				_, _, _ = dnsClient.ExchangeContext(ctx, msg, resolverAddr)
+			}()
+		}
 
 		newProcessed := atomic.AddInt64(&p.config.Status.Progress.Processed, 1)
 		// 减少保存频率，优化 IO
@@ -439,6 +465,65 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []string) error 
 
 	wg.Wait()
 	return nil
+}
+
+func parseQTypeMaskFromFields(fields []string) uint8 {
+	var mask uint8
+	for _, field := range fields {
+		k, v, ok := strings.Cut(field, "=")
+		if !ok || k != "qmask" {
+			continue
+		}
+		if parsed, err := strconv.Atoi(v); err == nil {
+			mask |= uint8(parsed)
+		}
+	}
+	return mask
+}
+
+func (p *Requery) refreshResolverAddress() string {
+	if p.config.ExecutionSettings.RefreshResolverAddress != "" {
+		return p.config.ExecutionSettings.RefreshResolverAddress
+	}
+	return p.config.ExecutionSettings.ResolverAddress
+}
+
+func (p *Requery) effectiveQueryMask(observed uint8) uint8 {
+	switch strings.ToLower(p.config.ExecutionSettings.QueryMode) {
+	case "a", "ipv4", "ipv4_only":
+		return qtypeMaskA
+	case "aaaa", "ipv6", "ipv6_only":
+		return qtypeMaskAAAA
+	case "dual", "all":
+		return qtypeMaskA | qtypeMaskAAAA
+	default:
+		if observed != 0 {
+			return observed
+		}
+		return qtypeMaskA | qtypeMaskAAAA
+	}
+}
+
+func (p *Requery) shouldFlushBeforeRefresh() bool {
+	switch strings.ToLower(p.config.Workflow.FlushMode) {
+	case "", "none":
+		return false
+	case "legacy", "before_refresh":
+		return len(p.config.URLActions.FlushRules) > 0
+	default:
+		return len(p.config.URLActions.FlushRules) > 0
+	}
+}
+
+func workflowBool(v *bool, defaultValue bool) bool {
+	if v == nil {
+		return defaultValue
+	}
+	return *v
+}
+
+func boolPtr(v bool) *bool {
+	return &v
 }
 
 // ----------------------------------------------------------------------------
@@ -472,7 +557,7 @@ func (p *Requery) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	
+
 	if p.config.Status.TaskState == "running" {
 		p.jsonError(w, "A task is already running.", http.StatusConflict)
 		return
@@ -492,18 +577,18 @@ func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		p.jsonError(w, "No running task to cancel.", http.StatusNotFound)
 		return
 	}
-	
+
 	p.taskCancel()
 	log.Println("[requery] Task cancellation requested via API.")
-	
+
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "Task cancellation initiated."}, http.StatusOK)
 }
 
 func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) {
 	// [修改] 定义一个扩展的结构体来接收包含 date_range_days 的 JSON
 	type SchedulerUpdatePayload struct {
-		SchedulerConfig       // 嵌入原有的 SchedulerConfig 字段 (Enabled, StartDatetime, IntervalMinutes)
-		DateRangeDays   int   `json:"date_range_days"` // 新增字段
+		SchedulerConfig     // 嵌入原有的 SchedulerConfig 字段 (Enabled, StartDatetime, IntervalMinutes)
+		DateRangeDays   int `json:"date_range_days"` // 新增字段
 	}
 
 	var payload SchedulerUpdatePayload
@@ -517,7 +602,7 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 
 	// [修改] 分别更新 Scheduler 和 ExecutionSettings
 	p.config.Scheduler = payload.SchedulerConfig
-	
+
 	// 只有当传入了有效天数时才更新 (防止意外归零)
 	if payload.DateRangeDays > 0 {
 		p.config.ExecutionSettings.DateRangeDays = payload.DateRangeDays
@@ -574,7 +659,7 @@ func (p *Requery) handleGetSourceFileCounts(w http.ResponseWriter, r *http.Reque
 		}
 		counts = append(counts, fileCount{Alias: sourceFile.Alias, Count: count})
 	}
-	
+
 	p.jsonResponse(w, map[string]any{"status": "success", "data": counts}, http.StatusOK)
 }
 
@@ -590,14 +675,21 @@ func (p *Requery) loadConfig() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Printf("[requery] config file %s not found, initializing with default empty config.", p.filePath)
-			p.config = &Config{Status: Status{TaskState: "idle"}}
-			// 设置默认值
+			p.config = &Config{
+				Status: Status{TaskState: "idle"},
+				Workflow: WorkflowSettings{
+					FlushMode:         "none",
+					SaveBeforeRefresh: boolPtr(true),
+					SaveAfterRefresh:  boolPtr(true),
+				},
+			}
 			p.config.ExecutionSettings.DateRangeDays = 30
+			p.config.ExecutionSettings.QueryMode = "observed"
 			return p.saveConfigUnlocked()
 		}
 		return err
 	}
-	
+
 	var cfg Config
 	if err := json.Unmarshal(dataBytes, &cfg); err != nil {
 		return fmt.Errorf("failed to parse json from config file %s: %w", p.filePath, err)
@@ -621,6 +713,26 @@ func (p *Requery) loadConfig() error {
 	}
 	if p.config.ExecutionSettings.DateRangeDays <= 0 {
 		p.config.ExecutionSettings.DateRangeDays = 30 // Default value (Requirement 4)
+		configChanged = true
+	}
+	if p.config.ExecutionSettings.QueryMode == "" {
+		p.config.ExecutionSettings.QueryMode = "observed"
+		configChanged = true
+	}
+	if p.config.Workflow.FlushMode == "" {
+		if len(p.config.URLActions.FlushRules) > 0 && p.config.ExecutionSettings.RefreshResolverAddress == "" {
+			p.config.Workflow.FlushMode = "legacy"
+		} else {
+			p.config.Workflow.FlushMode = "none"
+		}
+		configChanged = true
+	}
+	if p.config.Workflow.SaveBeforeRefresh == nil {
+		p.config.Workflow.SaveBeforeRefresh = boolPtr(true)
+		configChanged = true
+	}
+	if p.config.Workflow.SaveAfterRefresh == nil {
+		p.config.Workflow.SaveAfterRefresh = boolPtr(true)
 		configChanged = true
 	}
 
@@ -722,8 +834,8 @@ func (p *Requery) setupScheduler() error {
 
 	if delay > 0 {
 		log.Printf("[requery] Next scheduled run will be at %v (in %v).", nextRunTime.Local(), delay.Round(time.Second))
-		
-		// When the timer fires, it will execute the job and then immediately call rescheduleTasks 
+
+		// When the timer fires, it will execute the job and then immediately call rescheduleTasks
 		// to schedule the subsequent job, creating a chain.
 		time.AfterFunc(delay, func() {
 			jobFunc()
@@ -748,7 +860,7 @@ func (p *Requery) callURLs(ctx context.Context, urls []string) error {
 		if err != nil {
 			return fmt.Errorf("failed to create request for %s: %w", url, err)
 		}
-		
+
 		resp, err := p.httpClient.Do(req)
 		if err != nil {
 			return fmt.Errorf("failed to call URL %s: %w", url, err)
@@ -759,7 +871,7 @@ func (p *Requery) callURLs(ctx context.Context, urls []string) error {
 			body, _ := io.ReadAll(resp.Body)
 			return fmt.Errorf("bad response from URL %s: status %d, body: %s", url, resp.StatusCode, string(body))
 		}
-		
+
 		_, _ = io.Copy(io.Discard, resp.Body)
 
 		if i < len(urls)-1 {

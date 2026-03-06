@@ -1,3 +1,10 @@
+## [0.1.2] - 2026-03-06
+
+### 重构
+- **[shunt-memory]**: 重构 `domain_output + requery`，引入晋升阈值、衰减、`/stats` 和 refresh 专用旁路链路 — by msm
+  - 决策: shunt_memory_rebuild#D001(刷新默认绕过 DNS 响应缓存，规则从观察结果中晋升而不是单次直接生效)
+- **[config]**: 将默认分流记忆配置切到 `policy` 与 `workflow` 新配置口径，并新增 `requery_refresh.yaml` — by msm
+
 ## [0.1.1] - 2026-03-06
 
 ### 修复
