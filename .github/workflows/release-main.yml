@@ -5,6 +5,10 @@ on:
     branches: [ "main" ]
   workflow_dispatch:
 
+env:
+  RELEASE_NAME_SUFFIX: "来源: mosdns-v5 + yyysuo/ph-v5"
+  RELEASE_SUBTITLE: "副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。"
+
 permissions:
   contents: write
 
@@ -133,12 +137,12 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: "Release ${{ env.TAG_NAME }} | 来源: mosdns-v5 + yyysuo/ph-v5"
+          name: "Release ${{ env.TAG_NAME }} | ${{ env.RELEASE_NAME_SUFFIX }}"
           files: './artifacts/mosdns*.zip'
           prerelease: false
           generate_release_notes: true
           body: |
-            副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。
+            ${{ env.RELEASE_SUBTITLE }}
             Built with Go ${{ env.GO_VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
