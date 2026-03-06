@@ -43,6 +43,6 @@
 
 - `coremain/www/assets/js/log.js`
   - `requery` 面板改为直接读取 `my_fakeiplist/my_realiplist/my_nov4list/my_nov6list` 的 `/stats`
-  - 展示刷新链路说明、最近任务结果和四类分流记忆的已收集/已晋升/已发布/观察丢弃统计
+  - 当前 UI 仅保留状态、数量和操作，不展示策略说明型文案
 - `coremain/www/log.html`
-  - 新增 requery 运行态说明区和分流记忆统计表
+  - 维持简洁面板，只展示必要统计表

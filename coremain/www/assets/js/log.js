@@ -102,8 +102,6 @@ document.addEventListener('DOMContentLoaded', () => {
         requeryIntervalInput: document.getElementById('requery-interval-input'),
         requeryDateRangeInput: document.getElementById('requery-date-range-input'),
         requeryStartDatetimeInput: document.getElementById('requery-start-datetime-input'),
-        requeryWorkflowSummary: document.getElementById('requery-workflow-summary'),
-        requeryLastResult: document.getElementById('requery-last-result'),
         requeryMemoryStatsTbody: document.getElementById('requery-memory-stats-tbody'),
         updateModule: document.getElementById('update-module'),
         updateCurrentVersion: document.getElementById('update-current-version'),
@@ -415,12 +413,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 elements.requeryStatusText.textContent = '获取状态失败';
                 elements.requeryStatusText.style.color = 'var(--color-danger)';
                 elements.requeryTriggerBtn.disabled = true;
-                if (elements.requeryWorkflowSummary) {
-                    elements.requeryWorkflowSummary.textContent = '未能读取刷新链路配置';
-                }
-                if (elements.requeryLastResult) {
-                    elements.requeryLastResult.textContent = '未能读取最近运行结果';
-                }
                 this.renderMemoryStats();
                 return;
             }
@@ -488,47 +480,7 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.requeryCancelBtn.hidden = !isRunning;
             elements.requeryTriggerBtn.disabled = isRunning;
 
-            this.renderWorkflowSummary(config, status);
             this.renderMemoryStats();
-        },
-
-        renderWorkflowSummary(config, status) {
-            const execution = config.execution_settings || {};
-            const workflow = config.workflow || {};
-            const refreshResolver = execution.refresh_resolver_address || execution.resolver_address || '未配置';
-            const resolverMode = execution.refresh_resolver_address ? '旁路刷新' : '与主解析器共用';
-            const queryMode = this.formatQueryMode(execution.query_mode);
-            const flushMode = this.formatFlushMode(workflow.flush_mode);
-            const saveBefore = workflow.save_before_refresh !== false ? '刷新前保存' : '刷新前不保存';
-            const saveAfter = workflow.save_after_refresh !== false ? '刷新后发布' : '刷新后不发布';
-
-            if (elements.requeryWorkflowSummary) {
-                elements.requeryWorkflowSummary.textContent = `${resolverMode} ${refreshResolver}，查询模式 ${queryMode}，${flushMode}，${saveBefore} / ${saveAfter}。`;
-            }
-
-            if (!elements.requeryLastResult) return;
-            if (!status.last_run_start_time || status.last_run_start_time.startsWith('0001-01-01')) {
-                elements.requeryLastResult.textContent = '尚未执行过刷新任务。';
-                return;
-            }
-
-            const domainCount = typeof status.last_run_domain_count === 'number' ? status.last_run_domain_count.toLocaleString() : '0';
-            const processed = status.progress && typeof status.progress.processed === 'number' ? status.progress.processed.toLocaleString() : '0';
-            const total = status.progress && typeof status.progress.total === 'number' ? status.progress.total.toLocaleString() : '0';
-            const ended = status.last_run_end_time && !status.last_run_end_time.startsWith('0001-01-01');
-            const durationText = ended
-                ? `${Math.max(0, Math.round((new Date(status.last_run_end_time) - new Date(status.last_run_start_time)) / 1000))} 秒`
-                : '进行中';
-
-            let resultText = `最近一次任务处理 ${domainCount} 个域名，进度 ${processed}/${total}，耗时 ${durationText}。`;
-            if (status.task_state === 'failed') {
-                resultText = `最近一次任务失败，失败前处理 ${processed}/${total}，最近目标域名 ${domainCount} 个。`;
-            } else if (status.task_state === 'cancelled') {
-                resultText = `最近一次任务已取消，取消前处理 ${processed}/${total}，最近目标域名 ${domainCount} 个。`;
-            } else if (status.task_state === 'running') {
-                resultText = `当前正在刷新 ${total} 个域名，已完成 ${processed} 个。`;
-            }
-            elements.requeryLastResult.textContent = resultText;
         },
 
         renderMemoryStats() {
@@ -542,17 +494,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     return `
                         <tr>
                             <td><strong>${profile.title}</strong></td>
-                            <td class="text-right" colspan="5" style="color: var(--color-text-secondary);">统计不可用</td>
+                            <td class="text-right" colspan="4" style="color: var(--color-text-secondary);">统计不可用</td>
                         </tr>
                     `;
                 }
-
-                const policyText = [
-                    `${this.formatKind(stats.kind)} · 阈值 ${this.formatCount(stats.promote_after)}`,
-                    `${this.formatCount(stats.decay_days)} 天衰减`,
-                    stats.track_qtype ? '按观测类型' : '不区分类型',
-                    this.formatPublishMode(stats.publish_mode),
-                ].join('，');
 
                 return `
                     <tr>
@@ -560,8 +505,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <td class="text-right"><a href="#" class="control-item-link" data-list-type="${profile.key}" data-list-title="${profile.title}">${this.formatCount(stats.total_entries)}</a></td>
                         <td class="text-right">${this.formatCount(stats.promoted_entries)}</td>
                         <td class="text-right">${this.formatCount(stats.published_rules)}</td>
-                        <td class="text-right">${this.formatCount(stats.total_observations)} / ${this.formatCount(stats.dropped_observations)}</td>
-                        <td class="text-right">${policyText}</td>
+                        <td class="text-right">${this.formatCount(stats.dropped_observations)}</td>
                     </tr>
                 `;
             }).join('');
@@ -569,66 +513,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         formatCount(value) {
             return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '--';
-        },
-
-        formatKind(kind) {
-            switch ((kind || '').toLowerCase()) {
-                case 'fakeip':
-                    return 'FakeIP';
-                case 'realip':
-                    return 'RealIP';
-                case 'nov4':
-                    return '无 V4';
-                case 'nov6':
-                    return '无 V6';
-                default:
-                    return kind || '通用';
-            }
-        },
-
-        formatPublishMode(mode) {
-            switch ((mode || '').toLowerCase()) {
-                case 'promoted_only':
-                    return '仅发布已晋升';
-                case 'all':
-                    return '发布全部观察';
-                default:
-                    return mode || '默认发布';
-            }
-        },
-
-        formatFlushMode(mode) {
-            switch ((mode || '').toLowerCase()) {
-                case 'legacy':
-                case 'before_refresh':
-                    return '刷新前清空旧规则';
-                case 'none':
-                case '':
-                    return '保留旧规则，刷新后原子覆盖';
-                default:
-                    return `刷新模式 ${mode}`;
-            }
-        },
-
-        formatQueryMode(mode) {
-            switch ((mode || '').toLowerCase()) {
-                case 'observed':
-                case '':
-                    return '按历史观测定向刷新';
-                case 'a':
-                case 'ipv4':
-                case 'ipv4_only':
-                    return '仅 A';
-                case 'aaaa':
-                case 'ipv6':
-                case 'ipv6_only':
-                    return '仅 AAAA';
-                case 'dual':
-                case 'all':
-                    return 'A + AAAA';
-                default:
-                    return mode;
-            }
         },
 
         startPolling() {
@@ -2705,24 +2589,16 @@ const cacheManager = {
 
         describeInstance(stats) {
             if (stats.error) {
-                return { label: '加载失败', color: 'var(--color-danger)', detail: stats.error };
+                return { label: '加载失败', color: 'var(--color-danger)' };
             }
             const opErrors = [stats.last_dump, stats.last_load, stats.last_wal_replay].some(op => op?.status === 'error');
             if (opErrors) {
-                return { label: '异常', color: 'var(--color-danger)', detail: '最近持久化操作失败' };
+                return { label: '异常', color: 'var(--color-danger)' };
             }
             if (stats.backend_size > 0 || stats.l1_size > 0 || stats.counters.query_total > 0) {
-                return {
-                    label: '运行中',
-                    color: 'var(--color-success)',
-                    detail: stats.wal_file ? 'WAL 已启用' : '仅 snapshot'
-                };
+                return { label: '运行中', color: 'var(--color-success)' };
             }
-            return {
-                label: '待机',
-                color: 'var(--color-warning)',
-                detail: stats.wal_file ? 'WAL 已启用' : '仅 snapshot'
-            };
+            return { label: '待机', color: 'var(--color-warning)' };
         },
 
         renderStack(lines, align = 'left') {
@@ -2731,10 +2607,7 @@ const cacheManager = {
 
         renderStateCell(stats) {
             const stateInfo = this.describeInstance(stats);
-            return this.renderStack([
-                `<span style="font-weight:700; color:${stateInfo.color};">${stateInfo.label}</span>`,
-                `<span style="font-size:0.85rem; color:var(--color-text-secondary);">${stateInfo.detail}</span>`
-            ]);
+            return `<span style="font-weight:700; color:${stateInfo.color}; display:inline-block;">${stateInfo.label}</span>`;
         },
 
         async updateStats(signal) {
@@ -2781,15 +2654,8 @@ const cacheManager = {
                 const stats = state.cacheStats[cache.key] || this.emptyStats(cache.tag);
                 const counters = stats.counters || this.emptyStats(cache.tag).counters;
                 const hitRate = this.formatPercent(counters.hit_total, counters.query_total);
-                const lazyRate = this.formatPercent(counters.lazy_hit_total, counters.query_total);
-                const l1Share = this.formatPercent(counters.l1_hit_total, Math.max(counters.hit_total, 1));
-                const l2Share = this.formatPercent(counters.l2_hit_total, Math.max(counters.hit_total, 1));
-                const dumpStatus = this.formatOpStatus(stats.last_dump, '未 dump');
-                const loadStatus = this.formatOpStatus(stats.last_load, '未 load');
-                const replayStatus = this.formatOpStatus(stats.last_wal_replay, '未 replay');
-                const walState = stats.wal_file ? '已启用' : '未启用';
-                const snapshotName = stats.snapshot_file ? stats.snapshot_file.split('/').pop() : '未配置';
-                const walName = stats.wal_file ? stats.wal_file.split('/').pop() : '未配置';
+                const staleHitRate = this.formatPercent(counters.lazy_hit_total, counters.query_total);
+                const stateInfo = this.describeInstance(stats);
 
                 if (state.isMobile) {
                     tr.innerHTML = `
@@ -2800,13 +2666,13 @@ const cacheManager = {
                                     <button class="button danger small clear-cache-btn" data-cache-tag="${cache.tag}" style="padding: 0.3rem 0.6rem;">清空</button>
                                 </div>
                                 <div class="mobile-stats-grid">
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">运行态</span><span class="mobile-stat-value">${this.describeInstance(stats).label}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">请求 / 命中</span><span class="mobile-stat-value">${this.formatCount(counters.query_total)} / ${this.formatCount(counters.hit_total)} (${hitRate})</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">L1 / L2</span><span class="mobile-stat-value">${this.formatCount(counters.l1_hit_total)} / ${this.formatCount(counters.l2_hit_total)}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">过期刷新</span><span class="mobile-stat-value">${this.formatCount(counters.lazy_hit_total)} / ${this.formatCount(counters.lazy_update_total)}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">容量</span><span class="mobile-stat-value"><a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${this.formatCount(stats.backend_size)}</a> / ${this.formatCount(stats.l1_size)}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">Snapshot</span><span class="mobile-stat-value">${dumpStatus.text}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">WAL</span><span class="mobile-stat-value">${walState} · ${replayStatus.text}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">状态</span><span class="mobile-stat-value">${stateInfo.label}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">请求总数</span><span class="mobile-stat-value">${this.formatCount(counters.query_total)}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">缓存命中</span><span class="mobile-stat-value">${this.formatCount(counters.hit_total)}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">过期命中</span><span class="mobile-stat-value">${this.formatCount(counters.lazy_hit_total)}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">命中率</span><span class="mobile-stat-value">${hitRate}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">过期命中率</span><span class="mobile-stat-value">${staleHitRate}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">条目数</span><span class="mobile-stat-value"><a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${this.formatCount(stats.backend_size)}</a></span></div>
                                 </div>
                             </div>
                         </td>
@@ -2816,37 +2682,13 @@ const cacheManager = {
                         <td>
                             <div class="cache-name-wrapper" style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${cache.name}">${cache.name}</div>
                         </td>
-                        <td>${this.renderStateCell(stats)}</td>
-                        <td>${this.renderStack([
-                            `<span>请求 ${this.formatCount(counters.query_total)}</span>`,
-                            `<span>总命中 ${this.formatCount(counters.hit_total)} (${hitRate})</span>`,
-                            `<span>过期命中 ${this.formatCount(counters.lazy_hit_total)} (${lazyRate})</span>`
-                        ], 'right')}</td>
-                        <td>${this.renderStack([
-                            `<span>L1 命中 ${this.formatCount(counters.l1_hit_total)} (${l1Share})</span>`,
-                            `<span>L2 命中 ${this.formatCount(counters.l2_hit_total)} (${l2Share})</span>`,
-                            `<span>L1 / L2 容量 ${this.formatCount(stats.l1_size)} / ${this.formatCount(stats.backend_size)}</span>`
-                        ], 'right')}</td>
-                        <td>${this.renderStack([
-                            `<span>lazy update ${this.formatCount(counters.lazy_update_total)}</span>`,
-                            `<span>drop ${this.formatCount(counters.lazy_update_dropped_total)}</span>`,
-                            `<span>updated keys ${this.formatCount(stats.updated_keys)}</span>`
-                        ], 'right')}</td>
-                        <td>${this.renderStack([
-                            `<span style="color:${dumpStatus.color};">Dump · ${dumpStatus.text}</span>`,
-                            `<span style="color:${loadStatus.color};">Load · ${loadStatus.text}</span>`,
-                            `<span style="color:var(--color-text-secondary);">${snapshotName}</span>`
-                        ], 'right')}</td>
-                        <td>${this.renderStack([
-                            `<span style="font-weight:700;">${walState}</span>`,
-                            `<span style="color:${replayStatus.color};">Replay · ${replayStatus.text}</span>`,
-                            `<span style="color:var(--color-text-secondary);">${walName} · sync ${stats.config?.wal_sync_interval ?? 0}s</span>`
-                        ], 'right')}</td>
-                        <td class="text-right">${this.renderStack([
-                            `<a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${this.formatCount(stats.backend_size)} 条</a>`,
-                            `<span>L1 ${this.formatCount(stats.l1_size)} 条</span>`,
-                            `<span>配置容量 ${this.formatCount(stats.config?.size || 0)}</span>`
-                        ], 'right')}</td>
+                        <td class="text-center">${this.renderStateCell(stats)}</td>
+                        <td class="text-right">${this.formatCount(counters.query_total)}</td>
+                        <td class="text-right">${this.formatCount(counters.hit_total)}</td>
+                        <td class="text-right">${this.formatCount(counters.lazy_hit_total)}</td>
+                        <td class="text-right">${hitRate}</td>
+                        <td class="text-right">${staleHitRate}</td>
+                        <td class="text-right"><a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${this.formatCount(stats.backend_size)}</a></td>
                         <td class="text-center"><button class="button danger clear-cache-btn" data-cache-tag="${cache.tag}" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">清空</button></td>
                     `;
                 }

@@ -1168,13 +1168,13 @@
                             <thead>
                                 <tr>
                                     <th>缓存名称</th>
-                                    <th class="text-right hide-on-mobile">实例状态</th>
-                                    <th class="text-right hide-on-mobile">请求 / 命中</th>
-                                    <th class="text-right hide-on-mobile">L1 / L2</th>
-                                    <th class="text-right hide-on-mobile">过期刷新</th>
-                                    <th class="text-right hide-on-mobile">Snapshot</th>
-                                    <th class="text-right hide-on-mobile">WAL</th>
-                                    <th class="text-right">容量</th>
+                                    <th class="text-center hide-on-mobile">状态</th>
+                                    <th class="text-right hide-on-mobile">请求总数</th>
+                                    <th class="text-right hide-on-mobile">缓存命中</th>
+                                    <th class="text-right hide-on-mobile">过期命中</th>
+                                    <th class="text-right hide-on-mobile">命中率</th>
+                                    <th class="text-right hide-on-mobile">过期命中率</th>
+                                    <th class="text-right">条目数</th>
                                     <th class="text-center">操作</th>
                                 </tr>
                             </thead>
@@ -1267,15 +1267,6 @@
                         </div>
                     </div>
 
-                    <div class="control-item">
-                        <strong>刷新链路</strong>
-                        <span id="requery-workflow-summary">查询中...</span>
-                    </div>
-                    <div class="control-item">
-                        <strong>最近结果</strong>
-                        <span id="requery-last-result">查询中...</span>
-                    </div>
-
                     <!-- 定时任务设置 -->
                     <form id="requery-scheduler-form" class="requery-scheduler">
                         <div class="control-item">
@@ -1317,16 +1308,15 @@
                             <thead>
                                 <tr>
                                     <th>列表</th>
-                                    <th class="text-right">已收集</th>
+                                    <th class="text-right">条目</th>
                                     <th class="text-right">已晋升</th>
                                     <th class="text-right">已发布</th>
-                                    <th class="text-right">观察 / 丢弃</th>
-                                    <th class="text-right">策略</th>
+                                    <th class="text-right">丢弃</th>
                                 </tr>
                             </thead>
                             <tbody id="requery-memory-stats-tbody">
                                 <tr>
-                                    <td colspan="6">正在加载分流记忆统计...</td>
+                                    <td colspan="5">正在加载分流记忆统计...</td>
                                 </tr>
                             </tbody>
                         </table>
