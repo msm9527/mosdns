@@ -25,7 +25,6 @@ import (
 )
 
 func init() {
-	// 创建 probe 命令
 	probeCmd := &cobra.Command{
 		Use:   "probe",
 		Short: "Run some server tests.",
@@ -37,7 +36,6 @@ func init() {
 	)
 	coremain.AddSubCmd(probeCmd)
 
-	// 创建 config 命令
 	configCmd := &cobra.Command{
 		Use:   "config",
 		Short: "Tools that can generate/convert mosdns config file.",
@@ -45,10 +43,12 @@ func init() {
 	configCmd.AddCommand(newGenCmd(), newConvCmd())
 	coremain.AddSubCmd(configCmd)
 
-	// 创建 resend 命令
 	resendCmd := &cobra.Command{
 		Use:   "resend",
 		Short: "Resend DNS queries from a domain list file to the specified server.",
 	}
-	resendCmd.AddCommand(newResendRunCmd())  // 更改为新的子命令
-	coremain.AddSubCmd(resendCmd)}
+	resendCmd.AddCommand(newResendRunCmd())
+	coremain.AddSubCmd(resendCmd)
+
+	coremain.AddSubCmd(newStressCmd())
+}

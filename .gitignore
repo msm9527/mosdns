@@ -28,3 +28,4 @@ demo/
 /.spec-workflow/
 /config/cache/*.dump
 /config/cache/*.wal
+/reports/

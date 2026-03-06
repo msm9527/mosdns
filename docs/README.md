@@ -10,3 +10,5 @@
 - [分流记忆系统重构与优化方案](./SHUNT_MEMORY_REFACTOR_PLAN.md)
 - [分流记忆混合模式说明](./SHUNT_MEMORY_HYBRID_MODE.md)
 - [Cache WAL 灰度发布与回滚手册](./CACHE_WAL_ROLLOUT.md)
+- [mosdns 全链路压测说明](./STRESS_TEST_GUIDE.md)
+- [DNS 失败治理方案](./DNS_FAILURE_GOVERNANCE_PLAN.md)

@@ -7,6 +7,15 @@
   - 决策: shunt_memory_hybrid#D001(默认以按需刷新为主，定时巡检只做保底)
 - **[config]**: 将默认分流记忆配置切到 `policy` 与 `workflow` 新配置口径，并新增 `requery_refresh.yaml` — by msm
 
+### 新增
+- **[tools]**: 新增 `mosdns stress dns`，支持纯 DNS UDP 压测、少量 TCP 对照、JSON 报告和失败样本输出 — by msm
+- **[tools]**: 将 `mosdns stress dns` 调整为“真实域名冷启动 + 热点重复访问”模型，默认按 `1 万真实域名 + 9 万重复请求` 口径观察缓存收益 — by msm
+- **[tools]**: 为压测报告补充结果拆分与 `cache_effect` 汇总，区分正向结果、`NXDOMAIN`、`SERVFAIL` 和超时，便于判断缓存收益与负结果复用 — by msm
+- **[docs]**: 新增 DNS 失败治理方案，定义负结果缓存、失败抑制、上游熔断、报表口径和分流纠偏的落地顺序 — by msm
+
+### 修复
+- **[failure-governance]**: 为 `cache` 引入 `nxdomain_ttl/servfail_ttl`，并为 `aliapi` 增加 transport failure 短期抑制与上游熔断，降低热点失败域名对上游的重复冲击 — by msm
+
 ### 修复
 - **[ui]**: 系统页“刷新分流缓存”面板接入 `my_*list/stats`，补充刷新链路说明、最近结果解释和四类分流记忆运行态表格 — by msm
 - **[ui]**: 收缩缓存与分流刷新面板信息密度，移除解释性文案与多余列，仅保留状态、数量和操作 — by msm
