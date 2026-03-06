@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/go-chi/chi/v5"
@@ -29,16 +30,25 @@ func (h *outputRankHeap) Pop() any {
 }
 
 type statsResponse struct {
-	Kind                string `json:"kind"`
-	PromoteAfter        int    `json:"promote_after"`
-	DecayDays           int    `json:"decay_days"`
-	PublishMode         string `json:"publish_mode"`
-	TrackQType          bool   `json:"track_qtype"`
-	TotalEntries        int    `json:"total_entries"`
-	PromotedEntries     int64  `json:"promoted_entries"`
-	PublishedRules      int64  `json:"published_rules"`
-	TotalObservations   int64  `json:"total_observations"`
-	DroppedObservations int64  `json:"dropped_observations"`
+	MemoryID               string `json:"memory_id"`
+	Kind                   string `json:"kind"`
+	PromoteAfter           int    `json:"promote_after"`
+	DecayDays              int    `json:"decay_days"`
+	PublishMode            string `json:"publish_mode"`
+	TrackQType             bool   `json:"track_qtype"`
+	StaleAfterMinutes      int    `json:"stale_after_minutes"`
+	RefreshCooldownMinutes int    `json:"refresh_cooldown_minutes"`
+	TotalEntries           int    `json:"total_entries"`
+	DirtyEntries           int    `json:"dirty_entries"`
+	PromotedEntries        int64  `json:"promoted_entries"`
+	PublishedRules         int64  `json:"published_rules"`
+	TotalObservations      int64  `json:"total_observations"`
+	DroppedObservations    int64  `json:"dropped_observations"`
+}
+
+type verifyRequest struct {
+	Domain     string `json:"domain"`
+	VerifiedAt string `json:"verified_at,omitempty"`
 }
 
 func (d *domainOutput) Api() *chi.Mux {
@@ -105,21 +115,67 @@ func (d *domainOutput) Api() *chi.Mux {
 	r.Get("/stats", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		totalEntries := len(d.stats)
+		dirtyEntries := 0
+		for _, entry := range d.stats {
+			if entry.RefreshState == "dirty" {
+				dirtyEntries++
+			}
+		}
 		d.mu.Unlock()
 		resp := statsResponse{
-			Kind:                d.policy.kind,
-			PromoteAfter:        d.policy.promoteAfter,
-			DecayDays:           d.policy.decayDays,
-			PublishMode:         d.policy.publishMode,
-			TrackQType:          d.policy.trackQType,
-			TotalEntries:        totalEntries,
-			PromotedEntries:     atomic.LoadInt64(&d.promotedCount),
-			PublishedRules:      atomic.LoadInt64(&d.publishedCount),
-			TotalObservations:   atomic.LoadInt64(&d.totalCount),
-			DroppedObservations: atomic.LoadInt64(&d.droppedCount),
+			MemoryID:               d.memoryID,
+			Kind:                   d.policy.kind,
+			PromoteAfter:           d.policy.promoteAfter,
+			DecayDays:              d.policy.decayDays,
+			PublishMode:            d.policy.publishMode,
+			TrackQType:             d.policy.trackQType,
+			StaleAfterMinutes:      d.policy.staleAfterMinutes,
+			RefreshCooldownMinutes: d.policy.refreshCooldownMinutes,
+			TotalEntries:           totalEntries,
+			DirtyEntries:           dirtyEntries,
+			PromotedEntries:        atomic.LoadInt64(&d.promotedCount),
+			PublishedRules:         atomic.LoadInt64(&d.publishedCount),
+			TotalObservations:      atomic.LoadInt64(&d.totalCount),
+			DroppedObservations:    atomic.LoadInt64(&d.droppedCount),
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(resp)
+	}))
+
+	r.Post("/verify", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
+		var req verifyRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Domain) == "" {
+			http.Error(w, "invalid verify request", http.StatusBadRequest)
+			return
+		}
+		domain := strings.TrimSpace(strings.TrimSuffix(req.Domain, "."))
+		verifiedAt := req.VerifiedAt
+		if verifiedAt == "" {
+			verifiedAt = time.Now().UTC().Format(time.RFC3339)
+		}
+
+		d.mu.Lock()
+		updated := 0
+		for key, entry := range d.stats {
+			if strings.Split(key, "|")[0] != domain {
+				continue
+			}
+			entry.LastVerifiedAt = verifiedAt
+			entry.RefreshState = "clean"
+			entry.DirtyReason = ""
+			entry.CooldownUntil = ""
+			entry.LastDirtyAt = verifiedAt
+			d.stats[key] = entry
+			updated++
+		}
+		d.mu.Unlock()
+		if updated == 0 {
+			http.Error(w, "domain not found", http.StatusNotFound)
+			return
+		}
+		d.performWrite(WriteModeSave)
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "updated": updated})
 	}))
 
 	r.Get("/restartall", func(w http.ResponseWriter, req *http.Request) {

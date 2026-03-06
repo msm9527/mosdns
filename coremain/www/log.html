@@ -1250,6 +1250,8 @@
                                     class="chip">查询中...</span></div>
                             <div class="control-item"><strong>上次运行</strong> <span id="requery-last-run">查询中...</span>
                             </div>
+                            <div class="control-item"><strong>按需队列</strong> <span id="requery-queue-summary">查询中...</span>
+                            </div>
                         </div>
                         <div class="requery-actions">
                             <button id="requery-trigger-btn" class="button primary requery-primary-btn"
@@ -1267,30 +1269,25 @@
                         </div>
                     </div>
 
-                    <!-- 定时任务设置 -->
+                    <!-- 刷新模式 -->
                     <form id="requery-scheduler-form" class="requery-scheduler">
                         <div class="control-item">
-                            <strong>启用定时任务</strong>
+                            <strong>刷新模式</strong>
+                            <select id="requery-mode-select" style="margin-left:auto; min-width: 140px;">
+                                <option value="hybrid">混合模式</option>
+                                <option value="manual">仅按需刷新</option>
+                                <option value="scheduled">仅低频巡检</option>
+                            </select>
+                        </div>
+                        <div class="control-item">
+                            <strong>启用低频巡检</strong>
                             <label class="switch" style="margin-left:auto;">
                                 <input type="checkbox" id="requery-scheduler-toggle">
                                 <span class="slider"></span>
                             </label>
                         </div>
                         <div class="requery-scheduler-grid">
-                            <label for="requery-start-datetime-input" class="field-label">
-                                首次执行时间
-                                <span class="info-icon" title="输入您的本地时间。留空则表示插件启动后，到达下个间隔时间点时执行。">
-                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"
-                                        width="16" height="16">
-                                        <path
-                                            d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v2h-2V7zm0 4h2v6h-2v-6z">
-                                        </path>
-                                    </svg>
-                                </span>
-                            </label>
-                            <input type="datetime-local" id="requery-start-datetime-input">
-
-                            <label for="requery-interval-input" class="field-label">间隔 (分钟)</label>
+                            <label for="requery-interval-input" class="field-label">巡检间隔 (分钟)</label>
                             <input type="number" id="requery-interval-input" min="1">
                             <label for="requery-date-range-input" class="field-label" title="仅刷新最近 N 天内查询过的域名">
                                 域名刷新天数

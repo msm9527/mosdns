@@ -23,14 +23,15 @@
     "flush_rules": []
   },
   "workflow": {
+    "mode": "hybrid",
     "flush_mode": "none",
     "save_before_refresh": true,
     "save_after_refresh": true
   },
   "scheduler": {
     "enabled": true,
-    "start_datetime": "2025-10-14T20:30:00.000Z",
-    "interval_minutes": 10080
+    "start_datetime": "",
+    "interval_minutes": 1440
   },
   "execution_settings": {
     "queries_per_second": 10,
@@ -38,7 +39,8 @@
     "refresh_resolver_address": "127.0.0.1:7767",
     "query_mode": "observed",
     "url_call_delay_ms": 50,
-    "date_range_days": 30
+    "date_range_days": 30,
+    "max_queue_size": 2048
   },
   "status": {
     "task_state": "idle",

@@ -28,6 +28,10 @@ plugins:
         decay_days: 21
         track_qtype: true
         publish_mode: promoted_only
+        stale_after_minutes: 360
+        refresh_cooldown_minutes: 120
+        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
+        verify_url: "http://127.0.0.1:9099/plugins/my_realiplist/verify"
 
 #访问过的fakeip的域名清单和生成规则
   - tag: my_fakeiplist
@@ -44,6 +48,10 @@ plugins:
         decay_days: 21
         track_qtype: true
         publish_mode: promoted_only
+        stale_after_minutes: 240
+        refresh_cooldown_minutes: 120
+        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
+        verify_url: "http://127.0.0.1:9099/plugins/my_fakeiplist/verify"
 
 #访问过的无v6 ip的域名清单和生成规则
   - tag: my_nov6list
@@ -60,6 +68,10 @@ plugins:
         decay_days: 14
         track_qtype: true
         publish_mode: promoted_only
+        stale_after_minutes: 180
+        refresh_cooldown_minutes: 120
+        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
+        verify_url: "http://127.0.0.1:9099/plugins/my_nov6list/verify"
 
 #访问过的无v4 v6 ip的域名清单和生成规则
   - tag: my_nov4list
@@ -76,6 +88,10 @@ plugins:
         decay_days: 14
         track_qtype: true
         publish_mode: promoted_only
+        stale_after_minutes: 180
+        refresh_cooldown_minutes: 120
+        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
+        verify_url: "http://127.0.0.1:9099/plugins/my_nov4list/verify"
 
 #节点域名无v6 ip的域名清单和生成规则
   - tag: my_nodenov6list
@@ -92,6 +108,10 @@ plugins:
         decay_days: 14
         track_qtype: true
         publish_mode: promoted_only
+        stale_after_minutes: 180
+        refresh_cooldown_minutes: 120
+        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
+        verify_url: "http://127.0.0.1:9099/plugins/my_nodenov6list/verify"
 
 #节点域名无v4 v6 ip的域名清单和生成规则
   - tag: my_nodenov4list
@@ -108,3 +128,7 @@ plugins:
         decay_days: 14
         track_qtype: true
         publish_mode: promoted_only
+        stale_after_minutes: 180
+        refresh_cooldown_minutes: 120
+        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
+        verify_url: "http://127.0.0.1:9099/plugins/my_nodenov4list/verify"

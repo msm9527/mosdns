@@ -3,6 +3,8 @@
 ### 重构
 - **[shunt-memory]**: 重构 `domain_output + requery`，引入晋升阈值、衰减、`/stats` 和 refresh 专用旁路链路 — by msm
   - 决策: shunt_memory_rebuild#D001(刷新默认绕过 DNS 响应缓存，规则从观察结果中晋升而不是单次直接生效)
+- **[shunt-memory]**: 新增混合刷新模式，支持 `domain_output` 脏上报、`requery` 按需队列和低频巡检兜底 — by msm
+  - 决策: shunt_memory_hybrid#D001(默认以按需刷新为主，定时巡检只做保底)
 - **[config]**: 将默认分流记忆配置切到 `policy` 与 `workflow` 新配置口径，并新增 `requery_refresh.yaml` — by msm
 
 ### 修复

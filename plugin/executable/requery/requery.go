@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -62,6 +63,8 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 		filePath:   cfg.File,
 		scheduler:  cron.New(),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		queueIndex: make(map[string]struct{}),
+		queueKick:  make(chan struct{}, 1),
 	}
 
 	if err := p.loadConfig(); err != nil {
@@ -81,6 +84,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	// Start the scheduler's goroutine once. It will run forever.
 	p.scheduler.Start()
 	log.Println("[requery] Scheduler started.")
+	go p.runOnDemandLoop()
 
 	// Now, add the initial job based on the loaded config.
 	if err := p.setupScheduler(); err != nil {
@@ -106,6 +110,9 @@ type Requery struct {
 	taskCtx    context.Context
 	taskCancel context.CancelFunc
 	httpClient *http.Client
+	queue      []refreshJob
+	queueIndex map[string]struct{}
+	queueKick  chan struct{}
 }
 
 // Config maps directly to the requeryconfig.json file structure.
@@ -135,6 +142,7 @@ type URLActions struct {
 
 type WorkflowSettings struct {
 	FlushMode         string `json:"flush_mode"`
+	Mode              string `json:"mode,omitempty"`
 	SaveBeforeRefresh *bool  `json:"save_before_refresh,omitempty"`
 	SaveAfterRefresh  *bool  `json:"save_after_refresh,omitempty"`
 }
@@ -152,6 +160,7 @@ type ExecutionSettings struct {
 	QueryMode              string `json:"query_mode,omitempty"`
 	URLCallDelayMS         int    `json:"url_call_delay_ms"`
 	DateRangeDays          int    `json:"date_range_days"` // 新增配置项：日期范围
+	MaxQueueSize           int    `json:"max_queue_size,omitempty"`
 }
 
 type Status struct {
@@ -160,6 +169,12 @@ type Status struct {
 	LastRunEndTime     time.Time `json:"last_run_end_time,omitempty"`
 	LastRunDomainCount int       `json:"last_run_domain_count"`
 	Progress           Progress  `json:"progress"`
+	PendingQueue       int       `json:"pending_queue"`
+	OnDemandTriggered  int64     `json:"on_demand_triggered"`
+	OnDemandProcessed  int64     `json:"on_demand_processed"`
+	OnDemandSkipped    int64     `json:"on_demand_skipped"`
+	LastOnDemandAt     time.Time `json:"last_on_demand_at,omitempty"`
+	LastOnDemandDomain string    `json:"last_on_demand_domain,omitempty"`
 }
 
 type Progress struct {
@@ -170,6 +185,33 @@ type Progress struct {
 type domainCandidate struct {
 	Name      string
 	QTypeMask uint8
+}
+
+type refreshJob struct {
+	Domain     string    `json:"domain"`
+	MemoryID   string    `json:"memory_id,omitempty"`
+	QTypeMask  uint8     `json:"qtype_mask,omitempty"`
+	Reason     string    `json:"reason,omitempty"`
+	VerifyURL  string    `json:"verify_url,omitempty"`
+	ObservedAt time.Time `json:"observed_at,omitempty"`
+	Priority   int       `json:"-"`
+}
+
+func (j refreshJob) key() string {
+	return strings.ToLower(j.MemoryID + "|" + j.Domain)
+}
+
+func priorityForReason(reason string) int {
+	switch strings.ToLower(reason) {
+	case "conflict", "error":
+		return 100
+	case "stale":
+		return 80
+	case "observed":
+		return 60
+	default:
+		return 40
+	}
 }
 
 // ----------------------------------------------------------------------------
@@ -515,6 +557,177 @@ func (p *Requery) shouldFlushBeforeRefresh() bool {
 	}
 }
 
+func (p *Requery) refreshMode() string {
+	mode := strings.ToLower(strings.TrimSpace(p.config.Workflow.Mode))
+	switch mode {
+	case "manual", "scheduled", "hybrid":
+		return mode
+	default:
+		if p.config.Scheduler.Enabled {
+			return "hybrid"
+		}
+		return "manual"
+	}
+}
+
+func (p *Requery) allowsOnDemand() bool {
+	return p.refreshMode() != "scheduled"
+}
+
+func (p *Requery) allowsSweep() bool {
+	if p.refreshMode() == "manual" {
+		return false
+	}
+	return p.config.Scheduler.Enabled && p.config.Scheduler.IntervalMinutes > 0
+}
+
+func (p *Requery) maxQueueSize() int {
+	if p.config.ExecutionSettings.MaxQueueSize > 0 {
+		return p.config.ExecutionSettings.MaxQueueSize
+	}
+	return 2048
+}
+
+func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if !p.allowsOnDemand() {
+		p.config.Status.OnDemandSkipped++
+		return false
+	}
+	if job.Domain == "" {
+		p.config.Status.OnDemandSkipped++
+		return false
+	}
+	job.Domain = strings.TrimSuffix(strings.TrimSpace(job.Domain), ".")
+	if job.Domain == "" {
+		p.config.Status.OnDemandSkipped++
+		return false
+	}
+	if job.QTypeMask == 0 {
+		job.QTypeMask = qtypeMaskA | qtypeMaskAAAA
+	}
+	job.Priority = priorityForReason(job.Reason)
+	if job.ObservedAt.IsZero() {
+		job.ObservedAt = time.Now().UTC()
+	}
+	key := job.key()
+	if _, exists := p.queueIndex[key]; exists {
+		p.config.Status.OnDemandSkipped++
+		return false
+	}
+	if len(p.queue) >= p.maxQueueSize() {
+		p.config.Status.OnDemandSkipped++
+		return false
+	}
+	p.queue = append(p.queue, job)
+	sort.SliceStable(p.queue, func(i, j int) bool {
+		if p.queue[i].Priority == p.queue[j].Priority {
+			return p.queue[i].ObservedAt.Before(p.queue[j].ObservedAt)
+		}
+		return p.queue[i].Priority > p.queue[j].Priority
+	})
+	p.queueIndex[key] = struct{}{}
+	p.config.Status.PendingQueue = len(p.queue)
+	p.config.Status.OnDemandTriggered++
+	select {
+	case p.queueKick <- struct{}{}:
+	default:
+	}
+	return true
+}
+
+func (p *Requery) dequeueRefreshJob() (refreshJob, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.config.Status.TaskState == "running" || len(p.queue) == 0 {
+		return refreshJob{}, false
+	}
+	job := p.queue[0]
+	p.queue = append([]refreshJob(nil), p.queue[1:]...)
+	delete(p.queueIndex, job.key())
+	p.config.Status.PendingQueue = len(p.queue)
+	return job, true
+}
+
+func (p *Requery) runOnDemandLoop() {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-p.queueKick:
+		case <-ticker.C:
+		}
+
+		for {
+			job, ok := p.dequeueRefreshJob()
+			if !ok {
+				break
+			}
+			p.processOnDemandJob(job)
+		}
+	}
+}
+
+func (p *Requery) processOnDemandJob(job refreshJob) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	err := p.resendDNSQueries(ctx, []domainCandidate{{
+		Name:      job.Domain,
+		QTypeMask: job.QTypeMask,
+	}})
+	if err != nil {
+		p.mu.Lock()
+		p.config.Status.OnDemandSkipped++
+		p.mu.Unlock()
+		return
+	}
+
+	if job.VerifyURL != "" {
+		_ = p.markDomainVerified(ctx, job)
+	}
+
+	if workflowBool(p.config.Workflow.SaveAfterRefresh, true) && len(p.config.URLActions.SaveRules) > 0 {
+		_ = p.callURLs(ctx, p.config.URLActions.SaveRules)
+	}
+
+	p.mu.Lock()
+	p.config.Status.OnDemandProcessed++
+	p.config.Status.LastOnDemandAt = time.Now().UTC()
+	p.config.Status.LastOnDemandDomain = job.Domain
+	_ = p.saveConfigUnlocked()
+	p.mu.Unlock()
+}
+
+func (p *Requery) markDomainVerified(ctx context.Context, job refreshJob) error {
+	body, err := json.Marshal(map[string]string{
+		"domain":      job.Domain,
+		"verified_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.VerifyURL, strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("verify url returned %d", resp.StatusCode)
+	}
+	return nil
+}
+
 func workflowBool(v *bool, defaultValue bool) bool {
 	if v == nil {
 		return defaultValue
@@ -536,6 +749,7 @@ func (p *Requery) api() *chi.Mux {
 	r.Get("/", p.handleGetConfig)
 	r.Get("/status", p.handleGetStatus)
 	r.Post("/trigger", p.handleTriggerTask)
+	r.Post("/enqueue", p.handleEnqueueRefresh)
 	r.Post("/cancel", p.handleCancelTask)
 	r.Post("/scheduler/config", p.handleUpdateScheduler)
 	r.Get("/stats/source_file_counts", p.handleGetSourceFileCounts)
@@ -569,6 +783,26 @@ func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "A new task has been started."}, http.StatusOK)
 }
 
+func (p *Requery) handleEnqueueRefresh(w http.ResponseWriter, r *http.Request) {
+	var req refreshJob
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		p.jsonError(w, "Invalid JSON body", http.StatusBadRequest)
+		return
+	}
+	if ok := p.enqueueRefreshJob(req); !ok {
+		p.jsonResponse(w, map[string]any{
+			"status":  "skipped",
+			"message": "Refresh request was skipped.",
+		}, http.StatusAccepted)
+		return
+	}
+	p.jsonResponse(w, map[string]any{
+		"status":        "queued",
+		"domain":        req.Domain,
+		"pending_queue": p.config.Status.PendingQueue,
+	}, http.StatusAccepted)
+}
+
 func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -587,8 +821,9 @@ func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) {
 	// [修改] 定义一个扩展的结构体来接收包含 date_range_days 的 JSON
 	type SchedulerUpdatePayload struct {
-		SchedulerConfig     // 嵌入原有的 SchedulerConfig 字段 (Enabled, StartDatetime, IntervalMinutes)
-		DateRangeDays   int `json:"date_range_days"` // 新增字段
+		SchedulerConfig        // 嵌入原有的 SchedulerConfig 字段 (Enabled, StartDatetime, IntervalMinutes)
+		DateRangeDays   int    `json:"date_range_days"` // 新增字段
+		Mode            string `json:"mode"`
 	}
 
 	var payload SchedulerUpdatePayload
@@ -602,6 +837,9 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 
 	// [修改] 分别更新 Scheduler 和 ExecutionSettings
 	p.config.Scheduler = payload.SchedulerConfig
+	if payload.Mode != "" {
+		p.config.Workflow.Mode = strings.ToLower(payload.Mode)
+	}
 
 	// 只有当传入了有效天数时才更新 (防止意外归零)
 	if payload.DateRangeDays > 0 {
@@ -679,12 +917,14 @@ func (p *Requery) loadConfig() error {
 				Status: Status{TaskState: "idle"},
 				Workflow: WorkflowSettings{
 					FlushMode:         "none",
+					Mode:              "hybrid",
 					SaveBeforeRefresh: boolPtr(true),
 					SaveAfterRefresh:  boolPtr(true),
 				},
 			}
 			p.config.ExecutionSettings.DateRangeDays = 30
 			p.config.ExecutionSettings.QueryMode = "observed"
+			p.config.ExecutionSettings.MaxQueueSize = 2048
 			return p.saveConfigUnlocked()
 		}
 		return err
@@ -719,11 +959,23 @@ func (p *Requery) loadConfig() error {
 		p.config.ExecutionSettings.QueryMode = "observed"
 		configChanged = true
 	}
+	if p.config.ExecutionSettings.MaxQueueSize <= 0 {
+		p.config.ExecutionSettings.MaxQueueSize = 2048
+		configChanged = true
+	}
 	if p.config.Workflow.FlushMode == "" {
 		if len(p.config.URLActions.FlushRules) > 0 && p.config.ExecutionSettings.RefreshResolverAddress == "" {
 			p.config.Workflow.FlushMode = "legacy"
 		} else {
 			p.config.Workflow.FlushMode = "none"
+		}
+		configChanged = true
+	}
+	if p.config.Workflow.Mode == "" {
+		if p.config.Scheduler.Enabled {
+			p.config.Workflow.Mode = "hybrid"
+		} else {
+			p.config.Workflow.Mode = "manual"
 		}
 		configChanged = true
 	}
@@ -779,21 +1031,21 @@ func (p *Requery) setupScheduler() error {
 	}
 
 	// 2. Check if the scheduler is enabled in the config. This logic remains unchanged.
-	if !p.config.Scheduler.Enabled || p.config.Scheduler.IntervalMinutes <= 0 {
-		log.Println("[requery] Scheduler is disabled or interval is invalid in config.")
+	if !p.allowsSweep() {
+		log.Println("[requery] Sweep scheduler is disabled or interval is invalid in config.")
 		return nil
 	}
 
 	// 3. Check and parse the start time (start_datetime).
 	// If it's not set, precise scheduling is not possible, so we return directly.
-	if p.config.Scheduler.StartDatetime == "" {
-		log.Println("[requery] Scheduler is enabled but 'start_datetime' is not set. No task scheduled.")
-		return nil
-	}
-	startTime, err := time.Parse(time.RFC3339, p.config.Scheduler.StartDatetime)
-	if err != nil {
-		log.Printf("[requery] WARN: Invalid 'start_datetime' format ('%s'), scheduler disabled: %v", p.config.Scheduler.StartDatetime, err)
-		return nil // Return nil to avoid mosdns startup failure, but the scheduler will not work.
+	startTime := time.Now().UTC()
+	if p.config.Scheduler.StartDatetime != "" {
+		parsed, err := time.Parse(time.RFC3339, p.config.Scheduler.StartDatetime)
+		if err != nil {
+			log.Printf("[requery] WARN: Invalid 'start_datetime' format ('%s'), using interval from now: %v", p.config.Scheduler.StartDatetime, err)
+		} else {
+			startTime = parsed
+		}
 	}
 
 	// 4. Define the job to be executed. This logic remains unchanged and already includes the check to prevent task overlap.

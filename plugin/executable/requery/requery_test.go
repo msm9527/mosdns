@@ -2,6 +2,7 @@ package requery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
@@ -96,6 +97,90 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 	}
 	if p.config.Status.Progress.Total != 1 || p.config.Status.TaskState != "idle" {
 		t.Fatalf("unexpected status after run: %+v", p.config.Status)
+	}
+}
+
+func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
+	t.Parallel()
+
+	dnsAddr, queries, shutdownDNS := startTestDNSServer(t)
+	defer shutdownDNS()
+
+	var (
+		mu        sync.Mutex
+		saveHits  int
+		verifyHit []string
+	)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer r.Body.Close()
+		switch r.URL.Path {
+		case "/save":
+			mu.Lock()
+			saveHits++
+			mu.Unlock()
+		case "/verify":
+			var payload map[string]string
+			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+				t.Fatalf("decode verify payload: %v", err)
+			}
+			mu.Lock()
+			verifyHit = append(verifyHit, payload["domain"])
+			mu.Unlock()
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer httpSrv.Close()
+
+	p := &Requery{
+		httpClient: &http.Client{Timeout: 2 * time.Second},
+		queueIndex: make(map[string]struct{}),
+		queueKick:  make(chan struct{}, 1),
+		config: &Config{
+			URLActions: URLActions{SaveRules: []string{httpSrv.URL + "/save"}},
+			Workflow: WorkflowSettings{
+				Mode:              "hybrid",
+				SaveAfterRefresh:  boolPtr(true),
+				SaveBeforeRefresh: boolPtr(true),
+			},
+			ExecutionSettings: ExecutionSettings{
+				QueriesPerSecond:       50,
+				RefreshResolverAddress: dnsAddr,
+				QueryMode:              "observed",
+				MaxQueueSize:           16,
+			},
+			Status: Status{TaskState: "idle"},
+		},
+	}
+
+	if ok := p.enqueueRefreshJob(refreshJob{
+		Domain:    "example.com",
+		MemoryID:  "realip",
+		QTypeMask: qtypeMaskA,
+		Reason:    "stale",
+		VerifyURL: httpSrv.URL + "/verify",
+	}); !ok {
+		t.Fatal("expected enqueue to succeed")
+	}
+
+	job, ok := p.dequeueRefreshJob()
+	if !ok {
+		t.Fatal("expected a queued job")
+	}
+	p.processOnDemandJob(job)
+
+	if count := len(queries()); count != 1 {
+		t.Fatalf("expected one on-demand refresh query, got %d", count)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if saveHits != 1 {
+		t.Fatalf("expected one save hit, got %d", saveHits)
+	}
+	if len(verifyHit) != 1 || verifyHit[0] != "example.com" {
+		t.Fatalf("unexpected verify hits: %#v", verifyHit)
+	}
+	if p.config.Status.OnDemandProcessed != 1 || p.config.Status.PendingQueue != 0 {
+		t.Fatalf("unexpected on-demand status: %+v", p.config.Status)
 	}
 }
 

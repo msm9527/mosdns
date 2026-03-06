@@ -51,28 +51,43 @@ type Args struct {
 }
 
 type PolicyArgs struct {
-	Kind         string `yaml:"kind"`
-	PromoteAfter int    `yaml:"promote_after"`
-	DecayDays    int    `yaml:"decay_days"`
-	TrackQType   bool   `yaml:"track_qtype"`
-	PublishMode  string `yaml:"publish_mode"`
+	Kind                   string `yaml:"kind"`
+	PromoteAfter           int    `yaml:"promote_after"`
+	DecayDays              int    `yaml:"decay_days"`
+	TrackQType             bool   `yaml:"track_qtype"`
+	PublishMode            string `yaml:"publish_mode"`
+	StaleAfterMinutes      int    `yaml:"stale_after_minutes"`
+	RefreshCooldownMinutes int    `yaml:"refresh_cooldown_minutes"`
+	OnDirtyURL             string `yaml:"on_dirty_url"`
+	VerifyURL              string `yaml:"verify_url"`
 }
 
 type writePolicy struct {
-	kind         string
-	promoteAfter int
-	decayDays    int
-	trackQType   bool
-	publishMode  string
+	kind                   string
+	promoteAfter           int
+	decayDays              int
+	trackQType             bool
+	publishMode            string
+	staleAfterMinutes      int
+	refreshCooldownMinutes int
+	onDirtyURL             string
+	verifyURL              string
 }
 
 type statEntry struct {
-	Count      int
-	LastDate   string
-	QTypeMask  uint8
-	Score      int
-	Promoted   bool
-	LastSource string
+	Count          int
+	LastDate       string
+	LastSeenAt     string
+	LastDirtyAt    string
+	LastVerifiedAt string
+	CooldownUntil  string
+	DirtyReason    string
+	RefreshState   string
+	QTypeMask      uint8
+	Score          int
+	Promoted       bool
+	ConflictCount  int
+	LastSource     string
 }
 
 type logItem struct {
@@ -110,6 +125,7 @@ type domainOutput struct {
 
 	domainSetURL string
 	enableFlags  bool
+	memoryID     string
 	closeOnce    sync.Once
 }
 
@@ -126,6 +142,16 @@ type writeSnapshot struct {
 	stats         map[string]*statEntry
 	rules         []string
 	promotedCount int
+	dirtyCount    int
+}
+
+type dirtyEvent struct {
+	Domain     string `json:"domain"`
+	MemoryID   string `json:"memory_id"`
+	QTypeMask  uint8  `json:"qtype_mask"`
+	Reason     string `json:"reason"`
+	VerifyURL  string `json:"verify_url,omitempty"`
+	ObservedAt string `json:"observed_at"`
 }
 
 type outputRankItem struct {
@@ -199,6 +225,7 @@ func newDomainOutput(cfg *Args) *domainOutput {
 		workerDoneChan:  make(chan struct{}),
 		domainSetURL:    cfg.DomainSetURL,
 		enableFlags:     cfg.EnableFlags,
+		memoryID:        inferMemoryID(cfg),
 	}
 	d.currentDate.Store(time.Now().Format("2006-01-02"))
 	return d
@@ -210,6 +237,10 @@ func normalizePolicy(cfg *Args) writePolicy {
 	decayDays := 30
 	publishMode := "all"
 	trackQType := false
+	staleAfterMinutes := 0
+	refreshCooldownMinutes := 120
+	onDirtyURL := ""
+	verifyURL := ""
 
 	infer := strings.ToLower(strings.Join([]string{cfg.FileStat, cfg.FileRule, cfg.GenRule, cfg.DomainSetURL}, " "))
 	switch {
@@ -218,21 +249,25 @@ func normalizePolicy(cfg *Args) writePolicy {
 		promoteAfter = 2
 		publishMode = "promoted_only"
 		trackQType = true
+		staleAfterMinutes = 360
 	case strings.Contains(infer, "fakeip"):
 		kind = "fakeip"
 		promoteAfter = 2
 		publishMode = "promoted_only"
 		trackQType = true
+		staleAfterMinutes = 240
 	case strings.Contains(infer, "nov4"):
 		kind = "nov4"
 		promoteAfter = 2
 		publishMode = "promoted_only"
 		trackQType = true
+		staleAfterMinutes = 180
 	case strings.Contains(infer, "nov6"):
 		kind = "nov6"
 		promoteAfter = 2
 		publishMode = "promoted_only"
 		trackQType = true
+		staleAfterMinutes = 180
 	}
 
 	if cfg.Policy != nil {
@@ -251,17 +286,33 @@ func normalizePolicy(cfg *Args) writePolicy {
 		if cfg.Policy.TrackQType {
 			trackQType = true
 		}
+		if cfg.Policy.StaleAfterMinutes > 0 {
+			staleAfterMinutes = cfg.Policy.StaleAfterMinutes
+		}
+		if cfg.Policy.RefreshCooldownMinutes > 0 {
+			refreshCooldownMinutes = cfg.Policy.RefreshCooldownMinutes
+		}
+		if cfg.Policy.OnDirtyURL != "" {
+			onDirtyURL = cfg.Policy.OnDirtyURL
+		}
+		if cfg.Policy.VerifyURL != "" {
+			verifyURL = cfg.Policy.VerifyURL
+		}
 	}
 
 	if kind == "generic" && cfg.FileRule == "" && cfg.DomainSetURL == "" {
 		publishMode = "all"
 	}
 	return writePolicy{
-		kind:         kind,
-		promoteAfter: promoteAfter,
-		decayDays:    decayDays,
-		trackQType:   trackQType,
-		publishMode:  publishMode,
+		kind:                   kind,
+		promoteAfter:           promoteAfter,
+		decayDays:              decayDays,
+		trackQType:             trackQType,
+		publishMode:            publishMode,
+		staleAfterMinutes:      staleAfterMinutes,
+		refreshCooldownMinutes: refreshCooldownMinutes,
+		onDirtyURL:             onDirtyURL,
+		verifyURL:              verifyURL,
 	}
 }
 
@@ -355,9 +406,12 @@ func (d *domainOutput) startWorker() {
 func (d *domainOutput) processRecord(item *logItem) {
 	storageKey := buildStorageKey(strings.TrimSuffix(item.name, "."), item, d.enableFlags)
 	qmask := qtypeToMask(item.qtype)
+	now := time.Now().UTC()
+	nowDate := now.Format("2006-01-02")
+	nowStamp := now.Format(time.RFC3339)
+	var notify *dirtyEvent
 
 	d.mu.Lock()
-	currDate := d.currentDate.Load().(string)
 	entry, exists := d.stats[storageKey]
 	if !exists {
 		entry = &statEntry{}
@@ -365,12 +419,34 @@ func (d *domainOutput) processRecord(item *logItem) {
 	}
 	entry.Count++
 	entry.Score++
-	entry.LastDate = currDate
+	entry.LastDate = nowDate
+	entry.LastSeenAt = nowStamp
 	entry.LastSource = item.source
 	if qmask != 0 {
 		entry.QTypeMask |= qmask
 	}
 	entry.Promoted = d.shouldPromote(entry)
+	if item.source == "live" {
+		reason := d.nextDirtyReason(entry, now)
+		if reason != "" {
+			entry.RefreshState = "dirty"
+			entry.DirtyReason = reason
+			entry.LastDirtyAt = nowStamp
+			if d.policy.refreshCooldownMinutes > 0 {
+				entry.CooldownUntil = now.Add(time.Duration(d.policy.refreshCooldownMinutes) * time.Minute).Format(time.RFC3339)
+			}
+			if d.policy.onDirtyURL != "" && entry.Promoted {
+				notify = &dirtyEvent{
+					Domain:     strings.TrimSuffix(item.name, "."),
+					MemoryID:   d.memoryID,
+					QTypeMask:  entry.QTypeMask,
+					Reason:     reason,
+					VerifyURL:  d.policy.verifyURL,
+					ObservedAt: nowStamp,
+				}
+			}
+		}
+	}
 	d.mu.Unlock()
 
 	atomic.AddInt64(&d.totalCount, 1)
@@ -380,6 +456,9 @@ func (d *domainOutput) processRecord(item *logItem) {
 		case d.writeSignalChan <- struct{}{}:
 		default:
 		}
+	}
+	if notify != nil {
+		go d.notifyDirty(*notify)
 	}
 }
 
@@ -461,7 +540,13 @@ func (d *domainOutput) buildSnapshot(mode WriteMode) writeSnapshot {
 	}
 
 	rules, promoted := d.collectRules(snapshotStats)
-	return writeSnapshot{stats: snapshotStats, rules: rules, promotedCount: promoted}
+	dirtyCount := 0
+	for _, entry := range snapshotStats {
+		if entry.RefreshState == "dirty" {
+			dirtyCount++
+		}
+	}
+	return writeSnapshot{stats: snapshotStats, rules: rules, promotedCount: promoted, dirtyCount: dirtyCount}
 }
 
 func (d *domainOutput) collectRules(stats map[string]*statEntry) ([]string, int) {
@@ -575,7 +660,24 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot) {
 
 	writeFile(d.fileStat, func(w io.Writer) error {
 		for _, item := range sortedItems {
-			_, err := fmt.Fprintf(w, "%010d %s %s qmask=%d score=%d promoted=%d\n", item.Count, item.Date, item.Domain, item.QMask, item.Score, boolToInt(item.Prom))
+			entry := snapshot.stats[item.Domain]
+			_, err := fmt.Fprintf(
+				w,
+				"%010d %s %s qmask=%d score=%d promoted=%d last_seen=%s last_dirty=%s last_verified=%s dirty_reason=%s refresh_state=%s cooldown_until=%s conflicts=%d\n",
+				item.Count,
+				item.Date,
+				item.Domain,
+				item.QMask,
+				item.Score,
+				boolToInt(item.Prom),
+				sanitizeStatToken(entry.LastSeenAt),
+				sanitizeStatToken(entry.LastDirtyAt),
+				sanitizeStatToken(entry.LastVerifiedAt),
+				sanitizeStatToken(entry.DirtyReason),
+				sanitizeStatToken(entry.RefreshState),
+				sanitizeStatToken(entry.CooldownUntil),
+				entry.ConflictCount,
+			)
 			if err != nil {
 				return err
 			}
@@ -663,6 +765,22 @@ func (d *domainOutput) loadFromFile() {
 				}
 			case "promoted":
 				entry.Promoted = v == "1"
+			case "last_seen":
+				entry.LastSeenAt = restoreStatToken(v)
+			case "last_dirty":
+				entry.LastDirtyAt = restoreStatToken(v)
+			case "last_verified":
+				entry.LastVerifiedAt = restoreStatToken(v)
+			case "dirty_reason":
+				entry.DirtyReason = restoreStatToken(v)
+			case "refresh_state":
+				entry.RefreshState = restoreStatToken(v)
+			case "cooldown_until":
+				entry.CooldownUntil = restoreStatToken(v)
+			case "conflicts":
+				if parsed, err := strconv.Atoi(v); err == nil {
+					entry.ConflictCount = parsed
+				}
 			}
 		}
 		entry.Promoted = d.shouldPromote(entry)
@@ -720,6 +838,85 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func sanitizeStatToken(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return strings.ReplaceAll(v, " ", "_")
+}
+
+func restoreStatToken(v string) string {
+	if v == "-" {
+		return ""
+	}
+	return strings.ReplaceAll(v, "_", " ")
+}
+
+func inferMemoryID(cfg *Args) string {
+	infer := strings.ToLower(strings.Join([]string{cfg.FileStat, cfg.FileRule, cfg.GenRule, cfg.DomainSetURL}, " "))
+	switch {
+	case strings.Contains(infer, "realip"):
+		return "realip"
+	case strings.Contains(infer, "fakeip"):
+		return "fakeip"
+	case strings.Contains(infer, "nodenov4"):
+		return "nodenov4"
+	case strings.Contains(infer, "nodenov6"):
+		return "nodenov6"
+	case strings.Contains(infer, "nov4"):
+		return "nov4"
+	case strings.Contains(infer, "nov6"):
+		return "nov6"
+	case strings.Contains(infer, "top_domains"):
+		return "top"
+	default:
+		return "generic"
+	}
+}
+
+func (d *domainOutput) nextDirtyReason(entry *statEntry, now time.Time) string {
+	if !entry.Promoted || d.policy.onDirtyURL == "" {
+		return ""
+	}
+	if entry.CooldownUntil != "" {
+		if ts, err := time.Parse(time.RFC3339, entry.CooldownUntil); err == nil && now.Before(ts) {
+			if entry.RefreshState == "" {
+				entry.RefreshState = "cooldown"
+			}
+			return ""
+		}
+	}
+	if entry.LastDirtyAt == "" {
+		return "observed"
+	}
+	if d.policy.staleAfterMinutes > 0 {
+		if ts, err := time.Parse(time.RFC3339, entry.LastDirtyAt); err == nil && now.Sub(ts) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
+			return "stale"
+		}
+	}
+	return ""
+}
+
+func (d *domainOutput) notifyDirty(event dirtyEvent) {
+	body, err := json.Marshal(event)
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.policy.onDirtyURL, bytes.NewReader(body))
+	if err != nil {
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
 }
 
 func maxInt(a, b int) int {

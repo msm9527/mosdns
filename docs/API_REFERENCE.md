@@ -401,25 +401,41 @@ PUT/POST JSON 示例：
 | GET | `/` | 获取完整配置 |
 | GET | `/status` | 获取任务状态 |
 | POST | `/trigger` | 启动任务 |
+| POST | `/enqueue` | 提交按需刷新任务 |
 | POST | `/cancel` | 取消任务 |
 | POST | `/scheduler/config` | 更新调度配置 |
 | GET | `/stats/source_file_counts` | 统计源文件域名数量 |
 
 `requery` 新增配置口径：
 
+- `workflow.mode`: `hybrid`（推荐）、`manual`、`scheduled`
 - `workflow.flush_mode`: `none`（推荐）或 `legacy`
 - `workflow.save_before_refresh` / `workflow.save_after_refresh`
 - `execution_settings.refresh_resolver_address`: 旁路刷新入口，推荐 `127.0.0.1:7767`
 - `execution_settings.query_mode`: `observed`（推荐）、`dual`、`a`、`aaaa`
+- `execution_settings.max_queue_size`: 按需刷新队列上限，默认 `2048`
 
 `POST /scheduler/config` 请求体：
 
 ```json
 {
+  "mode": "hybrid",
   "enabled": true,
-  "start_datetime": "2026-03-04T00:00:00Z",
+  "start_datetime": "",
   "interval_minutes": 60,
   "date_range_days": 30
+}
+```
+
+`POST /enqueue` 请求体：
+
+```json
+{
+  "domain": "example.com",
+  "memory_id": "realip",
+  "qtype_mask": 1,
+  "reason": "stale",
+  "verify_url": "http://127.0.0.1:9099/plugins/my_realiplist/verify"
 }
 ```
 
@@ -443,7 +459,8 @@ PUT/POST JSON 示例：
 | GET | `/flush` | 清空内存态并立即刷新输出 |
 | GET | `/save` | 保存当前输出 |
 | GET | `/show` | 按计数倒序显示（`q/limit/offset`） |
-| GET | `/stats` | 查看晋升策略、已晋升条目和 dropped observations |
+| GET | `/stats` | 查看晋升策略、脏条目和 dropped observations |
+| POST | `/verify` | 标记指定域名已完成刷新验证 |
 | GET | `/restartall` | 触发 mosdns 自重启 |
 
 `domain_output` 新增 `policy` 配置块：
@@ -453,6 +470,10 @@ PUT/POST JSON 示例：
 - `decay_days`: 超过天数后不再继续发布旧记忆
 - `track_qtype`: 记录 `A/AAAA` 观察结果，用于 `nov4/nov6` 和 refresh 定向查询
 - `publish_mode`: `all` 或 `promoted_only`
+- `stale_after_minutes`: 按需刷新最小陈旧窗口
+- `refresh_cooldown_minutes`: 同域名按需刷新冷却窗口
+- `on_dirty_url`: 域名命中脏条件时异步上报地址，推荐指向 `/plugins/requery/enqueue`
+- `verify_url`: 刷新成功后回写验证状态地址，推荐指向对应列表实例的 `/verify`
 
 ## 4. UI 页面接口（非 JSON API）
 
