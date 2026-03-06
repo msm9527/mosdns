@@ -361,6 +361,24 @@ PUT/POST JSON 示例：
 | GET | `/save` | 保存缓存到 dump_file |
 | POST | `/load_dump` | 导入 dump（二进制 body） |
 | GET | `/show` | 文本分页查询（支持 `q/limit/offset`） |
+| GET | `/stats` | 输出当前缓存实例的 JSON 统计信息（含 L1/L2、snapshot/WAL 状态） |
+
+常用配置字段：
+
+- `size`
+- `lazy_cache_ttl`
+- `enable_ecs`
+- `exclude_ip`
+- `dump_file`
+- `dump_interval`
+- `wal_file`：可选，启用 WAL 持久化
+- `wal_sync_interval`：可选，WAL 刷盘间隔（秒）
+
+运维说明：
+
+- 生产启用建议同时保留 `dump_file` 和 `wal_file`：snapshot 负责 checkpoint，WAL 负责 checkpoint 间增量恢复
+- 回滚到仅 snapshot 模式时，删除 `wal_file` / `wal_sync_interval` 即可，`dump_file` 兼容不变
+- Web/UI 的缓存运行态面板应读取 `/plugins/{cache_tag}/stats`；系统级资源指标仍读取 `/metrics`
 
 ### `adguard_rule`
 
@@ -446,4 +464,3 @@ PUT/POST JSON 示例：
 - 先调用错误路径触发路由清单，快速确认实际可用接口。
 - 插件接口务必先确认 `tag` 是否与配置一致。
 - 对高频查询接口优先使用分页参数，避免一次拉全量数据。
-

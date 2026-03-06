@@ -123,6 +123,11 @@ func (c *Cache[K, V]) Store(key K, v V, expirationTime time.Time) {
 	return
 }
 
+// Delete removes key from cache if it exists.
+func (c *Cache[K, V]) Delete(key K) {
+	c.m.Del(key)
+}
+
 func (c *Cache[K, V]) gcLoop(interval time.Duration) {
 	if interval <= 0 {
 		interval = defaultCleanerInterval

@@ -96,3 +96,13 @@ func Test_memCache_race(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func Test_Cache_Delete(t *testing.T) {
+	c := New[testKey, int](Opts{Size: 16})
+	key := testKey(1)
+	c.Store(key, 42, time.Now().Add(time.Minute))
+	c.Delete(key)
+	if _, _, ok := c.Get(key); ok {
+		t.Fatal("expected key to be deleted")
+	}
+}

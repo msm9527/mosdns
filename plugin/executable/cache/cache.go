@@ -9,7 +9,6 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -53,7 +52,7 @@ const (
 	dumpBlockSize          = 128
 	dumpMaximumBlockLength = 1 << 20 // 1M block. 8kb pre entry. Should be enough.
 
-	shardCount   = 256  // 256分段锁，平衡锁竞争与内存开销
+	shardCount   = 256   // 256分段锁，平衡锁竞争与内存开销
 	l1TotalCap   = 51200 // L1 总容量限制
 	shardMaxSize = 200   // 每个分段桶的配额 (51200/shardCount)
 
@@ -119,21 +118,25 @@ type l1Shard struct {
 }
 
 type Args struct {
-	Size         int      `yaml:"size"`
-	LazyCacheTTL int      `yaml:"lazy_cache_ttl"`
-	EnableECS    bool     `yaml:"enable_ecs"`
-	ExcludeIPs   []string `yaml:"exclude_ip"`
-	DumpFile     string   `yaml:"dump_file"`
-	DumpInterval int      `yaml:"dump_interval"`
+	Size            int      `yaml:"size"`
+	LazyCacheTTL    int      `yaml:"lazy_cache_ttl"`
+	EnableECS       bool     `yaml:"enable_ecs"`
+	ExcludeIPs      []string `yaml:"exclude_ip"`
+	DumpFile        string   `yaml:"dump_file"`
+	DumpInterval    int      `yaml:"dump_interval"`
+	WALFile         string   `yaml:"wal_file"`
+	WALSyncInterval int      `yaml:"wal_sync_interval"`
 }
 
 type argsRaw struct {
-	Size         int         `yaml:"size"`
-	LazyCacheTTL int         `yaml:"lazy_cache_ttl"`
-	EnableECS    bool        `yaml:"enable_ecs"`
-	ExcludeIP    interface{} `yaml:"exclude_ip"`
-	DumpFile     string      `yaml:"dump_file"`
-	DumpInterval int         `yaml:"dump_interval"`
+	Size            int         `yaml:"size"`
+	LazyCacheTTL    int         `yaml:"lazy_cache_ttl"`
+	EnableECS       bool        `yaml:"enable_ecs"`
+	ExcludeIP       interface{} `yaml:"exclude_ip"`
+	DumpFile        string      `yaml:"dump_file"`
+	DumpInterval    int         `yaml:"dump_interval"`
+	WALFile         string      `yaml:"wal_file"`
+	WALSyncInterval int         `yaml:"wal_sync_interval"`
 }
 
 // UnmarshalYAML supports both scalar (space-separated) and sequence forms for exclude_ip.
@@ -146,6 +149,8 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	a.LazyCacheTTL = raw.LazyCacheTTL
 	a.DumpFile = raw.DumpFile
 	a.DumpInterval = raw.DumpInterval
+	a.WALFile = raw.WALFile
+	a.WALSyncInterval = raw.WALSyncInterval
 	a.EnableECS = raw.EnableECS
 
 	switch v := raw.ExcludeIP.(type) {
@@ -170,16 +175,28 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.Size, 1024)
 	utils.SetDefaultUnsignNum(&a.DumpInterval, 600)
+	utils.SetDefaultUnsignNum(&a.WALSyncInterval, 1)
 }
 
 type Cache struct {
 	args         *Args
 	logger       *zap.Logger
+	metricsTag   string
 	backend      *cache.Cache[key, *item]
 	lazyUpdateSF singleflight.Group
 	closeOnce    sync.Once
 	closeNotify  chan struct{}
 	updatedKey   atomic.Uint64
+	persistence  *persistenceManager
+	runtimeState *cacheRuntimeState
+
+	queryCount             atomic.Uint64
+	hitCount               atomic.Uint64
+	lazyHitCount           atomic.Uint64
+	l1HitCount             atomic.Uint64
+	l2HitCount             atomic.Uint64
+	lazyUpdateCount        atomic.Uint64
+	lazyUpdateDroppedCount atomic.Uint64
 
 	// 分段 L1 池
 	shards [shardCount]*l1Shard
@@ -187,10 +204,26 @@ type Cache struct {
 	// dumpMu protects the dump file writing process
 	dumpMu sync.Mutex
 
-	queryTotal   prometheus.Counter
-	hitTotal     prometheus.Counter
-	lazyHitTotal prometheus.Counter
-	size         prometheus.GaugeFunc
+	queryTotal              prometheus.Counter
+	hitTotal                prometheus.Counter
+	lazyHitTotal            prometheus.Counter
+	l1HitTotalMetric        prometheus.Counter
+	l2HitTotalMetric        prometheus.Counter
+	lazyUpdateTotalMetric   prometheus.Counter
+	lazyUpdateDroppedMetric prometheus.Counter
+	dumpTotalCounter        prometheus.Counter
+	dumpErrorCounter        prometheus.Counter
+	loadTotalCounter        prometheus.Counter
+	loadErrorCounter        prometheus.Counter
+	walAppendCounter        prometheus.Counter
+	walAppendErrorCounter   prometheus.Counter
+	walReplayCounter        prometheus.Counter
+	walReplayErrorCounter   prometheus.Counter
+	size                    prometheus.GaugeFunc
+	l1SizeMetric            prometheus.GaugeFunc
+	dumpDuration            prometheus.Histogram
+	loadDuration            prometheus.Histogram
+	walReplayDuration       prometheus.Histogram
 
 	excludeNets []*net.IPNet // parsed exclude_ip CIDRs
 
@@ -252,36 +285,17 @@ func NewCache(args *Args, opts Opts) *Cache {
 	backend := cache.New[key, *item](cache.Opts{Size: args.Size})
 	lb := map[string]string{"tag": opts.MetricsTag}
 	p := &Cache{
-		args:        args,
-		logger:      logger,
-		backend:     backend,
-		closeNotify: make(chan struct{}),
-		excludeNets: excludeNets,
+		args:            args,
+		logger:          logger,
+		metricsTag:      opts.MetricsTag,
+		backend:         backend,
+		closeNotify:     make(chan struct{}),
+		excludeNets:     excludeNets,
+		runtimeState:    newCacheRuntimeState(args.DumpFile, args.WALFile),
 		lazyUpdateLimit: make(chan struct{}, maxConcurrentLazyUpdate),
-
-		queryTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name:        "query_total",
-			Help:        "The total number of processed queries",
-			ConstLabels: lb,
-		}),
-		hitTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name:        "hit_total",
-			Help:        "The total number of queries that hit the cache",
-			ConstLabels: lb,
-		}),
-		lazyHitTotal: prometheus.NewCounter(prometheus.CounterOpts{
-			Name:        "lazy_hit_total",
-			Help:        "The total number of queries that hit the expired cache",
-			ConstLabels: lb,
-		}),
-		size: prometheus.NewGaugeFunc(prometheus.GaugeOpts{
-			Name:        "size_current",
-			Help:        "Current cache size in records",
-			ConstLabels: lb,
-		}, func() float64 {
-			return float64(backend.Len())
-		}),
 	}
+	p.persistence = newPersistenceManager(args, logger)
+	p.initMetrics(lb)
 
 	// 初始化桶 (FIFO 淘汰版)
 	for i := 0; i < shardCount; i++ {
@@ -361,7 +375,28 @@ func (c *Cache) containsExcluded(msg *dns.Msg) bool {
 }
 
 func (c *Cache) RegMetricsTo(r prometheus.Registerer) error {
-	for _, collector := range [...]prometheus.Collector{c.queryTotal, c.hitTotal, c.lazyHitTotal, c.size} {
+	for _, collector := range [...]prometheus.Collector{
+		c.queryTotal,
+		c.hitTotal,
+		c.lazyHitTotal,
+		c.l1HitTotalMetric,
+		c.l2HitTotalMetric,
+		c.lazyUpdateTotalMetric,
+		c.lazyUpdateDroppedMetric,
+		c.dumpTotalCounter,
+		c.dumpErrorCounter,
+		c.loadTotalCounter,
+		c.loadErrorCounter,
+		c.walAppendCounter,
+		c.walAppendErrorCounter,
+		c.walReplayCounter,
+		c.walReplayErrorCounter,
+		c.dumpDuration,
+		c.loadDuration,
+		c.walReplayDuration,
+		c.size,
+		c.l1SizeMetric,
+	} {
 		if err := r.Register(collector); err != nil {
 			return err
 		}
@@ -371,6 +406,7 @@ func (c *Cache) RegMetricsTo(r prometheus.Registerer) error {
 
 func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequence.ChainWalker) error {
 	c.queryTotal.Inc()
+	c.queryCount.Add(1)
 	q := qCtx.Q()
 
 	// 补丁：获取 Key 的字节切片和原始 Pool 指针
@@ -395,6 +431,9 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	now := time.Now()
 	if ok1 && now.Before(v1.expirationTime) {
 		c.hitTotal.Inc()
+		c.hitCount.Add(1)
+		c.l1HitTotalMetric.Inc()
+		c.l1HitCount.Add(1)
 
 		// 仅 Copy 一次，避免 TTL 修改污染缓存
 		r := v1.msg.Copy()
@@ -406,7 +445,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		if v1.domainSet != "" {
 			qCtx.StoreValue(query_context.KeyDomainSet, v1.domainSet)
 		}
-		
+
 		// 归还 Key 缓冲区
 		keyBufferPool.Put(bufPtr)
 		return nil
@@ -415,7 +454,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	// 命中 L1 失败或过期，需要正式生成 string Key 用于后续 L2 存储或异步任务
 	msgKey := string(msgKeyBuf)
 	kReal := key(msgKey)
-	
+
 	// 归还 Key 缓冲区
 	keyBufferPool.Put(bufPtr)
 
@@ -423,10 +462,14 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	cachedResp, lazyHit, domainSet := getRespFromCache(msgKey, c.backend, c.args.LazyCacheTTL > 0, expiredMsgTtl)
 	if lazyHit {
 		c.lazyHitTotal.Inc()
+		c.lazyHitCount.Add(1)
 		c.doLazyUpdate(msgKey, qCtx, next)
 	}
 	if cachedResp != nil {
 		c.hitTotal.Inc()
+		c.hitCount.Add(1)
+		c.l2HitTotalMetric.Inc()
+		c.l2HitCount.Add(1)
 		cachedResp.Id = q.Id
 		qCtx.SetResponse(cachedResp)
 		if domainSet != "" {
@@ -447,7 +490,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	r := qCtx.R()
 
 	if r != nil && !c.containsExcluded(r) {
-		if saveRespToCache(msgKey, qCtx, c.backend, c.args.LazyCacheTTL) {
+		if c.saveRespToCache(msgKey, qCtx) {
 			c.updatedKey.Add(1)
 
 			// 同时更新 L1
@@ -468,11 +511,16 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 func (c *Cache) doLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) {
 	qCtxCopy := qCtx.Copy()
 	lazyUpdateFunc := func() (any, error) {
+		c.lazyUpdateTotalMetric.Inc()
+		c.lazyUpdateCount.Add(1)
+
 		// 性能补丁：并发信号量控制
 		select {
 		case c.lazyUpdateLimit <- struct{}{}:
 			defer func() { <-c.lazyUpdateLimit }()
 		default:
+			c.lazyUpdateDroppedMetric.Inc()
+			c.lazyUpdateDroppedCount.Add(1)
 			return nil, nil // 负载过高，放弃此次异步更新，保护 CPU
 		}
 
@@ -492,7 +540,7 @@ func (c *Cache) doLazyUpdate(msgKey string, qCtx *query_context.Context, next se
 
 		r := qCtx.R()
 		if r != nil && !c.containsExcluded(r) {
-			if saveRespToCache(msgKey, qCtx, c.backend, c.args.LazyCacheTTL) {
+			if c.saveRespToCache(msgKey, qCtx) {
 				c.updatedKey.Add(1)
 				// 更新 L1
 				k := key(msgKey)
@@ -518,6 +566,9 @@ func (c *Cache) Close() error {
 	if err := c.dumpCache(); err != nil {
 		c.logger.Error("failed to dump cache", zap.Error(err))
 	}
+	if err := c.persistence.close(); err != nil {
+		c.logger.Error("failed to close cache persistence", zap.Error(err))
+	}
 	c.closeOnce.Do(func() {
 		close(c.closeNotify)
 	})
@@ -525,24 +576,10 @@ func (c *Cache) Close() error {
 }
 
 func (c *Cache) loadDump() error {
-	if len(c.args.DumpFile) == 0 {
+	if c.persistence == nil {
 		return nil
 	}
-	f, err := os.Open(c.args.DumpFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			c.logger.Info("cache dump file not found, skipping load", zap.String("file", c.args.DumpFile))
-			return nil
-		}
-		return err
-	}
-	defer f.Close()
-	en, err := c.readDump(f)
-	if err != nil {
-		return err
-	}
-	c.logger.Info("cache dump loaded", zap.Int("entries", en))
-	return nil
+	return c.persistence.restore(c)
 }
 
 func (c *Cache) startDumpLoop() {
@@ -574,17 +611,16 @@ func (c *Cache) dumpCache() error {
 	c.dumpMu.Lock()
 	defer c.dumpMu.Unlock()
 
-	if len(c.args.DumpFile) == 0 {
+	if c.persistence == nil {
 		return nil
 	}
-	f, err := os.Create(c.args.DumpFile)
+	start := time.Now()
+	c.dumpTotalCounter.Inc()
+	en, err := c.persistence.checkpoint(c)
+	c.dumpDuration.Observe(time.Since(start).Seconds())
+	c.runtimeState.recordDump(en, time.Since(start), err)
 	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	en, err := c.writeDump(f)
-	if err != nil {
+		c.dumpErrorCounter.Inc()
 		return fmt.Errorf("failed to write dump, %w", err)
 	}
 	c.logger.Info("cache dumped", zap.Int("entries", en))
@@ -598,16 +634,7 @@ func (c *Cache) Api() *chi.Mux {
 	r.Get("/flush", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
 		c.logger.Info("flushing cache via api")
 		c.backend.Flush()
-
-		// 清理 L1 分段桶
-		for i := 0; i < shardCount; i++ {
-			c.shards[i].Lock()
-			c.shards[i].items = make(map[key]*l1Item, shardMaxSize)
-			c.shards[i].order = make([]key, shardMaxSize)
-			c.shards[i].pos = 0
-			c.shards[i].ref = make(map[key]bool, shardMaxSize)
-			c.shards[i].Unlock()
-		}
+		c.resetL1()
 
 		c.updatedKey.Store(0)
 
@@ -653,7 +680,15 @@ func (c *Cache) Api() *chi.Mux {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := c.dumpCache(); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
+	}))
+
+	r.Get("/stats", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
+		c.writeStats(w)
 	}))
 
 	// 优化后的查询 API：支持分页、后端搜索和分级匹配
@@ -1051,12 +1086,13 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCache
 	v, _, _ := backend.Get(key(msgKey))
 	if v != nil {
 		now := time.Now()
-		
+
 		// 性能补丁：利用 Pool 进行解包，减少对象分配
 		m := dnsMsgPool.Get().(*dns.Msg)
 		defer dnsMsgPool.Put(m)
-		
+
 		if err := m.Unpack(v.resp); err != nil {
+			backend.Delete(key(msgKey))
 			return nil, false, ""
 		}
 
@@ -1076,7 +1112,7 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCache
 	return nil, false, ""
 }
 
-func saveRespToCache(msgKey string, qCtx *query_context.Context, backend *cache.Cache[key, *item], lazyCacheTtl int) bool {
+func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool {
 	r := qCtx.R()
 	if r == nil || r.Truncated != false {
 		return false
@@ -1096,15 +1132,15 @@ func saveRespToCache(msgKey string, qCtx *query_context.Context, backend *cache.
 		if len(r.Answer) == 0 { // Empty answer. Set ttl between 0~300.
 			const maxEmtpyAnswerTtl = 300
 			msgTtl = time.Duration(min(minTTL, maxEmtpyAnswerTtl)) * time.Second
-			if lazyCacheTtl > 0 {
-				cacheTtl = time.Duration(lazyCacheTtl) * time.Second
+			if c.args.LazyCacheTTL > 0 {
+				cacheTtl = time.Duration(c.args.LazyCacheTTL) * time.Second
 			} else {
 				cacheTtl = msgTtl
 			}
 		} else {
 			msgTtl = time.Duration(minTTL) * time.Second
-			if lazyCacheTtl > 0 {
-				cacheTtl = time.Duration(lazyCacheTtl) * time.Second
+			if c.args.LazyCacheTTL > 0 {
+				cacheTtl = time.Duration(c.args.LazyCacheTTL) * time.Second
 			} else {
 				cacheTtl = msgTtl
 			}
@@ -1138,6 +1174,17 @@ func saveRespToCache(msgKey string, qCtx *query_context.Context, backend *cache.
 		}
 	}
 
-	backend.Store(key(msgKey), v, now.Add(cacheTtl))
+	cacheExp := now.Add(cacheTtl)
+	c.backend.Store(key(msgKey), v, cacheExp)
+	if err := c.persistence.appendStore(walStoreRecord{
+		key:       key(msgKey),
+		cacheExp:  cacheExp,
+		cacheItem: v,
+	}); err != nil {
+		c.walAppendErrorCounter.Inc()
+		c.logger.Warn("failed to append cache wal", zap.Error(err))
+	} else if c.args.WALFile != "" {
+		c.walAppendCounter.Inc()
+	}
 	return true
 }

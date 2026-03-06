@@ -21,10 +21,17 @@ package cache
 
 import (
 	"bytes"
+	"encoding/json"
 	"github.com/miekg/dns"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 )
 
 func Test_cachePlugin_Dump(t *testing.T) {
@@ -65,4 +72,95 @@ func Test_cachePlugin_Dump(t *testing.T) {
 	if enw != enr {
 		t.Fatalf("read err, wrote %d entries, read %d", enw, enr)
 	}
+}
+
+func Test_cachePlugin_WALReplay(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            64,
+		DumpFile:        filepath.Join(dir, "cache.dump"),
+		DumpInterval:    3600,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 1,
+	}
+
+	c := NewCache(args, Opts{})
+	defer c.backend.Close()
+	if err := c.dumpCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	qCtx := testQueryContext(t, "wal.example.", net.IPv4(1, 1, 1, 1))
+	if !c.saveRespToCache("wal-key", qCtx) {
+		t.Fatal("expected response to be cached")
+	}
+	if err := c.persistence.close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := NewCache(args, Opts{})
+	defer c2.Close()
+	resp, lazy, _ := getRespFromCache("wal-key", c2.backend, false, expiredMsgTtl)
+	if resp == nil {
+		t.Fatal("expected wal replay to restore cache entry")
+	}
+	if lazy {
+		t.Fatal("expected restored response to be fresh")
+	}
+}
+
+func Test_cachePlugin_StatsAPI(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{MetricsTag: "stats_tag"})
+	defer c.Close()
+
+	qCtx := testQueryContext(t, "stats.example.", net.IPv4(8, 8, 8, 8))
+	if !c.saveRespToCache("stats-key", qCtx) {
+		t.Fatal("expected response to be cached")
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/stats", nil)
+	resp := httptest.NewRecorder()
+	c.Api().ServeHTTP(resp, req)
+
+	if resp.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d", resp.Code)
+	}
+
+	var stats cacheStatsResponse
+	if err := json.NewDecoder(resp.Body).Decode(&stats); err != nil {
+		t.Fatal(err)
+	}
+	if stats.Tag != "stats_tag" {
+		t.Fatalf("unexpected tag %q", stats.Tag)
+	}
+	if stats.BackendSize != 1 {
+		t.Fatalf("unexpected backend size %d", stats.BackendSize)
+	}
+}
+
+type testingHelper interface {
+	Helper()
+	Fatal(args ...interface{})
+}
+
+func testQueryContext(t testingHelper, name string, ip net.IP) *query_context.Context {
+	t.Helper()
+	q := new(dns.Msg)
+	q.SetQuestion(name, dns.TypeA)
+	q.Id = 1
+	qCtx := query_context.NewContext(q)
+
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{
+			Name:   name,
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		A: ip.To4(),
+	})
+	qCtx.SetResponse(resp)
+	return qCtx
 }
