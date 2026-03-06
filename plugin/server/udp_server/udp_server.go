@@ -86,8 +86,10 @@ type DomainMapperPlugin interface {
 type IPSetPlugin interface{ Match(addr netip.Addr) bool }
 
 type fastCacheItem struct {
+	// Keep the atomic field first so 32-bit ARM gets 8-byte alignment.
+	expire int64
+
 	resp      []byte
-	expire    int64
 	updating  uint32
 	domainSet string
 	hash      uint64

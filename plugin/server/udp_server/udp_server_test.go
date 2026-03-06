@@ -5,10 +5,18 @@ import (
 	"hash/maphash"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/miekg/dns"
 )
+
+func TestFastCacheItemAtomicFieldAlignment(t *testing.T) {
+	var item fastCacheItem
+	if offset := unsafe.Offsetof(item.expire); offset != 0 {
+		t.Fatalf("expire must stay at struct offset 0 for 32-bit atomic alignment, got %d", offset)
+	}
+}
 
 func mustPack(t *testing.T, m *dns.Msg) []byte {
 	t.Helper()
