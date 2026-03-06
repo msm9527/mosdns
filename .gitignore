@@ -29,3 +29,5 @@ demo/
 /config/cache/*.dump
 /config/cache/*.wal
 /reports/
+/config/gen/*
+!/config/gen/.gitkeep
