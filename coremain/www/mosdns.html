@@ -741,6 +741,8 @@
         const iconMap = { 
             '请求总数': 'fa-globe', '缓存命中': 'fa-check-circle', '过期缓存命中': 'fa-history', 
             '缓存命中率': 'fa-bullseye', '过期缓存命中率': 'fa-bullseye', '缓存条目数': 'fa-database', 
+            '运行状态': 'fa-info-circle', '总命中': 'fa-bullseye', 'L1 / L2 命中': 'fa-server',
+            '过期命中 / 刷新': 'fa-sync-alt', '条目数 (L2 / L1)': 'fa-database', 'Snapshot': 'fa-save', 'WAL': 'fa-file-alt',
             '启动时间': 'fa-power-off', 'CPU 时间': 'fa-microchip', '常驻内存 (RSS)': 'fa-memory', 
             '待用堆内存 (Idle)': 'fa-box-open', 'Go 版本': 'fa-code-branch', '线程数': 'fa-sitemap', 
             '打开文件描述符': 'fa-folder-open' 
@@ -863,18 +865,91 @@
             else { localStorage.removeItem('customBackgroundUrl'); }
         }
         
-        function parseMetrics(metricsText, cacheTag) {
-            const lines = metricsText.split('\n');
-            const metrics = { query_total: 0, hit_total: 0, lazy_hit_total: 0, size_current: 0 };
-            const query_str = `mosdns_cache_query_total{tag="${cacheTag}"}`; const hit_str = `mosdns_cache_hit_total{tag="${cacheTag}"}`;
-            const lazy_str = `mosdns_cache_lazy_hit_total{tag="${cacheTag}"}`; const size_str = `mosdns_cache_size_current{tag="${cacheTag}"}`;
-            lines.forEach(line => {
-                if (line.startsWith(query_str)) { metrics.query_total = parseFloat(line.split(' ')[1]) || 0; } 
-                else if (line.startsWith(hit_str)) { metrics.hit_total = parseFloat(line.split(' ')[1]) || 0; } 
-                else if (line.startsWith(lazy_str)) { metrics.lazy_hit_total = parseFloat(line.split(' ')[1]) || 0; } 
-                else if (line.startsWith(size_str)) { metrics.size_current = parseFloat(line.split(' ')[1]) || 0; }
-            });
-            return metrics;
+        function emptyCacheStats(cacheTag = '') {
+            return {
+                tag: cacheTag,
+                snapshot_file: '',
+                wal_file: '',
+                backend_size: 0,
+                l1_size: 0,
+                updated_keys: 0,
+                counters: {
+                    query_total: 0,
+                    hit_total: 0,
+                    l1_hit_total: 0,
+                    l2_hit_total: 0,
+                    lazy_hit_total: 0,
+                    lazy_update_total: 0,
+                    lazy_update_dropped_total: 0
+                },
+                last_dump: { status: 'not_run' },
+                last_load: { status: 'not_run' },
+                last_wal_replay: { status: 'not_run' },
+                config: {},
+                error: ''
+            };
+        }
+
+        function normalizeCacheStats(raw, cacheTag) {
+            const base = emptyCacheStats(cacheTag);
+            return {
+                ...base,
+                ...raw,
+                tag: raw?.tag || cacheTag,
+                snapshot_file: raw?.snapshot_file || '',
+                wal_file: raw?.wal_file || '',
+                backend_size: Number(raw?.backend_size || 0),
+                l1_size: Number(raw?.l1_size || 0),
+                updated_keys: Number(raw?.updated_keys || 0),
+                counters: { ...base.counters, ...(raw?.counters || {}) },
+                last_dump: { ...base.last_dump, ...(raw?.last_dump || {}) },
+                last_load: { ...base.last_load, ...(raw?.last_load || {}) },
+                last_wal_replay: { ...base.last_wal_replay, ...(raw?.last_wal_replay || {}) },
+                config: { ...(raw?.config || {}) },
+                error: ''
+            };
+        }
+
+        function formatRate(part, total) {
+            return total > 0 ? `${(part / total * 100).toFixed(2)}%` : '0.00%';
+        }
+
+        function formatCacheTime(isoString) {
+            if (!isoString || String(isoString).startsWith('0001-01-01')) return '未执行';
+            const date = new Date(isoString);
+            if (Number.isNaN(date.getTime())) return '未执行';
+            return date.toLocaleString('zh-CN', { hour12: false, month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' });
+        }
+
+        function formatCacheOp(op, idleText = '未执行') {
+            if (!op || !op.status || op.status === 'not_run') return idleText;
+            if (op.status === 'error') return `失败 · ${formatCacheTime(op.at)}`;
+            return `${formatCacheTime(op.at)} · ${formatNumber(op.entries || 0)} 条`;
+        }
+
+        function describeCacheState(stats) {
+            if (stats.error) return { label: '加载失败', detail: stats.error, color: '#e74c3c' };
+            const hasError = [stats.last_dump, stats.last_load, stats.last_wal_replay].some(op => op?.status === 'error');
+            if (hasError) return { label: '异常', detail: '最近持久化失败', color: '#e74c3c' };
+            if (stats.backend_size > 0 || stats.l1_size > 0 || stats.counters.query_total > 0) {
+                return { label: '运行中', detail: stats.wal_file ? 'WAL 已启用' : '仅 snapshot', color: 'var(--status-green)' };
+            }
+            return { label: '待机', detail: stats.wal_file ? 'WAL 已启用' : '仅 snapshot', color: 'var(--status-yellow)' };
+        }
+
+        function buildCacheMetrics(stats) {
+            const counters = stats.counters || emptyCacheStats().counters;
+            const stateInfo = describeCacheState(stats);
+            return [
+                { label: '运行状态', value: `${stateInfo.label} · ${stateInfo.detail}`, accent: true },
+                { label: '请求总数', numericValue: counters.query_total },
+                { label: '总命中', value: `${formatNumber(counters.hit_total)} (${formatRate(counters.hit_total, counters.query_total)})`, accent: true },
+                { label: 'L1 / L2 命中', value: `${formatNumber(counters.l1_hit_total)} / ${formatNumber(counters.l2_hit_total)}` },
+                { label: '过期命中 / 刷新', value: `${formatNumber(counters.lazy_hit_total)} / ${formatNumber(counters.lazy_update_total)}` },
+                { label: '条目数 (L2 / L1)', value: `${formatNumber(stats.backend_size)} / ${formatNumber(stats.l1_size)}` },
+                { label: 'Snapshot', value: `Dump ${formatCacheOp(stats.last_dump, '未 dump')} / Load ${formatCacheOp(stats.last_load, '未 load')}` },
+                { label: 'WAL', value: `${stats.wal_file ? '开启' : '关闭'} · ${formatCacheOp(stats.last_wal_replay, '未 replay')}` }
+            ];
         }
 
         function parseSystemMetrics(metricsText) {
@@ -897,23 +972,40 @@
             isRefreshing = true;
             D.body.classList.add('loading');
             try {
-                const response = await fetch('/metrics');
-                if (!response.ok) throw new Error(`网络响应错误: ${response.statusText} (${response.status})`);
-                const text = await response.text();
+                const metricsPromise = fetch('/metrics').then(async response => {
+                    if (!response.ok) throw new Error(`网络响应错误: ${response.statusText} (${response.status})`);
+                    return response.text();
+                });
+                const cachePromise = Promise.all(cacheOrder.map(async key => {
+                    const config = cacheConfig[key];
+                    const effectiveTag = coreMode === 'B' ? config.modeB : config.default;
+                    try {
+                        const response = await fetch(`/plugins/${effectiveTag}/stats`);
+                        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                        const raw = await response.json();
+                        return { key, stats: normalizeCacheStats(raw, effectiveTag) };
+                    } catch (error) {
+                        return {
+                            key,
+                            stats: {
+                                ...emptyCacheStats(effectiveTag),
+                                error: error.message || '加载失败'
+                            }
+                        };
+                    }
+                }));
+                const [text, cacheStatsList] = await Promise.all([metricsPromise, cachePromise]);
                 const data = { caches: {}, system: {} };
                 const systemMetrics = parseSystemMetrics(text);
                 
-                cacheOrder.forEach(key => {
-                    const config = cacheConfig[key];
-                    const effectiveTag = coreMode === 'B' ? config.modeB : config.default;
-                    const metrics = parseMetrics(text, effectiveTag);
-                    data.caches[key] = { ...metrics, hit_rate: metrics.query_total > 0 ? ((metrics.hit_total / metrics.query_total) * 100).toFixed(2) + '%' : '0.00%', lazy_hit_rate: metrics.query_total > 0 ? ((metrics.lazy_hit_total / metrics.query_total) * 100).toFixed(2) + '%' : '0.00%' };
+                cacheStatsList.forEach(({ key, stats }) => {
+                    data.caches[key] = stats;
                 });
                 
                 data.system = { start_time: systemMetrics.startTime ? new Date(systemMetrics.startTime * 1000).toLocaleString() : 'N/A', cpu_time: `${systemMetrics.cpuTime.toFixed(2)} 秒`, resident_memory: `${(systemMetrics.residentMemory / 1024 / 1024).toFixed(2)} MB`, heap_idle_memory: `${(systemMetrics.heapIdleMemory / 1024 / 1024).toFixed(2)} MB`, go_version: systemMetrics.goVersion, threads: systemMetrics.threads, open_fds: systemMetrics.openFds };
                 return data;
             } catch (error) {
-                console.error('获取 /metrics 失败:', error);
+                console.error('获取缓存运行态失败:', error);
                 return { error: error.message };
             } finally {
                 isRefreshing = false;
@@ -966,19 +1058,16 @@
                 const cardData = data.caches[key];
                 if (card && cardData && shouldBeVisible) {
                     card.classList.add('visible');
-                    const metricsContainer = getById(`metrics-${key}`);
-                    metricsContainer.innerHTML = ''; 
-                    [{ label: '请求总数', numericValue: cardData.query_total }, { label: '缓存命中', numericValue: cardData.hit_total }, { label: '过期缓存命中', numericValue: cardData.lazy_hit_total }, { label: '缓存命中率', value: cardData.hit_rate, accent: true }, { label: '过期缓存命中率', value: cardData.lazy_hit_rate, accent: true }, { label: '缓存条目数', numericValue: cardData.size_current }, ].forEach(m => {
-                        const p = createElement('div', 'metric-label');
-                        p.innerHTML = `<i class="fas ${iconMap[m.label] || 'fa-question-circle'}"></i> <span>${m.label}:</span>`;
-                        const v = createElement('div', `metric-value${m.accent ? ' accent' : ''}`);
-                        v.innerText = (m.numericValue !== undefined) ? formatNumber(m.numericValue) : m.value;
-                        metricsContainer.append(p, v);
-                    });
-                    
-                    getById(`status-dot-${key}`).classList.toggle('status-green', cardData.query_total > 0); getById(`status-dot-${key}`).classList.toggle('status-yellow', cardData.query_total === 0);
-                    getById(`charts-${key}`).style.display = cardData.query_total > 0 ? 'flex' : 'none';
-                    if ((forceRebuild || updateCharts) && cardData.query_total > 0) { createOrUpdatePieChart(`chart-hit-${key}`, '命中', cardData.hit_total, cardData.query_total); createOrUpdatePieChart(`chart-lazy-${key}`, '过期命中', cardData.lazy_hit_total, cardData.query_total); }
+                    updateMetrics(`metrics-${key}`, buildCacheMetrics(cardData));
+                    const stateInfo = describeCacheState(cardData);
+                    const statusDot = getById(`status-dot-${key}`);
+                    if (statusDot) statusDot.style.backgroundColor = stateInfo.color;
+                    const counters = cardData.counters || emptyCacheStats().counters;
+                    getById(`charts-${key}`).style.display = counters.query_total > 0 ? 'flex' : 'none';
+                    if ((forceRebuild || updateCharts) && counters.query_total > 0) {
+                        createOrUpdatePieChart(`chart-hit-${key}`, '命中', counters.hit_total, counters.query_total);
+                        createOrUpdatePieChart(`chart-lazy-${key}`, '过期命中', counters.lazy_hit_total, counters.query_total);
+                    }
                 }
             });
             updateMetrics('metrics-system', [{ label: '启动时间', value: data.system.start_time }, { label: 'CPU 时间', value: data.system.cpu_time }, { label: '常驻内存 (RSS)', value: data.system.resident_memory }, { label: '待用堆内存 (Idle)', value: data.system.heap_idle_memory }, { label: 'Go 版本', value: data.system.go_version, accent: true }, { label: '线程数', numericValue: data.system.threads }, { label: '打开文件描述符', numericValue: data.system.open_fds }, ]);

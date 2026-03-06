@@ -2529,30 +2529,140 @@ const cacheManager = {
             { key: 'cache_cnmihomo', name: '国内域名fakeip', tag: 'cache_cnmihomo' }
         ],
 
-        parseMetrics(metricsText, cacheTag) {
-            const lines = metricsText.split('\n');
-            const metrics = { query_total: 0, hit_total: 0, lazy_hit_total: 0, size_current: 0 };
-            const query_str = `mosdns_cache_query_total{tag="${cacheTag}"}`;
-            const hit_str = `mosdns_cache_hit_total{tag="${cacheTag}"}`;
-            const lazy_str = `mosdns_cache_lazy_hit_total{tag="${cacheTag}"}`;
-            const size_str = `mosdns_cache_size_current{tag="${cacheTag}"}`;
-            lines.forEach(line => {
-                if (line.startsWith(query_str)) metrics.query_total = parseFloat(line.split(' ')[1]) || 0;
-                else if (line.startsWith(hit_str)) metrics.hit_total = parseFloat(line.split(' ')[1]) || 0;
-                else if (line.startsWith(lazy_str)) metrics.lazy_hit_total = parseFloat(line.split(' ')[1]) || 0;
-                else if (line.startsWith(size_str)) metrics.size_current = parseFloat(line.split(' ')[1]) || 0;
-            });
-            return metrics;
+        emptyStats(cacheTag = '') {
+            return {
+                tag: cacheTag,
+                snapshot_file: '',
+                wal_file: '',
+                backend_size: 0,
+                l1_size: 0,
+                updated_keys: 0,
+                counters: {
+                    query_total: 0,
+                    hit_total: 0,
+                    l1_hit_total: 0,
+                    l2_hit_total: 0,
+                    lazy_hit_total: 0,
+                    lazy_update_total: 0,
+                    lazy_update_dropped_total: 0
+                },
+                last_dump: { status: 'not_run' },
+                last_load: { status: 'not_run' },
+                last_wal_replay: { status: 'not_run' },
+                config: {},
+                error: ''
+            };
+        },
+
+        normalizeStats(raw, cacheTag) {
+            const base = this.emptyStats(cacheTag);
+            const counters = {
+                ...base.counters,
+                ...(raw?.counters || {})
+            };
+            return {
+                ...base,
+                ...raw,
+                tag: raw?.tag || cacheTag,
+                snapshot_file: raw?.snapshot_file || '',
+                wal_file: raw?.wal_file || '',
+                backend_size: Number(raw?.backend_size || 0),
+                l1_size: Number(raw?.l1_size || 0),
+                updated_keys: Number(raw?.updated_keys || 0),
+                counters,
+                last_dump: { ...base.last_dump, ...(raw?.last_dump || {}) },
+                last_load: { ...base.last_load, ...(raw?.last_load || {}) },
+                last_wal_replay: { ...base.last_wal_replay, ...(raw?.last_wal_replay || {}) },
+                config: { ...(raw?.config || {}) },
+                error: ''
+            };
+        },
+
+        async fetchStats(cache, signal) {
+            try {
+                const raw = await api.fetch(`/plugins/${cache.tag}/stats`, { signal });
+                return { key: cache.key, stats: this.normalizeStats(raw, cache.tag) };
+            } catch (error) {
+                if (error.name === 'AbortError') {
+                    throw error;
+                }
+                return {
+                    key: cache.key,
+                    stats: {
+                        ...this.emptyStats(cache.tag),
+                        error: error.message || '加载失败'
+                    }
+                };
+            }
+        },
+
+        formatCount(value) {
+            return Number(value || 0).toLocaleString();
+        },
+
+        formatPercent(part, total) {
+            return total > 0 ? `${(part / total * 100).toFixed(2)}%` : '0.00%';
+        },
+
+        formatOpStatus(op, idleText = '未执行') {
+            if (!op || !op.status || op.status === 'not_run') {
+                return { text: idleText, color: 'var(--color-text-secondary)' };
+            }
+            const when = op.at ? formatRelativeTime(op.at) : '未知时间';
+            if (op.status === 'error') {
+                return {
+                    text: `失败 · ${when}${op.error ? ` · ${op.error}` : ''}`,
+                    color: 'var(--color-danger)'
+                };
+            }
+            const entries = typeof op.entries === 'number' ? `${this.formatCount(op.entries)} 条` : '完成';
+            const duration = op.duration ? ` · ${op.duration}` : '';
+            return {
+                text: `${entries} · ${when}${duration}`,
+                color: 'var(--color-success)'
+            };
+        },
+
+        describeInstance(stats) {
+            if (stats.error) {
+                return { label: '加载失败', color: 'var(--color-danger)', detail: stats.error };
+            }
+            const opErrors = [stats.last_dump, stats.last_load, stats.last_wal_replay].some(op => op?.status === 'error');
+            if (opErrors) {
+                return { label: '异常', color: 'var(--color-danger)', detail: '最近持久化操作失败' };
+            }
+            if (stats.backend_size > 0 || stats.l1_size > 0 || stats.counters.query_total > 0) {
+                return {
+                    label: '运行中',
+                    color: 'var(--color-success)',
+                    detail: stats.wal_file ? 'WAL 已启用' : '仅 snapshot'
+                };
+            }
+            return {
+                label: '待机',
+                color: 'var(--color-warning)',
+                detail: stats.wal_file ? 'WAL 已启用' : '仅 snapshot'
+            };
+        },
+
+        renderStack(lines, align = 'left') {
+            return `<div style="display:flex; flex-direction:column; gap:0.3rem; text-align:${align};">${lines.filter(Boolean).map(line => `<div>${line}</div>`).join('')}</div>`;
+        },
+
+        renderStateCell(stats) {
+            const stateInfo = this.describeInstance(stats);
+            return this.renderStack([
+                `<span style="font-weight:700; color:${stateInfo.color};">${stateInfo.label}</span>`,
+                `<span style="font-size:0.85rem; color:var(--color-text-secondary);">${stateInfo.detail}</span>`
+            ]);
         },
 
         async updateStats(signal) {
             try {
-                const metricsRes = await api.getMetrics(signal);
-                if (metricsRes) {
-                    this.config.forEach(cache => {
-                        state.cacheStats[cache.key] = this.parseMetrics(metricsRes, cache.tag);
-                    });
-                }
+                const results = await Promise.all(this.config.map(cache => this.fetchStats(cache, signal)));
+                results.forEach(({ key, stats }) => {
+                    state.cacheStats[key] = stats;
+                });
                 this.renderTable();
             } catch (error) {
                 if (error.name !== 'AbortError') {
@@ -2581,19 +2691,27 @@ const cacheManager = {
             tbody.innerHTML = '';
 
             if (isError) {
-                const cols = state.isMobile ? 1 : 8;
+                const cols = state.isMobile ? 1 : 9;
                 tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center; color: var(--color-danger);">缓存数据加载失败</td></tr>`;
                 return;
             }
 
             this.config.forEach(cache => {
                 const tr = document.createElement('tr');
-                const stats = state.cacheStats[cache.key] || { query_total: 0, hit_total: 0, lazy_hit_total: 0, size_current: 0 };
-                const hitRate = stats.query_total > 0 ? (stats.hit_total / stats.query_total * 100).toFixed(2) + '%' : '0.00%';
-                const lazyRate = stats.query_total > 0 ? (stats.lazy_hit_total / stats.query_total * 100).toFixed(2) + '%' : '0.00%';
+                const stats = state.cacheStats[cache.key] || this.emptyStats(cache.tag);
+                const counters = stats.counters || this.emptyStats(cache.tag).counters;
+                const hitRate = this.formatPercent(counters.hit_total, counters.query_total);
+                const lazyRate = this.formatPercent(counters.lazy_hit_total, counters.query_total);
+                const l1Share = this.formatPercent(counters.l1_hit_total, Math.max(counters.hit_total, 1));
+                const l2Share = this.formatPercent(counters.l2_hit_total, Math.max(counters.hit_total, 1));
+                const dumpStatus = this.formatOpStatus(stats.last_dump, '未 dump');
+                const loadStatus = this.formatOpStatus(stats.last_load, '未 load');
+                const replayStatus = this.formatOpStatus(stats.last_wal_replay, '未 replay');
+                const walState = stats.wal_file ? '已启用' : '未启用';
+                const snapshotName = stats.snapshot_file ? stats.snapshot_file.split('/').pop() : '未配置';
+                const walName = stats.wal_file ? stats.wal_file.split('/').pop() : '未配置';
 
                 if (state.isMobile) {
-                    // 移动端卡片视图
                     tr.innerHTML = `
                         <td>
                             <div class="mobile-system-card">
@@ -2602,28 +2720,53 @@ const cacheManager = {
                                     <button class="button danger small clear-cache-btn" data-cache-tag="${cache.tag}" style="padding: 0.3rem 0.6rem;">清空</button>
                                 </div>
                                 <div class="mobile-stats-grid">
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">条目数</span><span class="mobile-stat-value"><a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${stats.size_current.toLocaleString()}</a></span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">请求总数</span><span class="mobile-stat-value">${stats.query_total.toLocaleString()}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">缓存命中</span><span class="mobile-stat-value">${stats.hit_total.toLocaleString()}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">命中率</span><span class="mobile-stat-value">${hitRate}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">过期命中</span><span class="mobile-stat-value">${stats.lazy_hit_total.toLocaleString()}</span></div>
-                                    <div class="mobile-stat-item"><span class="mobile-stat-label">过期命中率</span><span class="mobile-stat-value">${lazyRate}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">运行态</span><span class="mobile-stat-value">${this.describeInstance(stats).label}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">请求 / 命中</span><span class="mobile-stat-value">${this.formatCount(counters.query_total)} / ${this.formatCount(counters.hit_total)} (${hitRate})</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">L1 / L2</span><span class="mobile-stat-value">${this.formatCount(counters.l1_hit_total)} / ${this.formatCount(counters.l2_hit_total)}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">过期刷新</span><span class="mobile-stat-value">${this.formatCount(counters.lazy_hit_total)} / ${this.formatCount(counters.lazy_update_total)}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">容量</span><span class="mobile-stat-value"><a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${this.formatCount(stats.backend_size)}</a> / ${this.formatCount(stats.l1_size)}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">Snapshot</span><span class="mobile-stat-value">${dumpStatus.text}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">WAL</span><span class="mobile-stat-value">${walState} · ${replayStatus.text}</span></div>
                                 </div>
                             </div>
                         </td>
                     `;
                 } else {
-                    // PC端表格视图
                     tr.innerHTML = `
                         <td>
                             <div class="cache-name-wrapper" style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${cache.name}">${cache.name}</div>
                         </td>
-                        <td class="text-right">${stats.query_total.toLocaleString()}</td>
-                        <td class="text-right">${stats.hit_total.toLocaleString()}</td>
-                        <td class="text-right">${stats.lazy_hit_total.toLocaleString()}</td>
-                        <td class="text-right">${hitRate}</td>
-                        <td class="text-right">${lazyRate}</td>
-                        <td class="text-right"><a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${stats.size_current.toLocaleString()}</a></td>
+                        <td>${this.renderStateCell(stats)}</td>
+                        <td>${this.renderStack([
+                            `<span>请求 ${this.formatCount(counters.query_total)}</span>`,
+                            `<span>总命中 ${this.formatCount(counters.hit_total)} (${hitRate})</span>`,
+                            `<span>过期命中 ${this.formatCount(counters.lazy_hit_total)} (${lazyRate})</span>`
+                        ], 'right')}</td>
+                        <td>${this.renderStack([
+                            `<span>L1 命中 ${this.formatCount(counters.l1_hit_total)} (${l1Share})</span>`,
+                            `<span>L2 命中 ${this.formatCount(counters.l2_hit_total)} (${l2Share})</span>`,
+                            `<span>L1 / L2 容量 ${this.formatCount(stats.l1_size)} / ${this.formatCount(stats.backend_size)}</span>`
+                        ], 'right')}</td>
+                        <td>${this.renderStack([
+                            `<span>lazy update ${this.formatCount(counters.lazy_update_total)}</span>`,
+                            `<span>drop ${this.formatCount(counters.lazy_update_dropped_total)}</span>`,
+                            `<span>updated keys ${this.formatCount(stats.updated_keys)}</span>`
+                        ], 'right')}</td>
+                        <td>${this.renderStack([
+                            `<span style="color:${dumpStatus.color};">Dump · ${dumpStatus.text}</span>`,
+                            `<span style="color:${loadStatus.color};">Load · ${loadStatus.text}</span>`,
+                            `<span style="color:var(--color-text-secondary);">${snapshotName}</span>`
+                        ], 'right')}</td>
+                        <td>${this.renderStack([
+                            `<span style="font-weight:700;">${walState}</span>`,
+                            `<span style="color:${replayStatus.color};">Replay · ${replayStatus.text}</span>`,
+                            `<span style="color:var(--color-text-secondary);">${walName} · sync ${stats.config?.wal_sync_interval ?? 0}s</span>`
+                        ], 'right')}</td>
+                        <td class="text-right">${this.renderStack([
+                            `<a href="#" class="control-item-link" data-cache-tag="${cache.tag}" data-cache-title="${cache.name}">${this.formatCount(stats.backend_size)} 条</a>`,
+                            `<span>L1 ${this.formatCount(stats.l1_size)} 条</span>`,
+                            `<span>配置容量 ${this.formatCount(stats.config?.size || 0)}</span>`
+                        ], 'right')}</td>
                         <td class="text-center"><button class="button danger clear-cache-btn" data-cache-tag="${cache.tag}" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">清空</button></td>
                     `;
                 }
@@ -4352,4 +4495,3 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 });
-
