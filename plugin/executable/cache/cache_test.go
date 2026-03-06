@@ -138,6 +138,31 @@ func Test_cachePlugin_StatsAPI(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_ServfailTTL(t *testing.T) {
+	c := NewCache(&Args{Size: 64, ServfailTTL: 42}, Opts{})
+	defer c.Close()
+
+	q := new(dns.Msg)
+	q.SetQuestion("servfail.example.", dns.TypeA)
+	qCtx := query_context.NewContext(q)
+	r := new(dns.Msg)
+	r.SetRcode(q, dns.RcodeServerFailure)
+	qCtx.SetResponse(r)
+
+	if !c.saveRespToCache("servfail-key", qCtx) {
+		t.Fatal("expected servfail response to be cached")
+	}
+
+	stored, _, _ := c.backend.Get(key("servfail-key"))
+	if stored == nil {
+		t.Fatal("expected cached item")
+	}
+	remaining := stored.expirationTime.Sub(stored.storedTime)
+	if remaining < 40*time.Second || remaining > 43*time.Second {
+		t.Fatalf("unexpected servfail ttl %s", remaining)
+	}
+}
+
 type testingHelper interface {
 	Helper()
 	Fatal(args ...interface{})

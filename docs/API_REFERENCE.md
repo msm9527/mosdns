@@ -367,6 +367,8 @@ PUT/POST JSON 示例：
 
 - `size`
 - `lazy_cache_ttl`
+- `nxdomain_ttl`：`NXDOMAIN` / `nov4` 类负结果的短期缓存 TTL（秒）
+- `servfail_ttl`：`SERVFAIL` 的短期失败缓存 TTL（秒）
 - `enable_ecs`
 - `exclude_ip`
 - `dump_file`
@@ -378,7 +380,23 @@ PUT/POST JSON 示例：
 
 - 生产启用建议同时保留 `dump_file` 和 `wal_file`：snapshot 负责 checkpoint，WAL 负责 checkpoint 间增量恢复
 - 回滚到仅 snapshot 模式时，删除 `wal_file` / `wal_sync_interval` 即可，`dump_file` 兼容不变
+- `SERVFAIL` 建议仅做短期缓存，默认推荐 `15s`
+- `NXDOMAIN` 建议与长期正向缓存分开看待，默认推荐 `60s`
 - Web/UI 的缓存运行态面板应读取 `/plugins/{cache_tag}/stats`；系统级资源指标仍读取 `/metrics`
+
+### `aliapi`
+
+常用失败治理字段：
+
+- `failure_suppress_ttl`：当所有并发上游都以 transport error / timeout 失败时，返回短期 `SERVFAIL` 并在该窗口内抑制重复回源
+- `upstream_failure_threshold`：连续 transport error 达到阈值后打开上游熔断
+- `upstream_circuit_break_seconds`：熔断保持时长（秒）
+
+运行行为：
+
+- 熔断只针对 transport error / timeout，不会因为单个 `NXDOMAIN` 或正常负结果摘除上游
+- 若某个域名在所有选中上游上都 transport fail，会合成短期 `SERVFAIL` 响应，供失败抑制与短期缓存使用
+- 上游恢复出一个成功响应后，会自动清除该域名的失败抑制记录
 
 ### `adguard_rule`
 

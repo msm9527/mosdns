@@ -120,6 +120,8 @@ type l1Shard struct {
 type Args struct {
 	Size            int      `yaml:"size"`
 	LazyCacheTTL    int      `yaml:"lazy_cache_ttl"`
+	NXDomainTTL     int      `yaml:"nxdomain_ttl"`
+	ServfailTTL     int      `yaml:"servfail_ttl"`
 	EnableECS       bool     `yaml:"enable_ecs"`
 	ExcludeIPs      []string `yaml:"exclude_ip"`
 	DumpFile        string   `yaml:"dump_file"`
@@ -131,6 +133,8 @@ type Args struct {
 type argsRaw struct {
 	Size            int         `yaml:"size"`
 	LazyCacheTTL    int         `yaml:"lazy_cache_ttl"`
+	NXDomainTTL     int         `yaml:"nxdomain_ttl"`
+	ServfailTTL     int         `yaml:"servfail_ttl"`
 	EnableECS       bool        `yaml:"enable_ecs"`
 	ExcludeIP       interface{} `yaml:"exclude_ip"`
 	DumpFile        string      `yaml:"dump_file"`
@@ -147,6 +151,8 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	}
 	a.Size = raw.Size
 	a.LazyCacheTTL = raw.LazyCacheTTL
+	a.NXDomainTTL = raw.NXDomainTTL
+	a.ServfailTTL = raw.ServfailTTL
 	a.DumpFile = raw.DumpFile
 	a.DumpInterval = raw.DumpInterval
 	a.WALFile = raw.WALFile
@@ -176,6 +182,8 @@ func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.Size, 1024)
 	utils.SetDefaultUnsignNum(&a.DumpInterval, 600)
 	utils.SetDefaultUnsignNum(&a.WALSyncInterval, 1)
+	utils.SetDefaultUnsignNum(&a.NXDomainTTL, 60)
+	utils.SetDefaultUnsignNum(&a.ServfailTTL, 15)
 }
 
 type Cache struct {
@@ -1122,10 +1130,10 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool
 	var cacheTtl time.Duration
 	switch r.Rcode {
 	case dns.RcodeNameError:
-		msgTtl = time.Second * 30
+		msgTtl = time.Duration(c.args.NXDomainTTL) * time.Second
 		cacheTtl = msgTtl
 	case dns.RcodeServerFailure:
-		msgTtl = time.Second * 5
+		msgTtl = time.Duration(c.args.ServfailTTL) * time.Second
 		cacheTtl = msgTtl
 	case dns.RcodeSuccess:
 		minTTL := dnsutils.GetMinimalTTL(r)

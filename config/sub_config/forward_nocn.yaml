@@ -5,6 +5,9 @@ plugins:
     type: aliapi
     args:
       concurrent: 2
+      failure_suppress_ttl: 10
+      upstream_failure_threshold: 3
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: "https://1.1.1.1/dns-query"
           socks5: "127.0.0.1:7891"

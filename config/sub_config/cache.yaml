@@ -9,6 +9,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
 #      exclude_ip:
 #        - 28.0.0.0/8
 #        - f2b0::/18
@@ -23,6 +25,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
       exclude_ip:
 #        - 28.0.0.0/8
 #        - f2b0::/18
@@ -37,6 +41,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
       dump_file: cache/cache_cn.dump
       wal_file: cache/cache_cn.wal
       dump_interval: 36000
@@ -48,6 +54,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
       dump_file: cache/cache_google.dump
       wal_file: cache/cache_google.wal
       dump_interval: 36000
@@ -58,6 +66,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
       enable_ecs: true
       dump_file: cache/cache_google_node.dump
       wal_file: cache/cache_google_node.wal
@@ -70,6 +80,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
       dump_file: cache/cache_node.dump
       wal_file: cache/cache_node.wal
       dump_interval: 36000
@@ -81,6 +93,8 @@ plugins:
     args:
       size: 20000000
       lazy_cache_ttl: 259200000
+      nxdomain_ttl: 60
+      servfail_ttl: 15
       dump_file: cache/cache_cnmihomo.dump
       wal_file: cache/cache_cnmihomo.wal
       dump_interval: 36000

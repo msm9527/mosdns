@@ -20,6 +20,8 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -48,8 +50,11 @@ const (
 
 // Args defines the configuration for the aliapi plugin.
 type Args struct {
-	Upstreams []UpstreamConfig `yaml:"upstreams"`
-	Concurrent int              `yaml:"concurrent"`
+	Upstreams                   []UpstreamConfig `yaml:"upstreams"`
+	Concurrent                  int              `yaml:"concurrent"`
+	FailureSuppressTTL          int              `yaml:"failure_suppress_ttl"`
+	UpstreamFailureThreshold    int              `yaml:"upstream_failure_threshold"`
+	UpstreamCircuitBreakSeconds int              `yaml:"upstream_circuit_break_seconds"`
 
 	// AliDNS API specific options, global to this plugin instance.
 	AccountID       string `yaml:"account_id"`
@@ -93,13 +98,13 @@ type UpstreamConfig struct {
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	a := args.(*Args)
-	
+
 	// [Debug] Log entry
 	bp.L().Info("[Debug AliAPI] Init plugin instance", zap.String("plugin_tag", bp.Tag()))
 
 	// 从 api_upstream.go 获取覆盖配置
 	overrides := coremain.GetUpstreamOverrides(bp.Tag())
-	
+
 	var activeUpstreams []UpstreamConfig
 	enabledCount := 0
 
@@ -110,7 +115,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 			if !o.Enabled {
 				continue
 			}
-			
+
 			u := UpstreamConfig{
 				Tag: o.Tag, Addr: o.Addr, DialAddr: o.DialAddr,
 				IdleTimeout: o.IdleTimeout, UpstreamQueryTimeout: o.UpstreamQueryTimeout,
@@ -142,14 +147,18 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		// 需求：只有当覆盖配置中有至少一个启用条目时，才替换原始配置
 		if len(activeUpstreams) > 0 {
 			a.Upstreams = activeUpstreams
-			
+
 			// 需求：自动设置 concurrent 数量（1-3）
 			conc := enabledCount
-			if conc > maxConcurrentQueries { conc = maxConcurrentQueries }
-			if conc < 1 { conc = 1 }
+			if conc > maxConcurrentQueries {
+				conc = maxConcurrentQueries
+			}
+			if conc < 1 {
+				conc = 1
+			}
 			a.Concurrent = conc
-			
-			bp.L().Info("[Debug AliAPI] Configuration REPLACED by overrides", 
+
+			bp.L().Info("[Debug AliAPI] Configuration REPLACED by overrides",
 				zap.String("tag", bp.Tag()),
 				zap.Int("active_upstreams", enabledCount),
 				zap.Int("new_concurrent", a.Concurrent))
@@ -188,6 +197,13 @@ type AliAPI struct {
 	logger       *zap.Logger
 	us           []*upstreamWrapper
 	tag2Upstream map[string]*upstreamWrapper
+	failureMu    sync.Mutex
+	failures     map[string]failureRecord
+}
+
+type failureRecord struct {
+	rcode     int
+	expiresAt time.Time
 }
 
 type Opts struct {
@@ -213,6 +229,16 @@ func NewAliAPI(args *Args, opt Opts) (*AliAPI, error) {
 		args:         args,
 		logger:       opt.Logger,
 		tag2Upstream: make(map[string]*upstreamWrapper),
+		failures:     make(map[string]failureRecord),
+	}
+	if args.FailureSuppressTTL <= 0 {
+		args.FailureSuppressTTL = 10
+	}
+	if args.UpstreamFailureThreshold <= 0 {
+		args.UpstreamFailureThreshold = 3
+	}
+	if args.UpstreamCircuitBreakSeconds <= 0 {
+		args.UpstreamCircuitBreakSeconds = 60
 	}
 
 	applyGlobal := func(c *UpstreamConfig) {
@@ -344,6 +370,12 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 		return nil, errors.New("no upstream to exchange")
 	}
 
+	question := qCtx.QQuestion()
+	failureKey := buildFailureKey(question)
+	if cachedFailure, ok := f.getFailure(failureKey); ok {
+		return newSyntheticFailureResponse(qCtx.Q(), cachedFailure.rcode), nil
+	}
+
 	queryPayload, err := pool.PackBuffer(qCtx.Q())
 	if err != nil {
 		return nil, err
@@ -375,11 +407,18 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 	var lastOtherResUpstream *upstreamWrapper
 	var lastError error
 
-	randIndex := rand.Intn(len(us))
+	availableUpstreams := filterAvailableUpstreams(us)
+	if len(availableUpstreams) == 0 {
+		availableUpstreams = us
+	}
+	if concurrent > len(availableUpstreams) {
+		concurrent = len(availableUpstreams)
+	}
+	randIndex := rand.Intn(len(availableUpstreams))
 
 	usToQuery := make([]*upstreamWrapper, 0, concurrent)
 	for i := 0; i < concurrent; i++ {
-		usToQuery = append(usToQuery, us[(randIndex+i)%len(us)])
+		usToQuery = append(usToQuery, availableUpstreams[(randIndex+i)%len(availableUpstreams)])
 	}
 
 	for _, u := range usToQuery {
@@ -398,7 +437,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 
 			var r *dns.Msg
 			respPayload, err := currentUpstream.ExchangeContext(upstreamCtx, *qc)
-			
+
 			if err != nil {
 				if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) &&
 					!strings.Contains(err.Error(), "connection refused") &&
@@ -417,7 +456,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 
 			select {
 			case resChan <- res{r: r, err: err, u: currentUpstream}:
-			case <-upstreamCtx.Done(): 
+			case <-upstreamCtx.Done():
 			}
 		}(qCtx.Id(), qCtx.QQuestion(), u)
 	}
@@ -427,19 +466,23 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 		case res := <-resChan:
 			r, err, u := res.r, res.err, res.u
 			if err != nil {
+				u.recordFailure(time.Now(), f.args.UpstreamFailureThreshold, time.Duration(f.args.UpstreamCircuitBreakSeconds)*time.Second)
 				if lastError == nil {
 					lastError = err
 				}
 				continue
 			}
+			u.recordSuccess()
 
 			if len(r.Answer) > 0 {
 				for _, ans := range r.Answer {
 					if a, ok := ans.(*dns.A); ok && len(a.A) > 0 {
+						f.clearFailure(failureKey)
 						u.mWinnerTotal.Inc()
 						return r, nil
 					}
 					if aaaa, ok := ans.(*dns.AAAA); ok && len(aaaa.AAAA) > 0 {
+						f.clearFailure(failureKey)
 						u.mWinnerTotal.Inc()
 						return r, nil
 					}
@@ -447,11 +490,15 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 			}
 
 			if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {
+				f.clearFailure(failureKey)
 				if lastSuccessOrNXRes == nil {
 					lastSuccessOrNXRes = r
 					lastSuccessOrNXResUpstream = u
 				}
 			} else {
+				if r.Rcode == dns.RcodeServerFailure {
+					f.putFailure(failureKey, dns.RcodeServerFailure)
+				}
 				if lastOtherRes == nil {
 					lastOtherRes = r
 					lastOtherResUpstream = u
@@ -475,18 +522,79 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 	}
 
 	if lastSuccessOrNXRes != nil {
+		f.clearFailure(failureKey)
 		lastSuccessOrNXResUpstream.mWinnerTotal.Inc()
 		return lastSuccessOrNXRes, nil
 	}
 	if lastOtherRes != nil {
+		if lastOtherRes.Rcode == dns.RcodeServerFailure {
+			f.putFailure(failureKey, dns.RcodeServerFailure)
+		}
 		lastOtherResUpstream.mWinnerTotal.Inc()
 		return lastOtherRes, nil
 	}
 	if lastError != nil {
-		return nil, lastError
+		f.putFailure(failureKey, dns.RcodeServerFailure)
+		return newSyntheticFailureResponse(qCtx.Q(), dns.RcodeServerFailure), nil
 	}
 
 	return nil, errors.New("all upstreams failed or returned no usable response")
+}
+
+func buildFailureKey(q dns.Question) string {
+	return strings.ToLower(dns.Fqdn(q.Name)) + "|" + strconv.Itoa(int(q.Qclass)) + "|" + strconv.Itoa(int(q.Qtype))
+}
+
+func newSyntheticFailureResponse(q *dns.Msg, rcode int) *dns.Msg {
+	r := new(dns.Msg)
+	r.SetRcode(q, rcode)
+	r.RecursionAvailable = true
+	return r
+}
+
+func filterAvailableUpstreams(us []*upstreamWrapper) []*upstreamWrapper {
+	now := time.Now()
+	available := make([]*upstreamWrapper, 0, len(us))
+	for _, u := range us {
+		if !u.isCircuitOpen(now) {
+			available = append(available, u)
+			continue
+		}
+		u.mCircuitSkipTotal.Inc()
+	}
+	return available
+}
+
+func (f *AliAPI) getFailure(key string) (failureRecord, bool) {
+	f.failureMu.Lock()
+	defer f.failureMu.Unlock()
+	rec, ok := f.failures[key]
+	if !ok {
+		return failureRecord{}, false
+	}
+	if time.Now().After(rec.expiresAt) {
+		delete(f.failures, key)
+		return failureRecord{}, false
+	}
+	return rec, true
+}
+
+func (f *AliAPI) putFailure(key string, rcode int) {
+	if f.args.FailureSuppressTTL <= 0 {
+		return
+	}
+	f.failureMu.Lock()
+	f.failures[key] = failureRecord{
+		rcode:     rcode,
+		expiresAt: time.Now().Add(time.Duration(f.args.FailureSuppressTTL) * time.Second),
+	}
+	f.failureMu.Unlock()
+}
+
+func (f *AliAPI) clearFailure(key string) {
+	f.failureMu.Lock()
+	delete(f.failures, key)
+	f.failureMu.Unlock()
 }
 
 func quickSetup(bq sequence.BQ, s string) (any, error) {
@@ -501,11 +609,11 @@ func quickSetup(bq sequence.BQ, s string) (any, error) {
 // DNSEntity represents the structure of the JSON response from AliDNS API
 type DNSEntity struct {
 	Status int      `json:"status"`
-	TC     bool     `json:"TC"`       // Truncated
-	RD     bool     `json:"RD"`       // Recursion Desired
-	RA     bool     `json:"RA"`       // Recursion Available
-	AD     bool     `json:"AD"`       // Authenticated Data
-	CD     bool     `json:"CD"`       // Checking Disabled
+	TC     bool     `json:"TC"` // Truncated
+	RD     bool     `json:"RD"` // Recursion Desired
+	RA     bool     `json:"RA"` // Recursion Available
+	AD     bool     `json:"AD"` // Authenticated Data
+	CD     bool     `json:"CD"` // Checking Disabled
 	Answer []Answer `json:"answer"`
 	Remark string   `json:"remark"`
 }
@@ -727,7 +835,7 @@ func (a *AliAPIUpstream) ExchangeContext(ctx context.Context, req []byte) (resp 
 
 	// Directly use the Rcode from the API's "Status" field.
 	responseMsg.SetRcode(dnsMsg, aliDNSResult.Status)
- 	responseMsg.Truncated = aliDNSResult.TC
+	responseMsg.Truncated = aliDNSResult.TC
 	responseMsg.RecursionAvailable = aliDNSResult.RA
 	responseMsg.AuthenticatedData = aliDNSResult.AD
 	responseMsg.CheckingDisabled = aliDNSResult.CD
@@ -737,8 +845,8 @@ func (a *AliAPIUpstream) ExchangeContext(ctx context.Context, req []byte) (resp 
 		for _, ans := range aliDNSResult.Answer {
 			// Keeping the original logic to only add records matching the question name.
 			// if ans.Name == qName {
-				record := getDNSRecord(ans)
-				responseMsg.Answer = append(responseMsg.Answer, record)
+			record := getDNSRecord(ans)
+			responseMsg.Answer = append(responseMsg.Answer, record)
 			// }
 		}
 	} else {
@@ -775,17 +883,21 @@ func (nopEO) OnEvent(upstream.Event) {}
 
 // upstreamWrapper wraps an upstream.Upstream and collects metrics.
 type upstreamWrapper struct {
-	u          upstream.Upstream
-	cfg        UpstreamConfig
-	metricsTag string
+	u                   upstream.Upstream
+	cfg                 UpstreamConfig
+	metricsTag          string
+	consecutiveFailures atomic.Uint32
+	circuitOpenUntil    atomic.Int64
 
-	mQueryTotal prometheus.Counter
-	mErrorTotal prometheus.Counter
-        mWinnerTotal     prometheus.Counter
-	mInflight   prometheus.Gauge
-        mResponseLatency prometheus.Histogram
-        mConnOpened prometheus.Counter
-        mConnClosed prometheus.Counter
+	mQueryTotal       prometheus.Counter
+	mErrorTotal       prometheus.Counter
+	mWinnerTotal      prometheus.Counter
+	mInflight         prometheus.Gauge
+	mResponseLatency  prometheus.Histogram
+	mConnOpened       prometheus.Counter
+	mConnClosed       prometheus.Counter
+	mCircuitOpenTotal prometheus.Counter
+	mCircuitSkipTotal prometheus.Counter
 }
 
 func (w *upstreamWrapper) OnEvent(e upstream.Event) {
@@ -847,25 +959,64 @@ func newWrapper(idx int, c UpstreamConfig, metricsTag string) *upstreamWrapper {
 				"metrics_tag": metricsTag,
 			},
 		}),
-                mConnOpened: prometheus.NewCounter(prometheus.CounterOpts{
-                    Name: "conn_opened_total",
-                    Help: "Total number of connections opened.",
-                    ConstLabels: prometheus.Labels{
-                        "tag":         c.Tag,
-                        "addr":        c.Addr,
-                        "metrics_tag": metricsTag,
-                    },
-                }),
-                mConnClosed: prometheus.NewCounter(prometheus.CounterOpts{
-                    Name: "conn_closed_total",
-                    Help: "Total number of connections closed.",
-                    ConstLabels: prometheus.Labels{
-                        "tag":         c.Tag,
-                        "addr":        c.Addr,
-                        "metrics_tag": metricsTag,
-                    },
-                }),
+		mConnOpened: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "conn_opened_total",
+			Help: "Total number of connections opened.",
+			ConstLabels: prometheus.Labels{
+				"tag":         c.Tag,
+				"addr":        c.Addr,
+				"metrics_tag": metricsTag,
+			},
+		}),
+		mConnClosed: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "conn_closed_total",
+			Help: "Total number of connections closed.",
+			ConstLabels: prometheus.Labels{
+				"tag":         c.Tag,
+				"addr":        c.Addr,
+				"metrics_tag": metricsTag,
+			},
+		}),
+		mCircuitOpenTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "circuit_open_total",
+			Help: "Total number of times the upstream circuit breaker opened.",
+			ConstLabels: prometheus.Labels{
+				"tag":         c.Tag,
+				"addr":        c.Addr,
+				"metrics_tag": metricsTag,
+			},
+		}),
+		mCircuitSkipTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "circuit_skip_total",
+			Help: "Total number of times the upstream was skipped because of an open circuit breaker.",
+			ConstLabels: prometheus.Labels{
+				"tag":         c.Tag,
+				"addr":        c.Addr,
+				"metrics_tag": metricsTag,
+			},
+		}),
 	}
+}
+
+func (w *upstreamWrapper) recordSuccess() {
+	w.consecutiveFailures.Store(0)
+}
+
+func (w *upstreamWrapper) recordFailure(now time.Time, threshold int, duration time.Duration) {
+	failures := w.consecutiveFailures.Add(1)
+	if threshold <= 0 || failures < uint32(threshold) {
+		return
+	}
+	openUntil := now.Add(duration).UnixNano()
+	prev := w.circuitOpenUntil.Load()
+	if openUntil > prev {
+		w.circuitOpenUntil.Store(openUntil)
+		w.mCircuitOpenTotal.Inc()
+	}
+}
+
+func (w *upstreamWrapper) isCircuitOpen(now time.Time) bool {
+	return now.UnixNano() < w.circuitOpenUntil.Load()
 }
 
 // ExchangeContext handles the actual exchange and updates metrics directly.
@@ -875,7 +1026,7 @@ func (w *upstreamWrapper) ExchangeContext(ctx context.Context, req []byte) (*[]b
 	w.mQueryTotal.Inc()
 	w.mInflight.Inc()
 
-	start := time.Now() 
+	start := time.Now()
 
 	resp, err := w.u.ExchangeContext(ctx, req) // Call the wrapped upstream's method
 
@@ -910,8 +1061,18 @@ func (w *upstreamWrapper) registerMetricsTo(r prometheus.Registerer) error {
 	if err := r.Register(w.mResponseLatency); err != nil {
 		return err
 	}
-            if err := r.Register(w.mConnOpened); err != nil { return err }
-            if err := r.Register(w.mConnClosed); err != nil { return err }
+	if err := r.Register(w.mConnOpened); err != nil {
+		return err
+	}
+	if err := r.Register(w.mConnClosed); err != nil {
+		return err
+	}
+	if err := r.Register(w.mCircuitOpenTotal); err != nil {
+		return err
+	}
+	if err := r.Register(w.mCircuitSkipTotal); err != nil {
+		return err
+	}
 	return nil
 }
 

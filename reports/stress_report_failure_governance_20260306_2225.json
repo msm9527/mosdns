@@ -1,0 +1,3342 @@
+{
+  "generated_at": "2026-03-06T14:25:42Z",
+  "target_server": "127.0.0.1:25353",
+  "question_type": "A",
+  "requested_total_queries": 100000,
+  "requested_unique_domains": 10000,
+  "unique_domains": 5314,
+  "repeated_queries": 94686,
+  "hotset_size": 1063,
+  "concurrency": 120,
+  "qps": 300,
+  "tcp_sample": 0,
+  "source": {
+    "actual_unique": 5314,
+    "allow_generated": false,
+    "file": "",
+    "generated": 0,
+    "insufficient_real_domains": true,
+    "remote_loaded": 5314,
+    "requested": 10000,
+    "source_lines": 6041,
+    "source_urls": [
+      "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo-lite/geosite/cn.list",
+      "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo-lite/geosite/google.list",
+      "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo-lite/geosite/netflix.list",
+      "https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/meta/geo-lite/geosite/proxy.list"
+    ],
+    "unique_loaded": 0
+  },
+  "cache_effect": {
+    "cold_phase": "udp-cold",
+    "repeat_phase": "udp-cache-hit",
+    "cold_positive_rate": 0.957847,
+    "repeat_positive_rate": 0.956868,
+    "positive_rate_delta": -0.000979,
+    "cold_timeout_rate": 0.035566,
+    "repeat_timeout_rate": 0.001331,
+    "timeout_rate_delta": -0.034235,
+    "cold_p50_ms": 0.233,
+    "repeat_p50_ms": 0.246,
+    "p50_delta_ms": 0.013,
+    "cold_p95_ms": 4.937,
+    "repeat_p95_ms": 0.652,
+    "p95_delta_ms": -4.285
+  },
+  "phases": [
+    {
+      "phase": "udp-cold",
+      "network": "udp",
+      "qtype": "A",
+      "total": 5314,
+      "responses": 5125,
+      "response_rate": 0.964434,
+      "noerror": 5090,
+      "nxdomain": 34,
+      "servfail": 1,
+      "timeouts": 189,
+      "errors": 189,
+      "duration": "19.223437246s",
+      "duration_ms": 19223.435,
+      "sent_qps": 276.433,
+      "response_qps": 266.602,
+      "latency": {
+        "avg_ms": 78.174,
+        "p50_ms": 0.233,
+        "p90_ms": 0.993,
+        "p95_ms": 4.937,
+        "p99_ms": 2000.237,
+        "max_ms": 2001.212
+      },
+      "breakdown": {
+        "positive_responses": 5090,
+        "positive_rate": 0.957847,
+        "nxdomain_responses": 34,
+        "nxdomain_rate": 0.006398,
+        "servfail_responses": 1,
+        "servfail_rate": 0.000188,
+        "other_rcode_responses": 0,
+        "other_rcode_rate": 0,
+        "timeout_errors": 189,
+        "timeout_rate": 0.035566,
+        "transport_errors": 189,
+        "transport_error_rate": 0.035566
+      },
+      "failure_samples": [
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 875.583
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "343480.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51990-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.164
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61716-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.145
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51115-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.08
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64267-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.181
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58234-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.152
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49275-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.268
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "4399wanju.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50787-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.183
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "5you.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54453-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.23
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "68h5.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59987-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.173
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "af-south-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60389-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.177
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "afdian.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:52621-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.166
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "afp.adchina.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53314-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.407
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "aldwx.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51171-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.159
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ap-southeast-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1788.281
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ap-southeast-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1786.323
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "alikmd.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56925-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.157
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "alimei.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55189-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.167
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "anruan.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59686-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.209
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ap-southeast-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60578-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.105
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "apaas-zone-test.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54750-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2001.212
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "apimkt.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51085-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.339
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "baidubcr.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56857-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.157
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bamenzhushou.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:52235-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.124
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "battlecare.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55999-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.153
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bcfmglobal.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65096-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.193
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bcy.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61733-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.231
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bcyimg.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60226-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.141
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bdydns.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56981-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.165
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bihu.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51605-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.228
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bilicdn4.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49283-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.15
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bilicdn5.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50805-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.154
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "bx1k.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60971-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.325
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cdndoctor.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49164-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.13
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "chaindd.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55281-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.179
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "chashebao.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63007-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.104
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-east-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50755-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.19
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-north-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:57504-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.126
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-north-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63006-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.099
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-north-4.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55859-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.134
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-north-5.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61290-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.16
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-north-6.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59702-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.146
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-north-9.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56921-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.151
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-south-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62735-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.114
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-south-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64225-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.108
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-south-4.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55897-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.172
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cn-southwest-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54893-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.085
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "codechina.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53090-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.106
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "coindog.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58993-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.137
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "com-hs-hkdy.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59566-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.111
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ctripteam.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56373-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.096
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "dajie.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54050-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.137
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "dcdkjx.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65450-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.377
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "diopic.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62882-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.192
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "duoshuo.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55135-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.141
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ecloud-gdu.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50055-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.094
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "edu4399.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55308-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.319
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "gcloudcstest.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1511.123
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "enterdesk.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60298-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.143
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "eu-west-0.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61331-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.107
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ewqcxz.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62408-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.276
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jddebug.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.204
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "fetionpic.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50186-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.272
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "fixdown.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53085-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.334
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "fzaqjy.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54276-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.181
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "g-cores.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50368-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.241
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ganjistatic1.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65278-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.341
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "gsadds.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54899-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.099
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "gzwanju.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1925.405
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "gtm.pub.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54871-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.333
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "homekoo.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55338-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.106
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "hwcloudvis.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49438-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.102
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "hz.pre.tbusergw.taobao.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62804-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.125
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "hz.tbusergw.taobao.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65167-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.084
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "lvmama.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 368.963
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "igtm.pub.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53045-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.136
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "imweb.io.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49511-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.285
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "it165.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50662-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.438
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ixgvideo.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60040-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.129
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jcloud-live.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61028-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.217
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jcloud-oss.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53029-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.2
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jclouddn.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61029-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.109
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jcloudimg.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63607-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.445
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jcloudlive.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63915-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.119
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jcloudoss.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61069-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.198
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "kiyuu.club.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1412.221
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jdcloudstatus.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60681-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.086
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jddapeigou.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64676-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.267
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jdpaydns.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50852-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.377
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "mmbang.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 659.722
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jidian.im.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63160-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.291
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "mmarket6.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 706.949
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jomocdn.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60826-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.093
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "joybuy.es.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:57289-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.103
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "jstucdn.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56321-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.12
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "kanbox.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51498-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.13
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "llsserver.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1404.221
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "kuaihou.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54155-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.127
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "kuyunbo.club.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:57452-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.074
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "la-north-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55155-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.15
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "la-south-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64334-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.072
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "larsonlimited.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60782-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.158
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "mai.tn.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1609.483
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "leturich.org.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61420-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.116
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "lieyunwang.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51163-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.212
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "livechina.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58908-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.237
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "rj.m.taobao.co.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 239.106
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "lxway.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63436-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.105
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "m6.run.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59146-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.33
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "m9.run.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50485-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.367
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "maoyun.tv.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51981-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.13
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "maoyuncloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59683-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.126
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "matpool.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54642-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.273
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "media.paperclipclub.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1978.759
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "miaobolive.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1905.763
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "meika360.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65453-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.381
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "morethan.tv.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:57484-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.182
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "mtyun.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50550-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.145
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "myshow360.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56854-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.241
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "myunlu.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:52469-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.071
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "na-mexico-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63263-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.115
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "p4pfile.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1746.165
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "oppo.mobi.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56954-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.387
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ourdvsss.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59847-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.418
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "papocket.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60531-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.297
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "phpwind.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65475-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.211
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "phpwind.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61379-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.177
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qcloud-edumall.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1876.029
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "powerapp.io.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50530-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.089
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qcloudmarket.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54266-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.157
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qdwebim.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50864-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.189
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qizuang.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50551-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.253
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qq163.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65402-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.276
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qq163.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59209-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.118
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qqgameapp.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61481-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.157
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qqgamedesign.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62446-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.137
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "qtmojo.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53122-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.127
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "quumibao.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53478-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.129
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "rmwxgame.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64570-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.125
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ru-northwest-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49676-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.299
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "sa-brazil-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63807-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.246
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "somode.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1587.245
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "scomper.me.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61058-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.161
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "sfcar.hk.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63201-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.115
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "shang360.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56303-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.166
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "shanhaitujian.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62001-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.417
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "sinopec-usa.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63890-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.161
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "spcdntipbak.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62427-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.157
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "sumkoo.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53474-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.115
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcdnhw.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65018-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.255
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcdnkcbak.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:61388-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.153
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcdnlivebak1.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58861-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.192
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcdnlivebak2.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59998-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.11
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcdnvodbak.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54340-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.079
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcfmglobal.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62118-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.103
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tclouddrive.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62618-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.185
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcloudhw.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60647-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.086
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tcloudhw.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:62901-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.437
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tefscloud.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63651-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.14
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tenant-zone-dev.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64556-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.075
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencdns.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56806-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.109
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencent-gcloud.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58513-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.133
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencentbyod.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64306-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.173
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencentcloud-aiot.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63226-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.232
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencentcloudmarket.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55878-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.265
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencentdms.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50968-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.108
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tencentwepark.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:57933-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.105
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tidaas.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54293-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.198
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "timmerse.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:64995-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.288
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tipdim.org.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60316-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.122
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tmalltv.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:49435-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.297
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tools.team.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50433-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.41
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "toplife.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63970-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.445
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "uuu9.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1653.597
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tsparkling.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:52478-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.162
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "tx-exhibition.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54482-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.111
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "txbyod.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63586-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.101
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "txtyxg.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60614-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.115
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "u-cdn.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59081-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.325
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "u17i.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58517-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.359
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "u17t.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59614-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.058
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ucgslb.net.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54614-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.19
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ucloudnaming.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:63360-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.216
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "veryhuo.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65406-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.102
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "vodtcbk.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51738-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.325
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "wamawama.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:57697-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.313
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "wanplus.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:54048-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.139
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "wanyx.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:55890-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.339
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "wcbygame.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:58062-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.351
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "app-measurement.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 415.985
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "wdfok.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:52817-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.267
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "weilaicaijing.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60474-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.083
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "cdn.angruo.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 659.175
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "win007.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53203-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.173
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "certificate-transparency.dev.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 239.013
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "youlian.fun.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1407.581
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "xiami.fm.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51608-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.335
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "xianfae.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:65125-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.172
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "xiaoluzhidian.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:56701-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.362
+        },
+        {
+          "phase": "udp-cold",
+          "network": "udp",
+          "domain": "ym.run.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1648.386
+        }
+      ]
+    },
+    {
+      "phase": "udp-cache-hit",
+      "network": "udp",
+      "qtype": "A",
+      "total": 94686,
+      "responses": 94560,
+      "response_rate": 0.998669,
+      "noerror": 90602,
+      "nxdomain": 2476,
+      "servfail": 1482,
+      "timeouts": 126,
+      "errors": 126,
+      "duration": "5m15.72339242s",
+      "duration_ms": 315723.39,
+      "sent_qps": 299.902,
+      "response_qps": 299.503,
+      "latency": {
+        "avg_ms": 3.531,
+        "p50_ms": 0.246,
+        "p90_ms": 0.526,
+        "p95_ms": 0.652,
+        "p99_ms": 1.254,
+        "max_ms": 2004.638
+      },
+      "breakdown": {
+        "positive_responses": 90602,
+        "positive_rate": 0.956868,
+        "nxdomain_responses": 2476,
+        "nxdomain_rate": 0.02615,
+        "servfail_responses": 1482,
+        "servfail_rate": 0.015652,
+        "other_rcode_responses": 0,
+        "other_rcode_rate": 0,
+        "timeout_errors": 126,
+        "timeout_rate": 0.001331,
+        "transport_errors": 126,
+        "transport_error_rate": 0.001331
+      },
+      "failure_samples": [
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1.69
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 2.07
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.959
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.24
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "apaas-zone-test.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.789
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.337
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "battlecare.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.222
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.438
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.167
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.148
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.287
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.391
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.165
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.295
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.178
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.229
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.252
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.183
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.219
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.18
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.215
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.2
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.266
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.239
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.146
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.19
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.183
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.325
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.179
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.178
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.186
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "cn-north-9.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.24
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.823
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.363
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.186
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.206
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.209
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "343480.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.334
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "battlecare.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.211
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.266
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "baidubcr.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.318
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.139
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.232
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.227
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.205
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.522
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.182
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.441
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399wanju.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.267
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.159
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.131
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.197
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.204
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.2
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.526
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "5you.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.267
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.19
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "apaas-zone-test.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.137
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.229
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.162
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.195
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.256
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.405
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.224
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.183
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.188
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.228
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.222
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.213
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "343480.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 3.222
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-2.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.134
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.09
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.157
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.243
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "343480.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.226
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.113
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.273
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "bamenzhushou.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.79
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.206
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.115
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.192
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.176
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.263
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.478
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.147
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.439
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.192
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.316
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "bamenzhushou.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.263
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.179
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.559
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.205
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.131
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.22
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.143
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.328
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.171
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60771-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.147
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.195
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.322
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.309
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399wanju.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.201
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.133
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.183
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.195
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.257
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "coindog.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:50096-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.214
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "codechina.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.345
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.505
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.381
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.22
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.161
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.489
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.225
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.245
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.175
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "af-south-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.308
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "alimei.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 1684.433
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.219
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.195
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.267
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.181
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.15
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.469
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "68h5.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.498
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.123
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.288
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.17
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.369
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.269
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.195
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.391
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.249
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.252
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.201
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.291
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "af-south-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.219
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.16
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ctripteam.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:53020-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.203
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.224
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "bcyimg.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:60719-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.295
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.217
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.238
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "5you.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.598
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.226
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.182
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.28
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.112
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "5you.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.196
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.268
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "5you.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.157
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "apaas-zone-test.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.322
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.283
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399api.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.124
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.54
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.194
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.307
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.201
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.484
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "bihu.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:51753-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.405
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.768
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.118
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "anruan.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.245
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "afp.adchina.com.",
+          "qtype": "A",
+          "error": "read udp 127.0.0.1:59006-\u003e127.0.0.1:25353: i/o timeout",
+          "latency_ms": 2000.32
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.2
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "343480.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.293
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.578
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.198
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.375
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.248
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.256
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "3234.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 1.137
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399wanju.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.377
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.455
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.266
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.177
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.188
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.168
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-3.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.16
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "315che.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.189
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.186
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.175
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "bihu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.383
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.199
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.279
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.271
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.242
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.21
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "alimei.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.285
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.227
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "4399wanju.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.241
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.911
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "ap-southeast-1.myhuaweicloud.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.304
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.137
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "bcyimg.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.336
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "114menhu.com.",
+          "qtype": "A",
+          "rcode": "SERVFAIL",
+          "latency_ms": 0.262
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.224
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "anruan.com.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.498
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "126.link.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.122
+        },
+        {
+          "phase": "udp-cache-hit",
+          "network": "udp",
+          "domain": "123juzi.net.",
+          "qtype": "A",
+          "rcode": "NXDOMAIN",
+          "latency_ms": 0.133
+        }
+      ]
+    }
+  ],
+  "generated_domains_preview": [
+    "00cdn.com.",
+    "0123456789.com.",
+    "0379home.com.",
+    "055110.com.",
+    "05sun.com.",
+    "0759job.com.",
+    "10010.com.",
+    "100bt.com.",
+    "100offer.com.",
+    "11467.com."
+  ]
+}

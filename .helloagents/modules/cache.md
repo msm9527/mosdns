@@ -3,8 +3,11 @@
 ## 涉及路径
 
 - `plugin/executable/cache`
+- `plugin/executable/aliapi`
 - `pkg/cache`
 - `config/sub_config/cache.yaml`
+- `config/sub_config/forward_local.yaml`
+- `config/sub_config/forward_nocn.yaml`
 - `coremain/www/assets/js/log.js`
 - `coremain/www/mosdns.html`
 - `coremain/www/mosdnsp.html`
@@ -29,8 +32,15 @@
 ### `config/sub_config/cache.yaml`
 
 - 为各缓存实例定义 `dump_file`、`dump_interval`、`wal_file`、`wal_sync_interval`
+- 支持 `nxdomain_ttl`、`servfail_ttl`，将正常负结果与短期失败缓存分开治理
 - 生产启用时默认保留 snapshot + WAL 双持久化链路
 - 回滚到仅 snapshot 模式时只需移除 `wal_file` / `wal_sync_interval`
+
+### `plugin/executable/aliapi`
+
+- 负责并发上游抢答、坏上游熔断和 transport error 的短期失败抑制
+- 支持 `failure_suppress_ttl`、`upstream_failure_threshold`、`upstream_circuit_break_seconds`
+- 当所有选中上游都 transport fail 时，返回短期 `SERVFAIL`，降低热点失败域名对上游的重复冲击
 
 ### `docs/CACHE_WAL_ROLLOUT.md`
 
@@ -56,3 +66,4 @@
 - 启动恢复顺序为：snapshot -> WAL replay
 - 缓存条目解包失败时会主动删除损坏项，避免坏数据长期留存
 - 缓存 UI 不再解析 Prometheus 文本来拼装缓存状态，`/stats` 是缓存运行态的单一事实来源
+- 当前失败治理默认值：`NXDOMAIN=60s`、`SERVFAIL=15s`、`transport suppress=10s`、`circuit threshold=3`、`circuit break=60s`
