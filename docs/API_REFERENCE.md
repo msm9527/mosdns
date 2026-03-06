@@ -389,6 +389,8 @@ PUT/POST JSON 示例：
 常用失败治理字段：
 
 - `failure_suppress_ttl`：当所有并发上游都以 transport error / timeout 失败时，返回短期 `SERVFAIL` 并在该窗口内抑制重复回源
+- `persistent_servfail_threshold`：同一域名在累计窗口内连续命中 `SERVFAIL` 达到阈值后，提升为热点失败域名
+- `persistent_servfail_ttl`：热点 `SERVFAIL` 域名的长抑制窗口，避免每次缓存过期后再次穿透上游
 - `upstream_failure_threshold`：连续 transport error 达到阈值后打开上游熔断
 - `upstream_circuit_break_seconds`：熔断保持时长（秒）
 
@@ -396,6 +398,7 @@ PUT/POST JSON 示例：
 
 - 熔断只针对 transport error / timeout，不会因为单个 `NXDOMAIN` 或正常负结果摘除上游
 - 若某个域名在所有选中上游上都 transport fail，会合成短期 `SERVFAIL` 响应，供失败抑制与短期缓存使用
+- 若某个域名跨多个失败窗口持续返回 `SERVFAIL`，会被提升为热点失败域名，并使用更长的 `persistent_servfail_ttl`
 - 上游恢复出一个成功响应后，会自动清除该域名的失败抑制记录
 
 ### `adguard_rule`

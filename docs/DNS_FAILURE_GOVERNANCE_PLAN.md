@@ -265,6 +265,7 @@
 
 - `cache` 插件支持独立配置 `nxdomain_ttl` 与 `servfail_ttl`
 - `aliapi` 支持 `failure_suppress_ttl`、`upstream_failure_threshold`、`upstream_circuit_break_seconds`
+- `aliapi` 支持 `persistent_servfail_threshold` 与 `persistent_servfail_ttl`，用于处理 `114menhu.com` 这类跨窗口重复 `SERVFAIL` 热点
 - 当并发上游全部以 transport error / timeout 失败时，会返回短期 `SERVFAIL`，避免热点失败域名持续穿透到上游
 - 上游连续 transport error 达到阈值后会短期熔断，窗口结束后自动恢复探测
 
@@ -273,6 +274,7 @@
 - 更细的上游健康评分与慢失败降权
 - 将 `SERVFAIL` / `NXDOMAIN` / 正向命中拆到运行时 `/stats`
 - 基于旁路验证的误分流纠偏自动化
+- 热点失败域名 TopN 与长抑制窗口的运行态暴露
 - 熔断时间：`60s`
 - 慢响应阈值：`>800ms`
 - 恢复探测间隔：`30s`

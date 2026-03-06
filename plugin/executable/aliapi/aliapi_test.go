@@ -56,7 +56,7 @@ func (f *fakeUpstream) Close() error { return nil }
 func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 	bad := &fakeUpstream{errs: []error{context.DeadlineExceeded}}
 	f := &AliAPI{
-		args:     &Args{Concurrent: 1, FailureSuppressTTL: 10, UpstreamFailureThreshold: 3, UpstreamCircuitBreakSeconds: 60},
+		args:     &Args{Concurrent: 1, FailureSuppressTTL: 10, PersistentServfailThreshold: 3, PersistentServfailTTL: 60, UpstreamFailureThreshold: 3, UpstreamCircuitBreakSeconds: 60},
 		logger:   zap.NewNop(),
 		us:       []*upstreamWrapper{newTestWrapper(bad, "test_bad_timeout")},
 		failures: make(map[string]failureRecord),
@@ -118,7 +118,7 @@ func TestAliAPI_ExchangeSkipsOpenCircuitUpstream(t *testing.T) {
 	badWrapper.circuitOpenUntil.Store(time.Now().Add(time.Minute).UnixNano())
 
 	f := &AliAPI{
-		args:   &Args{Concurrent: 2, FailureSuppressTTL: 10, UpstreamFailureThreshold: 2, UpstreamCircuitBreakSeconds: 60},
+		args:   &Args{Concurrent: 2, FailureSuppressTTL: 10, PersistentServfailThreshold: 3, PersistentServfailTTL: 60, UpstreamFailureThreshold: 2, UpstreamCircuitBreakSeconds: 60},
 		logger: zap.NewNop(),
 		us: []*upstreamWrapper{
 			badWrapper,
@@ -143,6 +143,73 @@ func TestAliAPI_ExchangeSkipsOpenCircuitUpstream(t *testing.T) {
 	}
 	if good.calls != 1 {
 		t.Fatalf("expected healthy upstream to continue serving, got %d calls", good.calls)
+	}
+}
+
+func TestAliAPI_PersistentServfailExtendsSuppressWindow(t *testing.T) {
+	f := &AliAPI{
+		args: &Args{
+			FailureSuppressTTL:          10,
+			PersistentServfailThreshold: 3,
+			PersistentServfailTTL:       60,
+		},
+		failures: make(map[string]failureRecord),
+	}
+
+	key := buildFailureKey(dns.Question{Name: "114menhu.com.", Qclass: dns.ClassINET, Qtype: dns.TypeA})
+	for i := 0; i < 3; i++ {
+		f.putFailure(key, dns.RcodeServerFailure)
+	}
+
+	rec, ok := f.getFailure(key)
+	if !ok {
+		t.Fatal("expected persistent servfail suppression to be active")
+	}
+	if rec.hits != 3 {
+		t.Fatalf("unexpected hit count %d", rec.hits)
+	}
+	remaining := time.Until(rec.expiresAt)
+	if remaining < 55*time.Second {
+		t.Fatalf("expected extended suppress ttl, got %s", remaining)
+	}
+}
+
+func TestAliAPI_PersistentServfailAccumulatesAcrossShortExpiredWindows(t *testing.T) {
+	f := &AliAPI{
+		args: &Args{
+			FailureSuppressTTL:          1,
+			PersistentServfailThreshold: 3,
+			PersistentServfailTTL:       10,
+		},
+		failures: make(map[string]failureRecord),
+	}
+
+	key := buildFailureKey(dns.Question{Name: "114menhu.com.", Qclass: dns.ClassINET, Qtype: dns.TypeA})
+	for i := 0; i < 3; i++ {
+		f.putFailure(key, dns.RcodeServerFailure)
+		f.failureMu.Lock()
+		rec := f.failures[key]
+		rec.expiresAt = time.Now().Add(-time.Millisecond)
+		rec.lastSeen = time.Now().Add(time.Duration(-2*(2-i)) * time.Second)
+		f.failures[key] = rec
+		f.failureMu.Unlock()
+	}
+
+	rec, ok := f.getFailure(key)
+	if ok {
+		t.Fatal("expected expired record to require a fresh lookup before promotion is observed")
+	}
+
+	f.putFailure(key, dns.RcodeServerFailure)
+	rec, ok = f.getFailure(key)
+	if !ok {
+		t.Fatal("expected record to be active after fresh promotion")
+	}
+	if rec.hits < 3 {
+		t.Fatalf("expected accumulated hotspot hits, got %d", rec.hits)
+	}
+	if remaining := time.Until(rec.expiresAt); remaining < 9*time.Second {
+		t.Fatalf("expected persistent suppression after accumulation, got %s", remaining)
 	}
 }
 

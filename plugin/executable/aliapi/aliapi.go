@@ -53,6 +53,8 @@ type Args struct {
 	Upstreams                   []UpstreamConfig `yaml:"upstreams"`
 	Concurrent                  int              `yaml:"concurrent"`
 	FailureSuppressTTL          int              `yaml:"failure_suppress_ttl"`
+	PersistentServfailThreshold int              `yaml:"persistent_servfail_threshold"`
+	PersistentServfailTTL       int              `yaml:"persistent_servfail_ttl"`
 	UpstreamFailureThreshold    int              `yaml:"upstream_failure_threshold"`
 	UpstreamCircuitBreakSeconds int              `yaml:"upstream_circuit_break_seconds"`
 
@@ -204,6 +206,8 @@ type AliAPI struct {
 type failureRecord struct {
 	rcode     int
 	expiresAt time.Time
+	hits      uint32
+	lastSeen  time.Time
 }
 
 type Opts struct {
@@ -233,6 +237,12 @@ func NewAliAPI(args *Args, opt Opts) (*AliAPI, error) {
 	}
 	if args.FailureSuppressTTL <= 0 {
 		args.FailureSuppressTTL = 10
+	}
+	if args.PersistentServfailThreshold <= 0 {
+		args.PersistentServfailThreshold = 3
+	}
+	if args.PersistentServfailTTL <= 0 {
+		args.PersistentServfailTTL = 60
 	}
 	if args.UpstreamFailureThreshold <= 0 {
 		args.UpstreamFailureThreshold = 3
@@ -572,8 +582,12 @@ func (f *AliAPI) getFailure(key string) (failureRecord, bool) {
 	if !ok {
 		return failureRecord{}, false
 	}
-	if time.Now().After(rec.expiresAt) {
-		delete(f.failures, key)
+	now := time.Now()
+	if now.After(rec.expiresAt) {
+		retention := time.Duration(max(f.args.PersistentServfailTTL, f.args.FailureSuppressTTL*3)) * time.Second
+		if rec.lastSeen.IsZero() || now.Sub(rec.lastSeen) > retention {
+			delete(f.failures, key)
+		}
 		return failureRecord{}, false
 	}
 	return rec, true
@@ -583,11 +597,32 @@ func (f *AliAPI) putFailure(key string, rcode int) {
 	if f.args.FailureSuppressTTL <= 0 {
 		return
 	}
-	f.failureMu.Lock()
-	f.failures[key] = failureRecord{
-		rcode:     rcode,
-		expiresAt: time.Now().Add(time.Duration(f.args.FailureSuppressTTL) * time.Second),
+	now := time.Now()
+	baseTTL := time.Duration(f.args.FailureSuppressTTL) * time.Second
+	persistentTTL := time.Duration(f.args.PersistentServfailTTL) * time.Second
+	if persistentTTL < baseTTL {
+		persistentTTL = baseTTL
 	}
+	accumulationWindow := persistentTTL
+	if accumulationWindow <= 0 {
+		accumulationWindow = baseTTL
+	}
+
+	f.failureMu.Lock()
+	rec := f.failures[key]
+	if rec.rcode == rcode && !rec.lastSeen.IsZero() && now.Sub(rec.lastSeen) <= accumulationWindow {
+		rec.hits++
+	} else {
+		rec.hits = 1
+	}
+	rec.rcode = rcode
+	rec.lastSeen = now
+	ttl := baseTTL
+	if rcode == dns.RcodeServerFailure && rec.hits >= uint32(f.args.PersistentServfailThreshold) {
+		ttl = persistentTTL
+	}
+	rec.expiresAt = now.Add(ttl)
+	f.failures[key] = rec
 	f.failureMu.Unlock()
 }
 
@@ -595,6 +630,13 @@ func (f *AliAPI) clearFailure(key string) {
 	f.failureMu.Lock()
 	delete(f.failures, key)
 	f.failureMu.Unlock()
+}
+
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 func quickSetup(bq sequence.BQ, s string) (any, error) {
