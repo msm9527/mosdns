@@ -1267,6 +1267,15 @@
                         </div>
                     </div>
 
+                    <div class="control-item">
+                        <strong>刷新链路</strong>
+                        <span id="requery-workflow-summary">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>最近结果</strong>
+                        <span id="requery-last-result">查询中...</span>
+                    </div>
+
                     <!-- 定时任务设置 -->
                     <form id="requery-scheduler-form" class="requery-scheduler">
                         <div class="control-item">
@@ -1302,6 +1311,26 @@
                             <input type="number" id="requery-date-range-input" min="1" value="30" style="text-align: center;">
                         </div>
                     </form>
+
+                    <div class="scrollable-table-container" style="max-height: none; overflow-y: visible;">
+                        <table id="requery-memory-stats-table">
+                            <thead>
+                                <tr>
+                                    <th>列表</th>
+                                    <th class="text-right">已收集</th>
+                                    <th class="text-right">已晋升</th>
+                                    <th class="text-right">已发布</th>
+                                    <th class="text-right">观察 / 丢弃</th>
+                                    <th class="text-right">策略</th>
+                                </tr>
+                            </thead>
+                            <tbody id="requery-memory-stats-tbody">
+                                <tr>
+                                    <td colspan="6">正在加载分流记忆统计...</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
 
                     <!-- 重要操作按钮区 -->
                     <div class="requery-important">

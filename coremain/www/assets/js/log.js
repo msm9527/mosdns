@@ -33,7 +33,7 @@ function closeAndUnlock(dialogElement) {
 
 document.addEventListener('DOMContentLoaded', () => {
     const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'A', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: {}, pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'A', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
         colorSwatches: document.querySelectorAll('.color-swatch'),
@@ -102,8 +102,9 @@ document.addEventListener('DOMContentLoaded', () => {
         requeryIntervalInput: document.getElementById('requery-interval-input'),
         requeryDateRangeInput: document.getElementById('requery-date-range-input'),
         requeryStartDatetimeInput: document.getElementById('requery-start-datetime-input'),
-        requeryDomainStatsTbody: document.getElementById('requery-domain-stats-tbody'),
-        requeryRefreshStatsBtn: document.getElementById('requery-refresh-stats-btn'),
+        requeryWorkflowSummary: document.getElementById('requery-workflow-summary'),
+        requeryLastResult: document.getElementById('requery-last-result'),
+        requeryMemoryStatsTbody: document.getElementById('requery-memory-stats-tbody'),
         updateModule: document.getElementById('update-module'),
         updateCurrentVersion: document.getElementById('update-current-version'),
         updateLatestVersion: document.getElementById('update-latest-version'),
@@ -160,6 +161,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const SHUNT_RULE_SAVE_PATHS = ['top_domains/save', 'my_fakeiplist/save', 'my_nodenov4list/save', 'my_nodenov6list/save', 'my_notinlist/save', 'my_nov4list/save', 'my_nov6list/save', 'my_realiplist/save'];
     const SHUNT_RULE_FLUSH_PATHS = ['top_domains/flush', 'my_fakeiplist/flush', 'my_nodenov4list/flush', 'my_nodenov6list/flush', 'my_notinlist/flush', 'my_nov4list/flush', 'my_nov6list/flush', 'my_realiplist/flush'];
+    const SHUNT_MEMORY_PROFILES = [
+        { key: 'fakeip', title: 'FakeIP 域名', statsEndpoint: '/plugins/my_fakeiplist/stats' },
+        { key: 'realip', title: 'RealIP 域名', statsEndpoint: '/plugins/my_realiplist/stats' },
+        { key: 'nov4', title: '无 V4 域名', statsEndpoint: '/plugins/my_nov4list/stats' },
+        { key: 'nov6', title: '无 V6 域名', statsEndpoint: '/plugins/my_nov6list/stats' },
+    ];
 
     const debounce = (func, wait) => { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func(...args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; };
 
@@ -170,6 +177,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const requeryApi = {
         getConfig: (signal) => api.fetch(`/plugins/requery`, { signal }),
         getStatus: (signal) => api.fetch(`/plugins/requery/status`, { signal }),
+        getMemoryStats: (endpoint, signal) => api.fetch(endpoint, { signal }),
         trigger: () => api.fetch(`/plugins/requery/trigger`, { method: 'POST' }),
         cancel: () => api.fetch(`/plugins/requery/cancel`, { method: 'POST' }),
         updateSchedulerConfig: (config) => api.fetch(`/plugins/requery/scheduler/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }),
@@ -376,18 +384,25 @@ document.addEventListener('DOMContentLoaded', () => {
         },
 
         async updateStatus(signal) {
-            this.updateDomainCounts(signal); // 在更新状态时自动刷新统计
             try {
-                const [status, config] = await Promise.all([
+                const [status, config, memoryResults] = await Promise.all([
                     requeryApi.getStatus(signal),
-                    requeryApi.getConfig(signal)
+                    requeryApi.getConfig(signal),
+                    Promise.allSettled(SHUNT_MEMORY_PROFILES.map(profile => requeryApi.getMemoryStats(profile.statsEndpoint, signal)))
                 ]);
                 state.requery.status = status;
                 state.requery.config = config;
+                state.requery.memoryStats = SHUNT_MEMORY_PROFILES.reduce((acc, profile, index) => {
+                    const result = memoryResults[index];
+                    acc[profile.key] = result && result.status === 'fulfilled' ? result.value : null;
+                    return acc;
+                }, {});
+                updateDomainListStats(signal);
                 this.render();
             } catch (error) {
                 if (error.name !== 'AbortError') {
-                    this.render(null, null);
+                    state.requery.memoryStats = {};
+                    this.render();
                 }
             }
         },
@@ -400,6 +415,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 elements.requeryStatusText.textContent = '获取状态失败';
                 elements.requeryStatusText.style.color = 'var(--color-danger)';
                 elements.requeryTriggerBtn.disabled = true;
+                if (elements.requeryWorkflowSummary) {
+                    elements.requeryWorkflowSummary.textContent = '未能读取刷新链路配置';
+                }
+                if (elements.requeryLastResult) {
+                    elements.requeryLastResult.textContent = '未能读取最近运行结果';
+                }
+                this.renderMemoryStats();
                 return;
             }
 
@@ -432,7 +454,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             elements.requeryProgressContainer.hidden = !isRunning;
             if (isRunning) {
-                const percent = (status.progress.total > 0) ? (status.progress.processed / status.progress.total) * 100 : 0;
+                const percent = status.progress.total > 0 ? (status.progress.processed / status.progress.total) * 100 : 0;
                 elements.requeryProgressBarFill.style.width = `${percent}%`;
                 elements.requeryProgressBarText.textContent = `${Math.floor(percent)}% (${status.progress.processed.toLocaleString()} / ${status.progress.total.toLocaleString()})`;
             }
@@ -465,7 +487,148 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.requeryTriggerBtn.hidden = isRunning;
             elements.requeryCancelBtn.hidden = !isRunning;
             elements.requeryTriggerBtn.disabled = isRunning;
-            elements.requeryClearBackupBtn.disabled = isRunning;
+
+            this.renderWorkflowSummary(config, status);
+            this.renderMemoryStats();
+        },
+
+        renderWorkflowSummary(config, status) {
+            const execution = config.execution_settings || {};
+            const workflow = config.workflow || {};
+            const refreshResolver = execution.refresh_resolver_address || execution.resolver_address || '未配置';
+            const resolverMode = execution.refresh_resolver_address ? '旁路刷新' : '与主解析器共用';
+            const queryMode = this.formatQueryMode(execution.query_mode);
+            const flushMode = this.formatFlushMode(workflow.flush_mode);
+            const saveBefore = workflow.save_before_refresh !== false ? '刷新前保存' : '刷新前不保存';
+            const saveAfter = workflow.save_after_refresh !== false ? '刷新后发布' : '刷新后不发布';
+
+            if (elements.requeryWorkflowSummary) {
+                elements.requeryWorkflowSummary.textContent = `${resolverMode} ${refreshResolver}，查询模式 ${queryMode}，${flushMode}，${saveBefore} / ${saveAfter}。`;
+            }
+
+            if (!elements.requeryLastResult) return;
+            if (!status.last_run_start_time || status.last_run_start_time.startsWith('0001-01-01')) {
+                elements.requeryLastResult.textContent = '尚未执行过刷新任务。';
+                return;
+            }
+
+            const domainCount = typeof status.last_run_domain_count === 'number' ? status.last_run_domain_count.toLocaleString() : '0';
+            const processed = status.progress && typeof status.progress.processed === 'number' ? status.progress.processed.toLocaleString() : '0';
+            const total = status.progress && typeof status.progress.total === 'number' ? status.progress.total.toLocaleString() : '0';
+            const ended = status.last_run_end_time && !status.last_run_end_time.startsWith('0001-01-01');
+            const durationText = ended
+                ? `${Math.max(0, Math.round((new Date(status.last_run_end_time) - new Date(status.last_run_start_time)) / 1000))} 秒`
+                : '进行中';
+
+            let resultText = `最近一次任务处理 ${domainCount} 个域名，进度 ${processed}/${total}，耗时 ${durationText}。`;
+            if (status.task_state === 'failed') {
+                resultText = `最近一次任务失败，失败前处理 ${processed}/${total}，最近目标域名 ${domainCount} 个。`;
+            } else if (status.task_state === 'cancelled') {
+                resultText = `最近一次任务已取消，取消前处理 ${processed}/${total}，最近目标域名 ${domainCount} 个。`;
+            } else if (status.task_state === 'running') {
+                resultText = `当前正在刷新 ${total} 个域名，已完成 ${processed} 个。`;
+            }
+            elements.requeryLastResult.textContent = resultText;
+        },
+
+        renderMemoryStats() {
+            const tbody = elements.requeryMemoryStatsTbody;
+            if (!tbody) return;
+
+            const statsMap = state.requery.memoryStats || {};
+            tbody.innerHTML = SHUNT_MEMORY_PROFILES.map(profile => {
+                const stats = statsMap[profile.key];
+                if (!stats) {
+                    return `
+                        <tr>
+                            <td><strong>${profile.title}</strong></td>
+                            <td class="text-right" colspan="5" style="color: var(--color-text-secondary);">统计不可用</td>
+                        </tr>
+                    `;
+                }
+
+                const policyText = [
+                    `${this.formatKind(stats.kind)} · 阈值 ${this.formatCount(stats.promote_after)}`,
+                    `${this.formatCount(stats.decay_days)} 天衰减`,
+                    stats.track_qtype ? '按观测类型' : '不区分类型',
+                    this.formatPublishMode(stats.publish_mode),
+                ].join('，');
+
+                return `
+                    <tr>
+                        <td><strong>${profile.title}</strong></td>
+                        <td class="text-right"><a href="#" class="control-item-link" data-list-type="${profile.key}" data-list-title="${profile.title}">${this.formatCount(stats.total_entries)}</a></td>
+                        <td class="text-right">${this.formatCount(stats.promoted_entries)}</td>
+                        <td class="text-right">${this.formatCount(stats.published_rules)}</td>
+                        <td class="text-right">${this.formatCount(stats.total_observations)} / ${this.formatCount(stats.dropped_observations)}</td>
+                        <td class="text-right">${policyText}</td>
+                    </tr>
+                `;
+            }).join('');
+        },
+
+        formatCount(value) {
+            return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '--';
+        },
+
+        formatKind(kind) {
+            switch ((kind || '').toLowerCase()) {
+                case 'fakeip':
+                    return 'FakeIP';
+                case 'realip':
+                    return 'RealIP';
+                case 'nov4':
+                    return '无 V4';
+                case 'nov6':
+                    return '无 V6';
+                default:
+                    return kind || '通用';
+            }
+        },
+
+        formatPublishMode(mode) {
+            switch ((mode || '').toLowerCase()) {
+                case 'promoted_only':
+                    return '仅发布已晋升';
+                case 'all':
+                    return '发布全部观察';
+                default:
+                    return mode || '默认发布';
+            }
+        },
+
+        formatFlushMode(mode) {
+            switch ((mode || '').toLowerCase()) {
+                case 'legacy':
+                case 'before_refresh':
+                    return '刷新前清空旧规则';
+                case 'none':
+                case '':
+                    return '保留旧规则，刷新后原子覆盖';
+                default:
+                    return `刷新模式 ${mode}`;
+            }
+        },
+
+        formatQueryMode(mode) {
+            switch ((mode || '').toLowerCase()) {
+                case 'observed':
+                case '':
+                    return '按历史观测定向刷新';
+                case 'a':
+                case 'ipv4':
+                case 'ipv4_only':
+                    return '仅 A';
+                case 'aaaa':
+                case 'ipv6':
+                case 'ipv6_only':
+                    return '仅 AAAA';
+                case 'dual':
+                case 'all':
+                    return 'A + AAAA';
+                default:
+                    return mode;
+            }
         },
 
         startPolling() {
@@ -490,7 +653,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     ui.showToast('刷新任务已开始', 'success');
                     await this.updateStatus();
                 } catch (error) {
-                    // Error toast is already shown by api.fetch
                 } finally {
                     ui.setLoading(btn, false);
                 }
@@ -506,8 +668,8 @@ document.addEventListener('DOMContentLoaded', () => {
                     ui.showToast('已发送取消请求', 'success');
                     elements.requeryCancelBtn.hidden = true;
                     elements.requeryTriggerBtn.hidden = false;
-                } catch (error) { }
-                finally {
+                } catch (error) {
+                } finally {
                     ui.setLoading(btn, false);
                 }
             }
@@ -553,91 +715,9 @@ document.addEventListener('DOMContentLoaded', () => {
                     state.requery.config.scheduler = newConfig;
                     if (!state.requery.config.execution_settings) state.requery.config.execution_settings = {};
                     state.requery.config.execution_settings.date_range_days = dateRangeDays;
-
                     this.render();
                 }
-            } catch (error) { }
-        },
-
-        async updateDomainCounts(signal) {
-            const btn = elements.requeryRefreshStatsBtn;
-            if (btn) {
-                const svg = btn.querySelector('svg');
-                if (svg) svg.style.animation = 'spin 1s linear infinite';
-                btn.disabled = true;
-            }
-
-            const tbody = elements.requeryDomainStatsTbody;
-            if (!tbody) return;
-
-            tbody.innerHTML = `<tr><td colspan="2">正在加载统计数据...</td></tr>`;
-
-            try {
-                const [sourceFilesRes, backupCountRes] = await Promise.allSettled([
-                    requeryApi.getCounts(signal),
-                    requeryApi.getBackupCount(signal)
-                ]);
-
-                let html = '';
-                let hasSourceData = false;
-
-                if (sourceFilesRes.status === 'fulfilled' && sourceFilesRes.value.status === 'success' && Array.isArray(sourceFilesRes.value.data)) {
-                    const sourceData = sourceFilesRes.value.data;
-                    if (sourceData.length > 0) {
-                        hasSourceData = true;
-                        sourceData.forEach(item => {
-                            let linkHtml = item.count.toLocaleString();
-                            let listType = null;
-                            let listTitle = item.alias;
-
-                            if (item.alias.includes('fakeip')) listType = 'fakeip';
-                            else if (item.alias.includes('realip')) listType = 'realip';
-                            else if (item.alias.includes('nov4')) listType = 'nov4';
-                            else if (item.alias.includes('nov6')) listType = 'nov6';
-                            else if (item.alias.includes('notin')) listType = 'notin';
-
-                            if (listType) {
-                                linkHtml = `<a href="#" class="control-item-link" data-list-type="${listType}" data-list-title="${listTitle}">${item.count.toLocaleString()}</a>`;
-                            }
-
-                            html += `
-                                <tr>
-                                    <td>${item.alias}</td>
-                                    <td class="text-right">${linkHtml}</td>
-                                </tr>
-                            `;
-                        });
-                    }
-                }
-
-                if (!hasSourceData) {
-                    html += `<tr><td colspan="2" style="color: var(--color-danger);">获取源文件条目失败</td></tr>`;
-                }
-
-                if (backupCountRes.status === 'fulfilled' && backupCountRes.value.status === 'success') {
-                    // 为总计行添加一个顶部边框，通过内联样式实现，这是最直接可靠的方式
-                    html += `
-                        <tr>
-                            <td style="border-top: 1px solid var(--color-border); padding-top: 0.8rem; font-weight: 700;">全部域名 (备份总表)</td>
-                            <td class="text-right" style="border-top: 1px solid var(--color-border); padding-top: 0.8rem; font-weight: 700; color: var(--color-accent-primary);">${backupCountRes.value.count.toLocaleString()}</td>
-                        </tr>
-                    `;
-                } else {
-                    html += `<tr><td colspan="2" style="color: var(--color-danger);">获取备份总数失败</td></tr>`;
-                }
-
-                tbody.innerHTML = html;
-
             } catch (error) {
-                if (error.name !== 'AbortError') {
-                    tbody.innerHTML = `<tr><td colspan="2" style="padding: 1rem; text-align: center; color: var(--color-danger);">加载统计数据时发生错误</td></tr>`;
-                }
-            } finally {
-                if (btn) {
-                    const svg = btn.querySelector('svg');
-                    if (svg) svg.style.animation = '';
-                    btn.disabled = false;
-                }
             }
         }
     };

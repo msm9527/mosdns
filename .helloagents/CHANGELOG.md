@@ -5,6 +5,9 @@
   - 决策: shunt_memory_rebuild#D001(刷新默认绕过 DNS 响应缓存，规则从观察结果中晋升而不是单次直接生效)
 - **[config]**: 将默认分流记忆配置切到 `policy` 与 `workflow` 新配置口径，并新增 `requery_refresh.yaml` — by msm
 
+### 修复
+- **[ui]**: 系统页“刷新分流缓存”面板接入 `my_*list/stats`，补充刷新链路说明、最近结果解释和四类分流记忆运行态表格 — by msm
+
 ## [0.1.1] - 2026-03-06
 
 ### 修复
