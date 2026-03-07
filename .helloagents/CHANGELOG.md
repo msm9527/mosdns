@@ -35,3 +35,4 @@
   - 方案: [202603061037_cache-runtime-rebuild](archive/2026-03/202603061037_cache-runtime-rebuild/)
   - 决策: cache_runtime_rebuild#D001(采用插件内纵向重构，保持现有插件与 API 兼容)
 - 2026-03-06: `aliapi` 新增热点 `SERVFAIL` 长抑制参数 `persistent_servfail_threshold` / `persistent_servfail_ttl`，用于压制 `114menhu.com` 一类跨窗口重复失败域名对上游的持续穿透。
+- 2026-03-07: 新增 `docs/DNS_FAILURE_FLOW_EXPLAINED.md`，说明 `SERVFAIL / timeout / NXDOMAIN` 在当前 mosdns 中的语义差异与处理链路。

@@ -12,3 +12,4 @@
 - [Cache WAL 灰度发布与回滚手册](./CACHE_WAL_ROLLOUT.md)
 - [mosdns 全链路压测说明](./STRESS_TEST_GUIDE.md)
 - [DNS 失败治理方案](./DNS_FAILURE_GOVERNANCE_PLAN.md)
+- [DNS 失败类型与处理链路说明](./DNS_FAILURE_FLOW_EXPLAINED.md)
