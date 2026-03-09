@@ -82,6 +82,7 @@ func (s *UdpServer) Close() error {
 type SwitchPlugin interface{ GetValue() string }
 type DomainMapperPlugin interface {
 	FastMatch(qname string) ([]uint8, string, bool)
+	GetRunBit() uint8
 }
 type IPSetPlugin interface{ Match(addr netip.Addr) bool }
 
@@ -406,6 +407,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 		var marks uint64
 		var dset string
 		if dm != nil {
+			marks |= (1 << dm.GetRunBit())
 			if mList, dsName, match := dm.FastMatch(qname); match {
 				for _, v := range mList {
 					if v < 64 {
@@ -449,6 +451,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 		ipMatch := false
 		if ipSet != nil {
 			ipMatch = ipSet.Match(remoteAddr.Addr().Unmap())
+			marks |= (1 << 48)
 		}
 		sw2Val, sw12Val := "", ""
 		if sw2 != nil {
