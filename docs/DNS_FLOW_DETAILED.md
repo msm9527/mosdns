@@ -41,12 +41,12 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    V401["V401 进入 sequence_ipv4"] --> V402["V402 unified_matcher4 打标"]
+    V401["V401 进入 sequence_ipv4"] --> V402["V402 读取 unified_matcher1 预计算标记"]
     V402 --> V403{"V403 fast_mark=7 灰名单?"}
     V403 -- 是 --> V404["V404 sequence_fakeip（国外 fakeip）并结束"]
     V403 -- 否 --> V405{"V405 fast_mark=8 白名单?"}
     V405 -- 是 --> V406["V406 sequence_local（国内 realip）"]
-    V405 -- 否 --> V410["V410 unified_matcher5 打标"]
+    V405 -- 否 --> V410["V410 继续消费 unified_matcher1 已设置标记"]
 
     V406 --> V407{"V407 rcode=0/3 且无 IPv4 ?"}
     V407 -- 是 --> V408["V408 写 my_nov4list"]
@@ -86,12 +86,12 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    V601["V601 进入 sequence_ipv6"] --> V602["V602 unified_matcher4 打标"]
+    V601["V601 进入 sequence_ipv6"] --> V602["V602 读取 unified_matcher1 预计算标记"]
     V602 --> V603{"V603 fast_mark=7 灰名单?"}
     V603 -- 是 --> V604["V604 sequence_fakeip 并结束"]
     V603 -- 否 --> V605{"V605 fast_mark=8 白名单?"}
     V605 -- 是 --> V606["V606 sequence_local（国内 realip）"]
-    V605 -- 否 --> V610["V610 unified_matcher5 打标"]
+    V605 -- 否 --> V610["V610 继续消费 unified_matcher1 已设置标记"]
 
     V606 --> V607{"V607 rcode=0/3 且无 IPv6 ?"}
     V607 -- 是 --> V608["V608 写 my_nov6list"]
@@ -145,7 +145,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    T01["T01 进入 sequence_other"] --> T02["T02 unified_matcher5 打标"]
+    T01["T01 进入 sequence_other"] --> T02["T02 读取 unified_matcher1 预计算标记"]
     T02 --> T03{"T03 fast_mark=16 (geosite_cn) ?"}
     T03 -- 是 --> T04["T04 sequence_local（国内）"]
     T03 -- 否 --> T05["T05 sequence_google（国外）"]
@@ -163,4 +163,3 @@ flowchart TD
 - `switch10`: Prefer IPv6
 - `switch12`: 指定 client 不科学分支
 - `switch13`: 主流程缓存开关
-

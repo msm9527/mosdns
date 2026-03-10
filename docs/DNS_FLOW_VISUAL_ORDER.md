@@ -43,12 +43,12 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    B0([进入 sequence_ipv4]) --> B1[unified_matcher4]
+    B0([进入 sequence_ipv4]) --> B1[读取 unified_matcher1 预计算标记]
     B1 --> B2{灰名单 fast_mark=7?}
     B2 -- 是 --> B3[sequence_fakeip 并结束]
     B2 -- 否 --> B4{白名单 fast_mark=8?}
     B4 -- 是 --> B5[sequence_local]
-    B4 -- 否 --> B9[unified_matcher5]
+    B4 -- 否 --> B9[继续消费 unified_matcher1 已设置标记]
 
     B5 --> B6{rcode=0/3 且无 IPv4 ?}
     B6 -- 是 --> B7[写入 my_nov4list]
@@ -90,12 +90,12 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    C0([进入 sequence_ipv6]) --> C1[unified_matcher4]
+    C0([进入 sequence_ipv6]) --> C1[读取 unified_matcher1 预计算标记]
     C1 --> C2{灰名单 fast_mark=7?}
     C2 -- 是 --> C3[sequence_fakeip 并结束]
     C2 -- 否 --> C4{白名单 fast_mark=8?}
     C4 -- 是 --> C5[sequence_local]
-    C4 -- 否 --> C9[unified_matcher5]
+    C4 -- 否 --> C9[继续消费 unified_matcher1 已设置标记]
 
     C5 --> C6{rcode=0/3 且无 IPv6 ?}
     C6 -- 是 --> C7[写入 my_nov6list]
@@ -148,9 +148,8 @@ flowchart TB
 
 ```mermaid
 flowchart TB
-    D0([进入 sequence_other]) --> D1[unified_matcher5]
+    D0([进入 sequence_other]) --> D1[读取 unified_matcher1 预计算标记]
     D1 --> D2{fast_mark=16 (geosite_cn) ?}
     D2 -- 是 --> D3[sequence_local]
     D2 -- 否 --> D4[sequence_google]
 ```
-

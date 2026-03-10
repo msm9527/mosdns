@@ -60,6 +60,43 @@ func makeAnswer(t *testing.T, name string, qtype uint16, id uint16, ttl uint32) 
 	return mustPack(t, r)
 }
 
+func mustPackNoTest(m *dns.Msg) []byte {
+	b, err := m.Pack()
+	if err != nil {
+		panic(err)
+	}
+	return b
+}
+
+func makeQueryNoTest(name string, qtype uint16, id uint16) []byte {
+	q := new(dns.Msg)
+	q.SetQuestion(name, qtype)
+	q.Id = id
+	return mustPackNoTest(q)
+}
+
+func makeAnswerNoTest(name string, qtype uint16, id uint16, ttl uint32) []byte {
+	q := new(dns.Msg)
+	q.SetQuestion(name, qtype)
+	q.Id = id
+
+	r := new(dns.Msg)
+	r.SetReply(q)
+	var rr dns.RR
+	var err error
+	switch qtype {
+	case dns.TypeAAAA:
+		rr, err = dns.NewRR(fmt.Sprintf("%s %d IN AAAA 2001:db8::1", name, ttl))
+	default:
+		rr, err = dns.NewRR(fmt.Sprintf("%s %d IN A 1.1.1.1", name, ttl))
+	}
+	if err != nil {
+		panic(err)
+	}
+	r.Answer = []dns.RR{rr}
+	return mustPackNoTest(r)
+}
+
 func TestParseFastQuestion(t *testing.T) {
 	q := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
 	qname, qtype, end, ok := parseFastQuestion(len(q), q)
@@ -200,6 +237,14 @@ func (m testDomainMapperPlugin) GetRunBit() uint8 {
 	return m.runBit
 }
 
+type testIPSetPlugin struct {
+	match bool
+}
+
+func (p testIPSetPlugin) Match(addr netip.Addr) bool {
+	return p.match
+}
+
 func TestBuildFastBypassRunBitOnlySetOnMatch(t *testing.T) {
 	tests := []struct {
 		name          string
@@ -256,5 +301,142 @@ func TestBuildFastBypassRunBitOnlySetOnMatch(t *testing.T) {
 				t.Fatalf("mark 17 set = %v, want %v, marks=%064b", gotMarkSet, tt.wantMarkSet, marks)
 			}
 		})
+	}
+}
+
+func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"switch15":         testSwitchPlugin{value: "A"},
+		"switch1":          testSwitchPlugin{value: "A"},
+		"unified_matcher1": testDomainMapperPlugin{runBit: 33, marks: []uint8{1}, match: true},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), &fastStats{})
+
+	req := makeQuery(t, "blocked.example.", dns.TypeA, 0x1234)
+	buf := append([]byte(nil), req...)
+	action, respLen, marks, _ := fastBypass(len(buf), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected fast reject reply, got %d", action)
+	}
+	if respLen != len(req) {
+		t.Fatalf("unexpected reply length: got %d want %d", respLen, len(req))
+	}
+	if marks != 0 {
+		t.Fatalf("reject path should not return pre marks, got %064b", marks)
+	}
+	if gotRcode := buf[3] & 0x0F; gotRcode != 3 {
+		t.Fatalf("expected NXDOMAIN-style reject rcode=3, got %d", gotRcode)
+	}
+}
+
+func TestBuildFastBypassClientIPFastMarks(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"switch15":  testSwitchPlugin{value: "A"},
+		"switch2":   testSwitchPlugin{value: "A"},
+		"switch12":  testSwitchPlugin{value: "B"},
+		"client_ip": testIPSetPlugin{match: false},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), &fastStats{})
+
+	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
+	action, _, marks, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected continue action, got %d", action)
+	}
+	if (marks & (uint64(1) << 48)) == 0 {
+		t.Fatalf("expected fast mark 48 to indicate client_ip fast-checked, got %064b", marks)
+	}
+	if (marks & (uint64(1) << 39)) == 0 {
+		t.Fatalf("expected fast mark 39 for direct-path branch, got %064b", marks)
+	}
+}
+
+func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "cached.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "缓存命中")
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"switch15": testSwitchPlugin{value: "A"},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, respLen, marks, dset := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected cache reply, got %d", action)
+	}
+	if marks != 0 {
+		t.Fatalf("cache hit should not return pre marks, got %064b", marks)
+	}
+	if dset != "缓存命中" {
+		t.Fatalf("unexpected domain set: %q", dset)
+	}
+	var out dns.Msg
+	if err := out.Unpack(buf[:respLen]); err != nil {
+		t.Fatalf("unpack cached reply: %v", err)
+	}
+	if out.Id != 0x9999 {
+		t.Fatalf("expected txid from request, got %x", out.Id)
+	}
+}
+
+func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"switch15": testSwitchPlugin{value: "A"},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), nil)
+	req := makeQueryNoTest("bench.example.", dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := append([]byte(nil), req...)
+		_, _, _, _ = fastBypass(len(buf), buf, addr)
+	}
+}
+
+func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "bench-cache.example."
+	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "bench")
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"switch15": testSwitchPlugin{value: "A"},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		buf := make([]byte, len(resp))
+		copy(buf, req)
+		_, _, _, _ = fastBypass(len(req), buf, addr)
 	}
 }
