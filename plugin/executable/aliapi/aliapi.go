@@ -459,7 +459,44 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 		}
 	}
 
-	for _, u := range usToQuery {
+	processResult := func(r *dns.Msg, err error, u *upstreamWrapper) (*dns.Msg, bool) {
+		if err != nil {
+			u.recordFailure(time.Now(), f.args.UpstreamFailureThreshold, time.Duration(f.args.UpstreamCircuitBreakSeconds)*time.Second)
+			if lastError == nil {
+				lastError = err
+			}
+			return nil, false
+		}
+		u.recordSuccess()
+
+		if hasUsableAnswer(r) {
+			f.clearFailure(failureKey)
+			u.mWinnerTotal.Inc()
+			return r, true
+		}
+
+		if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {
+			f.clearFailure(failureKey)
+			if lastSuccessOrNXRes == nil {
+				lastSuccessOrNXRes = r
+				lastSuccessOrNXResUpstream = u
+			}
+		} else {
+			if r.Rcode == dns.RcodeServerFailure {
+				f.putFailure(failureKey, dns.RcodeServerFailure)
+			}
+			if lastOtherRes == nil {
+				lastOtherRes = r
+				lastOtherResUpstream = u
+			}
+		}
+		return nil, false
+	}
+
+	for i, u := range usToQuery {
+		if i == 0 {
+			continue
+		}
 		qc := copyPayload(queryPayload)
 
 		upstreamTimeout := time.Duration(u.cfg.UpstreamQueryTimeout) * time.Millisecond
@@ -499,48 +536,16 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 		}(qCtx.Id(), qCtx.QQuestion(), u)
 	}
 
-	for i := 0; i < len(usToQuery); i++ {
+	firstRes, firstErr := f.exchangeOne(ctx, queryPayload, usToQuery[0])
+	if r, done := processResult(firstRes, firstErr, usToQuery[0]); done {
+		return r, nil
+	}
+
+	for i := 1; i < len(usToQuery); i++ {
 		select {
 		case res := <-resChan:
-			r, err, u := res.r, res.err, res.u
-			if err != nil {
-				u.recordFailure(time.Now(), f.args.UpstreamFailureThreshold, time.Duration(f.args.UpstreamCircuitBreakSeconds)*time.Second)
-				if lastError == nil {
-					lastError = err
-				}
-				continue
-			}
-			u.recordSuccess()
-
-			if len(r.Answer) > 0 {
-				for _, ans := range r.Answer {
-					if a, ok := ans.(*dns.A); ok && len(a.A) > 0 {
-						f.clearFailure(failureKey)
-						u.mWinnerTotal.Inc()
-						return r, nil
-					}
-					if aaaa, ok := ans.(*dns.AAAA); ok && len(aaaa.AAAA) > 0 {
-						f.clearFailure(failureKey)
-						u.mWinnerTotal.Inc()
-						return r, nil
-					}
-				}
-			}
-
-			if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {
-				f.clearFailure(failureKey)
-				if lastSuccessOrNXRes == nil {
-					lastSuccessOrNXRes = r
-					lastSuccessOrNXResUpstream = u
-				}
-			} else {
-				if r.Rcode == dns.RcodeServerFailure {
-					f.putFailure(failureKey, dns.RcodeServerFailure)
-				}
-				if lastOtherRes == nil {
-					lastOtherRes = r
-					lastOtherResUpstream = u
-				}
+			if r, done := processResult(res.r, res.err, res.u); done {
+				return r, nil
 			}
 
 		case <-ctx.Done():

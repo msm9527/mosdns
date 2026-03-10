@@ -134,3 +134,52 @@ func BenchmarkChainWalkerFallbackPathNoDebug(b *testing.B) {
 		}
 	}
 }
+
+func BenchmarkChainWalkerFastPathReuseContext(b *testing.B) {
+	node := &ChainNode{
+		PluginName: "bench_fast",
+		Matches: []NamedMatcher{
+			{Name: "fast_1", Matcher: benchFastMatcher{match: true}},
+			{Name: "fast_2", Matcher: benchFastMatcher{match: true}},
+		},
+		E: benchFastExec{},
+	}
+	ins := []instruction{{
+		isSimple:   true,
+		fastChecks: []func(qCtx *query_context.Context) bool{benchFastMatcher{match: true}.GetFastCheck(), benchFastMatcher{match: true}.GetFastCheck()},
+		fastExec:   benchFastExec{}.GetFastExec(),
+		node:       node,
+	}}
+	qCtx := newBenchQueryContext()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := NewChainWalker(ins, []*ChainNode{node}, nil, nil)
+		if err := w.ExecNext(context.Background(), qCtx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkChainWalkerFallbackPathReuseContext(b *testing.B) {
+	node := &ChainNode{
+		PluginName: "bench_slow",
+		Matches: []NamedMatcher{
+			{Name: "slow_1", Matcher: benchSlowMatcher{match: true}},
+			{Name: "slow_2", Matcher: benchSlowMatcher{match: true}},
+		},
+		E: benchSlowExec{},
+	}
+	ins := []instruction{{node: node}}
+	qCtx := newBenchQueryContext()
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		w := NewChainWalker(ins, []*ChainNode{node}, nil, nil)
+		if err := w.ExecNext(context.Background(), qCtx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
