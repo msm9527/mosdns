@@ -145,6 +145,8 @@ plugins:
   - tag: unified_matcher1
     type: domain_mapper
     args:
+      default_mark: 17 
+      default_tag: "未命中"
       rules:
         - tag: blocklist
           mark: 1 
@@ -161,38 +163,18 @@ plugins:
         - tag: ddnslist
           mark: 6 
           output_tag: "DDNS域名"
-
-#统一域名匹配,设置mark和域名输出tag，fakeip filter部分
-  - tag: unified_matcher3
-    type: domain_mapper
-    args:
-      rules:
-        - tag: realiplist
-          mark: 9
-          output_tag: "!CN fakeip filter"
-        - tag: cnfakeipfilter
-          mark: 10
-          output_tag: "CN fakeip filter"
-
-#统一域名匹配,设置mark和域名输出tag，灰白名单匹配部分
-  - tag: unified_matcher4
-    type: domain_mapper
-    args:
-      rules:
         - tag: greylist
           mark: 7
           output_tag: "灰名单"
         - tag: whitelist
           mark: 8 
           output_tag: "白名单"
-
-#统一域名匹配,设置mark和域名输出tag，其它名单匹配部分
-  - tag: unified_matcher5
-    type: domain_mapper
-    args:
-      default_mark: 17 
-      default_tag: "未命中"
-      rules:
+        - tag: realiplist
+          mark: 9
+          output_tag: "!CN fakeip filter"
+        - tag: cnfakeipfilter
+          mark: 10
+          output_tag: "CN fakeip filter"
         - tag: my_realiprule
           mark: 11
           output_tag: "记忆直连"

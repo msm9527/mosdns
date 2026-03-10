@@ -24,7 +24,7 @@ plugins:
         exec: $cache_cn
       - exec: $domestic
       - exec: cname_remover
-      - exec: exit
+#      - exec: exit
 
   - tag: sequence_local
     type: sequence
@@ -40,20 +40,18 @@ plugins:
     args:
       - matches: switch4 'A'
         exec: $cache_cnmihomo
-      - exec: $unified_matcher3  #匹配fakeip filter域名表并设置相应的fast_mark
       - matches: fast_mark 10
         exec: $sequence_local
       - matches: "!fast_mark 10"
         exec: $cnfake
       - exec: ttl 5
-      - exec: exit
+#      - exec: exit
 
   - tag: sequence_local_fake_clashmi
     type: sequence
     args:
       - matches: switch4 'A'
         exec: $cache_cnmihomo
-      - exec: $unified_matcher3  #匹配fakeip filter域名表并设置相应的fast_mark
       - matches: fast_mark 10
         exec: $sequence_local
       - matches: "!fast_mark 10"
@@ -64,14 +62,13 @@ plugins:
   - tag: sequence_local_fake_exit
     type: sequence
     args:
-      - exec: $unified_matcher3  #匹配fakeip filter域名表并设置相应的fast_mark
       - matches: fast_mark 10
         exec: exit               #直接采用前一步国内dns的realip并结束
       - matches: switch4 'A'
         exec: $cache_cnmihomo
       - exec: $cnfake
       - exec: ttl 5
-      - exec: exit
+#      - exec: exit
 
 #国内fake real分流
   - tag: sequence_local_divert
@@ -95,7 +92,6 @@ plugins:
   - tag: sequence_fakeip
     type: sequence
     args:
-      - exec: $unified_matcher3  #匹配fakeip filter域名表并设置相应的fast_mark
       - matches: fast_mark 9          #!cn fakeip filter，向国外dns请求realip
         exec:
           - $sequence_google
@@ -107,7 +103,6 @@ plugins:
   - tag: sequence_fakeip_addlist
     type: sequence
     args:
-      - exec: $unified_matcher3  #匹配fakeip filter域名表并设置相应的fast_mark
       - matches: fast_mark 9          #!cn fakeip filter，向国外dns请求realip
         exec:
           - $sequence_google

@@ -3,7 +3,6 @@ plugins:
   - tag: sequence_ipv4
     type: sequence
     args:
-      - exec: $unified_matcher4                            #匹配灰白域名表并设置相应的fast_mark
       - matches: fast_mark 7                               #灰名单域名向sing-box请求fakeip并结束
         exec: $sequence_fakeip
       - matches: fast_mark 8
@@ -19,9 +18,10 @@ plugins:
         exec: $sequence_local_fake_exit
       - matches: fast_mark 8                               #白名单中域名无ipv4，不再向国外dns请求
         exec: exit
-      - exec: $unified_matcher5                            #匹配其它域名表并设置相应的fast_mark
       - matches: fast_mark 11
         exec: $sequence_local_divert                       #自生成国内域名请求real或者fakeip并结束
+      - matches: fast_mark 11                              #cache插件会使本序列cache之后的exit动作归入后台而失效这里在cache后手动exit
+        exec: exit
       - matches: fast_mark 12
         exec: $sequence_fakeip                             #自生成国外域名向sing-box请求fakeip并结束
       - matches: fast_mark 13
