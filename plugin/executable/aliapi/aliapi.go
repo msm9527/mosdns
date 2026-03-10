@@ -431,6 +431,34 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 		usToQuery = append(usToQuery, availableUpstreams[(randIndex+i)%len(availableUpstreams)])
 	}
 
+	if len(usToQuery) == 1 {
+		u := usToQuery[0]
+		r, err := f.exchangeOne(ctx, queryPayload, u)
+		if err != nil {
+			u.recordFailure(time.Now(), f.args.UpstreamFailureThreshold, time.Duration(f.args.UpstreamCircuitBreakSeconds)*time.Second)
+			f.putFailure(failureKey, dns.RcodeServerFailure)
+			return newSyntheticFailureResponse(qCtx.Q(), dns.RcodeServerFailure), nil
+		}
+
+		u.recordSuccess()
+		switch {
+		case hasUsableAnswer(r):
+			f.clearFailure(failureKey)
+			u.mWinnerTotal.Inc()
+			return r, nil
+		case r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError:
+			f.clearFailure(failureKey)
+			u.mWinnerTotal.Inc()
+			return r, nil
+		default:
+			if r.Rcode == dns.RcodeServerFailure {
+				f.putFailure(failureKey, dns.RcodeServerFailure)
+			}
+			u.mWinnerTotal.Inc()
+			return r, nil
+		}
+	}
+
 	for _, u := range usToQuery {
 		qc := copyPayload(queryPayload)
 
@@ -549,6 +577,49 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 	}
 
 	return nil, errors.New("all upstreams failed or returned no usable response")
+}
+
+func hasUsableAnswer(r *dns.Msg) bool {
+	if r == nil || len(r.Answer) == 0 {
+		return false
+	}
+	for _, ans := range r.Answer {
+		if a, ok := ans.(*dns.A); ok && len(a.A) > 0 {
+			return true
+		}
+		if aaaa, ok := ans.(*dns.AAAA); ok && len(aaaa.AAAA) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func (f *AliAPI) exchangeOne(parent context.Context, queryPayload *[]byte, u *upstreamWrapper) (*dns.Msg, error) {
+	upstreamTimeout := time.Duration(u.cfg.UpstreamQueryTimeout) * time.Millisecond
+	if upstreamTimeout == 0 {
+		upstreamTimeout = queryTimeout
+	}
+
+	upstreamCtx, upstreamCancel := context.WithTimeout(parent, upstreamTimeout)
+	defer upstreamCancel()
+
+	respPayload, err := u.ExchangeContext(upstreamCtx, *queryPayload)
+	if err != nil {
+		if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) &&
+			!strings.Contains(err.Error(), "connection refused") &&
+			!strings.Contains(err.Error(), "no such host") {
+			f.logger.Debug("upstream query failed", zap.String("upstream", u.cfg.Addr), zap.Error(err))
+		}
+		return nil, err
+	}
+	defer pool.ReleaseBuf(respPayload)
+
+	r := new(dns.Msg)
+	if err := r.Unpack(*respPayload); err != nil {
+		f.logger.Debug("failed to unpack DNS response", zap.String("upstream", u.cfg.Addr), zap.Error(err))
+		return nil, err
+	}
+	return r, nil
 }
 
 func buildFailureKey(q dns.Question) string {

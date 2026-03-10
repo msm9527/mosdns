@@ -2,6 +2,7 @@ package domain_mapper
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 
@@ -95,5 +96,76 @@ func TestDomainMapperExecSkipsWhenRunBitAlreadySet(t *testing.T) {
 	}
 	if _, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
 		t.Fatal("domain set tag should not be stored when run bit already exists")
+	}
+}
+
+func newBenchmarkMapper(ruleCount int) *DomainMapper {
+	dm := &DomainMapper{
+		logger:      zap.NewNop(),
+		defaultMark: 17,
+		defaultTag:  "未命中",
+		runBit:      33,
+	}
+	m := domain.NewMixMatcher[*MatchResult]()
+	for i := 0; i < ruleCount; i++ {
+		rule := fmt.Sprintf("domain:bench-%d.example.org", i)
+		res := &MatchResult{
+			Marks:      []uint8{11},
+			JoinedTags: "订阅直连",
+		}
+		if err := m.Add(rule, res); err != nil {
+			panic(err)
+		}
+	}
+	dm.matcher = atomic.Value{}
+	dm.matcher.Store(m)
+	return dm
+}
+
+func BenchmarkDomainMapperFastMatchHit(b *testing.B) {
+	dm := newBenchmarkMapper(20000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, ok := dm.FastMatch("bench-19999.example.org.")
+		if !ok {
+			b.Fatal("expected match")
+		}
+	}
+}
+
+func BenchmarkDomainMapperFastMatchMiss(b *testing.B) {
+	dm := newBenchmarkMapper(20000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		_, _, ok := dm.FastMatch("unknown-bench.example.org.")
+		if ok {
+			b.Fatal("expected miss")
+		}
+	}
+}
+
+func BenchmarkDomainMapperExecHit(b *testing.B) {
+	dm := newBenchmarkMapper(20000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		qCtx := newTestQueryContext("bench-19999.example.org.")
+		if err := dm.Exec(context.Background(), qCtx); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
+
+func BenchmarkDomainMapperExecMiss(b *testing.B) {
+	dm := newBenchmarkMapper(20000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		qCtx := newTestQueryContext("unknown-bench.example.org.")
+		if err := dm.Exec(context.Background(), qCtx); err != nil {
+			b.Fatal(err)
+		}
 	}
 }

@@ -21,12 +21,45 @@ package sequence
 
 import (
 	"context"
+	"os"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"go.uber.org/zap"
 )
+
+var (
+	flowTraceInit    sync.Once
+	flowTraceEnabled atomic.Bool
+)
+
+func isFlowTraceEnabled() bool {
+	flowTraceInit.Do(func() {
+		switch strings.ToLower(os.Getenv("MOSDNS_SEQUENCE_TRACE")) {
+		case "1", "true", "yes", "on":
+			flowTraceEnabled.Store(true)
+		}
+	})
+	return flowTraceEnabled.Load()
+}
+
+func flowTraceDomain(qCtx *query_context.Context) string {
+	if qCtx != nil {
+		if d := qCtx.FastQName; d != "" {
+			if d[len(d)-1] == '.' {
+				return d[:len(d)-1]
+			}
+			return d
+		}
+		if q := qCtx.Q(); q != nil && len(q.Question) > 0 {
+			return strings.TrimSuffix(q.Question[0].Name, ".")
+		}
+	}
+	return "(no question)"
+}
 
 type instruction struct {
 	isSimple   bool
@@ -73,6 +106,7 @@ func NewChainWalker(ins []instruction, chain []*ChainNode, jumpBack *ChainWalker
 
 func (w *ChainWalker) ExecNext(ctx context.Context, qCtx *query_context.Context) error {
 	ins := w.ins
+	traceFlow := w.logger != nil && isFlowTraceEnabled()
 	for w.p < len(ins) {
 		instr := &ins[w.p]
 		n := instr.node
@@ -84,13 +118,9 @@ func (w *ChainWalker) ExecNext(ctx context.Context, qCtx *query_context.Context)
 			for j := 0; j < len(checks); j++ {
 				matchRes := checks[j](qCtx)
 
-				if w.logger != nil {
+				if traceFlow {
 					if ce := w.logger.Check(zap.DebugLevel, "dns query flows through matcher"); ce != nil {
-						domain := "(no question)"
-						if len(qCtx.Q().Question) > 0 {
-							domain = strings.TrimSuffix(qCtx.Q().Question[0].Name, ".")
-						}
-						ce.Write(zap.String("trace_id", qCtx.TraceID), zap.String("domain", domain), zap.String("matcher_name", n.Matches[j].Name), zap.Bool("match_result", matchRes), zap.Time("time", time.Now()))
+						ce.Write(zap.String("trace_id", qCtx.TraceID), zap.String("domain", flowTraceDomain(qCtx)), zap.String("matcher_name", n.Matches[j].Name), zap.Bool("match_result", matchRes), zap.Time("time", time.Now()))
 					}
 				}
 
@@ -101,13 +131,9 @@ func (w *ChainWalker) ExecNext(ctx context.Context, qCtx *query_context.Context)
 			}
 
 			if matched {
-				if w.logger != nil {
+				if traceFlow {
 					if ce := w.logger.Check(zap.DebugLevel, "dns query flows through plugin"); ce != nil {
-						domain := "(no question)"
-						if len(qCtx.Q().Question) > 0 {
-							domain = strings.TrimSuffix(qCtx.Q().Question[0].Name, ".")
-						}
-						ce.Write(zap.String("trace_id", qCtx.TraceID), zap.Uint16("query_id", qCtx.Q().Id), zap.String("domain", domain), zap.String("plugin_name", n.PluginName), zap.Time("time", time.Now()))
+						ce.Write(zap.String("trace_id", qCtx.TraceID), zap.Uint16("query_id", qCtx.Q().Id), zap.String("domain", flowTraceDomain(qCtx)), zap.String("plugin_name", n.PluginName), zap.Time("time", time.Now()))
 					}
 				}
 
@@ -129,13 +155,9 @@ func (w *ChainWalker) ExecNext(ctx context.Context, qCtx *query_context.Context)
 			}
 
 			// 【恢复被误删的 Matcher 日志】
-			if w.logger != nil {
+			if traceFlow {
 				if ce := w.logger.Check(zap.DebugLevel, "dns query flows through matcher"); ce != nil {
-					domain := "(no question)"
-					if len(qCtx.Q().Question) > 0 {
-						domain = strings.TrimSuffix(qCtx.Q().Question[0].Name, ".")
-					}
-					ce.Write(zap.String("trace_id", qCtx.TraceID), zap.String("domain", domain), zap.String("matcher_name", m.Name), zap.Bool("match_result", ok), zap.Time("time", time.Now()))
+					ce.Write(zap.String("trace_id", qCtx.TraceID), zap.String("domain", flowTraceDomain(qCtx)), zap.String("matcher_name", m.Name), zap.Bool("match_result", ok), zap.Time("time", time.Now()))
 				}
 			}
 
@@ -192,13 +214,9 @@ func (w *ChainWalker) ExecNext(ctx context.Context, qCtx *query_context.Context)
 
 		if matched {
 			// 【恢复被误删的 Plugin 日志】
-			if w.logger != nil {
+			if traceFlow {
 				if ce := w.logger.Check(zap.DebugLevel, "dns query flows through plugin"); ce != nil {
-					domain := "(no question)"
-					if len(qCtx.Q().Question) > 0 {
-						domain = strings.TrimSuffix(qCtx.Q().Question[0].Name, ".")
-					}
-					ce.Write(zap.String("trace_id", qCtx.TraceID), zap.Uint16("query_id", qCtx.Q().Id), zap.String("domain", domain), zap.String("plugin_name", n.PluginName), zap.Time("time", time.Now()))
+					ce.Write(zap.String("trace_id", qCtx.TraceID), zap.Uint16("query_id", qCtx.Q().Id), zap.String("domain", flowTraceDomain(qCtx)), zap.String("plugin_name", n.PluginName), zap.Time("time", time.Now()))
 				}
 			}
 

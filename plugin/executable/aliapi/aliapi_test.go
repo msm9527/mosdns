@@ -8,12 +8,13 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/upstream"
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	"go.uber.org/zap"
 )
 
-func newTestWrapper(u *fakeUpstream, addr string) *upstreamWrapper {
+func newTestWrapper(u upstream.Upstream, addr string) *upstreamWrapper {
 	return &upstreamWrapper{
 		u:                 u,
 		cfg:               UpstreamConfig{Addr: addr},
@@ -52,6 +53,24 @@ func (f *fakeUpstream) ExchangeContext(ctx context.Context, m []byte) (*[]byte, 
 }
 
 func (f *fakeUpstream) Close() error { return nil }
+
+type repeatUpstream struct {
+	resp *dns.Msg
+	err  error
+}
+
+func (r *repeatUpstream) ExchangeContext(ctx context.Context, m []byte) (*[]byte, error) {
+	if r.err != nil {
+		return nil, r.err
+	}
+	packed, err := pool.PackBuffer(r.resp)
+	if err != nil {
+		return nil, err
+	}
+	return packed, nil
+}
+
+func (r *repeatUpstream) Close() error { return nil }
 
 func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 	bad := &fakeUpstream{errs: []error{context.DeadlineExceeded}}
@@ -216,4 +235,100 @@ func TestAliAPI_PersistentServfailAccumulatesAcrossShortExpiredWindows(t *testin
 func testAliAPIContext(q *dns.Msg) *query_context.Context {
 	q.Id = 1
 	return query_context.NewContext(q)
+}
+
+func benchmarkAliAPIInstance(concurrent int, upstreams ...*upstreamWrapper) *AliAPI {
+	return &AliAPI{
+		args: &Args{
+			Concurrent:                  concurrent,
+			FailureSuppressTTL:          10,
+			PersistentServfailThreshold: 3,
+			PersistentServfailTTL:       60,
+			UpstreamFailureThreshold:    3,
+			UpstreamCircuitBreakSeconds: 60,
+		},
+		logger:   zap.NewNop(),
+		us:       upstreams,
+		failures: make(map[string]failureRecord),
+	}
+}
+
+func BenchmarkAliAPIExchangeSingleSuccess(b *testing.B) {
+	query := new(dns.Msg)
+	query.SetQuestion("bench.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(query)
+	resp.Answer = append(resp.Answer, &dns.A{Hdr: dns.RR_Header{Name: "bench.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: []byte{1, 1, 1, 1}})
+	u := &repeatUpstream{resp: resp}
+	f := benchmarkAliAPIInstance(1, newTestWrapper(u, "bench_success"))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q := new(dns.Msg)
+		q.SetQuestion("bench.example.", dns.TypeA)
+		qCtx := testAliAPIContext(q)
+		r, err := f.exchange(context.Background(), qCtx, f.us)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if r.Rcode != dns.RcodeSuccess {
+			b.Fatalf("unexpected rcode %d", r.Rcode)
+		}
+	}
+}
+
+func BenchmarkAliAPIExchangeSuppressedFailure(b *testing.B) {
+	query := new(dns.Msg)
+	query.SetQuestion("fail.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(query)
+	f := benchmarkAliAPIInstance(1, newTestWrapper(&repeatUpstream{resp: resp}, "bench_suppressed"))
+	key := buildFailureKey(query.Question[0])
+	f.putFailure(key, dns.RcodeServerFailure)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q := new(dns.Msg)
+		q.SetQuestion("fail.example.", dns.TypeA)
+		qCtx := testAliAPIContext(q)
+		r, err := f.exchange(context.Background(), qCtx, f.us)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if r.Rcode != dns.RcodeServerFailure {
+			b.Fatalf("unexpected rcode %d", r.Rcode)
+		}
+	}
+}
+
+func BenchmarkAliAPIExchangeDualUpstreamFirstHit(b *testing.B) {
+	query := new(dns.Msg)
+	query.SetQuestion("dual.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(query)
+	resp.Answer = append(resp.Answer, &dns.A{Hdr: dns.RR_Header{Name: "dual.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60}, A: []byte{8, 8, 8, 8}})
+
+	u1 := &repeatUpstream{resp: resp}
+	u2 := &repeatUpstream{resp: resp}
+	f := benchmarkAliAPIInstance(2,
+		newTestWrapper(u1, "bench_dual_1"),
+		newTestWrapper(u2, "bench_dual_2"),
+	)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		q := new(dns.Msg)
+		q.SetQuestion("dual.example.", dns.TypeA)
+		qCtx := testAliAPIContext(q)
+		r, err := f.exchange(context.Background(), qCtx, f.us)
+		if err != nil {
+			b.Fatal(err)
+		}
+		if r.Rcode != dns.RcodeSuccess {
+			b.Fatalf("unexpected rcode %d", r.Rcode)
+		}
+	}
 }
