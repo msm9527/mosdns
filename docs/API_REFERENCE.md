@@ -316,7 +316,7 @@ PUT/POST JSON 示例：
 }
 ```
 
-### `sd_set` / `sd_set_light` / `si_set` / `nft_add`
+### `sd_set` / `sd_set_light` / `si_set`
 
 通用接口：
 
@@ -331,7 +331,7 @@ PUT/POST JSON 示例：
 
 - `name, type, files, url, enabled, enable_regexp, auto_update, update_interval_hours, rule_count, last_updated`
 
-`si_set/nft_add` 的 `RuleSource`：
+`si_set` 的 `RuleSource`：
 
 - `name, type, files, url, enabled, auto_update, update_interval_hours, rule_count, last_updated`
 

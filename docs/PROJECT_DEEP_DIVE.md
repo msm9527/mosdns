@@ -193,7 +193,7 @@ api:
 
 ### 执行器类
 
-`arbitrary, black_hole, cache, debug_print, drop_resp, ecs_handler, forward, forward_edns0opt, hosts, ipset, metrics_collector, nftset, nft_add, query_summary, rate_limiter, redirect, reverse_lookup, domain_output, rewrite, adguard_rule, requery, sequence, fallback, sleep, tag_setter, ttl, aliapi, cname_remover`
+`arbitrary, black_hole, cache, debug_print, drop_resp, ecs_handler, forward, forward_edns0opt, hosts, ipset, metrics_collector, nftset, query_summary, rate_limiter, redirect, reverse_lookup, domain_output, rewrite, adguard_rule, requery, sequence, fallback, sleep, tag_setter, ttl, aliapi, cname_remover`
 
 ### 服务端类
 

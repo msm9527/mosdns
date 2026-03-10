@@ -32,7 +32,6 @@
 | `ipset` | `executable` | `plugin/executable/ipset/ipset.go` |
 | `mark` | `mark` | `plugin/mark/mark.go` |
 | `metrics_collector` | `executable` | `plugin/executable/metrics_collector/collector.go` |
-| `nft_add` | `executable` | `plugin/executable/nftadd/nftadd_others.go` |
 | `nftset` | `executable` | `plugin/executable/nftset/nftset.go` |
 | `ptr_ip` | `matcher` | `plugin/matcher/ptr_ip/ptr_ip.go` |
 | `qclass` | `matcher` | `plugin/matcher/qclass/qclass.go` |

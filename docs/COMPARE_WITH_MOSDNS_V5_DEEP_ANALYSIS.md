@@ -169,12 +169,12 @@
 ### 5.1 插件类型规模
 
 - 基线插件类型：`40`
-- 当前插件类型：`72`
-- 新增类型：`32`
+- 当前插件类型：`71`
+- 新增类型：`31`
 
 新增类型清单：
 
-`adguard_rule, aliapi, cname_remover, domain_mapper, domain_output, domain_set_light, fast_mark, nft_add, requery, rewrite, sd_set, sd_set_light, si_set, switch, switch1~switch16, tag_setter, webinfo`
+`adguard_rule, aliapi, cname_remover, domain_mapper, domain_output, domain_set_light, fast_mark, requery, rewrite, sd_set, sd_set_light, si_set, switch, switch1~switch16, tag_setter, webinfo`
 
 ### 5.2 `enabled_plugins.go` 的显式扩容
 
@@ -182,7 +182,7 @@
 
 - 新 data_provider：`domain_set_light`, `sd_set`, `sd_set_light`, `si_set`, `domain_mapper`
 - 新 matcher：`fast_mark`
-- 新 executable：`domain_output`, `switcher1..16`, `nftadd`, `aliapi`, `cname_remover`, `adguard`, `webinfo`, `requery`, `rewrite`, `tag_setter`
+- 新 executable：`domain_output`, `switcher1..16`, `aliapi`, `cname_remover`, `adguard`, `webinfo`, `requery`, `rewrite`, `tag_setter`
 
 证据：`plugin/enabled_plugins.go:25-95`。
 
@@ -242,7 +242,7 @@
 - Go 版本：`1.22.0 + toolchain 1.23.0` -> `1.26.0`
 - mapstructure：`mitchellh/mapstructure` -> `go-viper/mapstructure/v2`
 - 大量依赖升级：`chi`, `dns`, `quic-go`, `prometheus`, `x/*` 等
-- 新增关键依赖：`cilium/ebpf`, `google/uuid`, `robfig/cron/v3`, `sagernet/sing`
+- 新增关键依赖：`google/uuid`, `robfig/cron/v3`, `sagernet/sing`
 
 证据：`go.mod` diff。
 
@@ -322,7 +322,7 @@
   - `plugin/data_provider/sd_set_light/sd_set_light.go`
   - `plugin/data_provider/si_set/si_set.go`
 - executable：
-  - `adguard`, `aliapi`, `cname_remover`, `domain_output`, `nftadd`, `requery`, `rewrite`, `switcher1..16`, `tag_setter`, `webinfo`
+  - `adguard`, `aliapi`, `cname_remover`, `domain_output`, `requery`, `rewrite`, `switcher1..16`, `tag_setter`, `webinfo`
 - matcher：
   - `plugin/matcher/fast_mark/fast_mark.go`
 - switch：
@@ -336,7 +336,7 @@
 
 1. `coremain/update_manager.go` `+1125/-0`
 2. `plugin/executable/aliapi/aliapi.go` `+922/-0`
-3. `plugin/executable/nftadd/nftadd.go` `+903/-0`
+3. `plugin/executable/requery/requery.go` `+800/-0`
 4. `plugin/executable/adguard/adguard.go` `+885/-0`
 5. `plugin/executable/cache/cache.go` `+745/-83`
 6. `coremain/audit.go` `+811/-0`
