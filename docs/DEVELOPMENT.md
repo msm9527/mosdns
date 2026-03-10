@@ -80,6 +80,58 @@ go build -o ./bin/mosdns .
 - `--config` / `-c`: 主配置文件路径
 - `--cpu`: 设置 `GOMAXPROCS`
 
+### 4.1 常驻运行与基础可用性验证
+
+建议用独立终端窗口或 `tmux` session 启动，保持进程常驻：
+
+```bash
+./bin/mosdns start --dir /Users/doumao/code/github/mosdns/config
+```
+
+在另一个会话验证 DNS 与 HTTP 管理接口：
+
+```bash
+# DNS 监听验证（53）
+dig @127.0.0.1 -p 53 example.com A +time=2 +tries=1
+
+# HTTP 管理接口验证（默认 9099）
+curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
+```
+
+### 4.2 压测（stress dns）
+
+`stress dns` 是 mosdns 内置子命令，不是独立 `stress` 程序。
+
+示例（与当前仓库验证口径一致）：
+
+```bash
+./bin/mosdns stress dns \
+  --server 127.0.0.1:53 \
+  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --count 8000 \
+  --unique-count 2000 \
+  --concurrency 100 \
+  --qps 350 \
+  --tcp-sample 0
+```
+
+更大样本量可用：
+
+```bash
+./bin/mosdns stress dns \
+  --server 127.0.0.1:53 \
+  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --count 16000 \
+  --unique-count 2000 \
+  --concurrency 100 \
+  --qps 350 \
+  --tcp-sample 0
+```
+
+默认输出：
+- `stress-report.json`
+- `stress-failures.ndjson`
+
 ## 5. Debug 模式编译
 
 为了方便断点调试，关闭优化和内联：

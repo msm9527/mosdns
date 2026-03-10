@@ -27,6 +27,63 @@ https://github.com/yyysuo/firetv/blob/master/mosdnsconfigupdate/mosdns2026%E6%9B
   ./mosdns start -c config/config.yaml --dir config
   ```
 
+### 本地构建 + 常驻运行 + 功能验证（可直接复制）
+
+1. 构建本地可执行文件：
+
+```bash
+mkdir -p ./bin
+CGO_ENABLED=0 go build -o ./bin/mosdns .
+```
+
+2. 在独立会话常驻启动（建议使用单独终端窗口 / tmux session）：
+
+```bash
+./bin/mosdns start --dir /Users/doumao/code/github/mosdns/config
+```
+
+3. 在另一个会话验证 DNS 与 HTTP 管理端口：
+
+```bash
+# DNS 监听验证（53）
+dig @127.0.0.1 -p 53 example.com A +time=2 +tries=1
+
+# HTTP 管理接口验证（默认 9099）
+curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
+```
+
+4. 压测（注意：`stress dns` 是 mosdns 内置子命令，不是独立 `stress` 程序）：
+
+```bash
+./bin/mosdns stress dns \
+  --server 127.0.0.1:53 \
+  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --count 8000 \
+  --unique-count 2000 \
+  --concurrency 100 \
+  --qps 350 \
+  --tcp-sample 0
+```
+
+如需更大样本量，可将 `--count` 改为 `16000`：
+
+```bash
+./bin/mosdns stress dns \
+  --server 127.0.0.1:53 \
+  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --count 16000 \
+  --unique-count 2000 \
+  --concurrency 100 \
+  --qps 350 \
+  --tcp-sample 0
+```
+
+默认会生成：
+- `stress-report.json`
+- `stress-failures.ndjson`
+
+更多压测口径与指标解释见：`docs/STRESS_TEST_GUIDE.md`
+
 ### 手动保存个性化配置
 
 1. gen/top_domains.txt
