@@ -407,8 +407,8 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 		var marks uint64
 		var dset string
 		if dm != nil {
-			marks |= (1 << dm.GetRunBit())
 			if mList, dsName, match := dm.FastMatch(qname); match {
+				marks |= (1 << dm.GetRunBit())
 				for _, v := range mList {
 					if v < 64 {
 						marks |= (1 << v)

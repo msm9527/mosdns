@@ -3,10 +3,12 @@ package udp_server
 import (
 	"fmt"
 	"hash/maphash"
+	"net/netip"
 	"testing"
 	"time"
 	"unsafe"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/miekg/dns"
 )
@@ -172,5 +174,87 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	}
 	if out.Answer[0].Header().Ttl != 5 {
 		t.Fatalf("ttl should be clamped to 5, got %d", out.Answer[0].Header().Ttl)
+	}
+}
+
+type testSwitchPlugin struct {
+	value string
+}
+
+func (s testSwitchPlugin) GetValue() string {
+	return s.value
+}
+
+type testDomainMapperPlugin struct {
+	runBit uint8
+	marks  []uint8
+	tag    string
+	match  bool
+}
+
+func (m testDomainMapperPlugin) FastMatch(qname string) ([]uint8, string, bool) {
+	return m.marks, m.tag, m.match
+}
+
+func (m testDomainMapperPlugin) GetRunBit() uint8 {
+	return m.runBit
+}
+
+func TestBuildFastBypassRunBitOnlySetOnMatch(t *testing.T) {
+	tests := []struct {
+		name          string
+		dm            testDomainMapperPlugin
+		wantRunBitSet bool
+		wantMarkSet   bool
+	}{
+		{
+			name: "miss does not set run bit",
+			dm: testDomainMapperPlugin{
+				runBit: 33,
+				match:  false,
+			},
+			wantRunBitSet: false,
+			wantMarkSet:   false,
+		},
+		{
+			name: "hit sets run bit and returned mark",
+			dm: testDomainMapperPlugin{
+				runBit: 33,
+				marks:  []uint8{17},
+				tag:    "命中",
+				match:  true,
+			},
+			wantRunBitSet: true,
+			wantMarkSet:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+				"switch15":        testSwitchPlugin{value: "A"},
+				"unified_matcher1": tt.dm,
+			})
+			bp := coremain.NewBP("udp_test", m)
+			fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+				internalTTL: time.Minute,
+			}, &fastStats{}), &fastStats{})
+
+			req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
+			action, _, marks, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+			if action != server.FastActionContinue {
+				t.Fatalf("expected continue action, got %d", action)
+			}
+
+			gotRunBitSet := (marks & (uint64(1) << tt.dm.runBit)) != 0
+			if gotRunBitSet != tt.wantRunBitSet {
+				t.Fatalf("run bit set = %v, want %v, marks=%064b", gotRunBitSet, tt.wantRunBitSet, marks)
+			}
+
+			gotMarkSet := (marks & (uint64(1) << 17)) != 0
+			if gotMarkSet != tt.wantMarkSet {
+				t.Fatalf("mark 17 set = %v, want %v, marks=%064b", gotMarkSet, tt.wantMarkSet, marks)
+			}
+		})
 	}
 }
