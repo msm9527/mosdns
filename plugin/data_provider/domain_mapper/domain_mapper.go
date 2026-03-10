@@ -245,26 +245,30 @@ func (dm *DomainMapper) Exec(ctx context.Context, qCtx *query_context.Context) e
 		return nil
 	}
 
-	q := qCtx.Q()
-	if q == nil || len(q.Question) == 0 {
-		return nil
+	qname := qCtx.FastQName
+	if qname == "" {
+		q := qCtx.Q()
+		if q == nil || len(q.Question) == 0 {
+			return nil
+		}
+		qname = q.Question[0].Name
 	}
 
 	matcher := dm.matcher.Load().(*domain.MixMatcher[*MatchResult])
 
-	result, ok := matcher.Match(q.Question[0].Name)
+	result, ok := matcher.Match(qname)
 	if ok && result != nil {
 		for _, mark := range result.Marks {
 			qCtx.SetFastFlag(mark)
 		}
-		if result.JoinedTags != "" {
+		if result.JoinedTags != "" && !sameDomainSetValue(qCtx, result.JoinedTags) {
 			qCtx.StoreValue(query_context.KeyDomainSet, result.JoinedTags)
 		}
 	} else {
 		if dm.defaultMark != 0 {
 			qCtx.SetFastFlag(dm.defaultMark)
 		}
-		if dm.defaultTag != "" {
+		if dm.defaultTag != "" && !sameDomainSetValue(qCtx, dm.defaultTag) {
 			qCtx.StoreValue(query_context.KeyDomainSet, dm.defaultTag)
 		}
 	}
@@ -283,28 +287,41 @@ func (dm *DomainMapper) GetFastExec() func(ctx context.Context, qCtx *query_cont
 			return nil
 		}
 
-		q := qCtx.Q()
-		if q == nil || len(q.Question) == 0 {
-			return nil
+		qname := qCtx.FastQName
+		if qname == "" {
+			q := qCtx.Q()
+			if q == nil || len(q.Question) == 0 {
+				return nil
+			}
+			qname = q.Question[0].Name
 		}
 
 		matcher := dm.matcher.Load().(*domain.MixMatcher[*MatchResult])
-		result, ok := matcher.Match(q.Question[0].Name)
+		result, ok := matcher.Match(qname)
 		if ok && result != nil {
 			for _, mark := range result.Marks {
 				qCtx.SetFastFlag(mark)
 			}
-			if result.JoinedTags != "" {
+			if result.JoinedTags != "" && !sameDomainSetValue(qCtx, result.JoinedTags) {
 				qCtx.StoreValue(query_context.KeyDomainSet, result.JoinedTags)
 			}
 		} else {
 			if defMark != 0 {
 				qCtx.SetFastFlag(defMark)
 			}
-			if defTag != "" {
+			if defTag != "" && !sameDomainSetValue(qCtx, defTag) {
 				qCtx.StoreValue(query_context.KeyDomainSet, defTag)
 			}
 		}
 		return nil
 	}
+}
+
+func sameDomainSetValue(qCtx *query_context.Context, want string) bool {
+	if v, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
+		if s, ok := v.(string); ok {
+			return s == want
+		}
+	}
+	return false
 }

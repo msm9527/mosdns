@@ -56,9 +56,11 @@ type Context struct {
 	upstreamOpt *dns.OPT // may be nil
 
 	// lazy init.
-	kv        map[uint32]any
-	marks     map[uint32]struct{}
-	fastFlags uint64
+	kv           map[uint32]any
+	marks        map[uint32]struct{}
+	fastFlags    uint64
+	domainSet    any
+	hasDomainSet bool
 
 	// Extreme Performance Patch: Cache for fast matching
 	FastQName string
@@ -231,6 +233,8 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 	d.kv = copyMap(ctx.kv)
 	d.marks = copyMap(ctx.marks)
 	d.fastFlags = ctx.fastFlags
+	d.domainSet = ctx.domainSet
+	d.hasDomainSet = ctx.hasDomainSet
 
 	d.FastQName = ctx.FastQName
 	d.FastQType = ctx.FastQType
@@ -240,6 +244,11 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 // StoreValue stores any v in to this Context
 // k MUST from RegKey.
 func (ctx *Context) StoreValue(k uint32, v any) {
+	if k == KeyDomainSet {
+		ctx.domainSet = v
+		ctx.hasDomainSet = true
+		return
+	}
 	if ctx.kv == nil {
 		ctx.kv = make(map[uint32]any)
 	}
@@ -248,12 +257,23 @@ func (ctx *Context) StoreValue(k uint32, v any) {
 
 // GetValue returns the value stored by StoreValue.
 func (ctx *Context) GetValue(k uint32) (any, bool) {
+	if k == KeyDomainSet {
+		if ctx.hasDomainSet {
+			return ctx.domainSet, true
+		}
+		return nil, false
+	}
 	v, ok := ctx.kv[k]
 	return v, ok
 }
 
 // DeleteValue deletes value k from Context
 func (ctx *Context) DeleteValue(k uint32) {
+	if k == KeyDomainSet {
+		ctx.domainSet = nil
+		ctx.hasDomainSet = false
+		return
+	}
 	delete(ctx.kv, k)
 }
 
