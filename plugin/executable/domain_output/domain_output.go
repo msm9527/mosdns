@@ -112,16 +112,18 @@ type domainOutput struct {
 	stats map[string]*statEntry
 	mu    sync.Mutex
 
-	totalCount      int64
-	entryCounter    int64
-	droppedCount    int64
-	promotedCount   int64
-	publishedCount  int64
-	currentDate     atomic.Value
-	recordChan      chan *logItem
-	writeSignalChan chan struct{}
-	stopChan        chan struct{}
-	workerDoneChan  chan struct{}
+	totalCount         int64
+	entryCounter       int64
+	droppedCount       int64
+	droppedBufferCount int64
+	droppedByCapCount  int64
+	promotedCount      int64
+	publishedCount     int64
+	currentDate        atomic.Value
+	recordChan         chan *logItem
+	writeSignalChan    chan struct{}
+	stopChan           chan struct{}
+	workerDoneChan     chan struct{}
 
 	domainSetURL string
 	enableFlags  bool
@@ -345,6 +347,7 @@ func (d *domainOutput) GetFastExec() func(ctx context.Context, qCtx *query_conte
 			select {
 			case rChan <- item:
 			default:
+				atomic.AddInt64(&d.droppedBufferCount, 1)
 				atomic.AddInt64(&d.droppedCount, 1)
 			}
 		}
@@ -372,6 +375,7 @@ func (d *domainOutput) enqueueFromContext(qCtx *query_context.Context, source st
 		select {
 		case d.recordChan <- item:
 		default:
+			atomic.AddInt64(&d.droppedBufferCount, 1)
 			atomic.AddInt64(&d.droppedCount, 1)
 		}
 	}
@@ -414,6 +418,12 @@ func (d *domainOutput) processRecord(item *logItem) {
 	d.mu.Lock()
 	entry, exists := d.stats[storageKey]
 	if !exists {
+		if d.maxEntries > 0 && len(d.stats) >= d.maxEntries {
+			d.mu.Unlock()
+			atomic.AddInt64(&d.droppedByCapCount, 1)
+			atomic.AddInt64(&d.droppedCount, 1)
+			return
+		}
 		entry = &statEntry{}
 		d.stats[storageKey] = entry
 	}
@@ -784,6 +794,9 @@ func (d *domainOutput) loadFromFile() {
 			}
 		}
 		entry.Promoted = d.shouldPromote(entry)
+		if d.maxEntries > 0 && len(d.stats) >= d.maxEntries {
+			continue
+		}
 		d.stats[domain] = entry
 		atomic.AddInt64(&d.totalCount, int64(count))
 	}

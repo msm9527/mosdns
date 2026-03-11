@@ -48,6 +48,12 @@ var (
 	}
 )
 
+var removedPluginTypeHints = map[string]string{
+	"nft_add": "The nft_add plugin was removed on 2026-03-10. Please delete old nft_add/nft_ip config and migrate according to docs/NFT_EBPF_REMOVAL.md.",
+	"nft_ip":  "The nft_ip config/list entry was removed on 2026-03-10. Please delete old nft_add/nft_ip config and migrate according to docs/NFT_EBPF_REMOVAL.md.",
+	"ebpf":    "The eBPF path under nft_add was removed on 2026-03-10. Please migrate according to docs/NFT_EBPF_REMOVAL.md.",
+}
+
 // RegNewPluginFunc registers the type.
 // If the type has been registered. RegNewPluginFunc will panic.
 func RegNewPluginFunc(typ string, initFunc NewPluginFunc, argsType NewPluginArgsFunc) {
@@ -98,6 +104,9 @@ func (m *Mosdns) newPlugin(c PluginConfig) error {
 
 	typeInfo, ok := GetPluginType(c.Type)
 	if !ok {
+		if hint, removed := removedPluginTypeHints[c.Type]; removed {
+			return fmt.Errorf("plugin type %s is removed and no longer supported: %s", c.Type, hint)
+		}
 		return fmt.Errorf("plugin type %s not defined", c.Type)
 	}
 

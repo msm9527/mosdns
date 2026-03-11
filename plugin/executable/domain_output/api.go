@@ -38,12 +38,15 @@ type statsResponse struct {
 	TrackQType             bool   `json:"track_qtype"`
 	StaleAfterMinutes      int    `json:"stale_after_minutes"`
 	RefreshCooldownMinutes int    `json:"refresh_cooldown_minutes"`
+	MaxEntries             int    `json:"max_entries"`
 	TotalEntries           int    `json:"total_entries"`
 	DirtyEntries           int    `json:"dirty_entries"`
 	PromotedEntries        int64  `json:"promoted_entries"`
 	PublishedRules         int64  `json:"published_rules"`
 	TotalObservations      int64  `json:"total_observations"`
 	DroppedObservations    int64  `json:"dropped_observations"`
+	DroppedByBuffer        int64  `json:"dropped_by_buffer"`
+	DroppedByCap           int64  `json:"dropped_by_cap"`
 }
 
 type verifyRequest struct {
@@ -131,12 +134,15 @@ func (d *domainOutput) Api() *chi.Mux {
 			TrackQType:             d.policy.trackQType,
 			StaleAfterMinutes:      d.policy.staleAfterMinutes,
 			RefreshCooldownMinutes: d.policy.refreshCooldownMinutes,
+			MaxEntries:             d.maxEntries,
 			TotalEntries:           totalEntries,
 			DirtyEntries:           dirtyEntries,
 			PromotedEntries:        atomic.LoadInt64(&d.promotedCount),
 			PublishedRules:         atomic.LoadInt64(&d.publishedCount),
 			TotalObservations:      atomic.LoadInt64(&d.totalCount),
 			DroppedObservations:    atomic.LoadInt64(&d.droppedCount),
+			DroppedByBuffer:        atomic.LoadInt64(&d.droppedBufferCount),
+			DroppedByCap:           atomic.LoadInt64(&d.droppedByCapCount),
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(resp)

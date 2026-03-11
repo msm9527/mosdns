@@ -19,4 +19,6 @@ type QueryMeta struct {
 	UrlPath          string
 	PreFastFlags     uint64
 	PreFastDomainSet string
+	// PreFastDomainMatched reports whether domain_mapper already matched in UDP fast path.
+	PreFastDomainMatched bool
 }

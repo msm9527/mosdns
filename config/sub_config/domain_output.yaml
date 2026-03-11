@@ -1,11 +1,12 @@
 plugins:
+# 资源策略：以下 max_entries 采用路由器优先的保守默认值，避免高基数流量导致内存与落盘压力过高。
 #域名排行
   - tag: top_domains
     type: domain_output
     args:
       file_stat: gen/top_domains.txt
       enable_flags: true
-      max_entries: 10000000
+      max_entries: 200000
       dump_interval: 36000
       policy:
         kind: generic
@@ -19,7 +20,7 @@ plugins:
     args:
       file_stat: gen/realiplist.txt
       file_rule: gen/realiprule.txt
-      max_entries: 10000000
+      max_entries: 80000
       dump_interval: 36005
       domain_set_url: "http://127.0.0.1:9099/plugins/my_realiprule/post"
       policy:
@@ -39,7 +40,7 @@ plugins:
     args:
       file_stat: gen/fakeiplist.txt
       file_rule: gen/fakeiprule.txt
-      max_entries: 10000000
+      max_entries: 80000
       dump_interval: 36010
       domain_set_url: "http://127.0.0.1:9099/plugins/my_fakeiprule/post"
       policy:
@@ -59,7 +60,7 @@ plugins:
     args:
       file_stat: gen/nov6list.txt
       file_rule: gen/nov6rule.txt
-      max_entries: 100000000
+      max_entries: 120000
       dump_interval: 36040
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nov6rule/post"
       policy:
@@ -79,7 +80,7 @@ plugins:
     args:
       file_stat: gen/nov4list.txt
       file_rule: gen/nov4rule.txt
-      max_entries: 10000000
+      max_entries: 80000
       dump_interval: 36030
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nov4rule/post"
       policy:
@@ -99,7 +100,7 @@ plugins:
     args:
       file_stat: gen/nodenov6list.txt
       file_rule: gen/nodenov6rule.txt
-      max_entries: 10000000
+      max_entries: 50000
       dump_interval: 36060
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nodenov6rule/post"
       policy:
@@ -119,7 +120,7 @@ plugins:
     args:
       file_stat: gen/nodenov4list.txt
       file_rule: gen/nodenov4rule.txt
-      max_entries: 10000000
+      max_entries: 50000
       dump_interval: 36080
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nodenov4rule/post"
       policy:

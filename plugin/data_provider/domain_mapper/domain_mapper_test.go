@@ -17,7 +17,6 @@ func newTestMapper(defaultMark uint8, defaultTag string, result *MatchResult, na
 		logger:      zap.NewNop(),
 		defaultMark: defaultMark,
 		defaultTag:  defaultTag,
-		runBit:      33,
 	}
 	m := domain.NewMixMatcher[*MatchResult]()
 	for _, name := range names {
@@ -82,10 +81,10 @@ func TestDomainMapperExecAppliesMatchedMarksAndTag(t *testing.T) {
 	}
 }
 
-func TestDomainMapperExecSkipsWhenRunBitAlreadySet(t *testing.T) {
+func TestDomainMapperExecSkipsWhenFastBypassAlreadyMatched(t *testing.T) {
 	dm := newTestMapper(17, "未命中", nil)
 	qCtx := newTestQueryContext("unknown.example.")
-	qCtx.SetFastFlag(dm.runBit)
+	qCtx.ServerMeta.PreFastDomainMatched = true
 
 	if err := dm.Exec(context.Background(), qCtx); err != nil {
 		t.Fatalf("exec failed: %v", err)
@@ -104,7 +103,6 @@ func newBenchmarkMapper(ruleCount int) *DomainMapper {
 		logger:      zap.NewNop(),
 		defaultMark: 17,
 		defaultTag:  "未命中",
-		runBit:      33,
 	}
 	m := domain.NewMixMatcher[*MatchResult]()
 	for i := 0; i < ruleCount; i++ {

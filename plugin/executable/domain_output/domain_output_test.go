@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -103,6 +104,32 @@ func TestDomainOutputLoadLegacyStatFile(t *testing.T) {
 	d.mu.Unlock()
 	if entry == nil || entry.Count != 3 {
 		t.Fatalf("expected legacy entry count 3, got %#v", entry)
+	}
+}
+
+func TestDomainOutputMaxEntriesHardCap(t *testing.T) {
+	t.Parallel()
+
+	d := newDomainOutput(&Args{
+		MaxEntries: 1,
+	})
+
+	d.processRecord(&logItem{name: "first.example.", source: "live"})
+	d.processRecord(&logItem{name: "second.example.", source: "live"})
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if len(d.stats) != 1 {
+		t.Fatalf("expected hard cap to keep 1 entry, got %d", len(d.stats))
+	}
+	if _, ok := d.stats["first.example"]; !ok {
+		t.Fatalf("expected first entry to remain after cap")
+	}
+	if _, ok := d.stats["second.example"]; ok {
+		t.Fatalf("unexpected second entry when cap reached")
+	}
+	if got := atomic.LoadInt64(&d.droppedByCapCount); got != 1 {
+		t.Fatalf("droppedByCapCount = %d, want 1", got)
 	}
 }
 

@@ -223,18 +223,13 @@ func (s testSwitchPlugin) GetValue() string {
 }
 
 type testDomainMapperPlugin struct {
-	runBit uint8
-	marks  []uint8
-	tag    string
-	match  bool
+	marks []uint8
+	tag   string
+	match bool
 }
 
 func (m testDomainMapperPlugin) FastMatch(qname string) ([]uint8, string, bool) {
 	return m.marks, m.tag, m.match
-}
-
-func (m testDomainMapperPlugin) GetRunBit() uint8 {
-	return m.runBit
 }
 
 type testIPSetPlugin struct {
@@ -245,39 +240,34 @@ func (p testIPSetPlugin) Match(addr netip.Addr) bool {
 	return p.match
 }
 
-func TestBuildFastBypassRunBitOnlySetOnMatch(t *testing.T) {
+func TestBuildFastBypassSetsMapperMarksOnlyOnMatch(t *testing.T) {
 	tests := []struct {
-		name          string
-		dm            testDomainMapperPlugin
-		wantRunBitSet bool
-		wantMarkSet   bool
+		name        string
+		dm          testDomainMapperPlugin
+		wantMarkSet bool
 	}{
 		{
-			name: "miss does not set run bit",
+			name: "miss does not set mark",
 			dm: testDomainMapperPlugin{
-				runBit: 33,
-				match:  false,
+				match: false,
 			},
-			wantRunBitSet: false,
-			wantMarkSet:   false,
+			wantMarkSet: false,
 		},
 		{
-			name: "hit sets run bit and returned mark",
+			name: "hit sets returned mark",
 			dm: testDomainMapperPlugin{
-				runBit: 33,
-				marks:  []uint8{17},
-				tag:    "命中",
-				match:  true,
+				marks: []uint8{17},
+				tag:   "命中",
+				match: true,
 			},
-			wantRunBitSet: true,
-			wantMarkSet:   true,
+			wantMarkSet: true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-				"switch15":        testSwitchPlugin{value: "A"},
+				"switch15":         testSwitchPlugin{value: "A"},
 				"unified_matcher1": tt.dm,
 			})
 			bp := coremain.NewBP("udp_test", m)
@@ -286,14 +276,12 @@ func TestBuildFastBypassRunBitOnlySetOnMatch(t *testing.T) {
 			}, &fastStats{}), &fastStats{})
 
 			req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
-			action, _, marks, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+			action, _, marks, _, matched := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
 			if action != server.FastActionContinue {
 				t.Fatalf("expected continue action, got %d", action)
 			}
-
-			gotRunBitSet := (marks & (uint64(1) << tt.dm.runBit)) != 0
-			if gotRunBitSet != tt.wantRunBitSet {
-				t.Fatalf("run bit set = %v, want %v, marks=%064b", gotRunBitSet, tt.wantRunBitSet, marks)
+			if matched != tt.dm.match {
+				t.Fatalf("matched = %v, want %v", matched, tt.dm.match)
 			}
 
 			gotMarkSet := (marks & (uint64(1) << 17)) != 0
@@ -308,7 +296,7 @@ func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"switch15":         testSwitchPlugin{value: "A"},
 		"switch1":          testSwitchPlugin{value: "A"},
-		"unified_matcher1": testDomainMapperPlugin{runBit: 33, marks: []uint8{1}, match: true},
+		"unified_matcher1": testDomainMapperPlugin{marks: []uint8{1}, match: true},
 	})
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
@@ -317,7 +305,7 @@ func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 
 	req := makeQuery(t, "blocked.example.", dns.TypeA, 0x1234)
 	buf := append([]byte(nil), req...)
-	action, respLen, marks, _ := fastBypass(len(buf), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, respLen, marks, _, _ := fastBypass(len(buf), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionReply {
 		t.Fatalf("expected fast reject reply, got %d", action)
 	}
@@ -345,7 +333,7 @@ func TestBuildFastBypassClientIPFastMarks(t *testing.T) {
 	}, &fastStats{}), &fastStats{})
 
 	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
-	action, _, marks, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, _, marks, _, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionContinue {
 		t.Fatalf("expected continue action, got %d", action)
 	}
@@ -376,7 +364,7 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	req := makeQuery(t, name, dns.TypeA, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, req)
-	action, respLen, marks, dset := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, respLen, marks, dset, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache reply, got %d", action)
 	}
@@ -410,7 +398,7 @@ func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf := append([]byte(nil), req...)
-		_, _, _, _ = fastBypass(len(buf), buf, addr)
+		_, _, _, _, _ = fastBypass(len(buf), buf, addr)
 	}
 }
 
@@ -437,6 +425,6 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		buf := make([]byte, len(resp))
 		copy(buf, req)
-		_, _, _, _ = fastBypass(len(req), buf, addr)
+		_, _, _, _, _ = fastBypass(len(req), buf, addr)
 	}
 }

@@ -158,11 +158,13 @@ plugins:
           - $domestic
           - exit
       - matches:                            #当mosdns占用53直面客户端，只有client_ip.txt中指定的IP才科学
+        - "!fast_mark 48"                   #在快速路径中没有比对过
         - switch2 'A'
         - switch12 'B'
         - "!client_ip $client_ip"
         exec: fast_mark 39
       - matches:                            #当mosdns占用53直面客户端，client_ip.txt中指定的IP不科学
+        - "!fast_mark 48"                   #在快速路径中没有比对过
         - switch2 'B'
         - switch12 'A'
         - "client_ip $client_ip"

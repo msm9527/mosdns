@@ -82,7 +82,6 @@ func (s *UdpServer) Close() error {
 type SwitchPlugin interface{ GetValue() string }
 type DomainMapperPlugin interface {
 	FastMatch(qname string) ([]uint8, string, bool)
-	GetRunBit() uint8
 }
 type IPSetPlugin interface{ Match(addr netip.Addr) bool }
 
@@ -336,13 +335,13 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	return &UdpServer{args: args, c: c}, nil
 }
 
-func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int, []byte, netip.AddrPort) (int, int, uint64, string) {
+func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool) {
 	var once sync.Once
 	var sw15, sw5, sw6, sw1, sw7, sw2, sw12 SwitchPlugin
 	var dm DomainMapperPlugin
 	var ipSet IPSetPlugin
 
-	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string) {
+	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool) {
 		if stats != nil {
 			stats.bypassRequests.Add(1)
 		}
@@ -377,14 +376,14 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 		})
 
 		if sw15 == nil || sw15.GetValue() != "A" {
-			return server.FastActionContinue, 0, 0, ""
+			return server.FastActionContinue, 0, 0, "", false
 		}
 		qname, qtype, qEnd, ok := parseFastQuestion(reqLen, buf)
 		if !ok {
 			if stats != nil {
 				stats.bypassBadPacket.Add(1)
 			}
-			return server.FastActionContinue, 0, 0, ""
+			return server.FastActionContinue, 0, 0, "", false
 		}
 
 		if qtype == 6 || qtype == 12 || qtype == 65 {
@@ -392,7 +391,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, ""
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
 			}
 		}
 		if qtype == 28 {
@@ -400,21 +399,22 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, ""
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
 			}
 		}
 
 		var marks uint64
 		var dset string
+		var dsetMatched bool
 		if dm != nil {
 			if mList, dsName, match := dm.FastMatch(qname); match {
-				marks |= (1 << dm.GetRunBit())
 				for _, v := range mList {
 					if v < 64 {
 						marks |= (1 << v)
 					}
 				}
 				dset = dsName
+				dsetMatched = true
 			}
 		}
 
@@ -424,19 +424,19 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, ""
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false
 			}
 			if (marks&(1<<2)) != 0 && qtype == 1 && sw1Val == "A" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, ""
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
 			}
 			if (marks&(1<<3)) != 0 && qtype == 28 && sw1Val == "A" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, ""
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
 			}
 		}
 		if sw7 != nil {
@@ -444,7 +444,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, ""
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false
 			}
 		}
 
@@ -477,10 +477,10 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int,
 				if stats != nil {
 					stats.bypassCacheReply.Add(1)
 				}
-				return action, rLen, 0, ds
+				return action, rLen, 0, ds, false
 			}
 		}
-		return server.FastActionContinue, 0, marks, dset
+		return server.FastActionContinue, 0, marks, dset, dsetMatched
 	}
 }
 
