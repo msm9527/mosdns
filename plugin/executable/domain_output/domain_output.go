@@ -31,6 +31,8 @@ const (
 
 	qtypeMaskA    uint8 = 1 << 0
 	qtypeMaskAAAA uint8 = 1 << 1
+
+	defaultDirtyNotifyURL = "http://127.0.0.1:9099/plugins/requery/enqueue"
 )
 
 func init() {
@@ -261,27 +263,57 @@ func normalizePolicy(cfg *Args) writePolicy {
 	case strings.Contains(infer, "realip"):
 		kind = "realip"
 		promoteAfter = 2
+		decayDays = 21
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 360
+		onDirtyURL = defaultDirtyNotifyURL
+		verifyURL = "http://127.0.0.1:9099/plugins/my_realiplist/verify"
 	case strings.Contains(infer, "fakeip"):
 		kind = "fakeip"
 		promoteAfter = 2
+		decayDays = 21
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 240
+		onDirtyURL = defaultDirtyNotifyURL
+		verifyURL = "http://127.0.0.1:9099/plugins/my_fakeiplist/verify"
+	case strings.Contains(infer, "nodenov4"):
+		kind = "nov4"
+		promoteAfter = 2
+		decayDays = 14
+		publishMode = "promoted_only"
+		trackQType = true
+		staleAfterMinutes = 180
+		onDirtyURL = defaultDirtyNotifyURL
+		verifyURL = "http://127.0.0.1:9099/plugins/my_nodenov4list/verify"
+	case strings.Contains(infer, "nodenov6"):
+		kind = "nov6"
+		promoteAfter = 2
+		decayDays = 14
+		publishMode = "promoted_only"
+		trackQType = true
+		staleAfterMinutes = 180
+		onDirtyURL = defaultDirtyNotifyURL
+		verifyURL = "http://127.0.0.1:9099/plugins/my_nodenov6list/verify"
 	case strings.Contains(infer, "nov4"):
 		kind = "nov4"
 		promoteAfter = 2
+		decayDays = 14
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 180
+		onDirtyURL = defaultDirtyNotifyURL
+		verifyURL = "http://127.0.0.1:9099/plugins/my_nov4list/verify"
 	case strings.Contains(infer, "nov6"):
 		kind = "nov6"
 		promoteAfter = 2
+		decayDays = 14
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 180
+		onDirtyURL = defaultDirtyNotifyURL
+		verifyURL = "http://127.0.0.1:9099/plugins/my_nov6list/verify"
 	}
 
 	if cfg.Policy != nil {

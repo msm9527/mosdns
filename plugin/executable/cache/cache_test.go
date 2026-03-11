@@ -236,6 +236,31 @@ func Test_computeL1ShardCap(t *testing.T) {
 	}
 }
 
+func TestInferDefaultL1TotalCap(t *testing.T) {
+	if got := inferDefaultL1TotalCap(300000); got != defaultL1SmallCap {
+		t.Fatalf("inferDefaultL1TotalCap(300000) = %d, want %d", got, defaultL1SmallCap)
+	}
+	if got := inferDefaultL1TotalCap(800000); got != defaultL1TotalCap {
+		t.Fatalf("inferDefaultL1TotalCap(800000) = %d, want %d", got, defaultL1TotalCap)
+	}
+}
+
+func TestInferWALFileFromDump(t *testing.T) {
+	tests := []struct {
+		dump string
+		want string
+	}{
+		{dump: "", want: ""},
+		{dump: "cache/a.dump", want: "cache/a.wal"},
+		{dump: "cache/a.snapshot", want: "cache/a.snapshot.wal"},
+	}
+	for _, tt := range tests {
+		if got := inferWALFileFromDump(tt.dump); got != tt.want {
+			t.Fatalf("inferWALFileFromDump(%q) = %q, want %q", tt.dump, got, tt.want)
+		}
+	}
+}
+
 type testingHelper interface {
 	Helper()
 	Fatal(args ...interface{})

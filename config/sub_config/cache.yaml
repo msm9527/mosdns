@@ -1,122 +1,76 @@
 plugins:
-# 生产 WAL 配置说明:
-# 1. 默认全量启用 WAL, 每个实例独立 .wal 文件, dump 仍作为 checkpoint 基线。
-# 2. 灰度时可先仅保留部分实例的 wal_file/wal_sync_interval, 观察 dump 与 replay 状态后再全量开启。
-# 3. 回滚时删除 wal_file/wal_sync_interval 并保留 dump_file/dump_interval, 现有 snapshot 仍可继续恢复。
-# 路由器内存策略:
-# size 是“条目数上限”而非字节数，多实例叠加会显著放大内存占用。
-# 默认按保守档位分层，避免高并发/高基数场景下出现内存压力与回收抖动。
-# L1（热点缓存）策略:
-# - l1_enabled: 是否启用 L1（命中快，但会增加常驻内存）
-# - l1_total_cap: L1 总条目预算（内部会按分片均摊）
-# - 当前默认已降档，优先保证路由器稳定内存占用。
+# 高阶参数已下沉到代码默认值（仍兼容旧键）:
+# - nxdomain_ttl / servfail_ttl
+# - l1_enabled / l1_total_cap / l1_shard_cap
+# - wal_file / wal_sync_interval
+# 默认行为:
+# - WAL 文件自动由 dump_file 推导（*.dump -> *.wal）
+# - L1 容量按 size 自动分档（小实例更保守）
 #全部缓存 第1层缓存 直面客户端
   - tag: cache_all
     type: cache
     args:
       size: 800000
-      l1_enabled: true
-      l1_total_cap: 8192
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
 #      exclude_ip:
 #        - 28.0.0.0/8
 #        - f2b0::/18
       dump_file: cache/cache_all.dump
-      wal_file: cache/cache_all.wal
       dump_interval: 36000
-      wal_sync_interval: 1
 
 #全部缓存 第1层缓存 直面客户端
   - tag: cache_all_noleak
     type: cache
     args:
       size: 800000
-      l1_enabled: true
-      l1_total_cap: 8192
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
       exclude_ip:
 #        - 28.0.0.0/8
 #        - f2b0::/18
       dump_file: cache/cache_all_noleak.dump
-      wal_file: cache/cache_all_noleak.wal
       dump_interval: 36000
-      wal_sync_interval: 1
 
 #中国域名列表的过期缓存
   - tag: cache_cn
     type: cache
     args:
       size: 500000
-      l1_enabled: true
-      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
       dump_file: cache/cache_cn.dump
-      wal_file: cache/cache_cn.wal
       dump_interval: 36000
-      wal_sync_interval: 1
 
 #列表外域名的过期缓存
   - tag: cache_google
     type: cache
     args:
       size: 300000
-      l1_enabled: true
-      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
       dump_file: cache/cache_google.dump
-      wal_file: cache/cache_google.wal
       dump_interval: 36000
-      wal_sync_interval: 1
 
   - tag: cache_google_node
     type: cache
     args:
       size: 300000
-      l1_enabled: true
-      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
       enable_ecs: true
       dump_file: cache/cache_google_node.dump
-      wal_file: cache/cache_google_node.wal
       dump_interval: 36000
-      wal_sync_interval: 1
 
 #节点域名列表的过期缓存
   - tag: cache_node
     type: cache
     args:
       size: 300000
-      l1_enabled: true
-      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
       dump_file: cache/cache_node.dump
-      wal_file: cache/cache_node.wal
       dump_interval: 36000
-      wal_sync_interval: 1
 
 #cnmihomo fakeip过期缓存
   - tag: cache_cnmihomo
     type: cache
     args:
       size: 300000
-      l1_enabled: true
-      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
-      nxdomain_ttl: 60
-      servfail_ttl: 15
       dump_file: cache/cache_cnmihomo.dump
-      wal_file: cache/cache_cnmihomo.wal
       dump_interval: 36000
-      wal_sync_interval: 1

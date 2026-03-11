@@ -26,6 +26,7 @@ import (
 	"hash/maphash"
 	"net"
 	"net/netip"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -42,6 +43,9 @@ const (
 	PluginType = "udp_server"
 	cacheSize  = 65536
 	cacheMask  = cacheSize - 1
+
+	defaultFastBypassWarmupMain    = 3
+	defaultFastBypassWarmupRequery = 1
 )
 
 var maphashSeed = maphash.MakeSeed()
@@ -66,13 +70,24 @@ func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 5)
 	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(30))
 	utils.SetDefaultUnsignNum(&a.FastMetricsLogInterval, 60)
-	utils.SetDefaultUnsignNum(&a.FastBypassWarmupSec, 3)
+	if a.FastBypassWarmupSec <= 0 {
+		a.FastBypassWarmupSec = inferFastBypassWarmupSec(a.Entry, a.Listen)
+	}
 	if a.FastCacheTTLMax > 0 && a.FastCacheTTLMin > a.FastCacheTTLMax {
 		a.FastCacheTTLMin = a.FastCacheTTLMax
 	}
 	if a.FastBypassWarmupSec < 0 {
 		a.FastBypassWarmupSec = 0
 	}
+}
+
+func inferFastBypassWarmupSec(entry, listen string) int {
+	lentry := strings.ToLower(entry)
+	llisten := strings.ToLower(listen)
+	if strings.Contains(lentry, "requery") || strings.Contains(llisten, ":7766") {
+		return defaultFastBypassWarmupRequery
+	}
+	return defaultFastBypassWarmupMain
 }
 
 type UdpServer struct {

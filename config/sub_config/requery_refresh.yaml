@@ -413,7 +413,6 @@ plugins:
     args:
       entry: sequence_requery_refresh
       listen: ":7767"
-      fast_bypass_warmup_seconds: 1
 
   - tag: tcp_requery_refresh
     type: tcp_server

@@ -4,11 +4,6 @@ plugins:
     type: aliapi
     args:
       concurrent: 3
-      failure_suppress_ttl: 10
-      persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 60
-      upstream_failure_threshold: 3
-      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: "223.5.5.5"
         - addr: "223.6.6.6"

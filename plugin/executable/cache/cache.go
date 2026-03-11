@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -55,7 +56,11 @@ const (
 	shardCount = 256 // 256分段锁，平衡锁竞争与内存开销
 
 	defaultL1TotalCap = 8192 // 默认 L1 总容量（按路由器场景收敛）
+	defaultL1SmallCap = 4096 // 小容量实例默认 L1 总容量
 	maxL1ShardCap     = 1024 // 防止误配导致单分片过大
+
+	// size <= 600000 视为中小实例，自动使用更保守的 L1 档位。
+	l1SmallCapThreshold = 600000
 
 	// 性能补丁：后台更新并发上限，保护 CPU 不被瞬间过期的缓存任务占满
 	maxConcurrentLazyUpdate = 256
@@ -200,11 +205,32 @@ func (a *Args) init() {
 		a.L1Enabled = &defaultEnabled
 	}
 	if *a.L1Enabled {
-		utils.SetDefaultUnsignNum(&a.L1TotalCap, defaultL1TotalCap)
+		utils.SetDefaultUnsignNum(&a.L1TotalCap, inferDefaultL1TotalCap(a.Size))
 	}
 	if a.L1ShardCap < 0 {
 		a.L1ShardCap = 0
 	}
+	if a.WALFile == "" {
+		a.WALFile = inferWALFileFromDump(a.DumpFile)
+	}
+}
+
+func inferDefaultL1TotalCap(size int) int {
+	if size > 0 && size <= l1SmallCapThreshold {
+		return defaultL1SmallCap
+	}
+	return defaultL1TotalCap
+}
+
+func inferWALFileFromDump(dumpFile string) string {
+	if dumpFile == "" {
+		return ""
+	}
+	ext := filepath.Ext(dumpFile)
+	if ext == ".dump" {
+		return strings.TrimSuffix(dumpFile, ext) + ".wal"
+	}
+	return dumpFile + ".wal"
 }
 
 type Cache struct {

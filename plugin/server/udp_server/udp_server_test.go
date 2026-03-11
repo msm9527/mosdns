@@ -20,6 +20,18 @@ func TestFastCacheItemAtomicFieldAlignment(t *testing.T) {
 	}
 }
 
+func TestInferFastBypassWarmupSec(t *testing.T) {
+	if got := inferFastBypassWarmupSec("sequence_requery", ":53"); got != defaultFastBypassWarmupRequery {
+		t.Fatalf("requery entry warmup = %d, want %d", got, defaultFastBypassWarmupRequery)
+	}
+	if got := inferFastBypassWarmupSec("sequence_main", ":7766"); got != defaultFastBypassWarmupRequery {
+		t.Fatalf("requery listen warmup = %d, want %d", got, defaultFastBypassWarmupRequery)
+	}
+	if got := inferFastBypassWarmupSec("sequence_6666", ":53"); got != defaultFastBypassWarmupMain {
+		t.Fatalf("main warmup = %d, want %d", got, defaultFastBypassWarmupMain)
+	}
+}
+
 func mustPack(t *testing.T, m *dns.Msg) []byte {
 	t.Helper()
 	b, err := m.Pack()

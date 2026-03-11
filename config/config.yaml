@@ -140,7 +140,9 @@ plugins:
       entry: sequence_6666
       listen: ":53"
       enable_audit: true
-      fast_bypass_warmup_seconds: 3      # 启动后预热期：先走主链路，避免快路径冷启动抖动
+      # fast_bypass_warmup_seconds 已下沉到代码默认:
+      # - requery 链路默认 1s
+      # - 其他链路默认 3s
 
   - tag: tcp_all
     type: tcp_server
@@ -168,7 +170,6 @@ plugins:
     args:
       entry: sequence_requery
       listen: ":7766"
-      fast_bypass_warmup_seconds: 1      # 刷新链路也保留短预热，减少启动瞬时超时
 
   - tag: tcp_requery
     type: tcp_server
@@ -228,7 +229,6 @@ plugins:
       entry: sequence_for_clashmi
       listen: ":7799"
       enable_audit: true
-      fast_bypass_warmup_seconds: 3
 
   - tag: tcp_clashmi
     type: tcp_server

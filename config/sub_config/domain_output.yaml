@@ -1,5 +1,6 @@
 plugins:
-# 资源策略：以下 max_entries 采用路由器优先的保守默认值，避免高基数流量导致内存与落盘压力过高。
+# 说明：policy 高阶策略参数已下沉到代码自动推导（仍兼容旧 policy 配置）。
+# 推导依据：file_stat/file_rule/domain_set_url 中的关键字（realip/fakeip/nov4/nov6/nodenov4/nodenov6/top_domains）。
 #域名排行
   - tag: top_domains
     type: domain_output
@@ -8,11 +9,6 @@ plugins:
       enable_flags: true
       max_entries: 200000
       dump_interval: 36000
-      policy:
-        kind: generic
-        decay_days: 30
-        track_qtype: true
-        publish_mode: all
 
 #访问过的realip的域名清单和生成规则
   - tag: my_realiplist
@@ -23,16 +19,6 @@ plugins:
       max_entries: 80000
       dump_interval: 36005
       domain_set_url: "http://127.0.0.1:9099/plugins/my_realiprule/post"
-      policy:
-        kind: realip
-        promote_after: 2
-        decay_days: 21
-        track_qtype: true
-        publish_mode: promoted_only
-        stale_after_minutes: 360
-        refresh_cooldown_minutes: 120
-        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
-        verify_url: "http://127.0.0.1:9099/plugins/my_realiplist/verify"
 
 #访问过的fakeip的域名清单和生成规则
   - tag: my_fakeiplist
@@ -43,16 +29,6 @@ plugins:
       max_entries: 80000
       dump_interval: 36010
       domain_set_url: "http://127.0.0.1:9099/plugins/my_fakeiprule/post"
-      policy:
-        kind: fakeip
-        promote_after: 2
-        decay_days: 21
-        track_qtype: true
-        publish_mode: promoted_only
-        stale_after_minutes: 240
-        refresh_cooldown_minutes: 120
-        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
-        verify_url: "http://127.0.0.1:9099/plugins/my_fakeiplist/verify"
 
 #访问过的无v6 ip的域名清单和生成规则
   - tag: my_nov6list
@@ -63,16 +39,6 @@ plugins:
       max_entries: 120000
       dump_interval: 36040
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nov6rule/post"
-      policy:
-        kind: nov6
-        promote_after: 2
-        decay_days: 14
-        track_qtype: true
-        publish_mode: promoted_only
-        stale_after_minutes: 180
-        refresh_cooldown_minutes: 120
-        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
-        verify_url: "http://127.0.0.1:9099/plugins/my_nov6list/verify"
 
 #访问过的无v4 v6 ip的域名清单和生成规则
   - tag: my_nov4list
@@ -83,16 +49,6 @@ plugins:
       max_entries: 80000
       dump_interval: 36030
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nov4rule/post"
-      policy:
-        kind: nov4
-        promote_after: 2
-        decay_days: 14
-        track_qtype: true
-        publish_mode: promoted_only
-        stale_after_minutes: 180
-        refresh_cooldown_minutes: 120
-        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
-        verify_url: "http://127.0.0.1:9099/plugins/my_nov4list/verify"
 
 #节点域名无v6 ip的域名清单和生成规则
   - tag: my_nodenov6list
@@ -103,16 +59,6 @@ plugins:
       max_entries: 50000
       dump_interval: 36060
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nodenov6rule/post"
-      policy:
-        kind: nov6
-        promote_after: 2
-        decay_days: 14
-        track_qtype: true
-        publish_mode: promoted_only
-        stale_after_minutes: 180
-        refresh_cooldown_minutes: 120
-        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
-        verify_url: "http://127.0.0.1:9099/plugins/my_nodenov6list/verify"
 
 #节点域名无v4 v6 ip的域名清单和生成规则
   - tag: my_nodenov4list
@@ -123,13 +69,3 @@ plugins:
       max_entries: 50000
       dump_interval: 36080
       domain_set_url: "http://127.0.0.1:9099/plugins/my_nodenov4rule/post"
-      policy:
-        kind: nov4
-        promote_after: 2
-        decay_days: 14
-        track_qtype: true
-        publish_mode: promoted_only
-        stale_after_minutes: 180
-        refresh_cooldown_minutes: 120
-        on_dirty_url: "http://127.0.0.1:9099/plugins/requery/enqueue"
-        verify_url: "http://127.0.0.1:9099/plugins/my_nodenov4list/verify"

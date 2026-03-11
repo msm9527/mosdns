@@ -233,3 +233,49 @@ func TestDomainOutputPeriodicSkipWhenNotDirty(t *testing.T) {
 		t.Fatalf("expected periodic clean write to be skipped, mod time changed: %v -> %v", firstMod, st2.ModTime())
 	}
 }
+
+func TestDomainOutputInferPolicyDefaultsWithoutPolicyBlock(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Args{
+		FileStat:     "gen/realiplist.txt",
+		FileRule:     "gen/realiprule.txt",
+		DomainSetURL: "http://127.0.0.1:9099/plugins/my_realiprule/post",
+	}
+	p := normalizePolicy(cfg)
+	if p.kind != "realip" {
+		t.Fatalf("kind = %q, want realip", p.kind)
+	}
+	if p.promoteAfter != 2 {
+		t.Fatalf("promoteAfter = %d, want 2", p.promoteAfter)
+	}
+	if p.decayDays != 21 {
+		t.Fatalf("decayDays = %d, want 21", p.decayDays)
+	}
+	if p.onDirtyURL != "http://127.0.0.1:9099/plugins/requery/enqueue" {
+		t.Fatalf("onDirtyURL = %q", p.onDirtyURL)
+	}
+	if p.verifyURL != "http://127.0.0.1:9099/plugins/my_realiplist/verify" {
+		t.Fatalf("verifyURL = %q", p.verifyURL)
+	}
+}
+
+func TestDomainOutputInferPolicyNodeNov4(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Args{
+		FileStat:     "gen/nodenov4list.txt",
+		FileRule:     "gen/nodenov4rule.txt",
+		DomainSetURL: "http://127.0.0.1:9099/plugins/my_nodenov4rule/post",
+	}
+	p := normalizePolicy(cfg)
+	if p.kind != "nov4" {
+		t.Fatalf("kind = %q, want nov4", p.kind)
+	}
+	if p.decayDays != 14 {
+		t.Fatalf("decayDays = %d, want 14", p.decayDays)
+	}
+	if p.verifyURL != "http://127.0.0.1:9099/plugins/my_nodenov4list/verify" {
+		t.Fatalf("verifyURL = %q", p.verifyURL)
+	}
+}
