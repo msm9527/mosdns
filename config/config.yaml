@@ -1,3 +1,23 @@
+# ===============================================================
+# 主配置总览（请保留）
+# ===============================================================
+# 请求主路径:
+# 1) 客户端 -> `udp_all/tcp_all` (:53)
+# 2) 进入 `sequence_6666`
+# 3) 先执行 `sequence_common_precheck`（黑白名单、拦截、偏好、缓存前置）
+# 4) 再按 qtype 分流到:
+#    - A    -> `sequence_ipv4`
+#    - AAAA -> `sequence_ipv6`
+#    - 其他 -> `sequence_other`
+#
+# 刷新路径:
+# - `udp_requery/tcp_requery`(:7766) 与 `udp_requery_refresh/tcp_requery_refresh`(:7767)
+# - 使用与主链路一致的 fast_mark 语义，但不参与 top_domains 统计。
+#
+# 维护原则:
+# - include 顺序不要随意调整；后续子配置会引用前面定义的 tag。
+# - 新增 fast_mark/mark 编号前，先核对 `rule_set.yaml`、主链路与快路径实现。
+# ===============================================================
 log:
   level: warn
   file: "/tmp/mosdns.log"

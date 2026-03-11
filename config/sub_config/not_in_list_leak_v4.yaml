@@ -1,3 +1,9 @@
+# 文件用途:
+# - 兼容（泄露）模式下处理列表外 IPv4 查询。
+# 流程概要:
+# - 先查国内；无有效 IPv4 或污染时再查国外；
+# - 仍无 IPv4 时写入 `my_nov4list`；
+# - 有有效响应后交给 `sequence_not_in_list_ipmatch` 做归类。
 plugins:
 #列表外的域名的处理逻辑 兼容模式IPV4
   - tag: sequence_not_in_list_leak_v4

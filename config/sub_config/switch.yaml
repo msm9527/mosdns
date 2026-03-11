@@ -1,3 +1,9 @@
+# 文件用途:
+# - 定义可热更新开关（Web UI/HTTP API 可改），用于动态调整分流策略。
+# 通用约定:
+# - 每个开关值持久化在 `rule/switch*.txt`。
+# - 绝大多数开关使用: `A = 启用`，`B = 关闭`（个别开关在注释里单独说明）。
+# - API 示例: `curl -X POST http://<host>:9099/plugins/switch1/post -H 'Content-Type: application/json' -d '{\"value\":\"B\"}'`
 plugins:
 #开关，配置web ui，可以实现动态切换泄露版本/不泄露版本逻辑 源码内置了9个开关备用
 #curl -X POST http://10.10.10.1:9099/plugins/switch1/post -H "Content-Type: application/json" -d '{"value":"B"}'
@@ -99,7 +105,6 @@ plugins:
     type: switch15
     args:
       initial_value: "rule/switch15.txt"
-
 
 
 

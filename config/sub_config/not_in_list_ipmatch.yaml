@@ -1,3 +1,9 @@
+# 文件用途:
+# - 处理“列表外域名”在拿到上游响应后的 IP 判定与归档。
+# 核心动作:
+# - 命中 `direct_ip` / `geoip_cn` 后归入直连记忆（my_realiplist）。
+# - 命中非 CN 结果时归入代理记忆（my_fakeiplist）。
+# - 按 `switch9` 决定国内域名是返回 realip 还是转 fakeip。
 #列表外的域名获取ip后进行对比决定如何发放ip
 plugins:
   - tag: sequence_not_in_list_ipmatch

@@ -1,3 +1,10 @@
+# 文件用途:
+# - 为 sing-box / 节点探测提供专用 DNS 入口。
+# 设计目标:
+# - 节点域名优先稳定解析（含 fallback），并独立维护 `my_nodenov4rule/my_nodenov6rule`。
+# 对外端口:
+# - `:9999` 节点域名解析服务（sbnode）。
+# - `:8888` sing-box 常规 DNS 服务。
 plugins:
 #专门用于解析域名节点，默认使用8888解析，5毫秒不通用换223解析
   - tag: sbnodefallback

@@ -1,3 +1,8 @@
+# 文件用途:
+# - 维护访问统计与动态规则生成（realip/fakeip/nov4/nov6 等）。
+# 依赖关系:
+# - `rule_set.yaml` 里的 `*_rule` 数据集直接读取这里输出的规则文件。
+# - `requery` 刷新链路会消费这里发出的“dirty/stale”信号。
 plugins:
 # 说明：policy 高阶策略参数已下沉到代码自动推导（仍兼容旧 policy 配置）。
 # 推导依据：file_stat/file_rule/domain_set_url 中的关键字（realip/fakeip/nov4/nov6/nodenov4/nodenov6/top_domains）。

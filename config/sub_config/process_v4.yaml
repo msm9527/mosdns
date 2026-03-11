@@ -1,3 +1,11 @@
+# 文件用途:
+# - 主链路 IPv4（A）请求分流决策核心。
+# 输入:
+# - 来自 `sequence_common_precheck` 的 fast_mark 与偏好开关状态。
+# 输出:
+# - 选择 realip/fakeip 解析路径，并按结果更新记忆规则集（realip/fakeip/nov4）。
+# 维护建议:
+# - 新增规则时优先复用现有 fast_mark 语义，避免冲突。
 plugins:
 #处理A请求
   - tag: sequence_ipv4

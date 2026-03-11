@@ -1,3 +1,11 @@
+# 文件用途:
+# - 定义“刷新专用链路”（默认监听 `:7767`），用于 requery 任务回放与记忆修正。
+# 设计原则:
+# - 与主链路语义尽量一致，但使用 `*_refresh` 子序列避免影响实时查询统计。
+# - 刷新链路不做 top_domains 计数，避免把后台任务混入访问排行。
+# 关键点:
+# - 与主链路同样依赖 `unified_matcher1` 和 fast_mark 语义。
+# - 保留 `!fast_mark 48` 防重复 client_ip 判定，确保与 UDP 快路径一致。
 plugins:
   - tag: sequence_local_refresh
     type: sequence

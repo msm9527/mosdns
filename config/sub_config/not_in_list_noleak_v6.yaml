@@ -1,3 +1,9 @@
+# 文件用途:
+# - 安全（不泄露）模式下处理列表外 IPv6 查询。
+# 流程概要:
+# - 先 ECS 首查，失败后回退普通国外再回退国内；
+# - 无 IPv6 时写入 `my_nov6list` 并构造空答复结束；
+# - 成功结果继续走 `sequence_not_in_list_ipmatch`。
 #列表外的域名的处理逻辑 安全模式IPV6
 plugins:
   - tag: sequence_not_in_list_noleak_v6

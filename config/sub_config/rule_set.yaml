@@ -1,3 +1,10 @@
+# 文件用途:
+# - 汇总所有“规则数据源插件”（domain/ip set、rewrite、统一匹配器）。
+# 依赖关系:
+# - `unified_matcher1` 是主链路入口关键插件，会把域名命中结果写成 fast_mark。
+# - `process_v4/v6` 与 `sequence_common_precheck` 大量依赖这里定义的 tag。
+# 维护建议:
+# - 修改 mark 编号时必须同步核对主链路序列、快路径与注释文档，避免编号冲突。
 plugins:
 #列表外域名解析IP为此列表中IP，归入直连
   - tag: direct_ip

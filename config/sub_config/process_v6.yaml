@@ -1,3 +1,11 @@
+# 文件用途:
+# - 主链路 IPv6（AAAA）请求分流决策核心。
+# 输入:
+# - 来自 `sequence_common_precheck` 的 fast_mark 与偏好开关状态。
+# 输出:
+# - 选择 realip/fakeip 路径，并按结果更新 `my_realiplist` / `my_nov6list`。
+# 说明:
+# - 对“无 IPv6 / 污染 IPv6”场景会显式构造空答复，避免 CNAME 透传带来误判。
 plugins:
 #处理AAAA请求
   - tag: sequence_ipv6

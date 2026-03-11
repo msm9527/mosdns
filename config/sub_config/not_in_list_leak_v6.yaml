@@ -1,3 +1,9 @@
+# 文件用途:
+# - 兼容（泄露）模式下处理列表外 IPv6 查询。
+# 流程概要:
+# - 先查国内；若无有效 IPv6（或仅回环/保留）则记录 `my_nov6list`；
+# - 对无 IPv6 场景直接构造空答复结束；
+# - 有有效结果时交由 `sequence_not_in_list_ipmatch` 继续归类。
 plugins:
 #列表外的域名的处理逻辑 兼容模式IPV6
   - tag: sequence_not_in_list_leak_v6
