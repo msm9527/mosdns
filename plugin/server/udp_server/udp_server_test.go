@@ -279,7 +279,7 @@ func TestBuildFastBypassSetsMapperMarksOnlyOnMatch(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-				"switch15":         testSwitchPlugin{value: "A"},
+				"udp_fast_path":    testSwitchPlugin{value: "on"},
 				"unified_matcher1": tt.dm,
 			})
 			bp := coremain.NewBP("udp_test", m)
@@ -306,8 +306,8 @@ func TestBuildFastBypassSetsMapperMarksOnlyOnMatch(t *testing.T) {
 
 func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"switch15":         testSwitchPlugin{value: "A"},
-		"switch1":          testSwitchPlugin{value: "A"},
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"block_response":   testSwitchPlugin{value: "on"},
 		"unified_matcher1": testDomainMapperPlugin{marks: []uint8{1}, match: true},
 	})
 	bp := coremain.NewBP("udp_test", m)
@@ -334,10 +334,9 @@ func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 
 func TestBuildFastBypassClientIPFastMarks(t *testing.T) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"switch15":  testSwitchPlugin{value: "A"},
-		"switch2":   testSwitchPlugin{value: "A"},
-		"switch12":  testSwitchPlugin{value: "B"},
-		"client_ip": testIPSetPlugin{match: false},
+		"udp_fast_path":     testSwitchPlugin{value: "on"},
+		"client_proxy_mode": testSwitchPlugin{value: "whitelist"},
+		"client_ip":         testIPSetPlugin{match: false},
 	})
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
@@ -368,7 +367,7 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	fc.Store(name, dns.TypeA, resp, "缓存命中")
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"switch15": testSwitchPlugin{value: "A"},
+		"udp_fast_path": testSwitchPlugin{value: "on"},
 	})
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, fc, stats, 0)
@@ -406,7 +405,7 @@ func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
 	fc.Store(name, dns.TypeA, resp, "warmup")
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"switch15": testSwitchPlugin{value: "A"},
+		"udp_fast_path": testSwitchPlugin{value: "on"},
 	})
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, fc, stats, time.Second)
@@ -425,7 +424,7 @@ func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
 
 func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"switch15": testSwitchPlugin{value: "A"},
+		"udp_fast_path": testSwitchPlugin{value: "on"},
 	})
 	bp := coremain.NewBP("udp_bench", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
@@ -453,7 +452,7 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 	fc.Store(name, dns.TypeA, resp, "bench")
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"switch15": testSwitchPlugin{value: "A"},
+		"udp_fast_path": testSwitchPlugin{value: "on"},
 	})
 	bp := coremain.NewBP("udp_bench", m)
 	fastBypass := buildFastBypass(bp, fc, stats, 0)

@@ -141,3 +141,240 @@ body {
     background: rgba(0, 0, 0, 0.5);
     border: 1px solid rgba(255, 255, 255, 0.1);
 }
+
+/* 8. Feature Switches */
+#feature-switches-module {
+    gap: 1rem;
+}
+
+#feature-switches-module > h3 {
+    margin-bottom: 0.25rem;
+}
+
+#feature-switches-module > .control-item,
+#feature-switches-module .secondary-switches-grid .control-item {
+    margin-bottom: 0;
+}
+
+#feature-switches-module > .control-item {
+    display: grid;
+    grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+    align-items: center;
+    gap: 1rem 1.25rem;
+    padding: 1rem 1.1rem;
+    border-radius: var(--border-radius-lg);
+    border: 1px solid color-mix(in srgb, var(--color-border) 82%, transparent);
+    background:
+        linear-gradient(180deg, color-mix(in srgb, var(--color-bg-alt) 82%, transparent), color-mix(in srgb, var(--color-bg-card) 92%, transparent));
+    box-shadow: var(--shadow-sm);
+}
+
+#feature-switches-module > .control-item > strong {
+    font-size: 0.98rem;
+    letter-spacing: -0.01em;
+}
+
+#feature-switches-module .secondary-switches-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 0.8rem;
+    margin-top: 0;
+}
+
+#feature-switches-module .secondary-switches-grid .control-item {
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+    align-items: stretch;
+    gap: 0.65rem;
+    min-height: 112px;
+    padding: 0.9rem 0.9rem 0.85rem;
+    border-radius: var(--border-radius-lg);
+    border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+    background:
+        radial-gradient(circle at top right, color-mix(in srgb, var(--color-accent-primary) 9%, transparent), transparent 35%),
+        linear-gradient(180deg, color-mix(in srgb, var(--color-bg-alt) 84%, transparent), color-mix(in srgb, var(--color-bg-card) 96%, transparent));
+    box-shadow: var(--shadow-sm);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+#feature-switches-module .secondary-switches-grid .control-item:hover {
+    transform: translateY(-2px);
+    border-color: color-mix(in srgb, var(--color-accent-primary) 45%, var(--color-border));
+    box-shadow: var(--shadow-md);
+}
+
+#feature-switches-module .switch-label {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.35rem;
+    min-width: 0;
+}
+
+#feature-switches-module .switch-label .title-line {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.5rem;
+    width: 100%;
+    font-size: 0.98rem;
+    line-height: 1.3;
+}
+
+#feature-switches-module .switch-desc {
+    display: block;
+    color: color-mix(in srgb, var(--color-text-primary) 84%, var(--color-text-secondary));
+    font-size: 0.84rem;
+    line-height: 1.45;
+    font-weight: 600;
+    max-width: 36ch;
+}
+
+#feature-switches-module .info-icon {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    margin-left: 0;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-accent-primary) 14%, transparent);
+    color: var(--color-accent-primary);
+}
+
+#feature-switches-module .switch {
+    align-self: flex-end;
+    margin-top: 0.15rem;
+}
+
+#feature-switches-module .mode-select-item {
+    min-height: 112px;
+}
+
+#feature-switches-module .switch-select-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+    margin-top: 0.1rem;
+}
+
+#feature-switches-module .switch-select-label {
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
+    color: var(--color-text-secondary);
+}
+
+#feature-switches-module .switch-select {
+    width: 100%;
+    min-height: 2.5rem;
+    padding: 0.55rem 0.85rem;
+    border-radius: var(--border-radius-md);
+    border: 1px solid color-mix(in srgb, var(--color-border) 88%, transparent);
+    background: color-mix(in srgb, var(--color-bg-alt) 94%, transparent);
+    color: var(--color-text-primary);
+    font-size: 0.92rem;
+    font-weight: 700;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+#feature-switches-module .switch-select:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--color-accent-primary) 65%, white);
+    outline-offset: 2px;
+}
+
+#feature-switches-module .segmented-control {
+    position: relative;
+    width: 100%;
+    min-width: 0;
+    padding: 0.28rem;
+    border-radius: var(--border-radius-md);
+    border: 1px solid color-mix(in srgb, var(--color-border) 84%, transparent);
+    background: color-mix(in srgb, var(--color-bg-alt) 92%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+}
+
+#feature-switches-module .segmented-control button {
+    position: relative;
+    z-index: 1;
+    min-width: 0;
+    min-height: 2.8rem;
+    border: 0;
+    background: transparent;
+    color: var(--color-text-secondary);
+    font-weight: 700;
+    border-radius: calc(var(--border-radius-md) - 4px);
+    transition: color 0.2s ease, transform 0.2s ease;
+}
+
+#feature-switches-module .segmented-control button.active {
+    color: var(--color-accent-text);
+}
+
+#feature-switches-module .segmented-control button:not(.active):hover {
+    color: var(--color-text-primary);
+}
+
+#feature-switches-module .segmented-control .glider {
+    top: 0.28rem;
+    bottom: 0.28rem;
+    height: auto;
+    border-radius: calc(var(--border-radius-md) - 4px);
+    background: linear-gradient(135deg, var(--color-accent-primary), color-mix(in srgb, var(--color-accent-primary) 78%, white 22%));
+    box-shadow:
+        0 10px 20px -14px color-mix(in srgb, var(--color-accent-primary) 75%, transparent),
+        inset 0 1px 0 rgba(255, 255, 255, 0.18);
+}
+
+#feature-switches-module .compact-segmented-control {
+    display: grid;
+    align-items: stretch;
+}
+
+#feature-switches-module .compact-segmented-control button {
+    padding: 0.6rem 0.35rem;
+    font-size: 0.82rem;
+    line-height: 1.2;
+    white-space: nowrap;
+}
+
+#feature-switches-module .compact-segmented-control button i,
+#feature-switches-module #core-mode-switch-group button i {
+    margin-right: 0.35rem;
+}
+
+#feature-switches-module #core-mode-switch-group button {
+    min-height: 3rem;
+    padding-inline: 0.75rem;
+}
+
+@media (max-width: 960px) {
+    #feature-switches-module > .control-item {
+        grid-template-columns: 1fr;
+    }
+}
+
+@media (max-width: 768px) {
+    #feature-switches-module .secondary-switches-grid {
+        grid-template-columns: 1fr;
+        gap: 0.75rem;
+    }
+
+    #feature-switches-module .secondary-switches-grid .control-item {
+        min-height: 0;
+        padding: 0.85rem;
+    }
+
+    #feature-switches-module .compact-segmented-control button,
+    #feature-switches-module #core-mode-switch-group button {
+        min-height: 2.9rem;
+        font-size: 0.8rem;
+    }
+
+    #feature-switches-module .switch-desc {
+        max-width: none;
+    }
+}

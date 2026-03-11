@@ -240,11 +240,11 @@
         .segmented-control button { flex: 1; padding: 0.7rem; border: none; background-color: transparent; color: var(--control-text); font-weight: 600; font-size: 0.95rem; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 0.6rem; z-index: 1; }
         .segmented-control button.active { color: var(--accent-color); }
         .segmented-control.loading { pointer-events: none; opacity: 0.6; }
-        .secondary-switches-list { display: flex; flex-direction: column; gap: 0.6rem; }
-        .switch-card { display: grid; background-color: var(--card-bg); border: 1px solid var(--border-color); border-radius: var(--radius-main); padding: 0.8rem 1.2rem; grid-template-columns: auto 1fr auto; align-items: center; gap: 1.2rem; }
+        .secondary-switches-list { display: flex; flex-direction: column; gap: 0.55rem; }
+        .switch-card { display: grid; background: linear-gradient(180deg, color-mix(in srgb, var(--card-bg) 92%, transparent), color-mix(in srgb, var(--section-bg) 78%, transparent)); border: 1px solid color-mix(in srgb, var(--border-color) 84%, transparent); border-radius: var(--radius-main); padding: 0.75rem 1rem; grid-template-columns: auto 1fr auto; align-items: center; gap: 1rem; box-shadow: 0 10px 24px -24px rgba(0, 0, 0, 0.65); }
         .switch-card .icon-area { font-size: 1.1rem; color: var(--label-color); width: 1.5em; text-align: center; }
-        .switch-card .switch-content h4 { margin: 0 0 0.1rem 0; color: var(--value-color); font-size: 1.0rem; display: flex; align-items: center; gap: 0.5rem; }
-        .switch-card .switch-content p { margin: 0; color: var(--label-color); font-size: 0.85rem; }
+        .switch-card .switch-content h4 { margin: 0 0 0.1rem 0; color: var(--value-color); font-size: 1.0rem; display: flex; align-items: center; gap: 0.45rem; line-height: 1.25; }
+        .switch-card .switch-content p { margin: 0; color: color-mix(in srgb, var(--label-color) 55%, var(--value-color) 45%); font-size: 0.86rem; font-weight: 600; line-height: 1.45; }
         .switch-card .switch-control { position: relative; }
         .switch-card .apple-switch-input { display: none; }
         .switch-card .apple-switch-slider { position: relative; display: inline-block; width: 40px; height: 22px; background-color: var(--control-border); transition: .4s; border-radius: 22px; cursor: pointer; }
@@ -256,6 +256,12 @@
         .switch-card .mini-loader { display: none; position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 20px; height: 20px; border: 2px solid var(--control-border); border-top-color: var(--accent-color); border-radius: 50%; animation: spin 0.8s linear infinite; }
         .switch-card.loading .mini-loader { display: block; }
         .switch-card.loading .apple-switch-slider:before { display: none; }
+        .switch-card.mode-select-card { grid-template-columns: auto 1fr minmax(148px, 180px); }
+        .switch-card.mode-select-card .switch-control { width: 100%; }
+        .switch-card .switch-select-wrap { display: flex; flex-direction: column; gap: 0.35rem; width: 100%; }
+        .switch-card .switch-select-label { font-size: 0.72rem; font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--label-color); }
+        .switch-card .switch-select { width: 100%; min-height: 2.5rem; padding: 0.55rem 0.8rem; border-radius: calc(var(--radius-control) - 2px); border: 1px solid color-mix(in srgb, var(--control-border) 86%, transparent); background: color-mix(in srgb, var(--section-bg) 80%, transparent); color: var(--value-color); font-size: 0.92rem; font-weight: 700; box-shadow: inset 0 1px 0 rgba(255,255,255,0.04); }
+        .switch-card .switch-select:focus-visible { outline: 2px solid color-mix(in srgb, var(--accent-color) 70%, white); outline-offset: 2px; }
         
         .list-mgmt-layout { display: flex; height: 100%; width: 100%; flex-grow: 1; }
         .list-submenu { flex: 0 0 90px; border-right: 1px solid var(--border-color); overflow-y: auto; padding: 1rem 0; display: flex; flex-direction: column; }
@@ -729,8 +735,10 @@
             #appearance-container .subsection-title { margin-bottom: 0.5rem; }
             #appearance-container .theme-selector, #appearance-container .card-toggle-group { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 0.8rem; }
             
-            .switch-card { grid-template-columns: auto 1fr auto; align-items: center; gap: 0 1.2rem; padding: 1rem 1.2rem; }
+            .switch-card { grid-template-columns: auto 1fr auto; align-items: center; gap: 0 1.2rem; padding: 0.9rem 1rem; }
             .switch-card .switch-control { grid-column: auto; justify-self: auto; margin-top: 0; }
+            .switch-card.mode-select-card { grid-template-columns: auto 1fr; }
+            .switch-card.mode-select-card .switch-control { grid-column: 1 / -1; }
 
             .list-mgmt-layout { flex-direction: column; } 
             .list-submenu { flex-direction: row; flex-wrap: wrap; justify-content: flex-start; gap: 0.5rem; border-right: none; border-bottom: 1px solid var(--border-color); margin: 0; padding: 0.8rem 0; } 
@@ -936,6 +944,7 @@
         </div>
     </div>
     
+    <script src="assets/js/switch-profiles.js"></script>
     <script>
         // --- MODIFICATION START ---
         // I have reviewed and refactored the entire script block for clarity, 
@@ -982,7 +991,7 @@
         let autoRefreshTimer = null; 
         let isRefreshing = false; 
         let currentTheme = 'light';
-        let coreMode = 'A';
+        let coreMode = 'secure';
         let isMgmtTabInitialized = { config: false, list: false };
 
         let currentModalData = { type: null, rawEntries: [], filteredEntries: [], totalCount: 0, loadTime: 0 };
@@ -998,15 +1007,7 @@
             '打开文件描述符': 'fa-folder-open' 
         };
 
-        const switchProfiles = [
-            { tag: 'switch3', name: '核心运行模式', tip: '切换后将清空自动生成的分流规则，确保完全按照新模式分流（兼容/安全模式理论上分流效果无差异）。兼容模式性能更高，安全模式防泄露和劫持能力更强。', modes: { 'A': { name: '兼容模式', icon: 'fa-globe-americas' }, 'B': { name: '安全模式', icon: 'fa-shield-alt' }}},
-            { tag: 'switch1', name: '请求屏蔽开关', desc: '对无解析结果的请求进行屏蔽', tip: '建议开启，避免无ipv4及ipv6结果的非必要DNS解析。', icon: 'fa-ban', valueForOn: 'A' },
-            { tag: 'switch5', name: '类型屏蔽开关', desc: '屏蔽 SOA、PTR、HTTPS 等请求类型', tip: '建议开启，可减少不必要的网络请求，提高效率。', icon: 'fa-ban', valueForOn: 'A' },
-            { tag: 'switch6', name: 'IPV6屏蔽开关', desc: '屏蔽AAAA请求类型', tip: '无IPV6网络环境建议开启', icon: 'fa-ban', valueForOn: 'A' },
-            { tag: 'switch2', name: '指定 Client 开关', desc: '对特定客户端 IP 应用分流策略', tip: '按需开启。需要 MosDNS 监听53端口，并正确配置 client_ip 名单。', icon: 'fa-user-secret', valueForOn: 'A' },
-            { tag: 'switch4', name: '过期缓存开关', desc: '启用 Lazy Cache（乐观缓存）', tip: '建议开启，可以提升重复查询的响应速度，即使缓存已过期。', icon: 'fa-history', valueForOn: 'A' },
-            { tag: 'switch7', name: '广告屏蔽开关', desc: '启用Adguard广告屏蔽在线规则支持', tip: '此开关开启后，勾选的在线列表才会生效。', icon: 'fa-history', valueForOn: 'A' },
-        ];
+        const switchProfiles = window.MOSDNS_SWITCH_UI_PROFILES || [];
         
         const ipSetProfiles = [ 
             { tag: 'client_ip', name: '客户端 IP (IPSet)', icon: 'fa-network-wired' } 
@@ -1193,7 +1194,7 @@
                 });
                 const cachePromise = Promise.all(cacheOrder.map(async key => {
                     const config = cacheConfig[key];
-                    const effectiveTag = coreMode === 'B' ? config.modeB : config.default;
+                    const effectiveTag = coreMode === 'secure' ? config.modeB : config.default;
                     try {
                         const response = await fetch(`/plugins/${effectiveTag}/stats`);
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1258,7 +1259,7 @@
             cacheOrder.forEach(key => {
                 let card = D.querySelector(`.card[data-tag="${key}"]`);
                 const config = cacheConfig[key];
-                let title = coreMode === 'B' ? (config.titleModeB || config.title) : config.title;
+                let title = coreMode === 'secure' ? (config.titleModeB || config.title) : config.title;
                 const shouldBeVisible = visibleCards.includes(key);
 
                 let titleHTML = `<span>${title}</span>`;
@@ -1340,7 +1341,7 @@
         function hideErrorModal() { getById('error-modal').classList.remove('visible'); }
         async function updateCoreModeStatus() {
             try {
-                const response = await fetch('/plugins/switch3/show');
+                const response = await fetch('/plugins/core_mode/show');
                 if (response.ok) coreMode = (await response.text()).trim();
             } catch (e) { console.error("无法获取核心模式状态:", e); }
         }
@@ -1348,7 +1349,8 @@
         async function postApi(path, payload) {
             const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `请求失败，状态码: ${response.status}`); }
-            return response;
+            const contentType = response.headers.get('content-type') || '';
+            return contentType.includes('application/json') ? response.json() : response.text();
         }
 
         // 覆盖配置：加载与保存（移动版表单）
@@ -1376,8 +1378,7 @@
                 return;
             }
             try {
-                const res = await postApi('/api/v1/overrides', payload);
-                await res.text();
+                await postApi('/api/v1/overrides', payload);
                 showToast('覆盖配置已保存');
             } catch (e) {
                 showToast('保存覆盖配置失败', 'error');
@@ -1391,38 +1392,51 @@
             isMgmtTabInitialized.config = false;
             try {
                 await updateCoreModeStatus();
-                const fetchPromises = switchProfiles.map(p => fetch(`/plugins/${p.tag}/show`));
-                const results = await Promise.allSettled(fetchPromises);
-                
+                const response = await fetch('/plugins/switches/show');
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                const list = await response.json();
+                const valueMap = new Map(list.map(item => [item.name, item.value]));
                 const statuses = {};
-                for (let i = 0; i < results.length; i++) {
-                    const result = results[i];
-                    const profile = switchProfiles[i];
-                    if (result.status === 'fulfilled' && result.value.ok) {
-                        statuses[profile.tag] = (await result.value.text()).trim();
-                    } else {
-                        const reason = result.reason ? result.reason.message : (result.value ? `HTTP ${result.value.status}` : 'Unknown Error');
-                        console.error(`获取 ${profile.tag} 状态失败:`, reason);
-                        statuses[profile.tag] = 'error';
-                    }
-                }
+                switchProfiles.forEach(profile => {
+                    statuses[profile.tag] = valueMap.get(profile.tag) || 'error';
+                });
                 
                 container.innerHTML = ''; 
-                const masterProfile = switchProfiles.find(p => p.modes);
-                if (masterProfile) {
-                    const masterCard = createElement('div', 'master-switch-card');
-                    const currentState = statuses[masterProfile.tag];
-                    const titleHTML = `<h5 class="subsection-title"><i class="fas fa-satellite-dish"></i> <span>${masterProfile.name}</span>${masterProfile.tip ? `<i class="fas fa-info-circle info-tooltip-icon" data-tooltip="${masterProfile.tip}"></i>` : ''}</h5>`;
-                    
-                    masterCard.innerHTML = titleHTML + 
-                        (currentState === 'error' ? `<p class="error-message" style="padding:0;background:none;border:none;text-align:center;color:var(--error-color);">获取状态失败</p>` :
-                        `<div class="segmented-control">
-                            <div class="glider" style="transform: translateX(${currentState === 'A' ? '0%' : '100%'});"></div>
-                            ${Object.entries(masterProfile.modes).map(([val, {name, icon}]) => `<button class="${currentState===val?'active':''}" data-value="${val}" data-switch-tag="${masterProfile.tag}"><i class="fas ${icon}"></i> ${name}</button>`).join('')}
-                        </div>`);
-                    if (currentState !== 'error') masterCard.querySelectorAll('.segmented-control button').forEach(btn => { btn.onclick = () => handleMasterSwitch(btn); });
-                    container.appendChild(masterCard);
-                }
+                switchProfiles.filter(p => p.modes).forEach(profile => {
+                    const modeCard = createElement('div', 'master-switch-card');
+                    const currentState = statuses[profile.tag];
+                    const titleHTML = `<h5 class="subsection-title"><i class="fas fa-satellite-dish"></i> <span>${profile.name}</span>${profile.tip ? `<i class="fas fa-info-circle info-tooltip-icon" data-tooltip="${profile.tip}"></i>` : ''}</h5>`;
+
+                    if (profile.control === 'select') {
+                        modeCard.classList.add('switch-card', 'mode-select-card');
+                        modeCard.innerHTML = currentState === 'error'
+                            ? `<i class="icon-area fas ${profile.icon}"></i><div class="switch-content">${titleHTML}<p style="color:var(--error-color);">获取状态失败</p></div>`
+                            : `<i class="icon-area fas ${profile.icon}"></i>
+                               <div class="switch-content">${titleHTML}<p>${profile.desc || ''}</p></div>
+                               <div class="switch-control">
+                                   <label class="switch-select-wrap">
+                                       <span class="switch-select-label">当前模式</span>
+                                       <select class="switch-select" data-switch-tag="${profile.tag}">
+                                           ${Object.entries(profile.modes).map(([val, {name}]) => `<option value="${val}" ${currentState === val ? 'selected' : ''}>${name}</option>`).join('')}
+                                       </select>
+                                   </label>
+                               </div>`;
+                        if (currentState !== 'error') {
+                            modeCard.querySelector('select.switch-select').onchange = (e) => handleModeSelect(e.target);
+                        }
+                    } else {
+                        const gliderStep = 100 / Object.keys(profile.modes).length;
+                        const currentIndex = Math.max(0, Object.keys(profile.modes).indexOf(currentState));
+                        modeCard.innerHTML = titleHTML +
+                            (currentState === 'error' ? `<p class="error-message" style="padding:0;background:none;border:none;text-align:center;color:var(--error-color);">获取状态失败</p>` :
+                            `<div class="segmented-control">
+                                <div class="glider" style="width:${gliderStep}%;transform: translateX(${currentIndex * 100}%);"></div>
+                                ${Object.entries(profile.modes).map(([val, {name, icon}]) => `<button class="${currentState===val?'active':''}" data-value="${val}" data-switch-tag="${profile.tag}"><i class="fas ${icon}"></i> ${name}</button>`).join('')}
+                            </div>`);
+                        if (currentState !== 'error') modeCard.querySelectorAll('.segmented-control button').forEach(btn => { btn.onclick = () => handleModeSwitch(btn); });
+                    }
+                    container.appendChild(modeCard);
+                });
 
                 const secondaryContainer = createElement('div', 'secondary-switches-list');
                 
@@ -1454,23 +1468,27 @@
             }
         }
         
-        async function handleMasterSwitch(button) {
+        async function handleModeSwitch(button) {
             if (button.classList.contains('active')) return;
             const tag = button.dataset.switchTag, valueToPost = button.dataset.value, control = button.parentElement;
             control.classList.add('loading');
             try {
-                await postApi(`/plugins/${tag}/post`, { value: valueToPost });
-                coreMode = valueToPost; 
-                try {
-                    const requests = ruleListPaths.map(path => fetch(`/plugins/${path}`));
-                    await Promise.all(requests.map(async p => {
-                        const res = await p;
-                        if (!res.ok) throw new Error(`清空规则失败于: ${res.url} (${res.status})`);
-                    }));
-                    showToast('核心模式切换成功，已自动清空分流规则。');
-                } catch(flushError) {
-                    console.error("自动清空分流规则失败:", flushError);
-                    showToast(`核心模式已切换，但自动清空分流规则失败。`, 'error');
+                const result = await postApi(`/plugins/switches/${tag}`, { value: valueToPost });
+                if (tag === 'core_mode') {
+                    coreMode = result.value;
+                    try {
+                        const requests = ruleListPaths.map(path => fetch(`/plugins/${path}`));
+                        await Promise.all(requests.map(async p => {
+                            const res = await p;
+                            if (!res.ok) throw new Error(`清空规则失败于: ${res.url} (${res.status})`);
+                        }));
+                        showToast('核心模式切换成功，已自动清空分流规则。');
+                    } catch(flushError) {
+                        console.error("自动清空分流规则失败:", flushError);
+                        showToast(`核心模式已切换，但自动清空分流规则失败。`, 'error');
+                    }
+                } else {
+                    showToast(`“${switchProfiles.find(p => p.tag === tag)?.name || tag}” 已切换。`);
                 }
 
                 await refreshData(true, true);
@@ -1482,17 +1500,34 @@
             }
         }
 
+        async function handleModeSelect(select) {
+            const tag = select.dataset.switchTag;
+            const valueToPost = select.value;
+            const wrapper = select.closest('.switch-card, .master-switch-card');
+            if (wrapper) wrapper.classList.add('loading');
+            select.disabled = true;
+            try {
+                await postApi(`/plugins/switches/${tag}`, { value: valueToPost });
+                showToast(`“${switchProfiles.find(p => p.tag === tag)?.name || tag}” 已切换。`);
+            } catch (error) {
+                showToast(`切换 "${switchProfiles.find(p => p.tag === tag)?.name || tag}" 失败`, 'error');
+                showErrorModal(error.message);
+            } finally {
+                await initializeSwitchManagementTab();
+            }
+        }
+
         async function handleSecondarySwitch(checkbox) {
             const tag = checkbox.dataset.switchTag;
             const card = getById(`switch-card-${tag}`); card.classList.add('loading'); checkbox.disabled = true;
             const profile = switchProfiles.find(p => p.tag === tag);
-            const valueToPost = checkbox.checked ? profile.valueForOn : (profile.valueForOn === 'A' ? 'B' : 'A');
+            const valueToPost = checkbox.checked ? profile.valueForOn : profile.valueForOff;
             try {
-                await postApi(`/plugins/${tag}/post`, { value: valueToPost });
+                await postApi(`/plugins/switches/${tag}`, { value: valueToPost });
                 showToast(`“${profile.name}” 已${checkbox.checked ? '启用' : '禁用'}`);
             } catch (error) {
                 showToast(`切换 "${profile.name}" 失败`, 'error');
-                showErrorModal(e.message);
+                showErrorModal(error.message);
             } finally {
                 await initializeSwitchManagementTab();
             }
@@ -1888,7 +1923,7 @@
             };
             getById('save-rules-btn').addEventListener('click', () => { if (confirm('确定保存所有分流规则吗?')) { saveAllRulesAndNotify(); } });
             createApiAction('flush-rules-btn', ruleListPaths, '【危险操作】确定清空所有分流规则吗?', '分流规则已清空。');
-            getById('flush-cache-btn').addEventListener('click', async () => { if (!confirm('确定清空全部缓存吗? 此操作将根据当前核心运行模式清空对应的缓存。')) { return; } const cacheToFlush = coreMode === 'B' ? 'cache_all_noleak' : 'cache_all'; const path = `/plugins/${cacheToFlush}/flush`; try { const response = await fetch(path); if (!response.ok) { const errorText = await response.text(); throw new Error(`清空缓存失败于 ${path}: ${errorText || response.statusText}`); } showToast('全部缓存已清空，正在刷新数据...', 'success'); await refreshData(false, true); } catch (e) { showToast('清空缓存操作失败！', 'error'); showErrorModal(e.message); } });
+            getById('flush-cache-btn').addEventListener('click', async () => { if (!confirm('确定清空全部缓存吗? 此操作将根据当前核心运行模式清空对应的缓存。')) { return; } const cacheToFlush = coreMode === 'secure' ? 'cache_all_noleak' : 'cache_all'; const path = `/plugins/${cacheToFlush}/flush`; try { const response = await fetch(path); if (!response.ok) { const errorText = await response.text(); throw new Error(`清空缓存失败于 ${path}: ${errorText || response.statusText}`); } showToast('全部缓存已清空，正在刷新数据...', 'success'); await refreshData(false, true); } catch (e) { showToast('清空缓存操作失败！', 'error'); showErrorModal(e.message); } });
             getById('restart-mosdns-btn').onclick = async () => { if (confirm('【危险操作】此操作将首先保存所有分流规则，然后重启 MosDNS。确定要继续吗?')) { const saveSuccess = await saveAllRulesAndNotify(); if (saveSuccess) { showToast('规则已保存，正在发送重启命令...', 'success'); try { const response = await fetch('/plugins/my_fakeiplist/restartall'); if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `重启命令请求失败，状态码: ${response.status}`); } showToast('MosDNS 正在重启，页面即将刷新...'); setTimeout(() => location.reload(), 2000); } catch (e) { showToast('重启命令发送失败', 'error'); showErrorModal(e.message); } } else { showToast('由于规则保存失败，重启操作已取消。', 'error'); } } };getById('dns-log-page-btn').onclick = () => { const url = `http://${window.location.hostname}:${window.location.port}/log`; window.open(url, '_blank'); };
             
             const showEndpoints = { '请求排行': 'top_domains','fakeip 域名': 'my_fakeiplist', 'realip 域名': 'my_realiplist', '无 V4 域名': 'my_nov4list', '无 V6 域名': 'my_nov6list', '全部缓存（兼容）': 'cache_all', '全部缓存（安全）': 'cache_all_noleak','国内缓存': 'cache_cn', '国外缓存（兼容）': 'cache_google', '国外缓存（安全）': 'cache_google_node','节点缓存': 'cache_node' };

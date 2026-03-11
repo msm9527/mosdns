@@ -77,45 +77,43 @@ plugins:
     args:
       - matches:                            #阻止SOA PTR HTTPS类型的dns查询
         - "qtype 6 12 65"
-        - switch5 'A'
+        - switch 'block_query_type:on'
         exec: reject 0
       - matches:                            #阻止AAAA类型的dns查询
         - "qtype 28"
-        - switch6 'A'
+        - switch 'block_ipv6:on'
         exec: reject 0
       - exec: $unified_matcher1             #匹配屏蔽域名表并设置相应的fast_mark
       - matches:                            #屏蔽黑名单域名
         - fast_mark 1
-        - switch1 'A'
+        - switch 'block_response:on'
         exec: reject 3
       - matches:                            #屏蔽没有v4地址的域名
         - fast_mark 2
         - qtype 1
-        - switch1 'A'
+        - switch 'block_response:on'
         exec: reject 0
       - matches:                            #屏蔽没有v6地址的域名
         - fast_mark 3
         - qtype 28
-        - switch1 'A'
+        - switch 'block_response:on'
         exec: reject 0
       - matches:                            #屏蔽广告
         - fast_mark 5
-        - switch7 'A'
+        - switch 'ad_block:on'
         exec: reject 3
       - matches: fast_mark 6                #向上游请求ddns域名，无过期缓存
         exec:
           - $domestic
           - exit
-      - matches:                            #当mosdns占用53直面客户端，只有client_ip.txt中指定的IP才科学
+      - matches:                            # 客户端代理模式=whitelist：只有 client_ip.txt 中的客户端允许走代理
         - "!fast_mark 48"                   #在快速路径中没有比对过
-        - switch2 'A'
-        - switch12 'B'
+        - switch 'client_proxy_mode:whitelist'
         - "!client_ip $client_ip"
         exec: fast_mark 39
-      - matches:                            #当mosdns占用53直面客户端，client_ip.txt中指定的IP不科学
+      - matches:                            # 客户端代理模式=blacklist：client_ip.txt 中的客户端强制直连
         - "!fast_mark 48"                   #在快速路径中没有比对过
-        - switch2 'B'
-        - switch12 'A'
+        - switch 'client_proxy_mode:blacklist'
         - "client_ip $client_ip"
         exec: fast_mark 39
       - matches: fast_mark 39
@@ -124,20 +122,20 @@ plugins:
           - tag_setter 指定客户端直连
           - exit
       - matches:
-        - switch8 'A'                       #Prefer IPV4开
-        - switch10 'B'                      #Prefer IPV6关
+        - switch 'prefer_ipv4:on'
+        - switch 'prefer_ipv6:off'
         exec: prefer_ipv4
       - matches:
-        - switch8 'B'                       #Prefer IPV4关
-        - switch10 'A'                      #Prefer IPV6开
+        - switch 'prefer_ipv4:off'
+        - switch 'prefer_ipv6:on'
         exec: prefer_ipv6
       - matches:                            #web ui中选择泄露版（默认），用cache_all，否则用cache_all_noleak
-        - switch3 'A'                       #泄露模式
-        - switch13 'A'                      #缓存开关打开
+        - switch 'core_mode:compat'
+        - switch 'main_cache:on'
         exec: $cache_all
       - matches:
-        - switch3 'B'                       #非泄露模式
-        - switch13 'A'                      #缓存开关打开
+        - switch 'core_mode:secure'
+        - switch 'main_cache:on'
         exec: $cache_all_noleak
 
   - tag: sequence_6666

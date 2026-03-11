@@ -189,7 +189,7 @@ api:
 
 ### 匹配器类
 
-`client_ip, cname, env, has_resp, has_wanted_ans, ptr_ip, qclass, qname, qtype, random, rcode, resp_ip, string_exp, fast_mark, mark, switch, switch1..switch16`
+`client_ip, cname, env, has_resp, has_wanted_ans, ptr_ip, qclass, qname, qtype, random, rcode, resp_ip, string_exp, fast_mark, mark, switch`
 
 ### 执行器类
 
@@ -241,4 +241,3 @@ go: go.mod requires go >= 1.26.0 (running go 1.25.4; GOTOOLCHAIN=local)
 - 新增插件时优先实现清晰的 `Args` + API 路由，避免隐式配置。
 - 对外接口若计划长期演进，建议补充 OpenAPI 规范与版本策略。
 - 对高频接口（如 show/logs）已存在分页参数的插件，建议统一参数命名与响应结构。
-

@@ -21,7 +21,7 @@ plugins:
         exec: $my_nov6list
       - matches:                                           #开启cntomihomo开关后国内域名向mihomo请求fakeip
         - fast_mark 8
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_exit
       - matches: fast_mark 8                               #白名单中域名无ipv6，不再向国外dns请求
         exec: exit
@@ -47,7 +47,7 @@ plugins:
     args:
       - matches: "!fast_mark 11"                          #域名不在生成国内域名列表中
         exec: $my_realiplist
-      - matches: switch9 'B'                              #开启cntomihomo开关后国内域名向mihomo请求fakeip
+      - matches: switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_exit
       - exec: exit                                        #默认接受当前realip结果
 
@@ -81,7 +81,7 @@ plugins:
         - "fast_mark 21"
         - "!fast_mark 17"                                  #对于列表外的域名此时尚未请求任何上游dns，不能结束
         exec: $sequence_ipv6_realip_finalize
-      - matches: switch3 'A'                               #兼容模式处理列表外域名
+      - matches: switch 'core_mode:compat'
         exec: $sequence_not_in_list_leak_v6
-      - matches: switch3 'B'                               #安全模式处理列表外域名
+      - matches: switch 'core_mode:secure'
         exec: $sequence_not_in_list_noleak_v6

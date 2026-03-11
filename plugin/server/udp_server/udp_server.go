@@ -35,6 +35,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/IrineSistiana/mosdns/v5/plugin/server/server_utils"
+	"github.com/IrineSistiana/mosdns/v5/plugin/switch/switchmeta"
 	"github.com/miekg/dns"
 	"go.uber.org/zap"
 )
@@ -264,7 +265,7 @@ type fastHandler struct {
 func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
 	payload := h.next.Handle(ctx, q, meta, pack)
 
-	if h.sw != nil && h.sw.GetValue() != "A" {
+	if h.sw != nil && h.sw.GetValue() != "on" {
 		return payload
 	}
 
@@ -296,9 +297,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	}
 
 	var sw15 SwitchPlugin
-	if p := bp.M().GetPlugin("switch15"); p != nil {
-		sw15, _ = p.(SwitchPlugin)
-	}
+	sw15 = findSwitchPlugin(bp, switchmeta.MustLookup("udp_fast_path"))
 
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -361,7 +360,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 
 func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool) {
 	var once sync.Once
-	var sw15, sw5, sw6, sw1, sw7, sw2, sw12 SwitchPlugin
+	var sw15, sw5, sw6, sw1, sw7, clientProxyMode SwitchPlugin
 	var dm DomainMapperPlugin
 	var ipSet IPSetPlugin
 	readyAt := time.Now().Add(warmup)
@@ -377,27 +376,12 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			return server.FastActionContinue, 0, 0, "", false
 		}
 		once.Do(func() {
-			if p := bp.M().GetPlugin("switch15"); p != nil {
-				sw15, _ = p.(SwitchPlugin)
-			}
-			if p := bp.M().GetPlugin("switch5"); p != nil {
-				sw5, _ = p.(SwitchPlugin)
-			}
-			if p := bp.M().GetPlugin("switch6"); p != nil {
-				sw6, _ = p.(SwitchPlugin)
-			}
-			if p := bp.M().GetPlugin("switch1"); p != nil {
-				sw1, _ = p.(SwitchPlugin)
-			}
-			if p := bp.M().GetPlugin("switch7"); p != nil {
-				sw7, _ = p.(SwitchPlugin)
-			}
-			if p := bp.M().GetPlugin("switch2"); p != nil {
-				sw2, _ = p.(SwitchPlugin)
-			}
-			if p := bp.M().GetPlugin("switch12"); p != nil {
-				sw12, _ = p.(SwitchPlugin)
-			}
+			sw15 = findSwitchPlugin(bp, switchmeta.MustLookup("udp_fast_path"))
+			sw5 = findSwitchPlugin(bp, switchmeta.MustLookup("block_query_type"))
+			sw6 = findSwitchPlugin(bp, switchmeta.MustLookup("block_ipv6"))
+			sw1 = findSwitchPlugin(bp, switchmeta.MustLookup("block_response"))
+			sw7 = findSwitchPlugin(bp, switchmeta.MustLookup("ad_block"))
+			clientProxyMode = findSwitchPlugin(bp, switchmeta.MustLookup("client_proxy_mode"))
 			if p := bp.M().GetPlugin("unified_matcher1"); p != nil {
 				dm, _ = p.(DomainMapperPlugin)
 			}
@@ -406,7 +390,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		})
 
-		if sw15 == nil || sw15.GetValue() != "A" {
+		if sw15 == nil || sw15.GetValue() != "on" {
 			return server.FastActionContinue, 0, 0, "", false
 		}
 		qname, qtype, qEnd, ok := parseFastQuestion(reqLen, buf)
@@ -418,7 +402,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		}
 
 		if qtype == 6 || qtype == 12 || qtype == 65 {
-			if sw5 != nil && sw5.GetValue() == "A" {
+			if sw5 != nil && sw5.GetValue() == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
@@ -426,7 +410,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 		if qtype == 28 {
-			if sw6 != nil && sw6.GetValue() == "A" {
+			if sw6 != nil && sw6.GetValue() == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
@@ -451,19 +435,19 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 
 		if sw1 != nil {
 			sw1Val := sw1.GetValue()
-			if (marks&(1<<1)) != 0 && sw1Val == "A" {
+			if (marks&(1<<1)) != 0 && sw1Val == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
 				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false
 			}
-			if (marks&(1<<2)) != 0 && qtype == 1 && sw1Val == "A" {
+			if (marks&(1<<2)) != 0 && qtype == 1 && sw1Val == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
 				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
 			}
-			if (marks&(1<<3)) != 0 && qtype == 28 && sw1Val == "A" {
+			if (marks&(1<<3)) != 0 && qtype == 28 && sw1Val == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
@@ -471,7 +455,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 		if sw7 != nil {
-			if (marks&(1<<5)) != 0 && sw7.GetValue() == "A" {
+			if (marks&(1<<5)) != 0 && sw7.GetValue() == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
@@ -484,17 +468,14 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			ipMatch = ipSet.Match(remoteAddr.Addr().Unmap())
 			marks |= (1 << 48)
 		}
-		sw2Val, sw12Val := "", ""
-		if sw2 != nil {
-			sw2Val = sw2.GetValue()
-		}
-		if sw12 != nil {
-			sw12Val = sw12.GetValue()
+		mode := "all"
+		if clientProxyMode != nil {
+			mode = clientProxyMode.GetValue()
 		}
 
-		if sw2Val == "A" && sw12Val == "B" && !ipMatch {
+		if mode == "whitelist" && !ipMatch {
 			marks |= (1 << 39)
-		} else if sw2Val == "B" && sw12Val == "A" && ipMatch {
+		} else if mode == "blacklist" && ipMatch {
 			marks |= (1 << 39)
 		}
 
@@ -513,6 +494,15 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		}
 		return server.FastActionContinue, 0, marks, dset, dsetMatched
 	}
+}
+
+func findSwitchPlugin(bp *coremain.BP, def switchmeta.Definition) SwitchPlugin {
+	if p := bp.M().GetPlugin(def.Name); p != nil {
+		if sw, ok := p.(SwitchPlugin); ok {
+			return sw
+		}
+	}
+	return nil
 }
 
 func makeReject(reqLen int, buf []byte, offset int, rcode byte) int {

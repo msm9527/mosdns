@@ -55,10 +55,10 @@ type fastExecutor interface {
 
 type Sequence struct {
 	chain            []*ChainNode
-	anonymousPlugins[]any
+	anonymousPlugins []any
 	logger           *zap.Logger
 	isInline         bool
-	instructions[]instruction
+	instructions     []instruction
 }
 
 func (s *Sequence) Close() error {
@@ -68,18 +68,18 @@ func (s *Sequence) Close() error {
 	return nil
 }
 
-type Args =[]RuleArgs
+type Args = []RuleArgs
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	return NewSequence(NewBQ(bp.M(), bp.L()), *args.(*Args))
 }
 
-func NewSequence(bq BQ, ra[]RuleArgs) (*Sequence, error) {
+func NewSequence(bq BQ, ra []RuleArgs) (*Sequence, error) {
 	s := &Sequence{
 		logger: bq.L(),
 	}
 
-	var rc[]RuleConfig
+	var rc []RuleConfig
 	for _, ra := range ra {
 		rc = append(rc, parseArgs(ra))
 	}
@@ -92,13 +92,13 @@ func NewSequence(bq BQ, ra[]RuleArgs) (*Sequence, error) {
 }
 
 func (s *Sequence) compile() {
-	var ins[]instruction
+	var ins []instruction
 	for _, node := range s.chain {
 		instr := instruction{node: node}
 
 		// 1. 检查 Matchers 是否全都可以优化
 		allMatchersOptimizable := true
-		var checks[]func(qCtx *query_context.Context) bool
+		var checks []func(qCtx *query_context.Context) bool
 
 		for _, m := range node.Matches {
 			if fm, ok := m.Matcher.(fastMatcher); ok {
@@ -106,8 +106,8 @@ func (s *Sequence) compile() {
 					name := m.Name
 
 					// [终极优化] 预先识别哪些 Matcher 需要附加副作用 (KeyDomainSet)
-					isSwitch6 := strings.HasPrefix(name, "anonymous_match(switch6:")
-					isSwitch5 := strings.HasPrefix(name, "anonymous_match(switch5:")
+					isSwitch6 := strings.HasPrefix(name, "anonymous_match(switch: block_ipv6:")
+					isSwitch5 := strings.HasPrefix(name, "anonymous_match(switch: block_query_type:")
 					isQnameDollar := strings.HasPrefix(name, "anonymous_match(qname: $")
 					isQnameNormal := strings.HasPrefix(name, "anonymous_match(qname: ")
 
@@ -225,7 +225,7 @@ func (s *Sequence) newNode(bq BQ, r RuleConfig, ri int) (*ChainNode, error) {
 			n.PluginName = fmt.Sprintf("anonymous_exec(%s: %v)", ec.Type, ec.Args)
 		}
 	} else {
-		var names[]string
+		var names []string
 		for _, ec := range r.Execs {
 			if len(ec.Tag) > 0 {
 				names = append(names, ec.Tag)
@@ -254,10 +254,10 @@ func (s *Sequence) newNode(bq BQ, r RuleConfig, ri int) (*ChainNode, error) {
 		n.E = e
 		n.RE = re
 	} else if len(r.Execs) > 1 {
-		var subRules[]RuleConfig
+		var subRules []RuleConfig
 		for _, ec := range r.Execs {
 			subRules = append(subRules, RuleConfig{
-				Execs:[]ExecConfig{ec},
+				Execs: []ExecConfig{ec},
 			})
 		}
 
@@ -390,7 +390,7 @@ func (r reverseMatch) GetFastCheck() func(qCtx *query_context.Context) bool {
 	if fm, ok := r.m.(fastMatcher); ok {
 		if innerCheck := fm.GetFastCheck(); innerCheck != nil {
 			return func(qCtx *query_context.Context) bool {
-				return !innerCheck(qCtx) 
+				return !innerCheck(qCtx)
 			}
 		}
 	}

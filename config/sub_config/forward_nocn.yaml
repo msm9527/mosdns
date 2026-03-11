@@ -22,7 +22,7 @@ plugins:
   - tag: sequence_google_in
     type: sequence
     args:
-      - matches: switch4 'A'
+      - matches: switch 'branch_cache:on'
         exec: $cache_google
       - exec: $foreign
       - exec: cname_remover

@@ -3,14 +3,14 @@
 # 核心动作:
 # - 命中 `direct_ip` / `geoip_cn` 后归入直连记忆（my_realiplist）。
 # - 命中非 CN 结果时归入代理记忆（my_fakeiplist）。
-# - 按 `switch9` 决定国内域名是返回 realip 还是转 fakeip。
+# - 按 `cn_answer_mode` 决定国内域名是返回 realip 还是转 fakeip。
 #列表外的域名获取ip后进行对比决定如何发放ip
 plugins:
   - tag: sequence_not_in_list_direct_finalize
     type: sequence
     args:
       - exec: $my_realiplist                     #把此域名加入自生成国内域名列表
-      - matches: switch9 'B'                     #开启cntomihomo开关后国内域名向mihomo请求fakeip
+      - matches: switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake
       - exec: exit                               #上游dns返回了自定义直连ip列表中的ip，结束流程
 
@@ -18,7 +18,7 @@ plugins:
     type: sequence
     args:
       - exec: $my_realiplist                     #如果获取了cn ip，则加入自生成国内域名列表
-      - matches: switch9 'B'                     #开启cntomihomo开关后国内域名向mihomo请求fakeip，否则接受上游ip
+      - matches: switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake
 
   - tag: sequence_not_in_list_ipmatch

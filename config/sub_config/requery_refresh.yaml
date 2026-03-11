@@ -55,9 +55,9 @@ plugins:
   - tag: sequence_local_divert_refresh
     type: sequence
     args:
-      - matches: switch9 'A'
+      - matches: switch 'cn_answer_mode:realip'
         exec: $sequence_local_exit_refresh
-      - matches: switch9 'B'
+      - matches: switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_refresh
 
   - tag: sequence_fakeip_refresh
@@ -87,7 +87,7 @@ plugins:
     args:
       - exec: $my_realiplist
       - matches:
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_refresh
       - exec: exit
 
@@ -96,7 +96,7 @@ plugins:
     args:
       - exec: $my_realiplist
       - matches:
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_refresh
 
   - tag: sequence_not_in_list_ipmatch_refresh
@@ -221,7 +221,7 @@ plugins:
         exec: $my_nov4list
       - matches:
         - fast_mark 8
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_exit_refresh
       - matches: fast_mark 8
         exec: exit
@@ -246,7 +246,7 @@ plugins:
       - matches: "!fast_mark 11"
         exec: $my_realiplist
       - matches:
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_exit_refresh
       - exec: exit
 
@@ -264,7 +264,7 @@ plugins:
         exec: $my_nov6list
       - matches:
         - fast_mark 8
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_exit_refresh
       - matches: fast_mark 8
         exec: exit
@@ -289,7 +289,7 @@ plugins:
       - matches: "!fast_mark 11"
         exec: $my_realiplist
       - matches:
-        - switch9 'B'
+        - switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake_exit_refresh
       - exec: exit
 
@@ -307,9 +307,9 @@ plugins:
         exec: fast_mark 19
       - matches: fast_mark 19
         exec: $sequence_ipv4_realip_finalize_refresh
-      - matches: switch3 'A'
+      - matches: switch 'core_mode:compat'
         exec: $sequence_not_in_list_leak_v4_refresh
-      - matches: switch3 'B'
+      - matches: switch 'core_mode:secure'
         exec: $sequence_not_in_list_noleak_v4_refresh
 
   - tag: sequence_ipv6_refresh
@@ -341,9 +341,9 @@ plugins:
         - "fast_mark 21"
         - "!fast_mark 17"
         exec: $sequence_ipv6_realip_finalize_refresh
-      - matches: switch3 'A'
+      - matches: switch 'core_mode:compat'
         exec: $sequence_not_in_list_leak_v6_refresh
-      - matches: switch3 'B'
+      - matches: switch 'core_mode:secure'
         exec: $sequence_not_in_list_noleak_v6_refresh
 
   # 重要说明（请保留）:
@@ -353,51 +353,49 @@ plugins:
   # 关于 !fast_mark 48:
   # - fast_mark 48 由 UDP 快路径在已完成 client_ip 判断时预先置位。
   # - 当 48 已存在时，说明“指定客户端直连判定”已经在快路径做过，主链路不应重复判定。
-  # - 因此下面两段 switch2/switch12/client_ip 规则必须带 !fast_mark 48 保护，避免重复置位 fast_mark 39。
+  # - 因此下面两段 client_proxy_mode/client_ip 规则必须带 !fast_mark 48 保护，避免重复置位 fast_mark 39。
   - tag: sequence_requery_refresh
     type: sequence
     args:
       - matches:
         - "qtype 6 12 65"
-        - switch5 'A'
+        - switch 'block_query_type:on'
         exec: reject 0
       - matches:
         - "qtype 28"
-        - switch6 'A'
+        - switch 'block_ipv6:on'
         exec: reject 0
       - exec: $unified_matcher1
       - matches:
         - fast_mark 1
-        - switch1 'A'
+        - switch 'block_response:on'
         exec: reject 3
       - matches:
         - fast_mark 2
         - qtype 1
-        - switch1 'A'
+        - switch 'block_response:on'
         exec: reject 0
       - matches:
         - fast_mark 3
         - qtype 28
-        - switch1 'A'
+        - switch 'block_response:on'
         exec: reject 0
       - matches:
         - fast_mark 5
-        - switch7 'A'
+        - switch 'ad_block:on'
         exec: reject 3
       - matches: fast_mark 6
         exec:
           - $domestic
           - exit
-      - matches:                               # 仅在快路径未做过 client_ip 判定时才执行
+      - matches:                               # 客户端代理模式=whitelist：只有 client_ip.txt 中的客户端允许走代理
         - "!fast_mark 48"
-        - switch2 'A'
-        - switch12 'B'
+        - switch 'client_proxy_mode:whitelist'
         - "!client_ip $client_ip"
         exec: fast_mark 39
-      - matches:                               # 仅在快路径未做过 client_ip 判定时才执行
+      - matches:                               # 客户端代理模式=blacklist：client_ip.txt 中的客户端强制直连
         - "!fast_mark 48"
-        - switch2 'B'
-        - switch12 'A'
+        - switch 'client_proxy_mode:blacklist'
         - "client_ip $client_ip"
         exec: fast_mark 39
       - matches: fast_mark 39
@@ -406,12 +404,12 @@ plugins:
           - tag_setter 指定客户端直连
           - exit
       - matches:
-        - switch8 'A'
-        - switch10 'B'
+        - switch 'prefer_ipv4:on'
+        - switch 'prefer_ipv6:off'
         exec: prefer_ipv4
       - matches:
-        - switch8 'B'
-        - switch10 'A'
+        - switch 'prefer_ipv4:off'
+        - switch 'prefer_ipv6:on'
         exec: prefer_ipv6
       - exec: $rewrite
       - matches: qtype 1

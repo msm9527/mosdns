@@ -27,7 +27,7 @@ plugins:
   - tag: sequence_local
     type: sequence
     args:
-      - matches: switch4 'A'
+      - matches: switch 'branch_cache:on'
         exec: $cache_cn
       - exec: $domestic
       - exec: cname_remover
@@ -36,7 +36,7 @@ plugins:
   - tag: sequence_local_fake
     type: sequence
     args:
-      - matches: switch4 'A'
+      - matches: switch 'branch_cache:on'
         exec: $cache_cnmihomo
       - matches: fast_mark 10
         exec: $sequence_local
@@ -51,7 +51,7 @@ plugins:
     args:
       - matches: fast_mark 10
         exec: exit               #直接采用前一步国内dns的realip并结束
-      - matches: switch4 'A'
+      - matches: switch 'branch_cache:on'
         exec: $cache_cnmihomo
       - exec: $cnfake
       - exec: ttl 5
@@ -61,16 +61,16 @@ plugins:
   - tag: sequence_local_divert
     type: sequence
     args:
-      - matches: switch9 'A'              #realip
+      - matches: switch 'cn_answer_mode:realip'
         exec: $sequence_local
-      - matches: switch9 'B'              #fakeip
+      - matches: switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake
 
 #缓存序列-列表外域名
   - tag: sequence_google
     type: sequence
     args:
-      - matches: switch4 'A'
+      - matches: switch 'branch_cache:on'
         exec: $cache_google
       - exec: $foreign
       - exec: cname_remover

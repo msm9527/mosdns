@@ -166,11 +166,11 @@ func (w *ChainWalker) ExecNext(ctx context.Context, qCtx *query_context.Context)
 				if _, exists := qCtx.GetValue(query_context.KeyDomainSet); !exists {
 					name := m.Name
 					if strings.HasPrefix(name, "anonymous_match(") {
-						if strings.HasPrefix(name, "anonymous_match(switch6:") {
+						if strings.HasPrefix(name, "anonymous_match(switch: block_ipv6:") {
 							if len(qCtx.Q().Question) > 0 && qCtx.Q().Question[0].Qtype == 28 {
 								qCtx.StoreValue(query_context.KeyDomainSet, "BANAAAA")
 							}
-						} else if strings.HasPrefix(name, "anonymous_match(switch5:") {
+						} else if strings.HasPrefix(name, "anonymous_match(switch: block_query_type:") {
 							if len(qCtx.Q().Question) > 0 {
 								qtype := qCtx.Q().Question[0].Qtype
 								var domainSetName string

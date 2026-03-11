@@ -10,10 +10,12 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
+	"github.com/IrineSistiana/mosdns/v5/plugin/switch/switchmeta"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -23,6 +25,7 @@ const PluginType = "switch"
 var globalRegistry = struct {
 	sync.RWMutex
 	instances map[string]*Switch
+	apiOnce   sync.Once
 }{
 	instances: make(map[string]*Switch),
 }
@@ -39,10 +42,9 @@ type Args struct {
 
 // Switch represents a single, named switch instance.
 type Switch struct {
-	mutex    sync.RWMutex
-	value    string
-	filePath string
-	name     string
+	value atomic.Value
+	store *stateStore
+	def   switchmeta.Definition
 }
 
 // Register the plugin with mosdns core.
@@ -65,141 +67,56 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if cfg.StateFilePath == "" {
 		return nil, fmt.Errorf("plugin '%s' (name: %s) requires a 'state_file_path'", PluginType, cfg.Name)
 	}
+	def, ok := switchmeta.Lookup(cfg.Name)
+	if !ok {
+		return nil, fmt.Errorf("unknown switch name: %s", cfg.Name)
+	}
 
 	sw := &Switch{
-		filePath: cfg.StateFilePath,
-		name:     cfg.Name,
+		store: getStateStore(cfg.StateFilePath),
+		def:   def,
 	}
-
-	// Get a SugaredLogger for convenient, printf-style logging.
-	// THIS IS THE FIX: added .Sugar()
-	logger := bp.L().Sugar()
-
-	// Ensure the directory for the state file exists.
-	if err := os.MkdirAll(filepath.Dir(sw.filePath), 0755); err != nil {
-		return nil, fmt.Errorf("cannot create dir for switch file '%s': %w", sw.filePath, err)
-	}
-
-	// Load existing state from file.
-	data, err := os.ReadFile(sw.filePath)
-	if err == nil {
-		sw.value = strings.TrimSpace(string(data))
-		// Now logger.Infof will work correctly.
-		logger.Infof("Switch '%s' loaded initial value '%s' from %s", sw.name, sw.value, sw.filePath)
-	} else if os.IsNotExist(err) {
-		// If file does not exist, initialize with an empty value.
-		sw.value = ""
-		if err := os.WriteFile(sw.filePath, []byte(sw.value), 0644); err != nil {
-			// Now logger.Warnf will work correctly.
-			logger.Warnf("Failed to write initial state for switch '%s' to %s: %v", sw.name, sw.filePath, err)
-		} else {
-			// Now logger.Infof will work correctly.
-			logger.Infof("Switch '%s' initialized with empty value, state file created at %s", sw.name, sw.filePath)
-		}
-	} else {
-		// Other read errors.
-		return nil, fmt.Errorf("failed to read switch file '%s': %w", sw.filePath, err)
+	if err := sw.load(); err != nil {
+		return nil, err
 	}
 
 	// Register the instance to the global registry.
 	globalRegistry.Lock()
 	defer globalRegistry.Unlock()
-	if _, exists := globalRegistry.instances[sw.name]; exists {
-		return nil, fmt.Errorf("duplicate switch name detected: '%s'", sw.name)
+	if _, exists := globalRegistry.instances[def.Name]; exists {
+		return nil, fmt.Errorf("duplicate switch name detected: '%s'", def.Name)
 	}
-	globalRegistry.instances[sw.name] = sw
+	globalRegistry.instances[def.Name] = sw
 
-	// Register API endpoints for this instance.
-	// The API will be available at /api/plugins/{tag}/...
 	bp.RegAPI(sw.Api())
+	globalRegistry.apiOnce.Do(func() {
+		bp.M().RegPluginAPI("switches", switchesAPI())
+	})
 
 	return sw, nil
 }
 
-// Exec for a switch plugin is a no-op, as its logic is in the Matcher.
 func (s *Switch) Exec(ctx context.Context, qCtx *query_context.Context, next sequence.ChainWalker) error {
 	return next.ExecNext(ctx, qCtx)
-}
-
-// Api sets up and returns the HTTP routes for managing the switch's state.
-func (s *Switch) Api() *chi.Mux {
-	r := chi.NewRouter()
-	r.Get("/", s.handleGetValue)
-	r.Put("/", s.handleUpdateValue)
-	r.Post("/", s.handleUpdateValue) // Also accept POST for convenience
-	return r
-}
-
-// handleGetValue handles GET requests to fetch the current switch value.
-func (s *Switch) handleGetValue(w http.ResponseWriter, r *http.Request) {
-	s.mutex.RLock()
-	defer s.mutex.RUnlock()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	io.WriteString(w, s.value)
-}
-
-// handleUpdateValue handles PUT/POST requests to update the switch value.
-func (s *Switch) handleUpdateValue(w http.ResponseWriter, r *http.Request) {
-	var newVal string
-
-	contentType := r.Header.Get("Content-Type")
-	if strings.HasPrefix(contentType, "application/json") {
-		var body struct {
-			Value string `json:"value"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "Invalid JSON body. Expected format: {\"value\": \"new_value\"}", http.StatusBadRequest)
-			return
-		}
-		newVal = body.Value
-	} else if strings.HasPrefix(contentType, "application/x-www-form-urlencoded") ||
-		strings.HasPrefix(contentType, "multipart/form-data") {
-		if err := r.ParseForm(); err != nil {
-			http.Error(w, "Invalid form data", http.StatusBadRequest)
-			return
-		}
-		newVal = r.FormValue("value")
-	} else {
-		// Default to reading raw body as value for simple curl requests
-		// e.g., curl -X PUT -d 'new_value' http://...
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			http.Error(w, "Failed to read request body", http.StatusInternalServerError)
-			return
-		}
-		newVal = string(body)
-	}
-
-	// Atomically update the state.
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	// 1. First, try to persist to file.
-	if err := os.WriteFile(s.filePath, []byte(newVal), 0644); err != nil {
-		http.Error(w, "Failed to write to state file: "+err.Error(), http.StatusInternalServerError)
-		return // Important: do not update in-memory value if persistence fails.
-	}
-
-	// 2. Only update in-memory value after successful persistence.
-	s.value = newVal
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Switch '%s' updated to: %s\n", s.name, newVal)
 }
 
 // QuickSetup parses the raw string from a match clause.
 // Expected format: "switch_name:expected_value"
 func QuickSetup(_ sequence.BQ, raw string) (sequence.Matcher, error) {
-	// Trim quotes that might be added by YAML parsers.
 	cleanRaw := strings.Trim(raw, `"'`)
-	
 	parts := strings.SplitN(cleanRaw, ":", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return nil, fmt.Errorf("invalid switch matcher format: '%s'. Expected 'name:value'", cleanRaw)
 	}
-	return &Matcher{name: parts[0], expectedValue: parts[1]}, nil
+	def, ok := switchmeta.Lookup(parts[0])
+	if !ok {
+		return nil, fmt.Errorf("unknown switch name: %s", parts[0])
+	}
+	expected, err := def.NormalizeValue(parts[1])
+	if err != nil {
+		return nil, err
+	}
+	return &Matcher{name: def.Name, expectedValue: expected}, nil
 }
 
 // Matcher implements the sequence.Matcher interface.
@@ -215,15 +132,279 @@ func (m *Matcher) Match(_ context.Context, _ *query_context.Context) (bool, erro
 	globalRegistry.RUnlock()
 
 	if !ok {
-		// This is a configuration error. The switch name used in the matcher
-		// does not correspond to any configured switch instance.
-		// We return false to prevent query failures, but a log at startup
-		// would be ideal (though harder to implement in Matcher).
-		return false, fmt.Errorf("switch with name '%s' not found", m.name)
+		return false, nil
+	}
+	return instance.GetValue() == m.expectedValue, nil
+}
+
+func (m *Matcher) GetFastCheck() func(qCtx *query_context.Context) bool {
+	expected := m.expectedValue
+	name := m.name
+	return func(_ *query_context.Context) bool {
+		globalRegistry.RLock()
+		instance := globalRegistry.instances[name]
+		globalRegistry.RUnlock()
+		if instance == nil {
+			return false
+		}
+		return instance.GetValue() == expected
+	}
+}
+
+func (s *Switch) GetValue() string {
+	if val, ok := s.value.Load().(string); ok {
+		return val
+	}
+	return s.def.DefaultValue
+}
+
+func (s *Switch) Api() *chi.Mux {
+	r := chi.NewRouter()
+	r.Get("/", s.handleGetValue)
+	r.Get("/show", s.handleGetValue)
+	r.Put("/", s.handleUpdateValue)
+	r.Post("/", s.handleUpdateValue)
+	r.Put("/post", s.handleUpdateValue)
+	r.Post("/post", s.handleUpdateValue)
+	return r
+}
+
+func (s *Switch) handleGetValue(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = io.WriteString(w, s.GetValue())
+}
+
+func (s *Switch) handleUpdateValue(w http.ResponseWriter, r *http.Request) {
+	newValue, err := parseIncomingValue(r, s.def)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.store.Set(s.def, newValue); err != nil {
+		http.Error(w, "failed to update switch store: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	s.value.Store(newValue)
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "updated to: %s\n", newValue)
+}
+
+func (s *Switch) setValue(value string) error {
+	if err := s.store.Set(s.def, value); err != nil {
+		return err
+	}
+	s.value.Store(value)
+	return nil
+}
+
+func (s *Switch) load() error {
+	value, err := s.store.Ensure(s.def)
+	if err != nil {
+		return err
+	}
+	s.value.Store(value)
+	return nil
+}
+
+type stateStore struct {
+	path string
+	mu   sync.Mutex
+}
+
+var stateStores struct {
+	sync.Mutex
+	byPath map[string]*stateStore
+}
+
+func getStateStore(path string) *stateStore {
+	stateStores.Lock()
+	defer stateStores.Unlock()
+
+	if stateStores.byPath == nil {
+		stateStores.byPath = make(map[string]*stateStore)
+	}
+	if store := stateStores.byPath[path]; store != nil {
+		return store
+	}
+	store := &stateStore{path: path}
+	stateStores.byPath[path] = store
+	return store
+}
+
+func (s *stateStore) Ensure(def switchmeta.Definition) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	values, err := s.read()
+	if err != nil {
+		return "", err
+	}
+	if current, ok := values[def.Name]; ok {
+		return def.NormalizeValue(current)
 	}
 
-	instance.mutex.RLock()
-	defer instance.mutex.RUnlock()
+	values[def.Name] = def.DefaultValue
+	return def.DefaultValue, s.write(values)
+}
 
-	return instance.value == m.expectedValue, nil
+func (s *stateStore) Set(def switchmeta.Definition, value string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	values, err := s.read()
+	if err != nil {
+		return err
+	}
+	values[def.Name] = value
+	return s.write(values)
+}
+
+func (s *stateStore) read() (map[string]string, error) {
+	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
+		return nil, err
+	}
+
+	data, err := os.ReadFile(s.path)
+	switch {
+	case err == nil:
+		if len(strings.TrimSpace(string(data))) == 0 {
+			return make(map[string]string), nil
+		}
+		values := make(map[string]string)
+		if err := json.Unmarshal(data, &values); err != nil {
+			return nil, fmt.Errorf("invalid switch store %s: %w", s.path, err)
+		}
+		return values, nil
+	case os.IsNotExist(err):
+		return make(map[string]string), nil
+	default:
+		return nil, err
+	}
+}
+
+func (s *stateStore) write(values map[string]string) error {
+	data, err := json.MarshalIndent(values, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(s.path, append(data, '\n'), 0o644)
+}
+
+func parseIncomingValue(r *http.Request, def switchmeta.Definition) (string, error) {
+	contentType := r.Header.Get("Content-Type")
+	var raw string
+
+	switch {
+	case strings.HasPrefix(contentType, "application/json"):
+		var body struct {
+			Value string `json:"value"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			return "", fmt.Errorf("invalid JSON body")
+		}
+		raw = body.Value
+	case strings.HasPrefix(contentType, "application/x-www-form-urlencoded"),
+		strings.HasPrefix(contentType, "multipart/form-data"):
+		if err := r.ParseForm(); err != nil {
+			return "", fmt.Errorf("invalid form data")
+		}
+		raw = r.FormValue("value")
+	default:
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			return "", fmt.Errorf("failed to read request body")
+		}
+		raw = string(body)
+	}
+	return def.NormalizeValue(raw)
+}
+
+type switchState struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+func switchesAPI() *chi.Mux {
+	r := chi.NewRouter()
+	r.Get("/", handleGetAllSwitches)
+	r.Get("/show", handleGetAllSwitches)
+	r.Get("/{name}", handleGetSwitch)
+	r.Put("/{name}", handleUpdateSwitch)
+	r.Post("/{name}", handleUpdateSwitch)
+	return r
+}
+
+func handleGetAllSwitches(w http.ResponseWriter, _ *http.Request) {
+	payload := make([]switchState, 0, len(switchmeta.Ordered()))
+	for _, def := range switchmeta.Ordered() {
+		if sw := getSwitchByName(def.Name); sw != nil {
+			payload = append(payload, switchState{
+				Name:  def.Name,
+				Value: sw.GetValue(),
+			})
+		}
+	}
+	writeSwitchJSON(w, payload)
+}
+
+func handleGetSwitch(w http.ResponseWriter, r *http.Request) {
+	def, sw, ok := resolveSwitch(chi.URLParam(r, "name"))
+	if !ok {
+		http.Error(w, "switch not found", http.StatusNotFound)
+		return
+	}
+	writeSwitchJSON(w, switchState{
+		Name:  def.Name,
+		Value: sw.GetValue(),
+	})
+}
+
+func handleUpdateSwitch(w http.ResponseWriter, r *http.Request) {
+	def, sw, ok := resolveSwitch(chi.URLParam(r, "name"))
+	if !ok {
+		http.Error(w, "switch not found", http.StatusNotFound)
+		return
+	}
+
+	value, err := parseIncomingValue(r, def)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := sw.setValue(value); err != nil {
+		http.Error(w, "failed to update switch store: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeSwitchJSON(w, switchState{
+		Name:  def.Name,
+		Value: value,
+	})
+}
+
+func resolveSwitch(name string) (switchmeta.Definition, *Switch, bool) {
+	def, ok := switchmeta.Lookup(name)
+	if !ok {
+		return switchmeta.Definition{}, nil, false
+	}
+	sw := getSwitchByName(def.Name)
+	if sw == nil {
+		return switchmeta.Definition{}, nil, false
+	}
+	return def, sw, true
+}
+
+func getSwitchByName(name string) *Switch {
+	globalRegistry.RLock()
+	defer globalRegistry.RUnlock()
+	return globalRegistry.instances[name]
+}
+
+func writeSwitchJSON(w http.ResponseWriter, payload any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_ = json.NewEncoder(w).Encode(payload)
 }

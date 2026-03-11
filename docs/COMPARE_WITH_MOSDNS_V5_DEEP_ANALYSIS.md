@@ -182,7 +182,7 @@
 
 - 新 data_provider：`domain_set_light`, `sd_set`, `sd_set_light`, `si_set`, `domain_mapper`
 - 新 matcher：`fast_mark`
-- 新 executable：`domain_output`, `switcher1..16`, `aliapi`, `cname_remover`, `adguard`, `webinfo`, `requery`, `rewrite`, `tag_setter`
+- 新 executable：`domain_output`, `switch`, `aliapi`, `cname_remover`, `adguard`, `webinfo`, `requery`, `rewrite`, `tag_setter`
 
 证据：`plugin/enabled_plugins.go:25-95`。
 
@@ -322,7 +322,7 @@
   - `plugin/data_provider/sd_set_light/sd_set_light.go`
   - `plugin/data_provider/si_set/si_set.go`
 - executable：
-  - `adguard`, `aliapi`, `cname_remover`, `domain_output`, `requery`, `rewrite`, `switcher1..16`, `tag_setter`, `webinfo`
+  - `adguard`, `aliapi`, `cname_remover`, `domain_output`, `requery`, `rewrite`, `switch`, `tag_setter`, `webinfo`
 - matcher：
   - `plugin/matcher/fast_mark/fast_mark.go`
 - switch：
@@ -344,4 +344,3 @@
 8. `plugin/executable/requery/requery.go` `+800/-0`
 9. `plugin/data_provider/sd_set/sd_set.go` `+699/-0`
 10. `plugin/data_provider/sd_set_light/sd_set_light.go` `+686/-0`
-
