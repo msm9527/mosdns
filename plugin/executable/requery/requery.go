@@ -2,6 +2,7 @@ package requery
 
 import (
 	"bufio"
+	"container/heap"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,7 +13,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -63,9 +63,11 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 		filePath:   cfg.File,
 		scheduler:  cron.New(),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		queue:      make(refreshJobHeap, 0),
 		queueIndex: make(map[string]struct{}),
 		queueKick:  make(chan struct{}, 1),
 	}
+	heap.Init(&p.queue)
 
 	if err := p.loadConfig(); err != nil {
 		return nil, fmt.Errorf("requery: failed to load initial config from %s: %w", p.filePath, err)
@@ -110,7 +112,7 @@ type Requery struct {
 	taskCtx    context.Context
 	taskCancel context.CancelFunc
 	httpClient *http.Client
-	queue      []refreshJob
+	queue      refreshJobHeap
 	queueIndex map[string]struct{}
 	queueKick  chan struct{}
 }
@@ -195,6 +197,34 @@ type refreshJob struct {
 	VerifyURL  string    `json:"verify_url,omitempty"`
 	ObservedAt time.Time `json:"observed_at,omitempty"`
 	Priority   int       `json:"-"`
+}
+
+type refreshJobHeap []refreshJob
+
+func (h refreshJobHeap) Len() int { return len(h) }
+
+func (h refreshJobHeap) Less(i, j int) bool {
+	if h[i].Priority == h[j].Priority {
+		if h[i].ObservedAt.Equal(h[j].ObservedAt) {
+			return h[i].Domain < h[j].Domain
+		}
+		return h[i].ObservedAt.Before(h[j].ObservedAt)
+	}
+	return h[i].Priority > h[j].Priority
+}
+
+func (h refreshJobHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *refreshJobHeap) Push(x any) {
+	*h = append(*h, x.(refreshJob))
+}
+
+func (h *refreshJobHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
 }
 
 func (j refreshJob) key() string {
@@ -416,30 +446,64 @@ func (p *Requery) mergeAndFilterDomains(ctx context.Context) ([]domainCandidate,
 
 // resendDNSQueries handles step 6 of the workflow.
 func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidate) error {
-	var wg sync.WaitGroup
 	// 确保 QueriesPerSecond 大于 0，防止除以零 panic
 	qps := p.config.ExecutionSettings.QueriesPerSecond
 	if qps <= 0 {
 		qps = 100
 	}
+	// time.Second / qps 必须大于 0，避免 ticker 间隔为 0 触发 panic。
+	if qps > int(time.Second) {
+		qps = int(time.Second)
+	}
 	ticker := time.NewTicker(time.Second / time.Duration(qps))
 	defer ticker.Stop()
 
-	dnsClient := new(dns.Client)
-	// 设置超时，防止请求挂起
-	dnsClient.Timeout = 2 * time.Second
-
+	type queryJob struct {
+		domain string
+		qtype  uint16
+		useAD  bool
+		useCD  bool
+		useDO  bool
+	}
+	workerCount := requeryWorkerCount(qps)
+	jobCh := make(chan queryJob, workerCount*4)
+	var workerWG sync.WaitGroup
 	resolverAddr := p.refreshResolverAddress()
-	for i := 0; i < len(domains); i++ {
-		rawDomainStr := domains[i].Name
+	for i := 0; i < workerCount; i++ {
+		workerWG.Add(1)
+		go func() {
+			defer workerWG.Done()
+			dnsClient := &dns.Client{Timeout: 2 * time.Second}
+			for job := range jobCh {
+				msg := new(dns.Msg)
+				msg.SetQuestion(dns.Fqdn(job.domain), job.qtype)
+				msg.AuthenticatedData = job.useAD
+				msg.CheckingDisabled = job.useCD
+				msg.RecursionDesired = true
+				if job.useDO {
+					msg.SetEdns0(4096, true)
+				}
+				_, _, _ = dnsClient.ExchangeContext(ctx, msg, resolverAddr)
+			}
+		}()
+	}
 
+	sendJob := func(job queryJob) bool {
 		select {
 		case <-ticker.C:
 		case <-ctx.Done():
-			wg.Wait()
-			p.setCancelledState("task cancelled by user")
-			return ctx.Err()
+			return false
 		}
+		select {
+		case jobCh <- job:
+			return true
+		case <-ctx.Done():
+			return false
+		}
+	}
+
+	for i := 0; i < len(domains); i++ {
+		rawDomainStr := domains[i].Name
 
 		// --- 新增逻辑：解析域名和 Flags ---
 		// 1. 分割字符串
@@ -461,39 +525,34 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidat
 			}
 		}
 
-		// 3. 辅助函数：创建带正确 Flag 的消息
-		createMsg := func(qtype uint16) *dns.Msg {
-			m := new(dns.Msg)
-			m.SetQuestion(dns.Fqdn(realDomain), qtype)
-
-			// 还原原始请求的 Flags
-			m.AuthenticatedData = useAD
-			m.CheckingDisabled = useCD
-			if useDO {
-				m.SetEdns0(4096, true)
-			}
-			// 建议开启递归查询，模拟普通客户端行为
-			m.RecursionDesired = true
-			return m
-		}
-		// ----------------------------------
-
 		qmask := p.effectiveQueryMask(domains[i].QTypeMask)
 		if qmask&qtypeMaskA != 0 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				msg := createMsg(dns.TypeA)
-				_, _, _ = dnsClient.ExchangeContext(ctx, msg, resolverAddr)
-			}()
+			if !sendJob(queryJob{
+				domain: realDomain,
+				qtype:  dns.TypeA,
+				useAD:  useAD,
+				useCD:  useCD,
+				useDO:  useDO,
+			}) {
+				close(jobCh)
+				workerWG.Wait()
+				p.setCancelledState("task cancelled by user")
+				return ctx.Err()
+			}
 		}
 		if qmask&qtypeMaskAAAA != 0 {
-			wg.Add(1)
-			go func() {
-				defer wg.Done()
-				msg := createMsg(dns.TypeAAAA)
-				_, _, _ = dnsClient.ExchangeContext(ctx, msg, resolverAddr)
-			}()
+			if !sendJob(queryJob{
+				domain: realDomain,
+				qtype:  dns.TypeAAAA,
+				useAD:  useAD,
+				useCD:  useCD,
+				useDO:  useDO,
+			}) {
+				close(jobCh)
+				workerWG.Wait()
+				p.setCancelledState("task cancelled by user")
+				return ctx.Err()
+			}
 		}
 
 		newProcessed := atomic.AddInt64(&p.config.Status.Progress.Processed, 1)
@@ -505,8 +564,20 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidat
 		}
 	}
 
-	wg.Wait()
+	close(jobCh)
+	workerWG.Wait()
 	return nil
+}
+
+func requeryWorkerCount(qps int) int {
+	workers := qps / 8
+	if workers < 4 {
+		workers = 4
+	}
+	if workers > 128 {
+		workers = 128
+	}
+	return workers
 }
 
 func parseQTypeMaskFromFields(fields []string) uint8 {
@@ -621,13 +692,7 @@ func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
 		p.config.Status.OnDemandSkipped++
 		return false
 	}
-	p.queue = append(p.queue, job)
-	sort.SliceStable(p.queue, func(i, j int) bool {
-		if p.queue[i].Priority == p.queue[j].Priority {
-			return p.queue[i].ObservedAt.Before(p.queue[j].ObservedAt)
-		}
-		return p.queue[i].Priority > p.queue[j].Priority
-	})
+	heap.Push(&p.queue, job)
 	p.queueIndex[key] = struct{}{}
 	p.config.Status.PendingQueue = len(p.queue)
 	p.config.Status.OnDemandTriggered++
@@ -645,8 +710,7 @@ func (p *Requery) dequeueRefreshJob() (refreshJob, bool) {
 	if p.config.Status.TaskState == "running" || len(p.queue) == 0 {
 		return refreshJob{}, false
 	}
-	job := p.queue[0]
-	p.queue = append([]refreshJob(nil), p.queue[1:]...)
+	job := heap.Pop(&p.queue).(refreshJob)
 	delete(p.queueIndex, job.key())
 	p.config.Status.PendingQueue = len(p.queue)
 	return job, true

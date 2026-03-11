@@ -41,14 +41,13 @@ type V2PaginationInfo struct {
 // This function is completely separate from the v1 registration.
 func RegisterAuditAPIV2(router *chi.Mux) {
 	router.Route("/api/v2/audit", func(r chi.Router) {
-		// 为所有高频/重数据接口套上 WithAsyncGC
-		r.Get("/stats", WithAsyncGC(handleV2GetStats))           // 概览页调用
-		r.Get("/rank/domain", WithAsyncGC(handleV2GetDomainRank))   // 概览页调用
-		r.Get("/rank/client", WithAsyncGC(handleV2GetClientRank))   // 概览页调用
-		r.Get("/rank/domain_set", WithAsyncGC(handleV2GetDomainSetRank)) // 概览页调用
-		r.Get("/rank/slowest", WithAsyncGC(handleV2GetSlowestQueries))   // 概览页调用
-		
-		r.Get("/logs", WithAsyncGC(handleV2GetLogs)) // 已有的
+		// 高频读接口不再绑定 WithAsyncGC，避免请求风暴触发 GC 抖动。
+		r.Get("/stats", handleV2GetStats)                   // 概览页调用
+		r.Get("/rank/domain", handleV2GetDomainRank)        // 概览页调用
+		r.Get("/rank/client", handleV2GetClientRank)        // 概览页调用
+		r.Get("/rank/domain_set", handleV2GetDomainSetRank) // 概览页调用
+		r.Get("/rank/slowest", handleV2GetSlowestQueries)   // 概览页调用
+		r.Get("/logs", handleV2GetLogs)
 	})
 }
 
@@ -95,8 +94,8 @@ func handleV2GetDomainSetRank(w http.ResponseWriter, r *http.Request) {
 		mlog.L().Error("failed to encode v2 domain_set rank", zap.Error(err))
 	}
 }
-// --- ADDED END ---
 
+// --- ADDED END ---
 
 // 5. Handler for: Get slowest queries
 func handleV2GetSlowestQueries(w http.ResponseWriter, r *http.Request) {
@@ -111,7 +110,7 @@ func handleV2GetSlowestQueries(w http.ResponseWriter, r *http.Request) {
 // 6. Handler for: Get logs with advanced filtering and pagination
 func handleV2GetLogs(w http.ResponseWriter, r *http.Request) {
 	query := r.URL.Query()
-	
+
 	exactSearch, _ := strconv.ParseBool(query.Get("exact"))
 
 	params := V2GetLogsParams{

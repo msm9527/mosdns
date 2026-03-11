@@ -52,9 +52,10 @@ const (
 	dumpBlockSize          = 128
 	dumpMaximumBlockLength = 1 << 20 // 1M block. 8kb pre entry. Should be enough.
 
-	shardCount   = 256   // 256分段锁，平衡锁竞争与内存开销
-	l1TotalCap   = 51200 // L1 总容量限制
-	shardMaxSize = 200   // 每个分段桶的配额 (51200/shardCount)
+	shardCount = 256 // 256分段锁，平衡锁竞争与内存开销
+
+	defaultL1TotalCap = 8192 // 默认 L1 总容量（按路由器场景收敛）
+	maxL1ShardCap     = 1024 // 防止误配导致单分片过大
 
 	// 性能补丁：后台更新并发上限，保护 CPU 不被瞬间过期的缓存任务占满
 	maxConcurrentLazyUpdate = 256
@@ -111,10 +112,11 @@ type l1Item struct {
 // l1Shard 带有 FIFO 限制的分段锁桶
 type l1Shard struct {
 	sync.RWMutex
-	items map[key]*l1Item
-	order []key
-	pos   int
-	ref   map[key]bool
+	items   map[key]*l1Item
+	order   []key
+	pos     int
+	ref     map[key]bool
+	maxSize int
 }
 
 type Args struct {
@@ -122,6 +124,9 @@ type Args struct {
 	LazyCacheTTL    int      `yaml:"lazy_cache_ttl"`
 	NXDomainTTL     int      `yaml:"nxdomain_ttl"`
 	ServfailTTL     int      `yaml:"servfail_ttl"`
+	L1Enabled       *bool    `yaml:"l1_enabled"`
+	L1TotalCap      int      `yaml:"l1_total_cap"`
+	L1ShardCap      int      `yaml:"l1_shard_cap"`
 	EnableECS       bool     `yaml:"enable_ecs"`
 	ExcludeIPs      []string `yaml:"exclude_ip"`
 	DumpFile        string   `yaml:"dump_file"`
@@ -135,6 +140,9 @@ type argsRaw struct {
 	LazyCacheTTL    int         `yaml:"lazy_cache_ttl"`
 	NXDomainTTL     int         `yaml:"nxdomain_ttl"`
 	ServfailTTL     int         `yaml:"servfail_ttl"`
+	L1Enabled       *bool       `yaml:"l1_enabled"`
+	L1TotalCap      int         `yaml:"l1_total_cap"`
+	L1ShardCap      int         `yaml:"l1_shard_cap"`
 	EnableECS       bool        `yaml:"enable_ecs"`
 	ExcludeIP       interface{} `yaml:"exclude_ip"`
 	DumpFile        string      `yaml:"dump_file"`
@@ -153,6 +161,9 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	a.LazyCacheTTL = raw.LazyCacheTTL
 	a.NXDomainTTL = raw.NXDomainTTL
 	a.ServfailTTL = raw.ServfailTTL
+	a.L1Enabled = raw.L1Enabled
+	a.L1TotalCap = raw.L1TotalCap
+	a.L1ShardCap = raw.L1ShardCap
 	a.DumpFile = raw.DumpFile
 	a.DumpInterval = raw.DumpInterval
 	a.WALFile = raw.WALFile
@@ -184,6 +195,16 @@ func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.WALSyncInterval, 1)
 	utils.SetDefaultUnsignNum(&a.NXDomainTTL, 60)
 	utils.SetDefaultUnsignNum(&a.ServfailTTL, 15)
+	if a.L1Enabled == nil {
+		defaultEnabled := true
+		a.L1Enabled = &defaultEnabled
+	}
+	if *a.L1Enabled {
+		utils.SetDefaultUnsignNum(&a.L1TotalCap, defaultL1TotalCap)
+	}
+	if a.L1ShardCap < 0 {
+		a.L1ShardCap = 0
+	}
 }
 
 type Cache struct {
@@ -208,6 +229,9 @@ type Cache struct {
 
 	// 分段 L1 池
 	shards [shardCount]*l1Shard
+	// 运行期 L1 配置
+	l1Enabled  bool
+	l1ShardCap int
 
 	// dumpMu protects the dump file writing process
 	dumpMu sync.Mutex
@@ -292,6 +316,8 @@ func NewCache(args *Args, opts Opts) *Cache {
 
 	backend := cache.New[key, *item](cache.Opts{Size: args.Size})
 	lb := map[string]string{"tag": opts.MetricsTag}
+	l1Enabled := args.L1Enabled == nil || *args.L1Enabled
+	l1ShardCap := computeL1ShardCap(args, l1Enabled)
 	p := &Cache{
 		args:            args,
 		logger:          logger,
@@ -301,16 +327,23 @@ func NewCache(args *Args, opts Opts) *Cache {
 		excludeNets:     excludeNets,
 		runtimeState:    newCacheRuntimeState(args.DumpFile, args.WALFile),
 		lazyUpdateLimit: make(chan struct{}, maxConcurrentLazyUpdate),
+		l1Enabled:       l1Enabled,
+		l1ShardCap:      l1ShardCap,
 	}
 	p.persistence = newPersistenceManager(args, logger)
 	p.initMetrics(lb)
 
 	// 初始化桶 (FIFO 淘汰版)
+	capHint := l1ShardCap
+	if capHint < 1 {
+		capHint = 1
+	}
 	for i := 0; i < shardCount; i++ {
 		p.shards[i] = &l1Shard{
-			items: make(map[key]*l1Item, shardMaxSize),
-			order: make([]key, shardMaxSize),
-			ref:   make(map[key]bool, shardMaxSize),
+			items:   make(map[key]*l1Item, capHint),
+			order:   make([]key, capHint),
+			ref:     make(map[key]bool, capHint),
+			maxSize: l1ShardCap,
 		}
 	}
 
@@ -322,8 +355,35 @@ func NewCache(args *Args, opts Opts) *Cache {
 	return p
 }
 
+func computeL1ShardCap(args *Args, enabled bool) int {
+	if !enabled {
+		return 0
+	}
+	if args.L1ShardCap > 0 {
+		if args.L1ShardCap > maxL1ShardCap {
+			return maxL1ShardCap
+		}
+		return args.L1ShardCap
+	}
+	total := args.L1TotalCap
+	if total <= 0 {
+		total = defaultL1TotalCap
+	}
+	cap := (total + shardCount - 1) / shardCount
+	if cap < 1 {
+		cap = 1
+	}
+	if cap > maxL1ShardCap {
+		cap = maxL1ShardCap
+	}
+	return cap
+}
+
 // updateL1 实现热路径环形淘汰
 func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.Time, domainSet string) {
+	if s.maxSize <= 0 {
+		return
+	}
 	s.Lock()
 	defer s.Unlock()
 
@@ -336,6 +396,9 @@ func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.
 
 	// CLOCK 淘汰循环
 	for {
+		if s.pos >= s.maxSize {
+			s.pos = 0
+		}
 		oldKey := s.order[s.pos]
 		if oldKey == "" {
 			break
@@ -343,7 +406,7 @@ func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.
 
 		if s.ref[oldKey] {
 			s.ref[oldKey] = false
-			s.pos = (s.pos + 1) % shardMaxSize
+			s.pos = (s.pos + 1) % s.maxSize
 			continue
 		}
 
@@ -355,7 +418,7 @@ func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.
 	s.items[k] = &l1Item{msg: msg.Copy(), storedTime: storedTime, expirationTime: expirationTime, domainSet: domainSet}
 	s.order[s.pos] = k
 	s.ref[k] = true
-	s.pos = (s.pos + 1) % shardMaxSize
+	s.pos = (s.pos + 1) % s.maxSize
 }
 
 func (c *Cache) containsExcluded(msg *dns.Msg) bool {
@@ -432,9 +495,15 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	shard := c.shards[h%shardCount]
 
 	// --- L1 极速路径查询 (免解包) ---
-	shard.RLock()
-	v1, ok1 := shard.items[k]
-	shard.RUnlock()
+	var (
+		v1  *l1Item
+		ok1 bool
+	)
+	if c.l1Enabled {
+		shard.RLock()
+		v1, ok1 = shard.items[k]
+		shard.RUnlock()
+	}
 
 	now := time.Now()
 	if ok1 && now.Before(v1.expirationTime) {
@@ -485,7 +554,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		}
 
 		// 命中 L2 且未过期：晋升到 L1
-		if !lazyHit {
+		if c.l1Enabled && !lazyHit {
 			v2, _, _ := c.backend.Get(kReal)
 			if v2 != nil {
 				shard.updateL1(kReal, cachedResp, v2.storedTime, v2.expirationTime, v2.domainSet)
@@ -509,7 +578,9 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 					dset = s
 				}
 			}
-			shard.updateL1(kReal, r, now, now.Add(time.Duration(minTTL)*time.Second), dset)
+			if c.l1Enabled {
+				shard.updateL1(kReal, r, now, now.Add(time.Duration(minTTL)*time.Second), dset)
+			}
 		}
 	}
 
@@ -551,17 +622,19 @@ func (c *Cache) doLazyUpdate(msgKey string, qCtx *query_context.Context, next se
 			if c.saveRespToCache(msgKey, qCtx) {
 				c.updatedKey.Add(1)
 				// 更新 L1
-				k := key(msgKey)
-				h := k.Sum()
-				shard := c.shards[h%shardCount]
-				minTTL := dnsutils.GetMinimalTTL(r)
-				var dset string
-				if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
-					if s, isString := val.(string); isString {
-						dset = s
+				if c.l1Enabled {
+					k := key(msgKey)
+					h := k.Sum()
+					shard := c.shards[h%shardCount]
+					minTTL := dnsutils.GetMinimalTTL(r)
+					var dset string
+					if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
+						if s, isString := val.(string); isString {
+							dset = s
+						}
 					}
+					shard.updateL1(k, r, time.Now(), time.Now().Add(time.Duration(minTTL)*time.Second), dset)
 				}
-				shard.updateL1(k, r, time.Now(), time.Now().Add(time.Duration(minTTL)*time.Second), dset)
 			}
 		}
 		c.logger.Debug("lazy cache updated", qCtx.InfoField())
@@ -695,12 +768,12 @@ func (c *Cache) Api() *chi.Mux {
 		w.WriteHeader(http.StatusOK)
 	}))
 
-	r.Get("/stats", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
+	r.Get("/stats", func(w http.ResponseWriter, req *http.Request) {
 		c.writeStats(w)
-	}))
+	})
 
 	// 优化后的查询 API：支持分页、后端搜索和分级匹配
-	r.Get("/show", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
+	r.Get("/show", func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.Header().Set("Content-Disposition", `inline; filename="cache.txt"`)
 
@@ -786,7 +859,7 @@ func (c *Cache) Api() *chi.Mux {
 		if err != nil && err != stopIteration {
 			c.logger.Error("failed to enumerate cache", zap.Error(err))
 		}
-	}))
+	})
 
 	return r
 }

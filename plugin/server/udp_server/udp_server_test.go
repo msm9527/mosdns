@@ -273,7 +273,7 @@ func TestBuildFastBypassSetsMapperMarksOnlyOnMatch(t *testing.T) {
 			bp := coremain.NewBP("udp_test", m)
 			fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
 				internalTTL: time.Minute,
-			}, &fastStats{}), &fastStats{})
+			}, &fastStats{}), &fastStats{}, 0)
 
 			req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
 			action, _, marks, _, matched := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
@@ -301,7 +301,7 @@ func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
 		internalTTL: time.Minute,
-	}, &fastStats{}), &fastStats{})
+	}, &fastStats{}), &fastStats{}, 0)
 
 	req := makeQuery(t, "blocked.example.", dns.TypeA, 0x1234)
 	buf := append([]byte(nil), req...)
@@ -330,7 +330,7 @@ func TestBuildFastBypassClientIPFastMarks(t *testing.T) {
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
 		internalTTL: time.Minute,
-	}, &fastStats{}), &fastStats{})
+	}, &fastStats{}), &fastStats{}, 0)
 
 	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
 	action, _, marks, _, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
@@ -359,7 +359,7 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 		"switch15": testSwitchPlugin{value: "A"},
 	})
 	bp := coremain.NewBP("udp_test", m)
-	fastBypass := buildFastBypass(bp, fc, stats)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
 
 	req := makeQuery(t, name, dns.TypeA, 0x9999)
 	buf := make([]byte, len(resp))
@@ -383,6 +383,34 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	}
 }
 
+func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "warmup.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "warmup")
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"switch15": testSwitchPlugin{value: "A"},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, time.Second)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected warmup to skip fast path, got %d", action)
+	}
+	if stats.bypassWarmupSkip.Load() == 0 {
+		t.Fatal("expected bypassWarmupSkip metric to increase during warmup")
+	}
+}
+
 func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"switch15": testSwitchPlugin{value: "A"},
@@ -390,7 +418,7 @@ func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
 	bp := coremain.NewBP("udp_bench", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
 		internalTTL: time.Minute,
-	}, &fastStats{}), nil)
+	}, &fastStats{}), nil, 0)
 	req := makeQueryNoTest("bench.example.", dns.TypeA, 0x1234)
 	addr := netip.MustParseAddrPort("127.0.0.1:5353")
 
@@ -416,7 +444,7 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 		"switch15": testSwitchPlugin{value: "A"},
 	})
 	bp := coremain.NewBP("udp_bench", m)
-	fastBypass := buildFastBypass(bp, fc, stats)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
 	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
 	addr := netip.MustParseAddrPort("127.0.0.1:5353")
 

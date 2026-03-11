@@ -111,14 +111,14 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	m.initHttpMux()
 
 	// Register our new APIs.
-	RegisterCaptureAPI(m.httpMux)    // For process logs
-	RegisterAuditAPI(m.httpMux)      // For audit logs v1
-	RegisterAuditAPIV2(m.httpMux)    // For audit logs v2
+	RegisterCaptureAPI(m.httpMux)      // For process logs
+	RegisterAuditAPI(m.httpMux)        // For audit logs v1
+	RegisterAuditAPIV2(m.httpMux)      // For audit logs v2
 	RegisterOverridesAPI(m.httpMux, m) // <<< MODIFIED: Pass 'm'
 	RegisterConfigManagerAPI(m.httpMux)
-	RegisterUpdateAPI(m.httpMux)     // For binary updates
-	RegisterSystemAPI(m.httpMux, m)     // For self-restart
-        RegisterUpstreamAPI(m.httpMux)
+	RegisterUpdateAPI(m.httpMux)    // For binary updates
+	RegisterSystemAPI(m.httpMux, m) // For self-restart
+	RegisterUpstreamAPI(m.httpMux)
 
 	// Start http api server
 	if httpAddr := cfg.API.HTTP; len(httpAddr) > 0 {
@@ -161,7 +161,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 				}
 			}
 			m.logger.Info("all plugins were closed")
-            GlobalAuditCollector.StopWorker()
+			GlobalAuditCollector.StopWorker()
 		}()
 	})
 
@@ -260,7 +260,7 @@ func (m *Mosdns) initHttpMux() {
 			zap.String("method", r.Method))
 		metricsHandler.ServeHTTP(w, r)
 	})
-	m.httpMux.Method(http.MethodGet, "/metrics", WithAsyncGC(wrappedMetricsHandler))
+	m.httpMux.Method(http.MethodGet, "/metrics", wrappedMetricsHandler)
 
 	// [修改] 将原来的公共handler拆分为两个独立的handler
 

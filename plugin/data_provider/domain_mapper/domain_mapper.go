@@ -18,6 +18,11 @@ import (
 
 const PluginType = "domain_mapper"
 
+var reservedFastMarks = map[uint8]string{
+	39: "指定客户端直连标记 / designated-client bypass flag",
+	48: "UDP 快路径 client_ip 已匹配标记 / UDP fast-path client_ip matched flag",
+}
+
 func init() {
 	coremain.RegNewPluginFunc(PluginType, NewMapper, func() any { return new(Args) })
 }
@@ -52,15 +57,31 @@ type DomainMapper struct {
 
 var _ sequence.Executable = (*DomainMapper)(nil)
 
+func validateDomainMapperMark(scope string, mark uint8) error {
+	if mark > 63 {
+		return fmt.Errorf("%s must be between 0 and 63, got %d", scope, mark)
+	}
+	if mark == 0 {
+		return nil
+	}
+	if reason, ok := reservedFastMarks[mark]; ok {
+		return fmt.Errorf(
+			"%s uses reserved fast_mark %d (%s); migrate to a non-reserved business mark, recommended range: 50-63 / 该配置使用了保留位 fast_mark %d（%s），请迁移到非保留业务位，推荐范围：50-63",
+			scope, mark, reason, mark, reason,
+		)
+	}
+	return nil
+}
+
 func NewMapper(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
 
-	if cfg.DefaultMark > 63 {
-		return nil, fmt.Errorf("default_mark must be between 0 and 63, got %d", cfg.DefaultMark)
+	if err := validateDomainMapperMark("default_mark", cfg.DefaultMark); err != nil {
+		return nil, err
 	}
 	for _, r := range cfg.Rules {
-		if r.Mark > 63 {
-			return nil, fmt.Errorf("rule mark for tag '%s' must be between 0 and 63, got %d", r.Tag, r.Mark)
+		if err := validateDomainMapperMark(fmt.Sprintf("rule mark for tag '%s'", r.Tag), r.Mark); err != nil {
+			return nil, err
 		}
 	}
 

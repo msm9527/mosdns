@@ -197,3 +197,39 @@ func TestDomainOutputNotifyDirtyAndVerify(t *testing.T) {
 		t.Fatalf("expected clean verified entry, got %#v", entry)
 	}
 }
+
+func TestDomainOutputPeriodicSkipWhenNotDirty(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	statPath := filepath.Join(dir, "stats.txt")
+	rulePath := filepath.Join(dir, "rules.txt")
+	d := newDomainOutput(&Args{
+		FileStat: statPath,
+		FileRule: rulePath,
+		Policy: &PolicyArgs{
+			Kind:        "generic",
+			PublishMode: "all",
+			DecayDays:   30,
+		},
+	})
+
+	d.processRecord(&logItem{name: "skip.example.", qtype: 1, source: "live"})
+	d.performWrite(WriteModePeriodic)
+
+	st, err := os.Stat(statPath)
+	if err != nil {
+		t.Fatalf("stat first write: %v", err)
+	}
+	firstMod := st.ModTime()
+	time.Sleep(1100 * time.Millisecond)
+
+	d.performWrite(WriteModePeriodic)
+	st2, err := os.Stat(statPath)
+	if err != nil {
+		t.Fatalf("stat second write: %v", err)
+	}
+	if !st2.ModTime().Equal(firstMod) {
+		t.Fatalf("expected periodic clean write to be skipped, mod time changed: %v -> %v", firstMod, st2.ModTime())
+	}
+}

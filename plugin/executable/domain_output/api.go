@@ -69,7 +69,7 @@ func (d *domainOutput) Api() *chi.Mux {
 		_, _ = w.Write([]byte("domain_output saved"))
 	}))
 
-	r.Get("/show", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/show", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		query := strings.ToLower(r.URL.Query().Get("q"))
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
@@ -113,9 +113,9 @@ func (d *domainOutput) Api() *chi.Mux {
 			stat := sortedResult[i]
 			_, _ = fmt.Fprintf(w, "%010d %s %s qmask=%d score=%d promoted=%d\n", stat.Count, stat.Date, stat.Domain, stat.QMask, stat.Score, boolToInt(stat.Prom))
 		}
-	}))
+	})
 
-	r.Get("/stats", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
+	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
 		d.mu.Lock()
 		totalEntries := len(d.stats)
 		dirtyEntries := 0
@@ -146,7 +146,7 @@ func (d *domainOutput) Api() *chi.Mux {
 		}
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(resp)
-	}))
+	})
 
 	r.Post("/verify", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
 		var req verifyRequest

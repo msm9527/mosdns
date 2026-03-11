@@ -3,6 +3,7 @@ package domain_mapper
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -165,5 +166,25 @@ func BenchmarkDomainMapperExecMiss(b *testing.B) {
 		if err := dm.Exec(context.Background(), qCtx); err != nil {
 			b.Fatal(err)
 		}
+	}
+}
+
+func TestValidateDomainMapperMarkRejectsReservedBits(t *testing.T) {
+	if err := validateDomainMapperMark("default_mark", 39); err == nil {
+		t.Fatal("expected reserved fast_mark 39 to be rejected")
+	}
+	if err := validateDomainMapperMark("default_mark", 48); err == nil {
+		t.Fatal("expected reserved fast_mark 48 to be rejected")
+	}
+}
+
+func TestValidateDomainMapperMarkAcceptsBusinessBits(t *testing.T) {
+	for _, mark := range []uint8{0, 7, 17, 50, 63} {
+		if err := validateDomainMapperMark("default_mark", mark); err != nil {
+			t.Fatalf("mark %d should be accepted, got error: %v", mark, err)
+		}
+	}
+	if err := validateDomainMapperMark("default_mark", 64); err == nil || !strings.Contains(err.Error(), "between 0 and 63") {
+		t.Fatalf("expected out-of-range error for 64, got: %v", err)
 	}
 }

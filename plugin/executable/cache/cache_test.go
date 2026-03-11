@@ -34,6 +34,8 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 )
 
+func boolPtr(v bool) *bool { return &v }
+
 func Test_cachePlugin_Dump(t *testing.T) {
 	c := NewCache(&Args{Size: 16 * dumpBlockSize}, Opts{}) // Big enough to create dump fragments.
 
@@ -160,6 +162,77 @@ func Test_cachePlugin_ServfailTTL(t *testing.T) {
 	remaining := stored.expirationTime.Sub(stored.storedTime)
 	if remaining < 40*time.Second || remaining > 43*time.Second {
 		t.Fatalf("unexpected servfail ttl %s", remaining)
+	}
+}
+
+func Test_cachePlugin_L1Disabled(t *testing.T) {
+	c := NewCache(&Args{
+		Size:      64,
+		L1Enabled: boolPtr(false),
+	}, Opts{})
+	defer c.Close()
+
+	if c.l1Enabled {
+		t.Fatal("expected l1Enabled=false")
+	}
+	if got := c.l1Len(); got != 0 {
+		t.Fatalf("expected L1 length 0 when disabled, got %d", got)
+	}
+
+	qCtx := testQueryContext(t, "nol1.example.", net.IPv4(9, 9, 9, 9))
+	if !c.saveRespToCache("nol1-key", qCtx) {
+		t.Fatal("expected response to be cached")
+	}
+	stats := c.snapshotStats()
+	if stats.Config["l1_enabled"] != false {
+		t.Fatalf("expected stats config l1_enabled=false, got %#v", stats.Config["l1_enabled"])
+	}
+}
+
+func Test_computeL1ShardCap(t *testing.T) {
+	tests := []struct {
+		name    string
+		args    *Args
+		enabled bool
+		want    int
+	}{
+		{
+			name:    "disabled",
+			args:    &Args{},
+			enabled: false,
+			want:    0,
+		},
+		{
+			name: "custom shard cap",
+			args: &Args{
+				L1ShardCap: 64,
+			},
+			enabled: true,
+			want:    64,
+		},
+		{
+			name: "from total cap",
+			args: &Args{
+				L1TotalCap: 1024,
+			},
+			enabled: true,
+			want:    4,
+		},
+		{
+			name: "limit max",
+			args: &Args{
+				L1ShardCap: maxL1ShardCap + 1,
+			},
+			enabled: true,
+			want:    maxL1ShardCap,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := computeL1ShardCap(tt.args, tt.enabled); got != tt.want {
+				t.Fatalf("computeL1ShardCap() = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 

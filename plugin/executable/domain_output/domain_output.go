@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net/http"
 	"os"
@@ -109,8 +110,9 @@ type domainOutput struct {
 	dumpInterval   time.Duration
 	policy         writePolicy
 
-	stats map[string]*statEntry
-	mu    sync.Mutex
+	stats   map[string]*statEntry
+	mu      sync.Mutex
+	writeMu sync.Mutex
 
 	totalCount         int64
 	entryCounter       int64
@@ -125,10 +127,13 @@ type domainOutput struct {
 	stopChan           chan struct{}
 	workerDoneChan     chan struct{}
 
-	domainSetURL string
-	enableFlags  bool
-	memoryID     string
-	closeOnce    sync.Once
+	domainSetURL  string
+	enableFlags   bool
+	memoryID      string
+	dirtyPending  atomic.Bool
+	lastRulesHash uint64
+	hasRulesHash  bool
+	closeOnce     sync.Once
 }
 
 type WriteMode int
@@ -141,7 +146,7 @@ const (
 )
 
 type writeSnapshot struct {
-	stats         map[string]*statEntry
+	items         []outputRankItem
 	rules         []string
 	promotedCount int
 	dirtyCount    int
@@ -157,12 +162,19 @@ type dirtyEvent struct {
 }
 
 type outputRankItem struct {
-	Domain string
-	Count  int
-	Date   string
-	Score  int
-	QMask  uint8
-	Prom   bool
+	Domain         string
+	Count          int
+	Date           string
+	Score          int
+	QMask          uint8
+	Prom           bool
+	LastSeenAt     string
+	LastDirtyAt    string
+	LastVerifiedAt string
+	DirtyReason    string
+	RefreshState   string
+	CooldownUntil  string
+	ConflictCount  int
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
@@ -458,6 +470,7 @@ func (d *domainOutput) processRecord(item *logItem) {
 		}
 	}
 	d.mu.Unlock()
+	d.dirtyPending.Store(true)
 
 	atomic.AddInt64(&d.totalCount, 1)
 	newCount := atomic.AddInt64(&d.entryCounter, 1)
@@ -505,15 +518,24 @@ func qtypeToMask(qtype uint16) uint8 {
 }
 
 func (d *domainOutput) performWrite(mode WriteMode) {
+	d.writeMu.Lock()
+	defer d.writeMu.Unlock()
+
+	if mode == WriteModePeriodic && !d.dirtyPending.Load() {
+		return
+	}
+
 	d.currentDate.Store(time.Now().Format("2006-01-02"))
 	snapshot := d.buildSnapshot(mode)
-	d.writeSnapshot(snapshot)
-	if mode != WriteModeShutdown {
+	writeOK, rulesChanged := d.writeSnapshot(snapshot, mode)
+	if mode != WriteModeShutdown && rulesChanged {
 		d.pushToDomainSet(snapshot.rules)
+	}
+	if writeOK {
+		d.dirtyPending.Store(false)
 	}
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
 	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
-	coremain.ManualGC()
 }
 
 func (d *domainOutput) buildSnapshot(mode WriteMode) writeSnapshot {
@@ -532,35 +554,45 @@ func (d *domainOutput) buildSnapshot(mode WriteMode) writeSnapshot {
 		}
 	}
 
-	snapshotStats := make(map[string]*statEntry, len(d.stats))
-	for k, v := range d.stats {
-		cloned := *v
-		cloned.Promoted = d.shouldPromote(&cloned)
-		snapshotStats[k] = &cloned
-	}
-
 	switch mode {
 	case WriteModeFlush:
 		d.stats = make(map[string]*statEntry)
-		snapshotStats = map[string]*statEntry{}
 		atomic.StoreInt64(&d.totalCount, 0)
 		atomic.StoreInt64(&d.entryCounter, 0)
+		return writeSnapshot{}
 	case WriteModePeriodic, WriteModeSave, WriteModeShutdown:
 		atomic.StoreInt64(&d.entryCounter, 0)
 	}
 
-	rules, promoted := d.collectRules(snapshotStats)
+	items := make([]outputRankItem, 0, len(d.stats))
 	dirtyCount := 0
-	for _, entry := range snapshotStats {
+	for key, entry := range d.stats {
+		entry.Promoted = d.shouldPromote(entry)
+		items = append(items, outputRankItem{
+			Domain:         key,
+			Count:          entry.Count,
+			Date:           entry.LastDate,
+			Score:          entry.Score,
+			QMask:          entry.QTypeMask,
+			Prom:           entry.Promoted,
+			LastSeenAt:     entry.LastSeenAt,
+			LastDirtyAt:    entry.LastDirtyAt,
+			LastVerifiedAt: entry.LastVerifiedAt,
+			DirtyReason:    entry.DirtyReason,
+			RefreshState:   entry.RefreshState,
+			CooldownUntil:  entry.CooldownUntil,
+			ConflictCount:  entry.ConflictCount,
+		})
 		if entry.RefreshState == "dirty" {
 			dirtyCount++
 		}
 	}
-	return writeSnapshot{stats: snapshotStats, rules: rules, promotedCount: promoted, dirtyCount: dirtyCount}
+	rules, promoted := d.collectRules(items)
+	return writeSnapshot{items: items, rules: rules, promotedCount: promoted, dirtyCount: dirtyCount}
 }
 
-func (d *domainOutput) collectRules(stats map[string]*statEntry) ([]string, int) {
-	if len(stats) == 0 {
+func (d *domainOutput) collectRules(items []outputRankItem) ([]string, int) {
+	if len(items) == 0 {
 		return nil, 0
 	}
 	type agg struct {
@@ -570,14 +602,15 @@ func (d *domainOutput) collectRules(stats map[string]*statEntry) ([]string, int)
 	}
 	aggregated := make(map[string]agg)
 	promotedCount := 0
-	for key, entry := range stats {
+	for _, entry := range items {
+		key := entry.Domain
 		domainOnly := strings.Split(key, "|")[0]
 		current := aggregated[domainOnly]
 		current.count += entry.Count
-		if entry.LastDate > current.lastDate {
-			current.lastDate = entry.LastDate
+		if entry.Date > current.lastDate {
+			current.lastDate = entry.Date
 		}
-		if entry.Promoted {
+		if entry.Prom {
 			current.promoted = true
 		}
 		aggregated[domainOnly] = current
@@ -631,18 +664,18 @@ func (d *domainOutput) isStale(lastDate string) bool {
 	return time.Since(ts) > time.Duration(d.policy.decayDays)*24*time.Hour
 }
 
-func (d *domainOutput) writeSnapshot(snapshot writeSnapshot) {
-	writeFile := func(filePath string, writeContent func(io.Writer) error) {
+func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bool, bool) {
+	writeFile := func(filePath string, writeContent func(io.Writer) error) bool {
 		if filePath == "" {
-			return
+			return true
 		}
 		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-			return
+			return false
 		}
 		tmpFile := filePath + ".tmp"
 		f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 		if err != nil {
-			return
+			return false
 		}
 		writer := bufio.NewWriter(f)
 		writeErr := writeContent(writer)
@@ -650,27 +683,31 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot) {
 		closeErr := f.Close()
 		if writeErr != nil || flushErr != nil || closeErr != nil {
 			_ = os.Remove(tmpFile)
-			return
+			return false
 		}
 		if err := os.Rename(tmpFile, filePath); err != nil {
 			_ = os.Remove(tmpFile)
+			return false
 		}
+		return true
 	}
 
-	sortedItems := make([]outputRankItem, 0, len(snapshot.stats))
-	for k, v := range snapshot.stats {
-		sortedItems = append(sortedItems, outputRankItem{Domain: k, Count: v.Count, Date: v.LastDate, Score: v.Score, QMask: v.QTypeMask, Prom: v.Promoted})
+	rulesHash := hashRules(snapshot.rules)
+	rulesChanged := !d.hasRulesHash || d.lastRulesHash != rulesHash
+	if mode == WriteModeFlush {
+		// flush 需要强制同步空规则到下游 domain_set
+		rulesChanged = true
 	}
-	sort.Slice(sortedItems, func(i, j int) bool {
-		if sortedItems[i].Count == sortedItems[j].Count {
-			return sortedItems[i].Domain < sortedItems[j].Domain
+
+	sort.Slice(snapshot.items, func(i, j int) bool {
+		if snapshot.items[i].Count == snapshot.items[j].Count {
+			return snapshot.items[i].Domain < snapshot.items[j].Domain
 		}
-		return sortedItems[i].Count > sortedItems[j].Count
+		return snapshot.items[i].Count > snapshot.items[j].Count
 	})
 
-	writeFile(d.fileStat, func(w io.Writer) error {
-		for _, item := range sortedItems {
-			entry := snapshot.stats[item.Domain]
+	ok := writeFile(d.fileStat, func(w io.Writer) error {
+		for _, item := range snapshot.items {
 			_, err := fmt.Fprintf(
 				w,
 				"%010d %s %s qmask=%d score=%d promoted=%d last_seen=%s last_dirty=%s last_verified=%s dirty_reason=%s refresh_state=%s cooldown_until=%s conflicts=%d\n",
@@ -680,13 +717,13 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot) {
 				item.QMask,
 				item.Score,
 				boolToInt(item.Prom),
-				sanitizeStatToken(entry.LastSeenAt),
-				sanitizeStatToken(entry.LastDirtyAt),
-				sanitizeStatToken(entry.LastVerifiedAt),
-				sanitizeStatToken(entry.DirtyReason),
-				sanitizeStatToken(entry.RefreshState),
-				sanitizeStatToken(entry.CooldownUntil),
-				entry.ConflictCount,
+				sanitizeStatToken(item.LastSeenAt),
+				sanitizeStatToken(item.LastDirtyAt),
+				sanitizeStatToken(item.LastVerifiedAt),
+				sanitizeStatToken(item.DirtyReason),
+				sanitizeStatToken(item.RefreshState),
+				sanitizeStatToken(item.CooldownUntil),
+				item.ConflictCount,
 			)
 			if err != nil {
 				return err
@@ -695,32 +732,54 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot) {
 		return nil
 	})
 
-	writeFile(d.fileRule, func(w io.Writer) error {
-		for _, domain := range snapshot.rules {
-			if _, err := fmt.Fprintf(w, "full:%s\n", domain); err != nil {
-				return err
+	needRuleWrite := mode != WriteModePeriodic || rulesChanged
+	if needRuleWrite {
+		if !writeFile(d.fileRule, func(w io.Writer) error {
+			for _, domain := range snapshot.rules {
+				if _, err := fmt.Fprintf(w, "full:%s\n", domain); err != nil {
+					return err
+				}
 			}
-		}
-		return nil
-	})
-
-	writeFile(d.genRule, func(w io.Writer) error {
-		if d.pattern == "" {
 			return nil
+		}) {
+			ok = false
 		}
-		if d.appendedString != "" {
-			if _, err := fmt.Fprintln(w, d.appendedString); err != nil {
-				return err
+
+		if !writeFile(d.genRule, func(w io.Writer) error {
+			if d.pattern == "" {
+				return nil
 			}
-		}
-		for _, domain := range snapshot.rules {
-			line := strings.ReplaceAll(d.pattern, "DOMAIN", domain)
-			if _, err := fmt.Fprintln(w, line); err != nil {
-				return err
+			if d.appendedString != "" {
+				if _, err := fmt.Fprintln(w, d.appendedString); err != nil {
+					return err
+				}
 			}
+			for _, domain := range snapshot.rules {
+				line := strings.ReplaceAll(d.pattern, "DOMAIN", domain)
+				if _, err := fmt.Fprintln(w, line); err != nil {
+					return err
+				}
+			}
+			return nil
+		}) {
+			ok = false
 		}
-		return nil
-	})
+	}
+
+	if ok {
+		d.lastRulesHash = rulesHash
+		d.hasRulesHash = true
+	}
+	return ok, rulesChanged
+}
+
+func hashRules(rules []string) uint64 {
+	h := fnv.New64a()
+	for _, domain := range rules {
+		_, _ = h.Write([]byte(domain))
+		_, _ = h.Write([]byte{'\n'})
+	}
+	return h.Sum64()
 }
 
 func (d *domainOutput) loadFromFile() {

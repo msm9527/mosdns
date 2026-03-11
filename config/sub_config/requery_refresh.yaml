@@ -333,6 +333,14 @@ plugins:
       - matches: switch3 'B'
         exec: $sequence_not_in_list_noleak_v6_refresh
 
+  # 重要说明（请保留）:
+  # sequence_requery_refresh 是“刷新专用主入口”，其前置规则应与主链路 sequence_common_precheck 保持语义一致。
+  # 这里保留独立定义而不是直接引用主链路，是因为刷新链路使用 *_refresh 子序列（例如 sequence_ipv4_refresh）。
+  #
+  # 关于 !fast_mark 48:
+  # - fast_mark 48 由 UDP 快路径在已完成 client_ip 判断时预先置位。
+  # - 当 48 已存在时，说明“指定客户端直连判定”已经在快路径做过，主链路不应重复判定。
+  # - 因此下面两段 switch2/switch12/client_ip 规则必须带 !fast_mark 48 保护，避免重复置位 fast_mark 39。
   - tag: sequence_requery_refresh
     type: sequence
     args:
@@ -367,12 +375,14 @@ plugins:
         exec:
           - $domestic
           - exit
-      - matches:
+      - matches:                               # 仅在快路径未做过 client_ip 判定时才执行
+        - "!fast_mark 48"
         - switch2 'A'
         - switch12 'B'
         - "!client_ip $client_ip"
         exec: fast_mark 39
-      - matches:
+      - matches:                               # 仅在快路径未做过 client_ip 判定时才执行
+        - "!fast_mark 48"
         - switch2 'B'
         - switch12 'A'
         - "client_ip $client_ip"
@@ -403,6 +413,7 @@ plugins:
     args:
       entry: sequence_requery_refresh
       listen: ":7767"
+      fast_bypass_warmup_seconds: 1
 
   - tag: tcp_requery_refresh
     type: tcp_server

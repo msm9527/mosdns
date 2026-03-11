@@ -58,6 +58,7 @@ type Args struct {
 	FastCacheTTLMin        uint32 `yaml:"fast_cache_ttl_min"`
 	FastCacheTTLMax        uint32 `yaml:"fast_cache_ttl_max"`
 	FastMetricsLogInterval int    `yaml:"fast_metrics_log_interval"`
+	FastBypassWarmupSec    int    `yaml:"fast_bypass_warmup_seconds"`
 }
 
 func (a *Args) init() {
@@ -65,8 +66,12 @@ func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 5)
 	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(30))
 	utils.SetDefaultUnsignNum(&a.FastMetricsLogInterval, 60)
+	utils.SetDefaultUnsignNum(&a.FastBypassWarmupSec, 3)
 	if a.FastCacheTTLMax > 0 && a.FastCacheTTLMin > a.FastCacheTTLMax {
 		a.FastCacheTTLMin = a.FastCacheTTLMax
+	}
+	if a.FastBypassWarmupSec < 0 {
+		a.FastBypassWarmupSec = 0
 	}
 }
 
@@ -114,6 +119,7 @@ type fastStats struct {
 	bypassBadPacket  atomic.Uint64
 	bypassRuleReply  atomic.Uint64
 	bypassCacheReply atomic.Uint64
+	bypassWarmupSkip atomic.Uint64
 
 	cacheLookup    atomic.Uint64
 	cacheStore     atomic.Uint64
@@ -128,6 +134,7 @@ type fastStatsSnapshot struct {
 	BypassBadPacket  uint64
 	BypassRuleReply  uint64
 	BypassCacheReply uint64
+	BypassWarmupSkip uint64
 	CacheLookup      uint64
 	CacheStore       uint64
 	CacheHit         uint64
@@ -145,6 +152,7 @@ func (s *fastStats) snapshot() fastStatsSnapshot {
 		BypassBadPacket:  s.bypassBadPacket.Load(),
 		BypassRuleReply:  s.bypassRuleReply.Load(),
 		BypassCacheReply: s.bypassCacheReply.Load(),
+		BypassWarmupSkip: s.bypassWarmupSkip.Load(),
 		CacheLookup:      s.cacheLookup.Load(),
 		CacheStore:       s.cacheStore.Load(),
 		CacheHit:         s.cacheHit.Load(),
@@ -284,7 +292,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		ttlMax:      args.FastCacheTTLMax,
 	}, stats)
 	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, sw: sw15}
-	fastBypass := buildFastBypass(bp, fc, stats)
+	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second)
 
 	socketOpt := server_utils.ListenerSocketOpts{
 		SO_REUSEPORT: true,
@@ -312,6 +320,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 						zap.Uint64("bypass_bad_packet", s.BypassBadPacket),
 						zap.Uint64("bypass_rule_reply", s.BypassRuleReply),
 						zap.Uint64("bypass_cache_reply", s.BypassCacheReply),
+						zap.Uint64("bypass_warmup_skip", s.BypassWarmupSkip),
 						zap.Uint64("cache_lookup", s.CacheLookup),
 						zap.Uint64("cache_store", s.CacheStore),
 						zap.Uint64("cache_hit", s.CacheHit),
@@ -335,15 +344,22 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	return &UdpServer{args: args, c: c}, nil
 }
 
-func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool) {
+func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool) {
 	var once sync.Once
 	var sw15, sw5, sw6, sw1, sw7, sw2, sw12 SwitchPlugin
 	var dm DomainMapperPlugin
 	var ipSet IPSetPlugin
+	readyAt := time.Now().Add(warmup)
 
 	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool) {
 		if stats != nil {
 			stats.bypassRequests.Add(1)
+		}
+		if warmup > 0 && time.Now().Before(readyAt) {
+			if stats != nil {
+				stats.bypassWarmupSkip.Add(1)
+			}
+			return server.FastActionContinue, 0, 0, "", false
 		}
 		once.Do(func() {
 			if p := bp.M().GetPlugin("switch15"); p != nil {

@@ -31,7 +31,28 @@ include:
   - "sub_config/requery.yaml"               #分流与缓存刷新功能
 
 plugins:
-  - tag: sequence_6666
+# ========================= 重要说明（请保留） =========================
+# 这里把“主链路 + requery 链路”共同的前置规则抽成 sequence_common_precheck。
+# 这不是删除功能，而是“等价重构”，目的是避免两份大段规则长期漂移。
+#
+# 等价关系:
+# - 旧配置中 sequence_6666 与 sequence_requery 里重复的:
+#   qtype/switch 拦截、unified_matcher1、黑白名单拦截、client_ip 逻辑、
+#   prefer_ipv4/prefer_ipv6、cache_all/cache_all_noleak
+#   现在都集中在 sequence_common_precheck 中执行。
+#
+# 执行顺序:
+# - sequence_6666: 先执行 $sequence_common_precheck，再执行 top_domains/rewrite/分流。
+# - sequence_requery: 先执行 $sequence_common_precheck，再执行 rewrite/分流。
+#
+# 差异点（有意保留）:
+# - sequence_6666 保留 top_domains 统计。
+# - sequence_requery 不做 top_domains 统计（避免刷新链路污染访问排行）。
+#
+# 维护规则:
+# - 以后如果要改这段前置逻辑，只改 sequence_common_precheck 一处即可。
+# ===================================================================
+  - tag: sequence_common_precheck
     type: sequence
     args:
       - matches:                            #阻止SOA PTR HTTPS类型的dns查询
@@ -98,6 +119,11 @@ plugins:
         - switch3 'B'                       #非泄露模式
         - switch13 'A'                      #缓存开关打开
         exec: $cache_all_noleak
+
+  - tag: sequence_6666
+    type: sequence
+    args:
+      - exec: $sequence_common_precheck       # 等价于旧版中被提取的整段前置规则
       - exec: $top_domains
       - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
       - matches: qtype 1                    #处理A请求
@@ -114,6 +140,7 @@ plugins:
       entry: sequence_6666
       listen: ":53"
       enable_audit: true
+      fast_bypass_warmup_seconds: 3      # 启动后预热期：先走主链路，避免快路径冷启动抖动
 
   - tag: tcp_all
     type: tcp_server
@@ -126,70 +153,7 @@ plugins:
   - tag: sequence_requery
     type: sequence
     args:
-      - matches:                            #阻止SOA PTR HTTPS类型的dns查询
-        - "qtype 6 12 65"
-        - switch5 'A'
-        exec: reject 0
-      - matches:                            #阻止AAAA类型的dns查询
-        - "qtype 28"
-        - switch6 'A'
-        exec: reject 0
-      - exec: $unified_matcher1             #匹配屏蔽域名表并设置相应的fast_mark
-      - matches:                            #屏蔽黑名单域名
-        - fast_mark 1
-        - switch1 'A'
-        exec: reject 3
-      - matches:                            #屏蔽没有v4地址的域名
-        - fast_mark 2
-        - qtype 1
-        - switch1 'A'
-        exec: reject 0
-      - matches:                            #屏蔽没有v6地址的域名
-        - fast_mark 3
-        - qtype 28
-        - switch1 'A'
-        exec: reject 0
-      - matches:                            #屏蔽广告
-        - fast_mark 5
-        - switch7 'A'
-        exec: reject 3
-      - matches: fast_mark 6                #向上游请求ddns域名，无过期缓存
-        exec:
-          - $domestic
-          - exit
-      - matches:                            #当mosdns占用53直面客户端，只有client_ip.txt中指定的IP才科学
-        - "!fast_mark 48"                   #在快速路径中没有比对过
-        - switch2 'A'
-        - switch12 'B'
-        - "!client_ip $client_ip"
-        exec: fast_mark 39
-      - matches:                            #当mosdns占用53直面客户端，client_ip.txt中指定的IP不科学
-        - "!fast_mark 48"                   #在快速路径中没有比对过
-        - switch2 'B'
-        - switch12 'A'
-        - "client_ip $client_ip"
-        exec: fast_mark 39
-      - matches: fast_mark 39
-        exec:
-          - $sequence_local
-          - tag_setter 指定客户端直连
-          - exit
-      - matches:
-        - switch8 'A'                       #Prefer IPV4开
-        - switch10 'B'                      #Prefer IPV6关
-        exec: prefer_ipv4
-      - matches:
-        - switch8 'B'                       #Prefer IPV4关
-        - switch10 'A'                      #Prefer IPV6开
-        exec: prefer_ipv6
-      - matches:                            #web ui中选择泄露版（默认），用cache_all，否则用cache_all_noleak
-        - switch3 'A'                       #泄露模式
-        - switch13 'A'                      #缓存开关打开
-        exec: $cache_all
-      - matches:
-        - switch3 'B'                       #非泄露模式
-        - switch13 'A'                      #缓存开关打开
-        exec: $cache_all_noleak
+      - exec: $sequence_common_precheck       # 与主链路复用同一前置规则，避免漂移
       - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
       - matches: qtype 1                    #处理A请求
         exec: $sequence_ipv4
@@ -204,6 +168,7 @@ plugins:
     args:
       entry: sequence_requery
       listen: ":7766"
+      fast_bypass_warmup_seconds: 1      # 刷新链路也保留短预热，减少启动瞬时超时
 
   - tag: tcp_requery
     type: tcp_server
@@ -263,6 +228,7 @@ plugins:
       entry: sequence_for_clashmi
       listen: ":7799"
       enable_audit: true
+      fast_bypass_warmup_seconds: 3
 
   - tag: tcp_clashmi
     type: tcp_server

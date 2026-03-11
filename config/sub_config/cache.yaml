@@ -3,11 +3,20 @@ plugins:
 # 1. 默认全量启用 WAL, 每个实例独立 .wal 文件, dump 仍作为 checkpoint 基线。
 # 2. 灰度时可先仅保留部分实例的 wal_file/wal_sync_interval, 观察 dump 与 replay 状态后再全量开启。
 # 3. 回滚时删除 wal_file/wal_sync_interval 并保留 dump_file/dump_interval, 现有 snapshot 仍可继续恢复。
+# 路由器内存策略:
+# size 是“条目数上限”而非字节数，多实例叠加会显著放大内存占用。
+# 默认按保守档位分层，避免高并发/高基数场景下出现内存压力与回收抖动。
+# L1（热点缓存）策略:
+# - l1_enabled: 是否启用 L1（命中快，但会增加常驻内存）
+# - l1_total_cap: L1 总条目预算（内部会按分片均摊）
+# - 当前默认已降档，优先保证路由器稳定内存占用。
 #全部缓存 第1层缓存 直面客户端
   - tag: cache_all
     type: cache
     args:
-      size: 20000000
+      size: 800000
+      l1_enabled: true
+      l1_total_cap: 8192
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15
@@ -23,7 +32,9 @@ plugins:
   - tag: cache_all_noleak
     type: cache
     args:
-      size: 20000000
+      size: 800000
+      l1_enabled: true
+      l1_total_cap: 8192
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15
@@ -39,7 +50,9 @@ plugins:
   - tag: cache_cn
     type: cache
     args:
-      size: 20000000
+      size: 500000
+      l1_enabled: true
+      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15
@@ -52,7 +65,9 @@ plugins:
   - tag: cache_google
     type: cache
     args:
-      size: 20000000
+      size: 300000
+      l1_enabled: true
+      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15
@@ -64,7 +79,9 @@ plugins:
   - tag: cache_google_node
     type: cache
     args:
-      size: 20000000
+      size: 300000
+      l1_enabled: true
+      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15
@@ -78,7 +95,9 @@ plugins:
   - tag: cache_node
     type: cache
     args:
-      size: 20000000
+      size: 300000
+      l1_enabled: true
+      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15
@@ -91,7 +110,9 @@ plugins:
   - tag: cache_cnmihomo
     type: cache
     args:
-      size: 20000000
+      size: 300000
+      l1_enabled: true
+      l1_total_cap: 4096
       lazy_cache_ttl: 259200000
       nxdomain_ttl: 60
       servfail_ttl: 15

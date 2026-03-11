@@ -87,6 +87,9 @@ func newCacheOpStatus(entries int, dur time.Duration, err error) cacheOpStatus {
 }
 
 func (c *Cache) l1Len() int {
+	if !c.l1Enabled {
+		return 0
+	}
 	total := 0
 	for i := 0; i < shardCount; i++ {
 		shard := c.shards[i]
@@ -121,6 +124,9 @@ func (c *Cache) snapshotStats() cacheStatsResponse {
 		Config: map[string]interface{}{
 			"size":              c.args.Size,
 			"lazy_cache_ttl":    c.args.LazyCacheTTL,
+			"l1_enabled":        c.l1Enabled,
+			"l1_total_cap":      c.args.L1TotalCap,
+			"l1_shard_cap":      c.l1ShardCap,
 			"enable_ecs":        c.args.EnableECS,
 			"dump_interval":     c.args.DumpInterval,
 			"wal_sync_interval": c.args.WALSyncInterval,
