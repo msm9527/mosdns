@@ -18,7 +18,7 @@ plugins:
           socks5: "127.0.0.1:7891"
           upstream_query_timeout: 1000
 
-#国内域名 内部使用
+  # 保持调试入口在本文件内可初始化，避免依赖后续 include 才出现的 sequence_google。
   - tag: sequence_google_in
     type: sequence
     args:

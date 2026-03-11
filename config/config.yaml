@@ -239,7 +239,7 @@ plugins:
         exec: exit
       - matches: "!fast_mark 26"
         exec:
-          - $sequence_local_fake_clashmi
+          - $sequence_local_fake
           - tag_setter clashmi国内
           - exit
 

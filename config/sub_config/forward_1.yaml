@@ -24,16 +24,6 @@ plugins:
       upstreams:
         - addr: "udp://127.0.0.1:1053"
 
-#缓存序列-国内域名realip
-  - tag: sequence_local_exit
-    type: sequence
-    args:
-      - matches: switch4 'A'
-        exec: $cache_cn
-      - exec: $domestic
-      - exec: cname_remover
-#      - exec: exit
-
   - tag: sequence_local
     type: sequence
     args:
@@ -55,17 +45,6 @@ plugins:
       - exec: ttl 5
 #      - exec: exit
 
-  - tag: sequence_local_fake_clashmi
-    type: sequence
-    args:
-      - matches: switch4 'A'
-        exec: $cache_cnmihomo
-      - matches: fast_mark 10
-        exec: $sequence_local
-      - matches: "!fast_mark 10"
-        exec: $cnfake
-      - exec: ttl 5
-
 #向mihomo请求国内的fakeip序列,直接接受前一步国内dns的结果
   - tag: sequence_local_fake_exit
     type: sequence
@@ -83,7 +62,7 @@ plugins:
     type: sequence
     args:
       - matches: switch9 'A'              #realip
-        exec: $sequence_local_exit
+        exec: $sequence_local
       - matches: switch9 'B'              #fakeip
         exec: $sequence_local_fake
 
@@ -120,21 +99,15 @@ plugins:
         exec: $my_fakeiplist     #加入自生成国外域名列表
       - exec: exit
 
-#国内域名 内部使用
-  - tag: sequence_local_in
-    type: sequence
-    args:
-      - exec: $sequence_local
-
 #国内
   - tag: udp_local
     type: udp_server
     args:
-      entry: sequence_local_in
+      entry: sequence_local
       listen: ":7722"
 
   - tag: tcp_local
     type: tcp_server
     args:
-      entry: sequence_local_in
+      entry: sequence_local
       listen: ":7722"

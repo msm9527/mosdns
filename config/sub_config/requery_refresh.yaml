@@ -82,29 +82,36 @@ plugins:
         exec: $my_fakeiplist
       - exec: exit
 
+  - tag: sequence_not_in_list_direct_finalize_refresh
+    type: sequence
+    args:
+      - exec: $my_realiplist
+      - matches:
+        - switch9 'B'
+        exec: $sequence_local_fake_refresh
+      - exec: exit
+
+  - tag: sequence_not_in_list_cn_finalize_refresh
+    type: sequence
+    args:
+      - exec: $my_realiplist
+      - matches:
+        - switch9 'B'
+        exec: $sequence_local_fake_refresh
+
   - tag: sequence_not_in_list_ipmatch_refresh
     type: sequence
     args:
       - matches: "resp_ip $direct_ip"
         exec: fast_mark 24
       - matches: fast_mark 24
-        exec: $my_realiplist
-      - matches:
-        - fast_mark 24
-        - switch9 'B'
-        exec: $sequence_local_fake_refresh
-      - matches: fast_mark 24
-        exec: exit
+        exec: $sequence_not_in_list_direct_finalize_refresh
       - matches: "!resp_ip $geoip_cn"
         exec: fast_mark 25
       - matches: fast_mark 25
         exec: $sequence_fakeip_addlist_refresh
       - matches: "!fast_mark 25"
-        exec: $my_realiplist
-      - matches:
-        - "!fast_mark 25"
-        - switch9 'B'
-        exec: $sequence_local_fake_refresh
+        exec: $sequence_not_in_list_cn_finalize_refresh
 
   - tag: sequence_not_in_list_leak_v4_refresh
     type: sequence
@@ -200,7 +207,7 @@ plugins:
         exec: exit
       - exec: $sequence_not_in_list_ipmatch_refresh
 
-  - tag: sequence_ipv4_refresh
+  - tag: sequence_ipv4_known_domain_refresh
     type: sequence
     args:
       - matches: fast_mark 7
@@ -232,38 +239,18 @@ plugins:
         exec: $sequence_fakeip_addlist_refresh
       - matches: fast_mark 16
         exec: $sequence_local_refresh
-      - matches: "resp_ip $direct_ip"
-        exec: fast_mark 18
-      - matches:
-        - "fast_mark 18"
-        - "!fast_mark 11"
-        exec: $my_realiplist
-      - matches:
-        - fast_mark 18
-        - switch9 'B'
-        exec: $sequence_local_fake_exit_refresh
-      - matches: fast_mark 18
-        exec: exit
-      - matches:
-        - "resp_ip 0.0.0.0/0"
-        - "!resp_ip 0.0.0.0 127.0.0.1 127.0.0.2 127.0.0.3"
-        exec: fast_mark 19
-      - matches:
-        - "fast_mark 19"
-        - "!fast_mark 11"
-        exec: $my_realiplist
-      - matches:
-        - fast_mark 19
-        - switch9 'B'
-        exec: $sequence_local_fake_exit_refresh
-      - matches: fast_mark 19
-        exec: exit
-      - matches: switch3 'A'
-        exec: $sequence_not_in_list_leak_v4_refresh
-      - matches: switch3 'B'
-        exec: $sequence_not_in_list_noleak_v4_refresh
 
-  - tag: sequence_ipv6_refresh
+  - tag: sequence_ipv4_realip_finalize_refresh
+    type: sequence
+    args:
+      - matches: "!fast_mark 11"
+        exec: $my_realiplist
+      - matches:
+        - switch9 'B'
+        exec: $sequence_local_fake_exit_refresh
+      - exec: exit
+
+  - tag: sequence_ipv6_known_domain_refresh
     type: sequence
     args:
       - matches: fast_mark 7
@@ -295,18 +282,44 @@ plugins:
         exec: $sequence_fakeip_addlist_refresh
       - matches: fast_mark 16
         exec: $sequence_local_refresh
-      - matches: "resp_ip $direct_ip"
-        exec: fast_mark 18
-      - matches:
-        - "fast_mark 18"
-        - "!fast_mark 11"
+
+  - tag: sequence_ipv6_realip_finalize_refresh
+    type: sequence
+    args:
+      - matches: "!fast_mark 11"
         exec: $my_realiplist
       - matches:
-        - fast_mark 18
         - switch9 'B'
         exec: $sequence_local_fake_exit_refresh
+      - exec: exit
+
+  - tag: sequence_ipv4_refresh
+    type: sequence
+    args:
+      - exec: $sequence_ipv4_known_domain_refresh
+      - matches: "resp_ip $direct_ip"
+        exec: fast_mark 18
       - matches: fast_mark 18
-        exec: exit
+        exec: $sequence_ipv4_realip_finalize_refresh
+      - matches:
+        - "resp_ip 0.0.0.0/0"
+        - "!resp_ip 0.0.0.0 127.0.0.1 127.0.0.2 127.0.0.3"
+        exec: fast_mark 19
+      - matches: fast_mark 19
+        exec: $sequence_ipv4_realip_finalize_refresh
+      - matches: switch3 'A'
+        exec: $sequence_not_in_list_leak_v4_refresh
+      - matches: switch3 'B'
+        exec: $sequence_not_in_list_noleak_v4_refresh
+
+  - tag: sequence_ipv6_refresh
+    type: sequence
+    args:
+      - exec: $sequence_ipv6_known_domain_refresh
+      - matches: "resp_ip $direct_ip"
+        exec: fast_mark 18
+      - matches: fast_mark 18
+        exec: $sequence_ipv6_realip_finalize_refresh
       - matches:
         - "rcode 0 3"
         - "!resp_ip 2000::/3"
@@ -318,10 +331,6 @@ plugins:
         - "resp_ip 2000::/3"
         - "!resp_ip ::1 ::2 ::3"
         exec: fast_mark 21
-      - matches:
-        - "fast_mark 21"
-        - "!fast_mark 11"
-        exec: $my_realiplist
       - matches: fast_mark 20
         exec:
           - drop_resp
@@ -330,12 +339,8 @@ plugins:
         exec: exit
       - matches:
         - "fast_mark 21"
-        - switch9 'B'
-        exec: $sequence_local_fake_exit_refresh
-      - matches:
-        - "fast_mark 21"
         - "!fast_mark 17"
-        exec: exit
+        exec: $sequence_ipv6_realip_finalize_refresh
       - matches: switch3 'A'
         exec: $sequence_not_in_list_leak_v6_refresh
       - matches: switch3 'B'

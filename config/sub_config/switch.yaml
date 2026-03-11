@@ -89,12 +89,14 @@ plugins:
       initial_value: "rule/switch10.txt"
 
 #是否使用阿里私有DOH 'A'-使用  'B'-不使用
+#默认主链路暂未接入，保留给 Web UI 展示与后续扩展
   - tag: switch11
     type: switch11
     args:
       initial_value: "rule/switch11.txt"
 
 #是否使用运营商dns 'A'-使用  'B'-使用运营商dns
+#默认主链路暂未接入，保留给 Web UI 展示与后续扩展
   - tag: switch14
     type: switch14
     args:
@@ -105,6 +107,5 @@ plugins:
     type: switch15
     args:
       initial_value: "rule/switch15.txt"
-
 
 

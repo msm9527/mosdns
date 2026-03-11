@@ -60,8 +60,8 @@
 | `sub_config/for_singbox.yaml` | sing-box / 节点专用链路（8888/9999） | 外部客户端专用 |
 | `sub_config/webinfo.yaml` | Web UI 客户端名存储 | UI 数据持久化 |
 | `sub_config/requery.yaml` | requery 插件实例定义 | 刷新调度 |
-| `sub_config/con_match.yaml` | 统一 mark 示例序列（非主入口） | 规则实验/辅助 |
-| `sub_config/forward_2.yaml` | 本机主分流聚合入口（5656） | 旁路/内部转发 |
+| `examples/con_match.yaml` | 统一 mark 示例序列（非主入口） | 规则实验/辅助 |
+| `examples/forward_2.yaml` | 本机主分流聚合入口（5656） | 旁路/内部转发示例 |
 
 ## 4. fast_mark 对照（配置侧）
 
@@ -131,4 +131,4 @@
 - `docs/DNS_FLOW_VISUAL_ORDER.md`
 - `docs/SWITCH_1_15_FUNCTIONS.md`
 - `docs/STRESS_TEST_GUIDE.md`
-
+- `config/source/README.md`
