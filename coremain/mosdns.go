@@ -21,7 +21,6 @@ package coremain
 
 import (
 	"bytes"
-	"embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -29,9 +28,9 @@ import (
 	"net/http"
 	"net/http/pprof"
 	"os"
-	"path"
 	"path/filepath"
-	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/IrineSistiana/mosdns/v5/pkg/safe_close"
@@ -42,19 +41,18 @@ import (
 	"go.uber.org/zap"
 )
 
-//go:embed www/*
-var content embed.FS
-
 type Mosdns struct {
 	logger *zap.Logger // non-nil logger.
 
 	// Plugins
 	plugins map[string]any
 
-	httpMux         *chi.Mux
-	metricsReg      *prometheus.Registry
-	sc              *safe_close.SafeClose
-	globalOverrides *GlobalOverrides // <<< ADDED
+	httpMux          *chi.Mux
+	metricsReg       *prometheus.Registry
+	sc               *safe_close.SafeClose
+	overridesMu      sync.RWMutex
+	globalOverrides  *GlobalOverrides // <<< ADDED
+	restartScheduled atomic.Bool
 }
 
 // NewMosdns initializes a mosdns instance and its plugins.
@@ -95,7 +93,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 		if json.Unmarshal(data, &overrides) == nil {
 			// Prepare the lookup map for new generic replacements
 			overrides.Prepare()
-			m.globalOverrides = &overrides
+			m.setGlobalOverrides(&overrides)
 			mlog.L().Info("loaded global overrides from file",
 				zap.String("path", overridesPath),
 				zap.String("socks5", overrides.Socks5),
@@ -118,7 +116,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	RegisterConfigManagerAPI(m.httpMux)
 	RegisterUpdateAPI(m.httpMux)    // For binary updates
 	RegisterSystemAPI(m.httpMux, m) // For self-restart
-	RegisterUpstreamAPI(m.httpMux)
+	RegisterUpstreamAPI(m.httpMux, m)
 
 	// Start http api server
 	if httpAddr := cfg.API.HTTP; len(httpAddr) > 0 {
@@ -221,6 +219,33 @@ func (m *Mosdns) GetAPIRouter() *chi.Mux {
 	return m.httpMux
 }
 
+func (m *Mosdns) tryScheduleRestart() bool {
+	return m.restartScheduled.CompareAndSwap(false, true)
+}
+
+func (m *Mosdns) clearScheduledRestart() {
+	m.restartScheduled.Store(false)
+}
+
+func (m *Mosdns) setGlobalOverrides(overrides *GlobalOverrides) {
+	m.overridesMu.Lock()
+	m.globalOverrides = overrides
+	m.overridesMu.Unlock()
+}
+
+func (m *Mosdns) getGlobalOverridesRef() *GlobalOverrides {
+	m.overridesMu.RLock()
+	defer m.overridesMu.RUnlock()
+	return m.globalOverrides
+}
+
+// GetGlobalOverrides returns a deep copy of current runtime global overrides.
+func (m *Mosdns) GetGlobalOverrides() *GlobalOverrides {
+	m.overridesMu.RLock()
+	defer m.overridesMu.RUnlock()
+	return CloneGlobalOverrides(m.globalOverrides)
+}
+
 func (m *Mosdns) RegPluginAPI(tag string, mux *chi.Mux) {
 	m.httpMux.Mount("/plugins/"+tag, mux)
 }
@@ -262,115 +287,26 @@ func (m *Mosdns) initHttpMux() {
 	})
 	m.httpMux.Method(http.MethodGet, "/metrics", wrappedMetricsHandler)
 
-	// [修改] 将原来的公共handler拆分为两个独立的handler
-
-	// [新增] 根路由 ("/") 的 handler，指向 mosdnsp.html
-	rootHandler := func(w http.ResponseWriter, r *http.Request) {
-		data, err := content.ReadFile("www/mosdnsp.html") // 读取新文件
-		if err != nil {
-			m.logger.Error("Error reading embedded file", zap.String("file", "www/mosdnsp.html"), zap.Error(err))
-			http.Error(w, "Error reading the embedded file", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(data); err != nil {
-			m.logger.Error("Error writing response", zap.Error(err))
-		}
-	}
-
-	// [新增] graphic 路由 ("/graphic") 的 handler，保持指向 mosdns.html
-	graphicHandler := func(w http.ResponseWriter, r *http.Request) {
-		data, err := content.ReadFile("www/mosdns.html") // 读取原文件
-		if err != nil {
-			m.logger.Error("Error reading embedded file", zap.String("file", "www/mosdns.html"), zap.Error(err))
-			http.Error(w, "Error reading the embedded file", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(data); err != nil {
-			m.logger.Error("Error writing response", zap.Error(err))
-		}
-	}
-
-	// [新增] log 路由 ("/log") 的 handler, 指向 /www/log.html
-	logHandler := func(w http.ResponseWriter, r *http.Request) {
-		data, err := content.ReadFile("www/log.html") // 读取 /www/log.html
-		if err != nil {
-			m.logger.Error("Error reading embedded file", zap.String("file", "www/log.html"), zap.Error(err))
-			http.Error(w, "Error reading the embedded file", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(data); err != nil {
-			m.logger.Error("Error writing response", zap.Error(err))
-		}
-	}
-
-	plainLogHandler := func(w http.ResponseWriter, r *http.Request) {
-		data, err := content.ReadFile("www/log_plain.html")
-		if err != nil {
-			m.logger.Error("Error reading embedded file", zap.String("file", "www/log_plain.html"), zap.Error(err))
-			http.Error(w, "Error reading the embedded file", http.StatusInternalServerError)
-			return
-		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		if _, err := w.Write(data); err != nil {
-			m.logger.Error("Error writing response", zap.Error(err))
-		}
-	}
-
-	redirectToLog := func(w http.ResponseWriter, r *http.Request) {
-		http.Redirect(w, r, "/log", http.StatusFound)
-	}
-
-	staticAssetHandler := func(w http.ResponseWriter, r *http.Request) {
-		relativePath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
-		if !strings.HasPrefix(relativePath, "assets/") {
-			http.NotFound(w, r)
-			return
-		}
-		filePath := path.Join("www", relativePath)
-		data, err := content.ReadFile(filePath)
-		if err != nil {
-			m.logger.Error("Error reading embedded static file", zap.String("path", filePath), zap.Error(err))
-			http.NotFound(w, r)
-			return
-		}
-
-		switch ext := path.Ext(filePath); ext {
-		case ".css":
-			w.Header().Set("Content-Type", "text/css; charset=utf-8")
-		case ".js":
-			w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-		case ".woff2":
-			w.Header().Set("Content-Type", "font/woff2")
-		case ".woff":
-			w.Header().Set("Content-Type", "font/woff")
-		case ".ttf":
-			w.Header().Set("Content-Type", "font/ttf")
-		}
-
-		if _, err := w.Write(data); err != nil {
-			m.logger.Error("Error writing static asset response", zap.Error(err))
-		}
-	}
-
-	// [修改] 为每个路由注册对应的 handler
-	m.httpMux.Get("/", rootHandler)
-	m.httpMux.Get("/graphic", graphicHandler)
-	m.httpMux.Get("/log", logHandler)
-	m.httpMux.Get("/plog", plainLogHandler)
-	m.httpMux.Get("/rlog", redirectToLog)
-	m.httpMux.Get("/assets/*", staticAssetHandler)
-
-	// [新增逻辑] 自动扫描配置目录下 ui 目录的子文件夹并挂载为前端版本
+	// 外置 UI 模式：不再内置任何前端资源，只挂载配置目录下的 ui 文件。
 	uiBaseDir := filepath.Join(MainConfigBaseDir, "ui")
+	m.httpMux.Get("/", func(w http.ResponseWriter, r *http.Request) {
+		if info, err := os.Stat(uiBaseDir); err == nil && info.IsDir() {
+			http.Redirect(w, r, "/ui/", http.StatusFound)
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("No built-in UI. Please deploy external UI under <config-dir>/ui.\n"))
+	})
+
 	// 检查 ui 目录是否存在
 	if info, err := os.Stat(uiBaseDir); err == nil && info.IsDir() {
+		// 挂载 ui 根目录到 /ui
+		m.httpMux.Mount("/ui", http.StripPrefix("/ui", http.FileServer(http.Dir(uiBaseDir))))
+		m.logger.Info("mounted external ui root", zap.String("route", "/ui"), zap.String("path", uiBaseDir))
+
 		// 定义保留的路由名称，防止外部文件夹覆盖核心功能
 		reservedPaths := map[string]bool{
-			"graphic": true, "log": true, "plog": true, "rlog": true, "assets": true,
-			"debug": true, "metrics": true, "plugins": true, "api": true, "": true,
+			"debug": true, "metrics": true, "plugins": true, "api": true, "ui": true, "": true,
 		}
 
 		// 读取子目录
@@ -466,8 +402,8 @@ func (m *Mosdns) loadPluginsFromCfg(cfg *Config, includeDepth int) error {
 
 	for i, pc := range cfg.Plugins {
 		// <<< MODIFIED: Pass tag and apply overrides
-		if m.globalOverrides != nil {
-			ApplyOverrides(pc.Tag, &pc, m.globalOverrides)
+		if overrides := m.getGlobalOverridesRef(); overrides != nil {
+			ApplyOverrides(pc.Tag, &pc, overrides)
 		}
 		// <<< END MODIFICATION
 

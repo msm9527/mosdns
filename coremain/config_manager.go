@@ -12,10 +12,8 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
@@ -618,46 +616,25 @@ func triggerRestart() {
 	lg := mlog.L()
 
 	// 1. 尝试使用 HTTP API 重启 (优先读取环境变量)
-	endpoint := strings.TrimSpace(os.Getenv("MOSDNS_RESTART_ENDPOINT"))
-	if endpoint == "" {
-		endpoint = "http://127.0.0.1:9099/api/v1/system/restart"
-	}
+	endpoint := ResolveRestartEndpoint(DefaultRestartEndpoint)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	req, err := buildRestartRequest(ctx, endpoint)
-	if err != nil {
-		lg.Error("failed to build restart request", zap.String("endpoint", endpoint), zap.Error(err))
-		return
-	}
-
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Do(req)
-
-	if err == nil {
-		defer resp.Body.Close()
-		io.Copy(io.Discard, resp.Body)
-		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-			lg.Info("http restart request sent successfully", zap.String("endpoint", endpoint))
-			return
-		}
-		lg.Warn("http restart request returned non-2xx", zap.String("status", resp.Status))
+	if err := RequestSelfRestart(ctx, client, endpoint, 500); err == nil {
+		lg.Info("http restart request sent successfully", zap.String("endpoint", endpoint))
+		return
 	} else {
-		lg.Warn("http restart request failed", zap.Error(err))
+		lg.Warn("http restart request failed", zap.String("endpoint", endpoint), zap.Error(err))
 	}
 
 	// 2. 如果 HTTP 重启失败且不是 Windows，尝试直接 Exec 重启 (Fallback)
-	if runtime.GOOS != "windows" {
-		exe, err := os.Executable()
-		if err != nil {
-			lg.Error("failed to get executable path for restart", zap.Error(err))
-			return
-		}
+	if SelfRestartSupported() {
 		lg.Info("falling back to syscall.Exec for restart")
 		// 等待一小会儿确保 HTTP 响应已发送
 		time.Sleep(100 * time.Millisecond)
-		if err := syscall.Exec(exe, os.Args, os.Environ()); err != nil {
+		if err := ExecSelfRestart(); err != nil {
 			lg.Error("syscall.Exec failed", zap.Error(err))
 		}
 	} else {
@@ -666,17 +643,5 @@ func triggerRestart() {
 }
 
 func buildRestartRequest(ctx context.Context, endpoint string) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(`{"delay_ms":500}`))
-	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	// 针对 localhost/127.0.0.1 强制设置 Host，避免代理干扰
-	// (update_manager.go 中有类似的逻辑)
-	host := req.URL.Hostname()
-	if host == "localhost" || host == "127.0.0.1" {
-		req.Host = req.URL.Host
-	}
-	return req, nil
+	return BuildRestartRequestWithDelay(ctx, endpoint, 500)
 }

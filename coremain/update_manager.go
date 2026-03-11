@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"io"
 	stdlog "log"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -19,7 +18,6 @@ import (
 	"runtime/debug"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
@@ -41,7 +39,7 @@ const (
 	userAgent            = "mosdns-update-client"
 	stateFileName        = ".mosdns-update-state.json"
 	// 默认的重启端点；可由环境变量 MOSDNS_RESTART_ENDPOINT 覆盖。
-	postUpgradeEndpoint = "http://127.0.0.1:9099/api/v1/system/restart"
+	postUpgradeEndpoint = DefaultRestartEndpoint
 )
 
 var (
@@ -536,10 +534,7 @@ func (m *UpdateManager) recordInstalled(signature string) {
 }
 
 func (m *UpdateManager) triggerPostUpgradeHook(ctx context.Context) error {
-	endpoint := strings.TrimSpace(os.Getenv("MOSDNS_RESTART_ENDPOINT"))
-	if endpoint == "" {
-		endpoint = postUpgradeEndpoint
-	}
+	endpoint := ResolveRestartEndpoint(postUpgradeEndpoint)
 
 	if endpoint != "" {
 		if ctx == nil {
@@ -547,43 +542,24 @@ func (m *UpdateManager) triggerPostUpgradeHook(ctx context.Context) error {
 		}
 		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 		defer cancel()
-		payload := strings.NewReader(`{"delay_ms":500}`)
-		req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, endpoint, payload)
-		if err == nil {
-			req.Header.Set("Content-Type", "application/json")
-			if host, _, err := net.SplitHostPort(req.URL.Host); err == nil && (host == "localhost" || host == "127.0.0.1") {
-				req.Host = req.URL.Host
-			}
-			// This local call should not use proxy.
-			if resp, err := m.httpClient.Do(req); err == nil {
-				defer resp.Body.Close()
-				io.Copy(io.Discard, resp.Body)
-				if resp.StatusCode >= 200 && resp.StatusCode < 300 {
-					return nil
-				}
-				m.logWarn("self-restart hook returned non-2xx", fmt.Errorf("HTTP %s", resp.Status), zap.String("endpoint", endpoint))
-			} else {
-				m.logWarn("self-restart hook request failed", err, zap.String("endpoint", endpoint))
-			}
+		// This local call should not use proxy.
+		if err := RequestSelfRestart(requestCtx, m.httpClient, endpoint, 500); err == nil {
+			return nil
 		} else {
-			m.logWarn("self-restart hook request build failed", err, zap.String("endpoint", endpoint))
+			m.logWarn("self-restart hook request failed", err, zap.String("endpoint", endpoint))
 		}
 	}
 
-	if runtime.GOOS != "windows" {
-		exe, err := os.Executable()
-		if err != nil {
-			return err
-		}
-		args := append([]string{exe}, os.Args[1:]...)
-		env := os.Environ()
+	if SelfRestartSupported() {
 		go func() {
 			time.Sleep(500 * time.Millisecond)
-			_ = syscall.Exec(exe, args, env)
+			if err := ExecSelfRestart(); err != nil {
+				m.logWarn("self-restart syscall.Exec failed", err)
+			}
 		}()
 		return nil
 	}
-	return errors.New("self-restart is not supported on Windows")
+	return ErrSelfRestartNotSupported
 }
 
 func (m *UpdateManager) isUpdateNeeded(latest, signature string) bool {

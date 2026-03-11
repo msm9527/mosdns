@@ -19,7 +19,9 @@ func RegisterOverridesAPI(router *chi.Mux, m *Mosdns) {
 		r.Get("/", func(w http.ResponseWriter, r *http.Request) {
 			handleGetOverrides(w, r, m)
 		})
-		r.Post("/", handleSetOverrides)
+		r.Post("/", func(w http.ResponseWriter, r *http.Request) {
+			handleSetOverridesWithMosdns(w, r, m)
+		})
 	})
 }
 
@@ -70,14 +72,18 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 
-	// Logic: Memory -> File -> Discovery Fallback
-	if m.globalOverrides != nil {
-		// Loaded in memory, use it (contains latest config + stats)
-		resp.Socks5 = m.globalOverrides.Socks5
-		resp.ECS = m.globalOverrides.ECS
-		populateReplacements(m.globalOverrides, true)
-	} else {
-		// Not in memory, try file
+	loadedFromRuntime := false
+	// Logic: Runtime memory -> File -> Discovery fallback
+	if m != nil {
+		if current := m.GetGlobalOverrides(); current != nil {
+			resp.Socks5 = current.Socks5
+			resp.ECS = current.ECS
+			populateReplacements(current, true)
+			loadedFromRuntime = true
+		}
+	}
+	if !loadedFromRuntime {
+		// Not in memory, try file.
 		overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
 		data, err := os.ReadFile(overridesPath)
 		var fileObj GlobalOverrides
@@ -107,6 +113,10 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 }
 
 func handleSetOverrides(w http.ResponseWriter, r *http.Request) {
+	handleSetOverridesWithMosdns(w, r, nil)
+}
+
+func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 	var payload GlobalOverrides
 	if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
 		if errors.Is(err, errJSONBodyTooLarge) {
@@ -136,7 +146,20 @@ func handleSetOverrides(w http.ResponseWriter, r *http.Request) {
 		zap.String("ecs", payload.ECS),
 		zap.Int("replacements", len(payload.Replacements)))
 
+	payload.Prepare()
+	if m != nil {
+		m.setGlobalOverrides(CloneGlobalOverrides(&payload))
+		if err := m.ReloadRuntimeConfig(""); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_RELOAD_FAILED", "Settings saved but runtime apply failed: "+err.Error())
+			return
+		}
+	}
+
+	message := "Global overrides saved."
+	if m != nil {
+		message = "Global overrides saved and applied."
+	}
 	writeJSON(w, http.StatusOK, map[string]string{
-		"message": "Global overrides saved. Please restart mosdns to apply changes.",
+		"message": message,
 	})
 }

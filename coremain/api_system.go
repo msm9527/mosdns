@@ -2,13 +2,7 @@ package coremain
 
 import (
 	"errors"
-	"fmt"
-	"io"
 	"net/http"
-	"os"
-	"reflect"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -47,9 +41,13 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 			body.DelayMs = 300
 		}
 
-		if isWindows() {
+		if !SelfRestartSupported() {
 			// 复用 api_update.go 中的 writeJSON
 			writeAPIError(w, http.StatusNotImplemented, "RESTART_NOT_SUPPORTED_ON_WINDOWS", "self-restart is not supported on Windows")
+			return
+		}
+		if !m.tryScheduleRestart() {
+			writeAPIError(w, http.StatusConflict, "RESTART_ALREADY_SCHEDULED", "restart already scheduled")
 			return
 		}
 
@@ -58,71 +56,41 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 
 		go func(delay int) {
 			logger := m.Logger()
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					logger.Error("panic during self restart flow", zap.Any("panic", recovered))
+					m.clearScheduledRestart()
+				}
+			}()
 
 			// 2. 等待延迟
 			time.Sleep(time.Duration(delay) * time.Millisecond)
 
-			exe, err := os.Executable()
-			if err != nil {
-				logger.Error("self-restart failed: cannot get executable path", zap.Error(err))
-				return
-			}
-
-			// 3. [核心逻辑] 定向关闭需要保存数据的插件
-			logger.Info("saving data for targeted plugins...")
+			// 3. 只对显式声明了重启准备能力的插件执行落盘逻辑
+			logger.Info("preparing plugins for restart")
 
 			for tag, p := range m.plugins {
 				if p == nil {
 					continue
 				}
-
-				// 获取类型名称
-				pluginType := reflect.TypeOf(p)
-				if pluginType == nil {
+				preparer, ok := p.(RestartPreparer)
+				if !ok {
 					continue
 				}
-				typeName := pluginType.String()
-
-				// 只匹配 cache 和 domain_output
-				isCache := strings.Contains(typeName, "cache.Cache")
-				isDomainOutput := strings.Contains(typeName, "domain_output")
-
-				if isCache || isDomainOutput {
-					if closer, ok := p.(io.Closer); ok {
-						logger.Info("closing plugin to save data",
-							zap.String("tag", tag),
-							zap.String("type", typeName))
-
-						// 这里会阻塞，直到文件写入操作完成 (Go bufio -> OS Cache)
-						if err := closer.Close(); err != nil {
-							logger.Warn("failed to close plugin", zap.String("tag", tag), zap.Error(err))
-						}
-					}
+				logger.Info("running plugin restart preparer", zap.String("tag", tag))
+				if err := preparer.PrepareForRestart(); err != nil {
+					logger.Warn("plugin restart preparation failed", zap.String("tag", tag), zap.Error(err))
 				}
 			}
-			logger.Info("targeted data save completed")
+			logger.Info("plugin restart preparation completed")
 
-			// 4. [已移除] syscall.Sync()
-			// 既然只是进程重启而非系统关机，Close() 将数据写入 OS Cache 已经足够安全且高效。
-			// 移除后也解决了 Windows 编译报错问题。
-
-			// 5. 执行重启 (进程替换)
-			logger.Info("executing syscall.Exec", zap.String("exe", exe))
+			// 4. 执行重启 (进程替换)
+			logger.Info("executing self restart")
 			_ = logger.Sync()
-
-			rawArgs := append([]string{exe}, os.Args[1:]...)
-			env := os.Environ()
-
-			err = syscall.Exec(exe, rawArgs, env)
-
-			if err != nil {
-				fmt.Printf("[FATAL] syscall.Exec failed: %v\n", err)
-				os.Exit(1)
+			if err := ExecSelfRestart(); err != nil {
+				logger.Error("self-restart exec failed", zap.Error(err))
+				m.clearScheduledRestart()
 			}
 		}(body.DelayMs)
 	}
-}
-
-func isWindows() bool {
-	return os.PathSeparator == '\\'
 }

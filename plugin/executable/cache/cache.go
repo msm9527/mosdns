@@ -682,6 +682,10 @@ func (c *Cache) Close() error {
 	return c.backend.Close()
 }
 
+func (c *Cache) PrepareForRestart() error {
+	return c.Close()
+}
+
 func (c *Cache) loadDump() error {
 	if c.persistence == nil {
 		return nil

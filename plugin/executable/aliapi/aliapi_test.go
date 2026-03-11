@@ -85,7 +85,7 @@ func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 	q.SetQuestion("timeout.example.", dns.TypeA)
 	qCtx := testAliAPIContext(q)
 
-	r, err := f.exchange(context.Background(), qCtx, f.us)
+	r, err := f.exchange(context.Background(), qCtx, f.args, f.us)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -96,7 +96,7 @@ func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 		t.Fatalf("unexpected upstream calls %d", bad.calls)
 	}
 
-	r, err = f.exchange(context.Background(), qCtx, f.us)
+	r, err = f.exchange(context.Background(), qCtx, f.args, f.us)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -150,7 +150,7 @@ func TestAliAPI_ExchangeSkipsOpenCircuitUpstream(t *testing.T) {
 	q.SetQuestion("healthy.example.", dns.TypeA)
 	qCtx := testAliAPIContext(q)
 
-	r, err := f.exchange(context.Background(), qCtx, f.us)
+	r, err := f.exchange(context.Background(), qCtx, f.args, f.us)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -177,10 +177,10 @@ func TestAliAPI_PersistentServfailExtendsSuppressWindow(t *testing.T) {
 
 	key := buildFailureKey(dns.Question{Name: "114menhu.com.", Qclass: dns.ClassINET, Qtype: dns.TypeA})
 	for i := 0; i < 3; i++ {
-		f.putFailure(key, dns.RcodeServerFailure)
+		f.putFailure(key, dns.RcodeServerFailure, f.args)
 	}
 
-	rec, ok := f.getFailure(key)
+	rec, ok := f.getFailure(key, f.args)
 	if !ok {
 		t.Fatal("expected persistent servfail suppression to be active")
 	}
@@ -205,7 +205,7 @@ func TestAliAPI_PersistentServfailAccumulatesAcrossShortExpiredWindows(t *testin
 
 	key := buildFailureKey(dns.Question{Name: "114menhu.com.", Qclass: dns.ClassINET, Qtype: dns.TypeA})
 	for i := 0; i < 3; i++ {
-		f.putFailure(key, dns.RcodeServerFailure)
+		f.putFailure(key, dns.RcodeServerFailure, f.args)
 		f.failureMu.Lock()
 		rec := f.failures[key]
 		rec.expiresAt = time.Now().Add(-time.Millisecond)
@@ -214,13 +214,13 @@ func TestAliAPI_PersistentServfailAccumulatesAcrossShortExpiredWindows(t *testin
 		f.failureMu.Unlock()
 	}
 
-	rec, ok := f.getFailure(key)
+	rec, ok := f.getFailure(key, f.args)
 	if ok {
 		t.Fatal("expected expired record to require a fresh lookup before promotion is observed")
 	}
 
-	f.putFailure(key, dns.RcodeServerFailure)
-	rec, ok = f.getFailure(key)
+	f.putFailure(key, dns.RcodeServerFailure, f.args)
+	rec, ok = f.getFailure(key, f.args)
 	if !ok {
 		t.Fatal("expected record to be active after fresh promotion")
 	}
@@ -268,7 +268,7 @@ func BenchmarkAliAPIExchangeSingleSuccess(b *testing.B) {
 		q := new(dns.Msg)
 		q.SetQuestion("bench.example.", dns.TypeA)
 		qCtx := testAliAPIContext(q)
-		r, err := f.exchange(context.Background(), qCtx, f.us)
+		r, err := f.exchange(context.Background(), qCtx, f.args, f.us)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -285,7 +285,7 @@ func BenchmarkAliAPIExchangeSuppressedFailure(b *testing.B) {
 	resp.SetReply(query)
 	f := benchmarkAliAPIInstance(1, newTestWrapper(&repeatUpstream{resp: resp}, "bench_suppressed"))
 	key := buildFailureKey(query.Question[0])
-	f.putFailure(key, dns.RcodeServerFailure)
+	f.putFailure(key, dns.RcodeServerFailure, f.args)
 
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -293,7 +293,7 @@ func BenchmarkAliAPIExchangeSuppressedFailure(b *testing.B) {
 		q := new(dns.Msg)
 		q.SetQuestion("fail.example.", dns.TypeA)
 		qCtx := testAliAPIContext(q)
-		r, err := f.exchange(context.Background(), qCtx, f.us)
+		r, err := f.exchange(context.Background(), qCtx, f.args, f.us)
 		if err != nil {
 			b.Fatal(err)
 		}
@@ -323,7 +323,7 @@ func BenchmarkAliAPIExchangeDualUpstreamFirstHit(b *testing.B) {
 		q := new(dns.Msg)
 		q.SetQuestion("dual.example.", dns.TypeA)
 		qCtx := testAliAPIContext(q)
-		r, err := f.exchange(context.Background(), qCtx, f.us)
+		r, err := f.exchange(context.Background(), qCtx, f.args, f.us)
 		if err != nil {
 			b.Fatal(err)
 		}

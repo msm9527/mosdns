@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
@@ -65,12 +66,45 @@ func getUpstreamOverridesPath() (dir string, path string) {
 }
 
 // RegisterUpstreamAPI 注册路由
-func RegisterUpstreamAPI(router *chi.Mux) {
+func RegisterUpstreamAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/upstream", func(r chi.Router) {
 		r.Get("/tags", handleGetAliAPITags)
 		r.Get("/config", handleGetUpstreamConfig)
-		r.Post("/config", handleSetUpstreamConfig)
+		r.Put("/config", func(w http.ResponseWriter, r *http.Request) {
+			handleReplaceUpstreamConfigWithMosdns(w, r, m)
+		})
+		r.Post("/config", func(w http.ResponseWriter, r *http.Request) {
+			handleSetUpstreamConfigWithMosdns(w, r, m)
+		})
+		r.Post("/apply", func(w http.ResponseWriter, r *http.Request) {
+			handleApplyUpstreamConfigWithMosdns(w, r, m)
+		})
+		r.Get("/items", handleGetUpstreamItems)
+		r.Post("/items", func(w http.ResponseWriter, r *http.Request) {
+			handleCreateUpstreamItemWithMosdns(w, r, m)
+		})
+		r.Put("/items/{upstreamTag}", func(w http.ResponseWriter, r *http.Request) {
+			handleUpdateUpstreamItemWithMosdns(w, r, m)
+		})
+		r.Delete("/items/{upstreamTag}", func(w http.ResponseWriter, r *http.Request) {
+			handleDeleteUpstreamItemWithMosdns(w, r, m)
+		})
 	})
+}
+
+type upstreamConfigReplaceRequest struct {
+	Config GlobalUpstreamOverrides `json:"config"`
+	Apply  bool                    `json:"apply"`
+}
+
+type upstreamApplyRequest struct {
+	PluginTag string `json:"plugin_tag"`
+}
+
+type upstreamItemMutationRequest struct {
+	PluginTag string                 `json:"plugin_tag"`
+	Upstream  UpstreamOverrideConfig `json:"upstream"`
+	Apply     bool                   `json:"apply"`
 }
 
 // GetUpstreamOverrides 供 aliapi 插件初始化调用
@@ -193,6 +227,87 @@ func ensureUpstreamOverridesLoaded() error {
 	return loadUpstreamOverridesLocked()
 }
 
+func cloneUpstreamList(src []UpstreamOverrideConfig) []UpstreamOverrideConfig {
+	if len(src) == 0 {
+		return nil
+	}
+	dst := make([]UpstreamOverrideConfig, len(src))
+	copy(dst, src)
+	return dst
+}
+
+func cloneGlobalUpstreamOverrides(src GlobalUpstreamOverrides) GlobalUpstreamOverrides {
+	dst := make(GlobalUpstreamOverrides, len(src))
+	for pluginTag, entries := range src {
+		dst[pluginTag] = cloneUpstreamList(entries)
+	}
+	return dst
+}
+
+func validateUpstreamEntry(u UpstreamOverrideConfig, idx int) (string, string, bool) {
+	itemPos := idx + 1
+	u.Tag = strings.TrimSpace(u.Tag)
+	u.Protocol = strings.TrimSpace(u.Protocol)
+	if u.Tag == "" {
+		return "UPSTREAM_TAG_REQUIRED", fmt.Sprintf("Item #%d: tag (name) is required", itemPos), false
+	}
+
+	if !u.Enabled {
+		return "", "", true
+	}
+
+	if u.Protocol == "aliapi" {
+		if strings.TrimSpace(u.AccountID) == "" || strings.TrimSpace(u.AccessKeyID) == "" || strings.TrimSpace(u.AccessKeySecret) == "" {
+			return "ALIAPI_CREDENTIALS_REQUIRED", fmt.Sprintf("Item #%d (%s): AliAPI requires account_id, access_key_id, and access_key_secret", itemPos, u.Tag), false
+		}
+		return "", "", true
+	}
+
+	if strings.TrimSpace(u.Addr) == "" {
+		return "UPSTREAM_ADDR_REQUIRED", fmt.Sprintf("Item #%d (%s): addr is required for DNS types", itemPos, u.Tag), false
+	}
+	return "", "", true
+}
+
+func validateUpstreamList(upstreams []UpstreamOverrideConfig) (string, string, bool) {
+	tagSeen := make(map[string]struct{}, len(upstreams))
+	for i, u := range upstreams {
+		if code, msg, ok := validateUpstreamEntry(u, i); !ok {
+			return code, msg, false
+		}
+		tag := strings.TrimSpace(u.Tag)
+		if _, duplicated := tagSeen[tag]; duplicated {
+			return "UPSTREAM_TAG_DUPLICATED", fmt.Sprintf("duplicated upstream tag: %s", tag), false
+		}
+		tagSeen[tag] = struct{}{}
+	}
+	return "", "", true
+}
+
+func validateGlobalUpstreamConfig(cfg GlobalUpstreamOverrides) (string, string, bool) {
+	for pluginTag, upstreams := range cfg {
+		if strings.TrimSpace(pluginTag) == "" {
+			return "PLUGIN_TAG_REQUIRED", "plugin_tag is required", false
+		}
+		if code, msg, ok := validateUpstreamList(upstreams); !ok {
+			return code, msg, false
+		}
+	}
+	return "", "", true
+}
+
+func applyUpstreamRuntimeReload(m *Mosdns, pluginTag string) error {
+	if m == nil {
+		return nil
+	}
+	return m.ReloadRuntimeConfig(pluginTag)
+}
+
+func parseQueryBool(r *http.Request, key string) bool {
+	v := strings.ToLower(strings.TrimSpace(r.URL.Query().Get(key)))
+	return v == "1" || v == "true" || v == "yes"
+}
+
 // handleGetAliAPITags 获取扫描到的插件 Tag
 func handleGetAliAPITags(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
@@ -228,8 +343,327 @@ func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(safeData)
 }
 
+func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
+	var payload upstreamConfigReplaceRequest
+	if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
+		if errors.Is(err, errJSONBodyTooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
+		return
+	}
+
+	if payload.Config == nil {
+		payload.Config = make(GlobalUpstreamOverrides)
+	}
+	if code, msg, ok := validateGlobalUpstreamConfig(payload.Config); !ok {
+		writeAPIError(w, http.StatusBadRequest, code, msg)
+		return
+	}
+
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
+		return
+	}
+
+	if err := func() error {
+		upstreamOverridesLock.Lock()
+		defer upstreamOverridesLock.Unlock()
+		upstreamOverrides = cloneGlobalUpstreamOverrides(payload.Config)
+		return saveUpstreamOverridesLocked()
+	}(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save upstream config")
+		return
+	}
+
+	if payload.Apply {
+		if err := applyUpstreamRuntimeReload(m, ""); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved and applied."})
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved."})
+}
+
+func handleApplyUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
+	if m == nil {
+		writeAPIError(w, http.StatusServiceUnavailable, "SERVICE_UNAVAILABLE", "service unavailable")
+		return
+	}
+
+	var payload upstreamApplyRequest
+	if r.Body != nil && r.Body != http.NoBody {
+		if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
+			if errors.Is(err, errJSONBodyTooLarge) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+				return
+			}
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
+			return
+		}
+	}
+
+	if err := applyUpstreamRuntimeReload(m, strings.TrimSpace(payload.PluginTag)); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Runtime apply failed: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration applied."})
+}
+
+func handleGetUpstreamItems(w http.ResponseWriter, r *http.Request) {
+	pluginTag := strings.TrimSpace(r.URL.Query().Get("plugin_tag"))
+	if pluginTag == "" {
+		writeAPIError(w, http.StatusBadRequest, "PLUGIN_TAG_REQUIRED", "plugin_tag is required")
+		return
+	}
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
+		return
+	}
+
+	upstreamOverridesLock.RLock()
+	items := cloneUpstreamList(upstreamOverrides[pluginTag])
+	upstreamOverridesLock.RUnlock()
+	if items == nil {
+		items = make([]UpstreamOverrideConfig, 0)
+	}
+	writeJSON(w, http.StatusOK, items)
+}
+
+func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
+	var payload upstreamItemMutationRequest
+	if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
+		if errors.Is(err, errJSONBodyTooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
+		return
+	}
+	payload.PluginTag = strings.TrimSpace(payload.PluginTag)
+	if payload.PluginTag == "" {
+		writeAPIError(w, http.StatusBadRequest, "PLUGIN_TAG_REQUIRED", "plugin_tag is required")
+		return
+	}
+	if code, msg, ok := validateUpstreamList([]UpstreamOverrideConfig{payload.Upstream}); !ok {
+		writeAPIError(w, http.StatusBadRequest, code, msg)
+		return
+	}
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
+		return
+	}
+
+	if err := func() error {
+		upstreamOverridesLock.Lock()
+		defer upstreamOverridesLock.Unlock()
+
+		if upstreamOverrides == nil {
+			upstreamOverrides = make(GlobalUpstreamOverrides)
+		}
+		list := cloneUpstreamList(upstreamOverrides[payload.PluginTag])
+		for _, existing := range list {
+			if existing.Tag == payload.Upstream.Tag {
+				return fmt.Errorf("duplicated upstream tag: %s", payload.Upstream.Tag)
+			}
+		}
+		list = append(list, payload.Upstream)
+		if code, msg, ok := validateUpstreamList(list); !ok {
+			return fmt.Errorf("%s|%s", code, msg)
+		}
+		upstreamOverrides[payload.PluginTag] = list
+		return saveUpstreamOverridesLocked()
+	}(); err != nil {
+		if strings.Contains(err.Error(), "|") {
+			parts := strings.SplitN(err.Error(), "|", 2)
+			writeAPIError(w, http.StatusBadRequest, parts[0], parts[1])
+			return
+		}
+		if strings.Contains(err.Error(), "duplicated upstream tag:") {
+			writeAPIError(w, http.StatusConflict, "UPSTREAM_TAG_DUPLICATED", err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save upstream config")
+		return
+	}
+
+	if payload.Apply {
+		if err := applyUpstreamRuntimeReload(m, payload.PluginTag); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusCreated, map[string]string{"message": "Upstream created and applied."})
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "Upstream created."})
+}
+
+func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
+	upstreamTag := strings.TrimSpace(chi.URLParam(r, "upstreamTag"))
+	if upstreamTag == "" {
+		writeAPIError(w, http.StatusBadRequest, "UPSTREAM_TAG_REQUIRED", "upstream tag is required")
+		return
+	}
+
+	var payload upstreamItemMutationRequest
+	if err := decodeJSONBodyStrict(w, r, &payload, false); err != nil {
+		if errors.Is(err, errJSONBodyTooLarge) {
+			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+			return
+		}
+		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
+		return
+	}
+	payload.PluginTag = strings.TrimSpace(payload.PluginTag)
+	if payload.PluginTag == "" {
+		writeAPIError(w, http.StatusBadRequest, "PLUGIN_TAG_REQUIRED", "plugin_tag is required")
+		return
+	}
+	if strings.TrimSpace(payload.Upstream.Tag) == "" {
+		payload.Upstream.Tag = upstreamTag
+	}
+	if code, msg, ok := validateUpstreamList([]UpstreamOverrideConfig{payload.Upstream}); !ok {
+		writeAPIError(w, http.StatusBadRequest, code, msg)
+		return
+	}
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
+		return
+	}
+
+	notFound := false
+	conflictErr := false
+	if err := func() error {
+		upstreamOverridesLock.Lock()
+		defer upstreamOverridesLock.Unlock()
+
+		list := cloneUpstreamList(upstreamOverrides[payload.PluginTag])
+		if len(list) == 0 {
+			notFound = true
+			return nil
+		}
+		idx := -1
+		for i, item := range list {
+			if item.Tag == upstreamTag {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			notFound = true
+			return nil
+		}
+		for i, item := range list {
+			if i != idx && item.Tag == payload.Upstream.Tag {
+				conflictErr = true
+				return nil
+			}
+		}
+		list[idx] = payload.Upstream
+		if code, msg, ok := validateUpstreamList(list); !ok {
+			return fmt.Errorf("%s|%s", code, msg)
+		}
+		upstreamOverrides[payload.PluginTag] = list
+		return saveUpstreamOverridesLocked()
+	}(); err != nil {
+		if strings.Contains(err.Error(), "|") {
+			parts := strings.SplitN(err.Error(), "|", 2)
+			writeAPIError(w, http.StatusBadRequest, parts[0], parts[1])
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save upstream config")
+		return
+	}
+	if notFound {
+		writeAPIError(w, http.StatusNotFound, "UPSTREAM_NOT_FOUND", "upstream not found")
+		return
+	}
+	if conflictErr {
+		writeAPIError(w, http.StatusConflict, "UPSTREAM_TAG_DUPLICATED", "duplicated upstream tag")
+		return
+	}
+
+	if payload.Apply {
+		if err := applyUpstreamRuntimeReload(m, payload.PluginTag); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream updated and applied."})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream updated."})
+}
+
+func handleDeleteUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
+	upstreamTag := strings.TrimSpace(chi.URLParam(r, "upstreamTag"))
+	pluginTag := strings.TrimSpace(r.URL.Query().Get("plugin_tag"))
+	if pluginTag == "" {
+		writeAPIError(w, http.StatusBadRequest, "PLUGIN_TAG_REQUIRED", "plugin_tag is required")
+		return
+	}
+	if upstreamTag == "" {
+		writeAPIError(w, http.StatusBadRequest, "UPSTREAM_TAG_REQUIRED", "upstream tag is required")
+		return
+	}
+	if err := ensureUpstreamOverridesLoaded(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
+		return
+	}
+
+	deleted := false
+	if err := func() error {
+		upstreamOverridesLock.Lock()
+		defer upstreamOverridesLock.Unlock()
+
+		list := cloneUpstreamList(upstreamOverrides[pluginTag])
+		if len(list) == 0 {
+			return nil
+		}
+
+		nextList := make([]UpstreamOverrideConfig, 0, len(list))
+		for _, item := range list {
+			if !deleted && item.Tag == upstreamTag {
+				deleted = true
+				continue
+			}
+			nextList = append(nextList, item)
+		}
+		if !deleted {
+			return nil
+		}
+		upstreamOverrides[pluginTag] = nextList
+		return saveUpstreamOverridesLocked()
+	}(); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save upstream config")
+		return
+	}
+	if !deleted {
+		writeAPIError(w, http.StatusNotFound, "UPSTREAM_NOT_FOUND", "upstream not found")
+		return
+	}
+
+	if parseQueryBool(r, "apply") {
+		if err := applyUpstreamRuntimeReload(m, pluginTag); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream deleted and applied."})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream deleted."})
+}
+
 // handleSetUpstreamConfig 核心保存逻辑
 func handleSetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
+	handleSetUpstreamConfigWithMosdns(w, r, nil)
+}
+
+func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 	mlog.L().Info("[Debug UpstreamAPI] API Request: Set Config Received") // DEBUG
 
 	var payload struct {
@@ -257,30 +691,9 @@ func handleSetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	for i, u := range payload.Upstreams {
-		if u.Tag == "" {
-			msg := fmt.Sprintf("Item #%d: tag (name) is required", i+1)
-			writeAPIError(w, http.StatusBadRequest, "UPSTREAM_TAG_REQUIRED", msg)
-			return
-		}
-
-		if !u.Enabled {
-			continue
-		}
-
-		if u.Protocol == "aliapi" {
-			if u.AccountID == "" || u.AccessKeyID == "" || u.AccessKeySecret == "" {
-				msg := fmt.Sprintf("Item #%d (%s): AliAPI requires account_id, access_key_id, and access_key_secret", i+1, u.Tag)
-				writeAPIError(w, http.StatusBadRequest, "ALIAPI_CREDENTIALS_REQUIRED", msg)
-				return
-			}
-		} else {
-			if u.Addr == "" {
-				msg := fmt.Sprintf("Item #%d (%s): addr is required for DNS types", i+1, u.Tag)
-				writeAPIError(w, http.StatusBadRequest, "UPSTREAM_ADDR_REQUIRED", msg)
-				return
-			}
-		}
+	if code, msg, ok := validateUpstreamList(payload.Upstreams); !ok {
+		writeAPIError(w, http.StatusBadRequest, code, msg)
+		return
 	}
 
 	if err := ensureUpstreamOverridesLoaded(); err != nil {
@@ -289,18 +702,29 @@ func handleSetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	upstreamOverridesLock.Lock()
-	defer upstreamOverridesLock.Unlock()
+	// Only hold the lock for in-memory mutation and file persistence.
+	// Runtime reload may read upstream overrides again, so it must run after unlocking.
+	if err := func() error {
+		upstreamOverridesLock.Lock()
+		defer upstreamOverridesLock.Unlock()
 
-	if upstreamOverrides == nil {
-		upstreamOverrides = make(GlobalUpstreamOverrides)
-	}
-
-	upstreamOverrides[payload.PluginTag] = payload.Upstreams
-
-	if err := saveUpstreamOverridesLocked(); err != nil {
+		if upstreamOverrides == nil {
+			upstreamOverrides = make(GlobalUpstreamOverrides)
+		}
+		upstreamOverrides[payload.PluginTag] = payload.Upstreams
+		return saveUpstreamOverridesLocked()
+	}(); err != nil {
 		mlog.L().Error("[Debug UpstreamAPI] Save failed", zap.Error(err))
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save config file")
+		return
+	}
+
+	if m != nil {
+		if err := m.ReloadRuntimeConfig(payload.PluginTag); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved and applied."})
 		return
 	}
 

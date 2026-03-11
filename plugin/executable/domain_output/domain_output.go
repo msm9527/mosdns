@@ -18,7 +18,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -948,13 +947,13 @@ func (d *domainOutput) Close() error {
 	return nil
 }
 
+func (d *domainOutput) PrepareForRestart() error {
+	return d.Close()
+}
+
 func restartSelf() {
 	time.Sleep(100 * time.Millisecond)
-	bin, err := os.Executable()
-	if err != nil {
-		os.Exit(0)
-	}
-	_ = syscall.Exec(bin, os.Args, os.Environ())
+	_ = coremain.ExecSelfRestart()
 }
 
 func boolToInt(v bool) int {

@@ -15,7 +15,7 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
- */ 
+ */
 
 package fastforward
 
@@ -26,6 +26,7 @@ import (
 	"fmt"
 	"math/rand"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -85,10 +86,17 @@ type UpstreamConfig struct {
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
-	f, err := NewForward(args.(*Args), Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
+	baseArgs := cloneArgs(args.(*Args))
+	effectiveArgs := buildEffectiveArgs(baseArgs, bp.M().GetGlobalOverrides())
+
+	f, err := NewForward(effectiveArgs, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
 	if err != nil {
 		return nil, err
 	}
+	f.baseArgs = baseArgs
+	f.pluginTag = bp.Tag()
+	f.metricsTag = bp.Tag()
+
 	if err := f.RegisterMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.M().GetMetricsReg())); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -98,9 +106,14 @@ func Init(bp *coremain.BP, args any) (any, error) {
 
 var _ sequence.Executable = (*Forward)(nil)
 var _ sequence.QuickConfigurableExec = (*Forward)(nil)
+var _ coremain.RuntimeConfigReloader = (*Forward)(nil)
 
 type Forward struct {
-	args *Args
+	runtimeMu  sync.RWMutex
+	args       *Args
+	baseArgs   *Args
+	pluginTag  string
+	metricsTag string
 
 	logger       *zap.Logger
 	us           []*upstreamWrapper
@@ -194,8 +207,78 @@ func (f *Forward) RegisterMetricsTo(r prometheus.Registerer) error {
 	return nil
 }
 
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return &Args{}
+	}
+	dst := *src
+	if src.Upstreams != nil {
+		dst.Upstreams = append([]UpstreamConfig(nil), src.Upstreams...)
+	}
+	return &dst
+}
+
+func buildEffectiveArgs(base *Args, global *coremain.GlobalOverrides) *Args {
+	a := cloneArgs(base)
+	if global != nil && global.Socks5 != "" {
+		a.Socks5 = global.Socks5
+	}
+	return a
+}
+
+func (f *Forward) snapshotRuntime() (*Args, []*upstreamWrapper) {
+	f.runtimeMu.RLock()
+	defer f.runtimeMu.RUnlock()
+	return f.args, append([]*upstreamWrapper(nil), f.us...)
+}
+
+func (f *Forward) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrapper, error) {
+	f.runtimeMu.RLock()
+	defer f.runtimeMu.RUnlock()
+
+	us := make([]*upstreamWrapper, 0, len(tags))
+	for _, tag := range tags {
+		u := f.tag2Upstream[tag]
+		if u == nil {
+			return nil, nil, fmt.Errorf("cannot find upstream by tag %s", tag)
+		}
+		us = append(us, u)
+	}
+	return f.args, us, nil
+}
+
+func (f *Forward) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	f.runtimeMu.RLock()
+	base := cloneArgs(f.baseArgs)
+	metricsTag := f.metricsTag
+	f.runtimeMu.RUnlock()
+
+	effective := buildEffectiveArgs(base, global)
+	rebuilt, err := NewForward(effective, Opts{Logger: f.logger, MetricsTag: metricsTag})
+	if err != nil {
+		return err
+	}
+
+	f.runtimeMu.Lock()
+	oldUs := f.us
+	f.args = effective
+	f.us = rebuilt.us
+	f.tag2Upstream = rebuilt.tag2Upstream
+	f.runtimeMu.Unlock()
+
+	go func(old []*upstreamWrapper) {
+		time.Sleep(2 * time.Second)
+		for _, u := range old {
+			_ = u.Close()
+		}
+	}(oldUs)
+
+	return nil
+}
+
 func (f *Forward) Exec(ctx context.Context, qCtx *query_context.Context) (err error) {
-	r, err := f.exchange(ctx, qCtx, f.us)
+	args, us := f.snapshotRuntime()
+	r, err := f.exchange(ctx, qCtx, args, us)
 	if err != nil {
 		return err
 	}
@@ -205,20 +288,23 @@ func (f *Forward) Exec(ctx context.Context, qCtx *query_context.Context) (err er
 
 // QuickConfigureExec format: [upstream_tag]...
 func (f *Forward) QuickConfigureExec(args string) (any, error) {
-	var us []*upstreamWrapper
-	if len(args) == 0 { // No args, use all upstreams.
-		us = f.us
-	} else { // Pick up upstreams by tags.
-		for _, tag := range strings.Fields(args) {
-			u := f.tag2Upstream[tag]
-			if u == nil {
-				return nil, fmt.Errorf("cannot find upstream by tag %s", tag)
-			}
-			us = append(us, u)
-		}
-	}
+	selectedTags := strings.Fields(args)
 	var execFunc sequence.ExecutableFunc = func(ctx context.Context, qCtx *query_context.Context) error {
-		r, err := f.exchange(ctx, qCtx, us)
+		var (
+			runtimeArgs *Args
+			us          []*upstreamWrapper
+			err         error
+		)
+		if len(selectedTags) == 0 {
+			runtimeArgs, us = f.snapshotRuntime()
+		} else {
+			runtimeArgs, us, err = f.snapshotRuntimeByTags(selectedTags)
+			if err != nil {
+				return err
+			}
+		}
+
+		r, err := f.exchange(ctx, qCtx, runtimeArgs, us)
 		if err != nil {
 			return err
 		}
@@ -229,7 +315,10 @@ func (f *Forward) QuickConfigureExec(args string) (any, error) {
 }
 
 func (f *Forward) Close() error {
-	for _, u := range f.us {
+	f.runtimeMu.RLock()
+	us := append([]*upstreamWrapper(nil), f.us...)
+	f.runtimeMu.RUnlock()
+	for _, u := range us {
 		_ = u.Close()
 	}
 	return nil
@@ -239,7 +328,7 @@ func (f *Forward) Close() error {
 // ===== VVVV  The only modified function is `exchange` below. VVVV =====
 // ===============================================================================
 
-func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, us []*upstreamWrapper) (*dns.Msg, error) {
+func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, runtimeArgs *Args, us []*upstreamWrapper) (*dns.Msg, error) {
 	if len(us) == 0 {
 		return nil, errors.New("no upstream to exchange")
 	}
@@ -250,7 +339,7 @@ func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, us 
 	}
 	defer pool.ReleaseBuf(queryPayload)
 
-	concurrent := f.args.Concurrent
+	concurrent := runtimeArgs.Concurrent
 	if concurrent <= 0 {
 		concurrent = 1
 	}
@@ -271,7 +360,7 @@ func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, us 
 	// Variables to store the best available "fallback" results according to priority.
 	var lastSuccessOrNXRes *dns.Msg // Priority 2: Stores NOERROR or NXDOMAIN responses.
 	var lastOtherRes *dns.Msg       // Priority 3: Stores other responses like SERVFAIL.
-	var lastError error              // Priority 4: Stores the first encountered network error.
+	var lastError error             // Priority 4: Stores the first encountered network error.
 	// --- MODIFICATION END ---
 
 	r := rand.Intn(len(us))
@@ -372,7 +461,6 @@ func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, us 
 // ===============================================================================
 // ===== ^^^^ The only modified function is `exchange` above. ^^^^ =====
 // ===============================================================================
-
 
 func quickSetup(bq sequence.BQ, s string) (any, error) {
 	args := new(Args)

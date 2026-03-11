@@ -833,7 +833,7 @@
                             <button id="p-overrides-save-btn" class="btn"><i class="fas fa-upload"></i> 保存</button>
                         </div>
                         <p class="subtle-tip" style="margin-top: .4rem; color: var(--label-color);">
-                            保存后需重启 MosDNS 生效。
+                            保存后会立即下发到运行实例。
                         </p>
                     </div>
                 </div>
@@ -1379,7 +1379,7 @@
             }
             try {
                 await postApi('/api/v1/overrides', payload);
-                showToast('覆盖配置已保存');
+                showToast('覆盖配置已保存并立即生效');
             } catch (e) {
                 showToast('保存覆盖配置失败', 'error');
                 showErrorModal(e.message || '保存失败');

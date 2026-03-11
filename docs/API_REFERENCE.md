@@ -1,33 +1,38 @@
-# mosdns API 接口文档（完整）
+# mosdns API 文档（当前项目版）
 
-> 说明：本文档以源码路由注册与处理逻辑为准，覆盖核心 API 与插件 API。插件接口通过 `/plugins/{tag}` 暴露，`{tag}` 为配置文件中插件实例 `tag`。
+> 本文档以当前仓库源码为准，整理前端与运维实际会用到的 API。
+> 重点保留“获取状态 / 更新配置 / 触发更新 / 重启系统”这类请求。
+> 插件接口统一挂在 `/plugins/{tag}` 下，`tag` 来自配置里的插件实例名，不是插件类型名。
 
 ## 1. 基础约定
 
-- 默认 API 根（示例）：`http://127.0.0.1:9099`
-- CORS：全局允许 `GET, POST, OPTIONS, PUT, DELETE`
-- 统一响应并不完全一致（部分接口返回纯文本，部分返回 JSON）
-- 未匹配路径会返回包含可用路由列表的文本说明
+- 默认根地址：`http://127.0.0.1:9099`
+- CORS：允许 `GET, POST, PUT, DELETE, OPTIONS`
+- 返回格式不是完全统一的：
+  - 核心 API 多数返回 JSON
+  - 很多插件 API 返回 `text/plain`
+  - 少数接口返回二进制，如缓存 dump、配置导出 zip
+- 查询类插件接口常见参数：
+  - `q`：后端搜索
+  - `limit`：返回条数
+  - `offset`：偏移量
 
 ## 2. 核心 API
 
-## 2.1 系统与观测类
+### 2.1 观测与调试
 
-| 方法 | 路径 | 说明 | 请求体 | 返回 |
-|---|---|---|---|---|
-| GET | `/metrics` | Prometheus 指标 | 无 | 文本指标 |
-| GET | `/debug/pprof/*` | pprof 入口 | 无 | pprof 页面/数据 |
-| GET | `/debug/pprof/cmdline` | pprof cmdline | 无 | 文本 |
-| GET | `/debug/pprof/profile` | pprof profile | 无 | 二进制 |
-| GET | `/debug/pprof/symbol` | pprof symbol | 无 | 文本 |
-| GET | `/debug/pprof/trace` | pprof trace | 无 | 二进制 |
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/metrics` | Prometheus 指标 |
+| `GET` | `/debug/pprof/*` | Go pprof 调试入口 |
 
-## 2.2 日志抓取 API（v1）
+### 2.2 日志抓取
 
-### `POST /api/v1/capture/start`
+#### `POST /api/v1/capture/start`
 
-- 作用：开始内存日志抓取并临时提升日志级别到 `DEBUG`
-- Body（可选）：
+开始临时抓取运行日志，并把日志级别提升到 `DEBUG`。
+
+请求体可选：
 
 ```json
 {
@@ -35,30 +40,28 @@
 }
 ```
 
-- 约束：`duration_seconds` 取值 `1~600`，默认 `120`
-- 成功返回：纯文本
-- 失败：`400`（JSON 解析错误或参数非法）
+- 默认值：`120`
+- 合法范围：`1 ~ 600`
 
-### `GET /api/v1/capture/logs`
+#### `GET /api/v1/capture/logs`
 
-- 作用：获取抓取日志（读后清空缓冲）
-- 返回：JSON 数组（结构化日志对象）
+获取抓取到的日志，返回 JSON 数组。
 
-## 2.3 审计 API（v1）
+### 2.3 审计 API v1
 
 根路径：`/api/v1/audit`
 
-| 方法 | 子路径 | 说明 | 请求体 |
-|---|---|---|---|
-| POST | `/start` | 开始审计采集 | 无 |
-| POST | `/stop` | 停止审计采集 | 无 |
-| GET | `/status` | 采集状态 | 无 |
-| GET | `/logs` | 审计日志列表 | 无 |
-| POST | `/clear` | 清空审计日志 | 无 |
-| GET | `/capacity` | 获取容量 | 无 |
-| POST | `/capacity` | 设置容量并清空现有日志 | `{"capacity": <int>}` |
+| 方法 | 子路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/start` | 开始审计采集 |
+| `POST` | `/stop` | 停止审计采集 |
+| `GET` | `/status` | 获取采集状态 |
+| `GET` | `/logs` | 获取审计日志 |
+| `POST` | `/clear` | 清空审计日志 |
+| `GET` | `/capacity` | 获取日志容量 |
+| `POST` | `/capacity` | 设置日志容量 |
 
-常见响应示例：
+示例：
 
 ```json
 {
@@ -72,18 +75,26 @@
 }
 ```
 
-## 2.4 审计 API（v2）
+设置容量请求体：
+
+```json
+{
+  "capacity": 100000
+}
+```
+
+### 2.4 审计 API v2
 
 根路径：`/api/v2/audit`
 
-| 方法 | 子路径 | 说明 | 查询参数 |
-|---|---|---|---|
-| GET | `/stats` | 总请求数与平均耗时 | 无 |
-| GET | `/rank/domain` | 域名排行 | `limit`（默认20） |
-| GET | `/rank/client` | 客户端排行 | `limit`（默认20） |
-| GET | `/rank/domain_set` | 规则集排行 | `limit`（默认20） |
-| GET | `/rank/slowest` | 慢查询排行 | `limit`（默认100） |
-| GET | `/logs` | 分页 + 过滤日志 | `page,limit,domain,answer_ip,cname,client_ip,q,exact` |
+| 方法 | 子路径 | 说明 | 常用参数 |
+| --- | --- | --- | --- |
+| `GET` | `/stats` | 获取总请求数与平均耗时 | 无 |
+| `GET` | `/rank/domain` | 域名排行 | `limit` |
+| `GET` | `/rank/client` | 客户端排行 | `limit` |
+| `GET` | `/rank/domain_set` | 规则集排行 | `limit` |
+| `GET` | `/rank/slowest` | 慢查询排行 | `limit` |
+| `GET` | `/logs` | 分页日志查询 | `page,limit,domain,answer_ip,cname,client_ip,q,exact` |
 
 `/logs` 返回结构：
 
@@ -99,26 +110,16 @@
 }
 ```
 
-审计日志字段（核心）：
-
-- `client_ip`
-- `query_type`, `query_name`, `query_class`
-- `query_time`, `duration_ms`
-- `trace_id`
-- `response_code`, `response_flags`（`aa/tc/ra`）
-- `answers[]`（`type/ttl/data`）
-- `domain_set`
-
-## 2.5 全局覆盖配置 API
+### 2.5 覆盖配置
 
 根路径：`/api/v1/overrides`
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 读取覆盖配置与替换命中统计 |
-| POST | `/` | 保存覆盖配置 |
+| --- | --- | --- |
+| `GET` | `/` | 获取覆盖配置与替换规则命中结果 |
+| `POST` | `/` | 保存覆盖配置 |
 
-`POST /api/v1/overrides/` 请求体示例：
+请求体示例：
 
 ```json
 {
@@ -128,18 +129,20 @@
     {
       "original": "old-value",
       "new": "new-value",
-      "comment": "replace example"
+      "comment": "example"
     }
   ]
 }
 ```
 
-## 2.6 配置管理 API
+### 2.6 配置管理
 
-### `POST /api/v1/config/export`
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `POST` | `/api/v1/config/export` | 导出配置目录为 zip |
+| `POST` | `/api/v1/config/update_from_url` | 从 URL 下载 zip 覆盖配置并触发重启 |
 
-- 作用：打包目录为 ZIP 下载
-- 请求体：
+导出请求体：
 
 ```json
 {
@@ -147,12 +150,7 @@
 }
 ```
 
-- 返回：`application/zip`
-
-### `POST /api/v1/config/update_from_url`
-
-- 作用：下载 ZIP -> 本地备份 -> 覆盖 -> 触发重启
-- 请求体：
+在线更新配置请求体：
 
 ```json
 {
@@ -161,19 +159,17 @@
 }
 ```
 
-- 返回：JSON（`status: success`）或错误文本
-
-## 2.7 在线更新 API
+### 2.7 版本检查与程序更新
 
 根路径：`/api/v1/update`
 
 | 方法 | 子路径 | 说明 |
-|---|---|---|
-| GET | `/status` | 查询更新状态（带缓存） |
-| POST | `/check` | 强制刷新更新状态 |
-| POST | `/apply` | 执行更新 |
+| --- | --- | --- |
+| `GET` | `/status` | 获取更新状态 |
+| `POST` | `/check` | 强制重新检查更新 |
+| `POST` | `/apply` | 应用更新 |
 
-`POST /apply` 请求体：
+`POST /api/v1/update/apply` 请求体：
 
 ```json
 {
@@ -182,23 +178,26 @@
 }
 ```
 
-更新状态结构（`UpdateStatus` 关键字段）：
+常见返回字段：
 
-- `current_version`, `latest_version`
-- `release_url`, `architecture`
-- `asset_name`, `download_url`
-- `asset_signature`, `current_signature`
-- `checked_at`, `cache_expires_at`
-- `update_available`, `cached`
+- `current_version`
+- `latest_version`
+- `architecture`
+- `release_url`
+- `download_url`
+- `update_available`
 - `pending_restart`
-- `amd64_v3_capable`, `current_is_v3`
+- `checked_at`
+- `cache_expires_at`
+- `message`
 
-## 2.8 系统操作 API
+### 2.8 系统操作
 
-### `POST /api/v1/system/restart`
+#### `POST /api/v1/system/restart`
 
-- 作用：计划自重启（非 Windows）
-- 请求体：
+计划自重启。
+
+请求体：
 
 ```json
 {
@@ -206,19 +205,106 @@
 }
 ```
 
-- Windows 返回 `501`：`self-restart is not supported on Windows`
+返回示例：
 
-## 2.9 上游配置 API
+```json
+{
+  "status": "scheduled",
+  "delay_ms": 300
+}
+```
+
+### 2.9 上游配置
 
 根路径：`/api/v1/upstream`
 
 | 方法 | 子路径 | 说明 |
-|---|---|---|
-| GET | `/tags` | 获取扫描到的上游相关插件标签（如 aliapi） |
-| GET | `/config` | 获取当前上游覆盖配置 |
-| POST | `/config` | 保存指定插件标签的上游列表 |
+| --- | --- | --- |
+| `GET` | `/tags` | 获取扫描到的上游插件 tag |
+| `GET` | `/config` | 获取上游覆盖配置 |
+| `PUT` | `/config` | 全量保存上游配置（支持 `apply`） |
+| `POST` | `/apply` | 基于已保存配置触发运行时生效 |
+| `GET` | `/items` | 按 `plugin_tag` 查询上游列表 |
+| `POST` | `/items` | 新增单个上游 |
+| `PUT` | `/items/{upstreamTag}` | 更新单个上游 |
+| `DELETE` | `/items/{upstreamTag}` | 删除单个上游 |
+| `POST` | `/config` | 兼容接口：按插件 tag 覆盖保存并可立即生效 |
 
-`POST /api/v1/upstream/config` 请求体：
+#### `PUT /api/v1/upstream/config`（推荐）
+
+```json
+{
+  "config": {
+    "aliapi_main": [
+      {
+        "tag": "up1",
+        "enabled": true,
+        "protocol": "doh",
+        "addr": "https://dns.example/dns-query"
+      }
+    ]
+  },
+  "apply": true
+}
+```
+
+- `apply: true`：保存后立即触发 runtime reload。
+- `apply: false`：只落盘，不立即生效。
+
+#### `POST /api/v1/upstream/apply`
+
+请求体可选：
+
+```json
+{
+  "plugin_tag": "aliapi_main"
+}
+```
+
+- 不传 `plugin_tag`：全量生效
+- 传 `plugin_tag`：仅生效指定插件 tag
+
+#### `GET /api/v1/upstream/items?plugin_tag=aliapi_main`
+
+返回指定插件组的上游数组。
+
+#### `POST /api/v1/upstream/items`
+
+```json
+{
+  "plugin_tag": "aliapi_main",
+  "upstream": {
+    "tag": "up2",
+    "enabled": true,
+    "protocol": "udp",
+    "addr": "223.5.5.5"
+  },
+  "apply": false
+}
+```
+
+#### `PUT /api/v1/upstream/items/{upstreamTag}`
+
+```json
+{
+  "plugin_tag": "aliapi_main",
+  "upstream": {
+    "tag": "up2",
+    "enabled": false,
+    "protocol": "udp",
+    "addr": "223.5.5.5"
+  },
+  "apply": true
+}
+```
+
+#### `DELETE /api/v1/upstream/items/{upstreamTag}?plugin_tag=aliapi_main&apply=true`
+
+- 删除后是否立即生效由 `apply` 查询参数控制。
+
+#### 兼容接口：`POST /api/v1/upstream/config`
+
+旧请求体仍可用：
 
 ```json
 {
@@ -228,305 +314,304 @@
       "tag": "up1",
       "enabled": true,
       "protocol": "doh",
-      "addr": "https://dns.example/dns-query",
-      "socks5": "127.0.0.1:1080"
+      "addr": "https://dns.example/dns-query"
     }
   ]
 }
 ```
 
-`upstreams[]` 字段支持：
+## 3. 统一开关 API
 
-- 通用：`tag, enabled, protocol, addr, dial_addr, idle_timeout, upstream_query_timeout`
-- DNS：`enable_pipeline, enable_http3, insecure_skip_verify, socks5, so_mark, bind_to_device, bootstrap, bootstrap_version`
-- AliAPI：`account_id, access_key_id, access_key_secret, server_addr, ecs_client_ip, ecs_client_mask`
+当前项目已经改为具名开关，不再建议使用旧的 `switch1/switch2/...` 语义。
 
-## 3. 插件 API（`/plugins/{tag}`）
+### 3.1 推荐：集中开关接口
 
-## 3.1 路由映射说明
+根路径：`/plugins/switches`
 
-- 每个插件实例通过 `bp.RegAPI(mux)` 挂载。
-- `tag` 来自配置中的插件实例标识，不是插件类型名。
-- 同类型多个实例会对应多个不同路径前缀。
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/` | 获取全部开关状态 |
+| `GET` | `/show` | 同上 |
+| `GET` | `/{name}` | 获取单个开关状态 |
+| `POST` | `/{name}` | 更新单个开关 |
+| `PUT` | `/{name}` | 更新单个开关 |
+
+当前具名开关包括：
+
+- `core_mode`
+- `client_proxy_mode`
+- `block_response`
+- `block_query_type`
+- `block_ipv6`
+- `branch_cache`
+- `main_cache`
+- `ad_block`
+- `cn_answer_mode`
+- `udp_fast_path`
+- `prefer_ipv4`
+- `prefer_ipv6`
 
 示例：
 
-- 配置：`tag: cache_main`, `type: cache`
-- 路径：`/plugins/cache_main/show`
+```json
+[
+  { "name": "core_mode", "value": "secure" },
+  { "name": "client_proxy_mode", "value": "all" }
+]
+```
 
-## 3.2 已实现插件 API 的类型与接口
-
-## A. 开关类
-
-### `switch`（`plugin/switch/switch`）
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 获取当前值（纯文本） |
-| PUT | `/` | 更新值（JSON/form/raw body） |
-| POST | `/` | 同 PUT |
-
-PUT/POST JSON 示例：
+更新请求体：
 
 ```json
 {
-  "value": "on"
+  "value": "secure"
 }
 ```
 
-### `switch`
+### 3.2 兼容：单开关实例接口
+
+单个开关实例仍然暴露在 `/plugins/{switch_name}` 下：
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/show` | 查看当前值 |
-| POST | `/post` | 更新值（支持 JSON 或 form） |
+| --- | --- | --- |
+| `GET` | `/plugins/{switch_name}` | 获取当前值 |
+| `GET` | `/plugins/{switch_name}/show` | 同上 |
+| `POST` | `/plugins/{switch_name}` | 更新当前值 |
+| `PUT` | `/plugins/{switch_name}` | 更新当前值 |
+| `POST` | `/plugins/{switch_name}/post` | 兼容更新入口 |
+| `PUT` | `/plugins/{switch_name}/post` | 兼容更新入口 |
 
-### `switches`
+这套接口返回的是纯文本，不如 `/plugins/switches/*` 稳定，后续应优先使用集中接口。
+
+## 4. 常用插件 API
+
+下面这些是当前前端和运维会实际调用的插件接口。
+
+### 4.1 Requery / 刷新任务
+
+根路径：`/plugins/requery`
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/show` | 返回全部具名开关当前值 |
-| GET | `/{name}` | 返回单个具名开关当前值 |
-| POST | `/{name}` | 更新单个具名开关值 |
+| --- | --- | --- |
+| `GET` | `/` | 获取完整 requery 配置 |
+| `GET` | `/status` | 获取运行状态 |
+| `POST` | `/trigger` | 手动触发一次刷新任务 |
+| `POST` | `/enqueue` | 入队单域名刷新任务 |
+| `POST` | `/cancel` | 取消当前任务 |
+| `POST` | `/scheduler/config` | 更新调度配置 |
+| `GET` | `/stats/source_file_counts` | 获取各源文件条目统计 |
 
-## B. 规则集合类
-
-### `domain_set` / `domain_set_light`
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/show` | 输出规则文本（`domain_set_light` 支持 `q/limit/offset`） |
-| GET | `/save` | 保存内存规则到文件 |
-| POST | `/post` | 以 JSON 覆盖规则 |
-
-`POST /post` 请求体：
+`POST /plugins/requery/scheduler/config` 示例：
 
 ```json
 {
-  "values": ["full:example.com", "domain:google.com"]
-}
-```
-
-### `ip_set`
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/show` | 输出前缀列表 |
-| GET | `/save` | 保存到文件 |
-| GET | `/flush` | 清空并保存 |
-| POST | `/post` | 用 `values[]` 覆盖列表 |
-
-请求体示例：
-
-```json
-{
-  "values": ["1.1.1.1", "10.0.0.0/8"]
-}
-```
-
-### `sd_set` / `sd_set_light` / `si_set`
-
-通用接口：
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/config` | 查询规则源列表 |
-| POST | `/update/{name}` | 手工触发某规则源更新（异步） |
-| PUT | `/config/{name}` | 新增或更新规则源 |
-| DELETE | `/config/{name}` | 删除规则源 |
-
-`sd_set/sd_set_light` 的 `RuleSource`：
-
-- `name, type, files, url, enabled, enable_regexp, auto_update, update_interval_hours, rule_count, last_updated`
-
-`si_set` 的 `RuleSource`：
-
-- `name, type, files, url, enabled, auto_update, update_interval_hours, rule_count, last_updated`
-
-## C. 执行器与状态类
-
-### `rewrite`
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/show` | 查看 rewrite 规则 |
-| POST | `/post` | 覆盖 rewrite 规则 |
-
-请求体：
-
-```json
-{
-  "values": ["full:a.com 1.1.1.1", "domain:b.com 2.2.2.2"]
-}
-```
-
-### `cache`
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/flush` | 清空缓存并异步 dump |
-| GET | `/dump` | 导出缓存 dump（二进制） |
-| GET | `/save` | 保存缓存到 dump_file |
-| POST | `/load_dump` | 导入 dump（二进制 body） |
-| GET | `/show` | 文本分页查询（支持 `q/limit/offset`） |
-| GET | `/stats` | 输出当前缓存实例的 JSON 统计信息（含 L1/L2、snapshot/WAL 状态） |
-
-常用配置字段：
-
-- `size`
-- `lazy_cache_ttl`
-- `nxdomain_ttl`：`NXDOMAIN` / `nov4` 类负结果的短期缓存 TTL（秒）
-- `servfail_ttl`：`SERVFAIL` 的短期失败缓存 TTL（秒）
-- `enable_ecs`
-- `exclude_ip`
-- `dump_file`
-- `dump_interval`
-- `wal_file`：可选，启用 WAL 持久化
-- `wal_sync_interval`：可选，WAL 刷盘间隔（秒）
-
-运维说明：
-
-- 生产启用建议同时保留 `dump_file` 和 `wal_file`：snapshot 负责 checkpoint，WAL 负责 checkpoint 间增量恢复
-- 回滚到仅 snapshot 模式时，删除 `wal_file` / `wal_sync_interval` 即可，`dump_file` 兼容不变
-- `SERVFAIL` 建议仅做短期缓存，默认推荐 `15s`
-- `NXDOMAIN` 建议与长期正向缓存分开看待，默认推荐 `60s`
-- Web/UI 的缓存运行态面板应读取 `/plugins/{cache_tag}/stats`；系统级资源指标仍读取 `/metrics`
-
-### `aliapi`
-
-常用失败治理字段：
-
-- `failure_suppress_ttl`：当所有并发上游都以 transport error / timeout 失败时，返回短期 `SERVFAIL` 并在该窗口内抑制重复回源
-- `persistent_servfail_threshold`：同一域名在累计窗口内连续命中 `SERVFAIL` 达到阈值后，提升为热点失败域名
-- `persistent_servfail_ttl`：热点 `SERVFAIL` 域名的长抑制窗口，避免每次缓存过期后再次穿透上游
-- `upstream_failure_threshold`：连续 transport error 达到阈值后打开上游熔断
-- `upstream_circuit_break_seconds`：熔断保持时长（秒）
-
-运行行为：
-
-- 熔断只针对 transport error / timeout，不会因为单个 `NXDOMAIN` 或正常负结果摘除上游
-- 若某个域名在所有选中上游上都 transport fail，会合成短期 `SERVFAIL` 响应，供失败抑制与短期缓存使用
-- 若某个域名跨多个失败窗口持续返回 `SERVFAIL`，会被提升为热点失败域名，并使用更长的 `persistent_servfail_ttl`
-- 上游恢复出一个成功响应后，会自动清除该域名的失败抑制记录
-
-### `adguard_rule`
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/rules` | 规则源列表 |
-| POST | `/rules` | 新增规则源 |
-| PUT | `/rules/{id}` | 更新规则源 |
-| DELETE | `/rules/{id}` | 删除规则源 |
-| POST | `/update` | 手工更新所有启用规则 |
-
-`OnlineRule` 请求/响应字段：
-
-- `id, name, url, enabled, auto_update, update_interval_hours, rule_count, last_updated`
-
-### `requery`
-
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 获取完整配置 |
-| GET | `/status` | 获取任务状态 |
-| POST | `/trigger` | 启动任务 |
-| POST | `/enqueue` | 提交按需刷新任务 |
-| POST | `/cancel` | 取消任务 |
-| POST | `/scheduler/config` | 更新调度配置 |
-| GET | `/stats/source_file_counts` | 统计源文件域名数量 |
-
-`requery` 新增配置口径：
-
-- `workflow.mode`: `hybrid`（推荐）、`manual`、`scheduled`
-- `workflow.flush_mode`: `none`（推荐）或 `legacy`
-- `workflow.save_before_refresh` / `workflow.save_after_refresh`
-- `execution_settings.refresh_resolver_address`: 旁路刷新入口，推荐 `127.0.0.1:7767`
-- `execution_settings.query_mode`: `observed`（推荐）、`dual`、`a`、`aaaa`
-- `execution_settings.max_queue_size`: 按需刷新队列上限，默认 `2048`
-
-`POST /scheduler/config` 请求体：
-
-```json
-{
-  "mode": "hybrid",
   "enabled": true,
-  "start_datetime": "",
-  "interval_minutes": 60,
-  "date_range_days": 30
+  "start_datetime": "2026-03-11T03:00:00Z",
+  "interval_minutes": 1440,
+  "date_range_days": 30,
+  "mode": "hybrid"
 }
 ```
 
-`POST /enqueue` 请求体：
+### 4.2 缓存插件
+
+根路径：`/plugins/{cache_tag}`
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/flush` | 清空缓存并触发后台 dump |
+| `GET` | `/dump` | 下载缓存 dump |
+| `GET` | `/save` | 保存缓存到 dump 文件 |
+| `POST` | `/load_dump` | 从请求体加载 dump |
+| `GET` | `/stats` | 获取缓存统计 |
+| `GET` | `/show` | 按文本查看缓存内容 |
+
+`/show` 支持：`q, limit, offset`
+
+### 4.3 domain_output / 域名输出与记忆库
+
+根路径：`/plugins/{memory_tag}`
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/flush` | 清空并写盘 |
+| `GET` | `/save` | 保存当前内存到文件 |
+| `GET` | `/show` | 查看记忆数据 |
+| `GET` | `/stats` | 获取统计信息 |
+| `POST` | `/verify` | 标记域名已验证、清理 dirty 状态 |
+| `GET` | `/restartall` | 触发程序重启 |
+
+`POST /verify` 示例：
 
 ```json
 {
   "domain": "example.com",
-  "memory_id": "realip",
-  "qtype_mask": 1,
-  "reason": "stale",
-  "verify_url": "http://127.0.0.1:9099/plugins/my_realiplist/verify"
+  "verified_at": "2026-03-11T12:00:00Z"
 }
 ```
 
-### `webinfo`
+### 4.4 规则列表类：IPSet / DomainSet / Light 版本
+
+这类接口常见于：
+
+- `client_ip`
+- `direct_ip`
+- `top_domains`
+- `my_fakeiplist`
+- `my_realiplist`
+- `my_nov4list`
+- `my_nov6list`
+
+常见路径：
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 读取任意 JSON 数据 |
-| PUT | `/` | 覆盖写入任意 JSON 数据 |
+| --- | --- | --- |
+| `GET` | `/plugins/{tag}/show` | 查看当前内容 |
+| `GET` | `/plugins/{tag}/save` | 保存到文件 |
+| `GET` | `/plugins/{tag}/flush` | 清空内容 |
+| `POST` | `/plugins/{tag}/post` | 用 `values[]` 替换内容 |
 
-### `reverse_lookup`
+`POST /plugins/{tag}/post` 请求体：
+
+```json
+{
+  "values": [
+    "full:example.com",
+    "1.2.3.4/32"
+  ]
+}
+```
+
+说明：
+
+- `IPSet` 返回和接收的是 IP / CIDR
+- `DomainSet` 返回和接收的是域名规则文本
+- `DomainSetLight` 的 `/show` 额外支持 `q, limit, offset`
+
+### 4.5 在线规则源管理：`sd_set` / `si_set`
+
+适用于：
+
+- `geosite_cn`
+- `geosite_no_cn`
+- `geoip_cn`
+- `cuscn`
+- `cusnocn`
+
+常见路径：
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 查询反查缓存（`?ip=1.2.3.4`） |
+| --- | --- | --- |
+| `GET` | `/plugins/{tag}/config` | 获取规则源配置列表 |
+| `PUT` | `/plugins/{tag}/config/{name}` | 新增或更新规则源 |
+| `DELETE` | `/plugins/{tag}/config/{name}` | 删除规则源 |
+| `POST` | `/plugins/{tag}/update/{name}` | 触发指定规则源后台更新 |
 
-### `domain_output`
+### 4.6 AdGuard 在线广告规则
 
-| 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/flush` | 清空内存态并立即刷新输出 |
-| GET | `/save` | 保存当前输出 |
-| GET | `/show` | 按计数倒序显示（`q/limit/offset`） |
-| GET | `/stats` | 查看晋升策略、脏条目和 dropped observations |
-| POST | `/verify` | 标记指定域名已完成刷新验证 |
-| GET | `/restartall` | 触发 mosdns 自重启 |
-
-`domain_output` 新增 `policy` 配置块：
-
-- `kind`: `generic/realip/fakeip/nov4/nov6`
-- `promote_after`: 达到阈值后才进入规则文件和 `domain_set_url`
-- `decay_days`: 超过天数后不再继续发布旧记忆
-- `track_qtype`: 记录 `A/AAAA` 观察结果，用于 `nov4/nov6` 和 refresh 定向查询
-- `publish_mode`: `all` 或 `promoted_only`
-- `stale_after_minutes`: 按需刷新最小陈旧窗口
-- `refresh_cooldown_minutes`: 同域名按需刷新冷却窗口
-- `on_dirty_url`: 域名命中脏条件时异步上报地址，推荐指向 `/plugins/requery/enqueue`
-- `verify_url`: 刷新成功后回写验证状态地址，推荐指向对应列表实例的 `/verify`
-
-## 4. UI 页面接口（非 JSON API）
+根路径：`/plugins/adguard`
 
 | 方法 | 路径 | 说明 |
-|---|---|---|
-| GET | `/` | 默认页面 `mosdnsp.html` |
-| GET | `/graphic` | 图形页 `mosdns.html` |
-| GET | `/log` | 日志页面 |
-| GET | `/plog` | 纯文本日志页 |
-| GET | `/rlog` | 重定向到 `/log` |
-| GET | `/assets/*` | 静态资源 |
+| --- | --- | --- |
+| `GET` | `/rules` | 获取规则列表 |
+| `POST` | `/rules` | 新增规则 |
+| `PUT` | `/rules/{id}` | 更新规则 |
+| `DELETE` | `/rules/{id}` | 删除规则 |
+| `POST` | `/update` | 更新所有启用规则 |
 
-## 5. 错误处理与状态码约定
+新增 / 更新请求体核心字段：
 
-- 常见成功：`200, 201, 202, 204`
-- 参数错误：`400`
-- 资源不存在：`404`
-- 业务冲突：`409`（如 requery 正在执行）
-- 服务端错误：`500`
-- 外部依赖失败：`502`（更新接口）
-- 平台不支持：`501`（Windows 自重启）
+```json
+{
+  "name": "AdGuard Base",
+  "url": "https://example.com/rules.txt",
+  "enabled": true,
+  "auto_update": true,
+  "update_interval_hours": 24
+}
+```
 
-## 6. 调试建议
+## 5. 当前前端重点依赖的接口
 
-- 先调用错误路径触发路由清单，快速确认实际可用接口。
-- 插件接口务必先确认 `tag` 是否与配置一致。
-- 对高频查询接口优先使用分页参数，避免一次拉全量数据。
+如果你是在维护 `log.html` / `log.js` 这套前端，优先关注这些接口：
+
+### 5.1 页面状态与统计
+
+- `GET /api/v1/audit/status`
+- `GET /api/v1/audit/capacity`
+- `GET /api/v2/audit/stats`
+- `GET /api/v2/audit/rank/domain`
+- `GET /api/v2/audit/rank/client`
+- `GET /api/v2/audit/rank/domain_set`
+- `GET /api/v2/audit/rank/slowest`
+- `GET /api/v2/audit/logs`
+- `GET /metrics`
+
+### 5.2 系统控制
+
+- `GET /plugins/switches/show`
+- `POST /plugins/switches/{name}`
+- `GET /api/v1/update/status`
+- `POST /api/v1/update/check`
+- `POST /api/v1/update/apply`
+- `GET /api/v1/overrides`
+- `POST /api/v1/overrides`
+- `GET /api/v1/upstream/tags`
+- `GET /api/v1/upstream/config`
+- `PUT /api/v1/upstream/config`
+- `POST /api/v1/upstream/apply`
+- `GET /api/v1/upstream/items?plugin_tag=...`
+- `POST /api/v1/upstream/items`
+- `PUT /api/v1/upstream/items/{upstreamTag}`
+- `DELETE /api/v1/upstream/items/{upstreamTag}?plugin_tag=...`
+- `POST /api/v1/upstream/config`（兼容）
+- `POST /api/v1/system/restart`
+
+### 5.3 刷新与缓存
+
+- `GET /plugins/requery`
+- `GET /plugins/requery/status`
+- `POST /plugins/requery/trigger`
+- `POST /plugins/requery/cancel`
+- `POST /plugins/requery/scheduler/config`
+- `GET /plugins/cache_all/flush`
+- `GET /plugins/cache_all_noleak/flush`
+
+### 5.4 规则与列表管理
+
+- `GET /plugins/adguard/rules`
+- `POST /plugins/adguard/rules`
+- `PUT /plugins/adguard/rules/{id}`
+- `DELETE /plugins/adguard/rules/{id}`
+- `POST /plugins/adguard/update`
+- `GET /plugins/{tag}/show`
+- `POST /plugins/{tag}/post`
+- `GET /plugins/{tag}/save`
+- `GET /plugins/{tag}/flush`
+- `GET /plugins/{tag}/config`
+- `PUT /plugins/{tag}/config/{name}`
+- `DELETE /plugins/{tag}/config/{name}`
+- `POST /plugins/{tag}/update/{name}`
+
+## 6. 迁移说明
+
+### 6.1 旧编号开关接口
+
+文档和前端都应当优先使用具名开关：
+
+- 推荐：`/plugins/switches/*`
+- 不推荐但仍兼容：`/plugins/{switch_name}`、`/plugins/{switch_name}/show`、`/plugins/{switch_name}/post`
+
+### 6.2 插件 tag 与插件类型不是一回事
+
+例如：
+
+- `type: cache`
+- `tag: cache_all`
+
+实际 API 路径是：
+
+- `/plugins/cache_all/show`
+- `/plugins/cache_all/stats`
+
+不是 `/plugins/cache/show`。

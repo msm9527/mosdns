@@ -99,83 +99,17 @@ type UpstreamConfig struct {
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
-	a := args.(*Args)
+	baseArgs := cloneArgs(args.(*Args))
+	effectiveArgs := buildEffectiveArgs(bp.Tag(), baseArgs, bp.M().GetGlobalOverrides(), coremain.GetUpstreamOverrides(bp.Tag()), bp.L())
 
-	// [Debug] Log entry
-	bp.L().Info("[Debug AliAPI] Init plugin instance", zap.String("plugin_tag", bp.Tag()))
-
-	// 从 api_upstream.go 获取覆盖配置
-	overrides := coremain.GetUpstreamOverrides(bp.Tag())
-
-	var activeUpstreams []UpstreamConfig
-	enabledCount := 0
-
-	if overrides != nil && len(overrides) > 0 {
-		bp.L().Info("[Debug AliAPI] Found upstream overrides", zap.String("tag", bp.Tag()), zap.Int("count", len(overrides))) // DEBUG
-
-		for _, o := range overrides {
-			if !o.Enabled {
-				continue
-			}
-
-			u := UpstreamConfig{
-				Tag: o.Tag, Addr: o.Addr, DialAddr: o.DialAddr,
-				IdleTimeout: o.IdleTimeout, UpstreamQueryTimeout: o.UpstreamQueryTimeout,
-				EnablePipeline: o.EnablePipeline, EnableHTTP3: o.EnableHTTP3,
-				InsecureSkipVerify: o.InsecureSkipVerify, Socks5: o.Socks5,
-				SoMark: o.SoMark, BindToDevice: o.BindToDevice,
-				Bootstrap: o.Bootstrap, BootstrapVer: o.BootstrapVer,
-			}
-
-			if o.Protocol == "aliapi" {
-				u.Type = "aliapi"
-				// 如果配置了 aliapi 类型的上游，且提供了凭证，覆盖全局 Args
-				if o.AccountID != "" {
-					a.AccountID = o.AccountID
-					a.AccessKeyID = o.AccessKeyID
-					a.AccessKeySecret = o.AccessKeySecret
-					a.ServerAddr = o.ServerAddr
-					a.EcsClientIP = o.EcsClientIP
-					a.EcsClientMask = o.EcsClientMask
-				}
-			} else {
-				u.Type = "dns"
-				// Addr 已经包含了协议头 (前端处理) 或者在 NewUpstream 自动处理
-			}
-			activeUpstreams = append(activeUpstreams, u)
-			enabledCount++
-		}
-
-		// 需求：只有当覆盖配置中有至少一个启用条目时，才替换原始配置
-		if len(activeUpstreams) > 0 {
-			a.Upstreams = activeUpstreams
-
-			// 需求：自动设置 concurrent 数量（1-3）
-			conc := enabledCount
-			if conc > maxConcurrentQueries {
-				conc = maxConcurrentQueries
-			}
-			if conc < 1 {
-				conc = 1
-			}
-			a.Concurrent = conc
-
-			bp.L().Info("[Debug AliAPI] Configuration REPLACED by overrides",
-				zap.String("tag", bp.Tag()),
-				zap.Int("active_upstreams", enabledCount),
-				zap.Int("new_concurrent", a.Concurrent))
-		} else {
-			bp.L().Info("[Debug AliAPI] Overrides exist but none enabled, using default YAML config", zap.String("tag", bp.Tag()))
-		}
-	} else {
-		bp.L().Info("[Debug AliAPI] No overrides found, using default YAML config", zap.String("tag", bp.Tag()))
-	}
-
-	// 执行正常初始化
-	f, err := NewAliAPI(a, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
+	f, err := NewAliAPI(effectiveArgs, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
 	if err != nil {
 		return nil, err
 	}
+	f.baseArgs = baseArgs
+	f.pluginTag = bp.Tag()
+	f.metricsTag = bp.Tag()
+
 	if err := f.RegisterMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.M().GetMetricsReg())); err != nil {
 		_ = f.Close()
 		return nil, err
@@ -183,18 +117,94 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	return f, nil
 }
 
-// applyUpstreamOverrides 负责根据本地 JSON 文件内容动态修改插件运行参数
-// (保留此函数以防你在其他地方调用，但逻辑已移至 Init)
-func applyUpstreamOverrides(pluginTag string, args *Args, logger *zap.Logger) {
-	// ... 略 (因为 Init 已经处理了)
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return &Args{}
+	}
+	dst := *src
+	if src.Upstreams != nil {
+		dst.Upstreams = append([]UpstreamConfig(nil), src.Upstreams...)
+	}
+	return &dst
+}
+
+func buildEffectiveArgs(pluginTag string, base *Args, global *coremain.GlobalOverrides, overrides []coremain.UpstreamOverrideConfig, logger *zap.Logger) *Args {
+	a := cloneArgs(base)
+	if global != nil && global.Socks5 != "" {
+		a.Socks5 = global.Socks5
+	}
+
+	enabledUpstreams := make([]UpstreamConfig, 0, len(overrides))
+	enabledCount := 0
+
+	for _, o := range overrides {
+		if !o.Enabled {
+			continue
+		}
+		u := UpstreamConfig{
+			Tag: o.Tag, Addr: o.Addr, DialAddr: o.DialAddr,
+			IdleTimeout: o.IdleTimeout, UpstreamQueryTimeout: o.UpstreamQueryTimeout,
+			EnablePipeline: o.EnablePipeline, EnableHTTP3: o.EnableHTTP3,
+			InsecureSkipVerify: o.InsecureSkipVerify, Socks5: o.Socks5,
+			SoMark: o.SoMark, BindToDevice: o.BindToDevice,
+			Bootstrap: o.Bootstrap, BootstrapVer: o.BootstrapVer,
+		}
+
+		if o.Protocol == "aliapi" {
+			u.Type = "aliapi"
+			if o.AccountID != "" {
+				a.AccountID = o.AccountID
+				a.AccessKeyID = o.AccessKeyID
+				a.AccessKeySecret = o.AccessKeySecret
+				a.ServerAddr = o.ServerAddr
+				a.EcsClientIP = o.EcsClientIP
+				a.EcsClientMask = o.EcsClientMask
+			}
+		} else {
+			u.Type = "dns"
+		}
+
+		enabledUpstreams = append(enabledUpstreams, u)
+		enabledCount++
+	}
+
+	if len(enabledUpstreams) > 0 {
+		a.Upstreams = enabledUpstreams
+		conc := enabledCount
+		if conc > maxConcurrentQueries {
+			conc = maxConcurrentQueries
+		}
+		if conc < 1 {
+			conc = 1
+		}
+		a.Concurrent = conc
+		if logger != nil {
+			logger.Info("[Debug AliAPI] Configuration replaced by runtime overrides",
+				zap.String("tag", pluginTag),
+				zap.Int("active_upstreams", enabledCount),
+				zap.Int("new_concurrent", a.Concurrent))
+		}
+		return a
+	}
+
+	if logger != nil {
+		logger.Info("[Debug AliAPI] No enabled upstream overrides, using base config",
+			zap.String("tag", pluginTag))
+	}
+	return a
 }
 
 var _ sequence.Executable = (*AliAPI)(nil)
 var _ sequence.QuickConfigurableExec = (*AliAPI)(nil)
+var _ coremain.RuntimeConfigReloader = (*AliAPI)(nil)
 
 // AliAPI represents the aliapi plugin instance.
 type AliAPI struct {
-	args *Args
+	runtimeMu  sync.RWMutex
+	args       *Args
+	baseArgs   *Args
+	pluginTag  string
+	metricsTag string
 
 	logger       *zap.Logger
 	us           []*upstreamWrapper
@@ -335,8 +345,64 @@ func (f *AliAPI) RegisterMetricsTo(r prometheus.Registerer) error {
 	return nil
 }
 
+func (f *AliAPI) snapshotRuntime() (*Args, []*upstreamWrapper) {
+	f.runtimeMu.RLock()
+	defer f.runtimeMu.RUnlock()
+	return f.args, append([]*upstreamWrapper(nil), f.us...)
+}
+
+func (f *AliAPI) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrapper, error) {
+	f.runtimeMu.RLock()
+	defer f.runtimeMu.RUnlock()
+
+	us := make([]*upstreamWrapper, 0, len(tags))
+	for _, tag := range tags {
+		u := f.tag2Upstream[tag]
+		if u == nil {
+			return nil, nil, fmt.Errorf("cannot find upstream by tag %s", tag)
+		}
+		us = append(us, u)
+	}
+	return f.args, us, nil
+}
+
+func (f *AliAPI) ReloadRuntimeConfig(global *coremain.GlobalOverrides, upstreams []coremain.UpstreamOverrideConfig) error {
+	f.runtimeMu.RLock()
+	base := cloneArgs(f.baseArgs)
+	pluginTag := f.pluginTag
+	metricsTag := f.metricsTag
+	f.runtimeMu.RUnlock()
+
+	effective := buildEffectiveArgs(pluginTag, base, global, upstreams, f.logger)
+	rebuilt, err := NewAliAPI(effective, Opts{Logger: f.logger, MetricsTag: metricsTag})
+	if err != nil {
+		return err
+	}
+
+	f.runtimeMu.Lock()
+	oldUs := f.us
+	f.args = effective
+	f.us = rebuilt.us
+	f.tag2Upstream = rebuilt.tag2Upstream
+	f.runtimeMu.Unlock()
+
+	f.failureMu.Lock()
+	f.failures = make(map[string]failureRecord)
+	f.failureMu.Unlock()
+
+	go func(old []*upstreamWrapper) {
+		time.Sleep(2 * time.Second)
+		for _, u := range old {
+			_ = u.Close()
+		}
+	}(oldUs)
+
+	return nil
+}
+
 func (f *AliAPI) Exec(ctx context.Context, qCtx *query_context.Context) (err error) {
-	r, err := f.exchange(ctx, qCtx, f.us)
+	args, us := f.snapshotRuntime()
+	r, err := f.exchange(ctx, qCtx, args, us)
 	if err != nil {
 		return err
 	}
@@ -345,20 +411,22 @@ func (f *AliAPI) Exec(ctx context.Context, qCtx *query_context.Context) (err err
 }
 
 func (f *AliAPI) QuickConfigureExec(args string) (any, error) {
-	var us []*upstreamWrapper
-	if len(args) == 0 {
-		us = f.us
-	} else {
-		for _, tag := range strings.Fields(args) {
-			u := f.tag2Upstream[tag]
-			if u == nil {
-				return nil, fmt.Errorf("cannot find upstream by tag %s", tag)
-			}
-			us = append(us, u)
-		}
-	}
+	selectedTags := strings.Fields(args)
 	var execFunc sequence.ExecutableFunc = func(ctx context.Context, qCtx *query_context.Context) error {
-		r, err := f.exchange(ctx, qCtx, us)
+		var (
+			runtimeArgs *Args
+			us          []*upstreamWrapper
+			err         error
+		)
+		if len(selectedTags) == 0 {
+			runtimeArgs, us = f.snapshotRuntime()
+		} else {
+			runtimeArgs, us, err = f.snapshotRuntimeByTags(selectedTags)
+			if err != nil {
+				return err
+			}
+		}
+		r, err := f.exchange(ctx, qCtx, runtimeArgs, us)
 		if err != nil {
 			return err
 		}
@@ -369,20 +437,23 @@ func (f *AliAPI) QuickConfigureExec(args string) (any, error) {
 }
 
 func (f *AliAPI) Close() error {
-	for _, u := range f.us {
+	f.runtimeMu.RLock()
+	us := append([]*upstreamWrapper(nil), f.us...)
+	f.runtimeMu.RUnlock()
+	for _, u := range us {
 		_ = u.Close()
 	}
 	return nil
 }
 
-func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us []*upstreamWrapper) (*dns.Msg, error) {
+func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runtimeArgs *Args, us []*upstreamWrapper) (*dns.Msg, error) {
 	if len(us) == 0 {
 		return nil, errors.New("no upstream to exchange")
 	}
 
 	question := qCtx.QQuestion()
 	failureKey := buildFailureKey(question)
-	if cachedFailure, ok := f.getFailure(failureKey); ok {
+	if cachedFailure, ok := f.getFailure(failureKey, runtimeArgs); ok {
 		return newSyntheticFailureResponse(qCtx.Q(), cachedFailure.rcode), nil
 	}
 
@@ -392,7 +463,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 	}
 	defer pool.ReleaseBuf(queryPayload)
 
-	concurrent := f.args.Concurrent
+	concurrent := runtimeArgs.Concurrent
 	if concurrent <= 0 {
 		concurrent = 1
 	}
@@ -435,8 +506,8 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 		u := usToQuery[0]
 		r, err := f.exchangeOne(ctx, queryPayload, u)
 		if err != nil {
-			u.recordFailure(time.Now(), f.args.UpstreamFailureThreshold, time.Duration(f.args.UpstreamCircuitBreakSeconds)*time.Second)
-			f.putFailure(failureKey, dns.RcodeServerFailure)
+			u.recordFailure(time.Now(), runtimeArgs.UpstreamFailureThreshold, time.Duration(runtimeArgs.UpstreamCircuitBreakSeconds)*time.Second)
+			f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 			return newSyntheticFailureResponse(qCtx.Q(), dns.RcodeServerFailure), nil
 		}
 
@@ -452,7 +523,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 			return r, nil
 		default:
 			if r.Rcode == dns.RcodeServerFailure {
-				f.putFailure(failureKey, dns.RcodeServerFailure)
+				f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 			}
 			u.mWinnerTotal.Inc()
 			return r, nil
@@ -461,7 +532,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 
 	processResult := func(r *dns.Msg, err error, u *upstreamWrapper) (*dns.Msg, bool) {
 		if err != nil {
-			u.recordFailure(time.Now(), f.args.UpstreamFailureThreshold, time.Duration(f.args.UpstreamCircuitBreakSeconds)*time.Second)
+			u.recordFailure(time.Now(), runtimeArgs.UpstreamFailureThreshold, time.Duration(runtimeArgs.UpstreamCircuitBreakSeconds)*time.Second)
 			if lastError == nil {
 				lastError = err
 			}
@@ -483,7 +554,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 			}
 		} else {
 			if r.Rcode == dns.RcodeServerFailure {
-				f.putFailure(failureKey, dns.RcodeServerFailure)
+				f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 			}
 			if lastOtherRes == nil {
 				lastOtherRes = r
@@ -571,13 +642,13 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, us [
 	}
 	if lastOtherRes != nil {
 		if lastOtherRes.Rcode == dns.RcodeServerFailure {
-			f.putFailure(failureKey, dns.RcodeServerFailure)
+			f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 		}
 		lastOtherResUpstream.mWinnerTotal.Inc()
 		return lastOtherRes, nil
 	}
 	if lastError != nil {
-		f.putFailure(failureKey, dns.RcodeServerFailure)
+		f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 		return newSyntheticFailureResponse(qCtx.Q(), dns.RcodeServerFailure), nil
 	}
 
@@ -651,7 +722,7 @@ func filterAvailableUpstreams(us []*upstreamWrapper) []*upstreamWrapper {
 	return available
 }
 
-func (f *AliAPI) getFailure(key string) (failureRecord, bool) {
+func (f *AliAPI) getFailure(key string, runtimeArgs *Args) (failureRecord, bool) {
 	f.failureMu.Lock()
 	defer f.failureMu.Unlock()
 	rec, ok := f.failures[key]
@@ -660,7 +731,7 @@ func (f *AliAPI) getFailure(key string) (failureRecord, bool) {
 	}
 	now := time.Now()
 	if now.After(rec.expiresAt) {
-		retention := time.Duration(max(f.args.PersistentServfailTTL, f.args.FailureSuppressTTL*3)) * time.Second
+		retention := time.Duration(max(runtimeArgs.PersistentServfailTTL, runtimeArgs.FailureSuppressTTL*3)) * time.Second
 		if rec.lastSeen.IsZero() || now.Sub(rec.lastSeen) > retention {
 			delete(f.failures, key)
 		}
@@ -669,13 +740,13 @@ func (f *AliAPI) getFailure(key string) (failureRecord, bool) {
 	return rec, true
 }
 
-func (f *AliAPI) putFailure(key string, rcode int) {
-	if f.args.FailureSuppressTTL <= 0 {
+func (f *AliAPI) putFailure(key string, rcode int, runtimeArgs *Args) {
+	if runtimeArgs.FailureSuppressTTL <= 0 {
 		return
 	}
 	now := time.Now()
-	baseTTL := time.Duration(f.args.FailureSuppressTTL) * time.Second
-	persistentTTL := time.Duration(f.args.PersistentServfailTTL) * time.Second
+	baseTTL := time.Duration(runtimeArgs.FailureSuppressTTL) * time.Second
+	persistentTTL := time.Duration(runtimeArgs.PersistentServfailTTL) * time.Second
 	if persistentTTL < baseTTL {
 		persistentTTL = baseTTL
 	}
@@ -694,7 +765,7 @@ func (f *AliAPI) putFailure(key string, rcode int) {
 	rec.rcode = rcode
 	rec.lastSeen = now
 	ttl := baseTTL
-	if rcode == dns.RcodeServerFailure && rec.hits >= uint32(f.args.PersistentServfailThreshold) {
+	if rcode == dns.RcodeServerFailure && rec.hits >= uint32(runtimeArgs.PersistentServfailThreshold) {
 		ttl = persistentTTL
 	}
 	rec.expiresAt = now.Add(ttl)
