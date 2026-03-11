@@ -10,6 +10,7 @@ import (
 	"hash/fnv"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -32,7 +33,7 @@ const (
 	qtypeMaskA    uint8 = 1 << 0
 	qtypeMaskAAAA uint8 = 1 << 1
 
-	defaultDirtyNotifyURL = "http://127.0.0.1:9099/plugins/requery/enqueue"
+	defaultDirtyNotifyPath = "/plugins/requery/enqueue"
 )
 
 func init() {
@@ -248,6 +249,7 @@ func newDomainOutput(cfg *Args) *domainOutput {
 }
 
 func normalizePolicy(cfg *Args) writePolicy {
+	apiBase := inferAPIBaseFromConfig(cfg)
 	kind := "generic"
 	promoteAfter := 1
 	decayDays := 30
@@ -267,8 +269,8 @@ func normalizePolicy(cfg *Args) writePolicy {
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 360
-		onDirtyURL = defaultDirtyNotifyURL
-		verifyURL = "http://127.0.0.1:9099/plugins/my_realiplist/verify"
+		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
+		verifyURL = buildAPIURL(apiBase, "/plugins/my_realiplist/verify")
 	case strings.Contains(infer, "fakeip"):
 		kind = "fakeip"
 		promoteAfter = 2
@@ -276,8 +278,8 @@ func normalizePolicy(cfg *Args) writePolicy {
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 240
-		onDirtyURL = defaultDirtyNotifyURL
-		verifyURL = "http://127.0.0.1:9099/plugins/my_fakeiplist/verify"
+		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
+		verifyURL = buildAPIURL(apiBase, "/plugins/my_fakeiplist/verify")
 	case strings.Contains(infer, "nodenov4"):
 		kind = "nov4"
 		promoteAfter = 2
@@ -285,8 +287,8 @@ func normalizePolicy(cfg *Args) writePolicy {
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 180
-		onDirtyURL = defaultDirtyNotifyURL
-		verifyURL = "http://127.0.0.1:9099/plugins/my_nodenov4list/verify"
+		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
+		verifyURL = buildAPIURL(apiBase, "/plugins/my_nodenov4list/verify")
 	case strings.Contains(infer, "nodenov6"):
 		kind = "nov6"
 		promoteAfter = 2
@@ -294,8 +296,8 @@ func normalizePolicy(cfg *Args) writePolicy {
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 180
-		onDirtyURL = defaultDirtyNotifyURL
-		verifyURL = "http://127.0.0.1:9099/plugins/my_nodenov6list/verify"
+		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
+		verifyURL = buildAPIURL(apiBase, "/plugins/my_nodenov6list/verify")
 	case strings.Contains(infer, "nov4"):
 		kind = "nov4"
 		promoteAfter = 2
@@ -303,8 +305,8 @@ func normalizePolicy(cfg *Args) writePolicy {
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 180
-		onDirtyURL = defaultDirtyNotifyURL
-		verifyURL = "http://127.0.0.1:9099/plugins/my_nov4list/verify"
+		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
+		verifyURL = buildAPIURL(apiBase, "/plugins/my_nov4list/verify")
 	case strings.Contains(infer, "nov6"):
 		kind = "nov6"
 		promoteAfter = 2
@@ -312,8 +314,8 @@ func normalizePolicy(cfg *Args) writePolicy {
 		publishMode = "promoted_only"
 		trackQType = true
 		staleAfterMinutes = 180
-		onDirtyURL = defaultDirtyNotifyURL
-		verifyURL = "http://127.0.0.1:9099/plugins/my_nov6list/verify"
+		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
+		verifyURL = buildAPIURL(apiBase, "/plugins/my_nov6list/verify")
 	}
 
 	if cfg.Policy != nil {
@@ -360,6 +362,24 @@ func normalizePolicy(cfg *Args) writePolicy {
 		onDirtyURL:             onDirtyURL,
 		verifyURL:              verifyURL,
 	}
+}
+
+func inferAPIBaseFromConfig(cfg *Args) string {
+	if cfg == nil || cfg.DomainSetURL == "" {
+		return ""
+	}
+	u, err := url.Parse(cfg.DomainSetURL)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return ""
+	}
+	return u.Scheme + "://" + u.Host
+}
+
+func buildAPIURL(base, path string) string {
+	if base == "" || path == "" {
+		return ""
+	}
+	return strings.TrimRight(base, "/") + path
 }
 
 func (d *domainOutput) Exec(ctx context.Context, qCtx *query_context.Context) error {

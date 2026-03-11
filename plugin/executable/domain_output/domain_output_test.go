@@ -279,3 +279,22 @@ func TestDomainOutputInferPolicyNodeNov4(t *testing.T) {
 		t.Fatalf("verifyURL = %q", p.verifyURL)
 	}
 }
+
+func TestDomainOutputInferPolicyWithoutAPIBase(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Args{
+		FileStat: "gen/nov4list.txt",
+		FileRule: "gen/nov4rule.txt",
+	}
+	p := normalizePolicy(cfg)
+	if p.kind != "nov4" {
+		t.Fatalf("kind = %q, want nov4", p.kind)
+	}
+	if p.onDirtyURL != "" {
+		t.Fatalf("onDirtyURL = %q, want empty", p.onDirtyURL)
+	}
+	if p.verifyURL != "" {
+		t.Fatalf("verifyURL = %q, want empty", p.verifyURL)
+	}
+}
