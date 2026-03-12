@@ -93,7 +93,8 @@ func GetPluginType(typ string) (PluginTypeInfo, bool) {
 }
 
 // newPlugin initializes a Plugin from c and adds it to mosdns.
-func (m *Mosdns) newPlugin(c PluginConfig) error {
+func (m *Mosdns) newPlugin(rawCfg PluginConfig, effectiveCfg PluginConfig) error {
+	c := effectiveCfg
 	if len(c.Tag) == 0 {
 		c.Tag = fmt.Sprintf("anonymouse_%s_%d", c.Type, len(m.plugins))
 	}
@@ -119,8 +120,17 @@ func (m *Mosdns) newPlugin(c PluginConfig) error {
 		}
 	}
 
+	rawArgs := typeInfo.NewArgs()
+	if reflect.TypeOf(rawCfg.Args) == reflect.TypeOf(rawArgs) { // Same type, no need to parse.
+		rawArgs = rawCfg.Args
+	} else {
+		if err := utils.WeakDecode(rawCfg.Args, rawArgs); err != nil {
+			return fmt.Errorf("unable to decode original plugin args: %w", err)
+		}
+	}
+
 	m.logger.Info("loading plugin", zap.String("tag", c.Tag), zap.String("type", c.Type))
-	p, err := typeInfo.NewPlugin(NewBP(c.Tag, m), args)
+	p, err := typeInfo.NewPlugin(newBPWithRawArgs(c.Tag, m, rawArgs), args)
 	if err != nil {
 		return fmt.Errorf("failed to init plugin: %w", err)
 	}
@@ -172,17 +182,23 @@ func LoadNewPersetPluginFuncs() map[string]NewPersetPluginFunc {
 }
 
 type BP struct {
-	tag string
-	m   *Mosdns
-	l   *zap.Logger
+	tag     string
+	m       *Mosdns
+	l       *zap.Logger
+	rawArgs any
 }
 
 // NewBP creates a new BP. m MUST NOT nil.
 func NewBP(tag string, m *Mosdns) *BP {
+	return newBPWithRawArgs(tag, m, nil)
+}
+
+func newBPWithRawArgs(tag string, m *Mosdns, rawArgs any) *BP {
 	return &BP{
-		tag: tag,
-		l:   m.Logger().Named(tag),
-		m:   m,
+		tag:     tag,
+		l:       m.Logger().Named(tag),
+		m:       m,
+		rawArgs: rawArgs,
 	}
 }
 
@@ -201,6 +217,11 @@ func (p *BP) M() *Mosdns {
 // a test environment.
 func (p *BP) Tag() string {
 	return p.tag
+}
+
+// RawArgs returns the original plugin args before global overrides were applied.
+func (p *BP) RawArgs() any {
+	return p.rawArgs
 }
 
 // RegAPI mounts mux to mosdns api. Note: Plugins MUST NOT call RegAPI twice.

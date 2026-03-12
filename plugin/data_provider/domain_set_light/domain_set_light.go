@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
@@ -61,6 +62,10 @@ func (c *stringCollector) Add(s string, _ struct{}) error {
 }
 
 type DomainSetLight struct {
+	bp        *coremain.BP
+	pluginTag string
+	baseArgs  *Args
+
 	mu sync.RWMutex
 	// [优化] 移除了 heavy 的 mixM 和 otherM
 	// mixM   *domain.MixMatcher[struct{}]
@@ -72,6 +77,8 @@ type DomainSetLight struct {
 	// 新增：订阅者列表
 	subscribers []func()
 }
+
+var _ coremain.RuntimeConfigReloader = (*DomainSetLight)(nil)
 
 // GetRules 实现 RuleExporter 接口
 func (d *DomainSetLight) GetRules() ([]string, error) {
@@ -164,7 +171,14 @@ func (d *DomainSetLight) loadFileInternal(f string) ([]string, error) {
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
+	baseArgs := cloneArgs(cfg)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 	ds := &DomainSetLight{
+		bp:          bp,
+		pluginTag:   bp.Tag(),
+		baseArgs:    baseArgs,
 		subscribers: make([]func(), 0),
 	}
 
@@ -186,6 +200,17 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	return ds, nil
 }
 
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	return &Args{
+		Exps:  append([]string(nil), src.Exps...),
+		Sets:  append([]string(nil), src.Sets...),
+		Files: append([]string(nil), src.Files...),
+	}
+}
+
 func (d *DomainSetLight) GetDomainMatcher() domain.Matcher[struct{}] {
 	return d
 }
@@ -195,30 +220,60 @@ func (d *DomainSetLight) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
 }
 
+func (d *DomainSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(d.pluginTag, d.baseArgs, effective, global); err != nil {
+		return err
+	}
+
+	tmp := &DomainSetLight{}
+	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files)
+	if err != nil {
+		return fmt.Errorf("failed to load rules: %w", err)
+	}
+
+	ruleFile := ""
+	if len(effective.Files) > 0 {
+		ruleFile = effective.Files[0]
+	}
+
+	d.mu.Lock()
+	d.ruleFile = ruleFile
+	d.rules = loadedRules
+	d.mu.Unlock()
+
+	d.notifySubscribers()
+	go func() {
+		time.Sleep(1 * time.Second)
+		coremain.ManualGC()
+	}()
+	return nil
+}
+
 // ================== API FUNCTION (CORRECTED) ==================
 
 func (d *DomainSetLight) api() *chi.Mux {
 	r := chi.NewRouter()
 
-// 优化后的 show 接口：支持分页和后端搜索
+	// 优化后的 show 接口：支持分页和后端搜索
 	r.Get("/show", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) { // 这里定义的变量是 r
 		d.mu.RLock()
 		defer d.mu.RUnlock()
 
 		// 获取分页和搜索参数
 		query := strings.ToLower(r.URL.Query().Get("q"))
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))  // 修改这里：req -> r
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))   // 修改这里：req -> r
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset")) // 修改这里：req -> r
 
 		if limit <= 0 {
-			limit = 100 
+			limit = 100
 		}
 		if offset < 0 {
 			offset = 0
 		}
 
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		
+
 		matchedCount := 0
 		sentCount := 0
 
@@ -242,7 +297,7 @@ func (d *DomainSetLight) api() *chi.Mux {
 				sentCount++
 
 				if sentCount >= limit {
-					break 
+					break
 				}
 			}
 		}
@@ -283,7 +338,7 @@ func (d *DomainSetLight) api() *chi.Mux {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		
+
 		// 规则更新成功，通知订阅者 (domain_mapper)
 		d.notifySubscribers()
 

@@ -102,6 +102,9 @@ func (c *counterCollector) Add(_ netip.Prefix) {
 
 // SiSet implements IPMatcherProvider and holds the state for the plugin.
 type SiSet struct {
+	pluginTag string
+	baseArgs  *Args
+
 	matcher atomic.Value // Stores a netlist.Matcher for concurrent-safe access.
 
 	mu      sync.RWMutex // Protects the sources map and related file I/O.
@@ -116,6 +119,7 @@ type SiSet struct {
 // Ensure SiSet implements required interfaces.
 var _ data_provider.IPMatcherProvider = (*SiSet)(nil)
 var _ io.Closer = (*SiSet)(nil)
+var _ coremain.RuntimeConfigReloader = (*SiSet)(nil)
 
 var _ netlist.Matcher = (*SiSet)(nil)
 
@@ -126,36 +130,20 @@ func newSiSet(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("%s: 'local_config' must be specified", PluginType)
 	}
 
-	// Configure HTTP client with optional SOCKS5 proxy
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-	if cfg.Socks5 != "" {
-		log.Printf("[%s] using SOCKS5 proxy: %s", PluginType, cfg.Socks5)
-		dialer, err := proxy.SOCKS5("tcp", cfg.Socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("%s: failed to create SOCKS5 dialer: %w", PluginType, err)
-		}
-		contextDialer, ok := dialer.(proxy.ContextDialer)
-		if !ok {
-			return nil, fmt.Errorf("%s: created dialer does not support context", PluginType)
-		}
-		transport.DialContext = contextDialer.DialContext
-		transport.Proxy = nil
-	}
-	httpClient := &http.Client{
-		Timeout:   downloadTimeout,
-		Transport: transport,
+	httpClient, err := newHTTPClient(cfg.Socks5)
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	baseArgs := cloneArgs(cfg)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 
 	p := &SiSet{
+		pluginTag:       bp.Tag(),
+		baseArgs:        baseArgs,
 		sources:         make(map[string]*RuleSource),
 		localConfigFile: cfg.LocalConfig,
 		httpClient:      httpClient,
@@ -178,6 +166,44 @@ func newSiSet(bp *coremain.BP, args any) (any, error) {
 	return p, nil
 }
 
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	return &Args{
+		Socks5:      src.Socks5,
+		LocalConfig: src.LocalConfig,
+	}
+}
+
+func newHTTPClient(socks5 string) (*http.Client, error) {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	if socks5 != "" {
+		log.Printf("[%s] using SOCKS5 proxy: %s", PluginType, socks5)
+		dialer, err := proxy.SOCKS5("tcp", socks5, nil, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("%s: failed to create SOCKS5 dialer: %w", PluginType, err)
+		}
+		contextDialer, ok := dialer.(proxy.ContextDialer)
+		if !ok {
+			return nil, fmt.Errorf("%s: created dialer does not support context", PluginType)
+		}
+		transport.DialContext = contextDialer.DialContext
+		transport.Proxy = nil
+	}
+	return &http.Client{
+		Timeout:   downloadTimeout,
+		Transport: transport,
+	}, nil
+}
+
 // GetIPMatcher provides the currently active IP matcher.
 // [MODIFIED] Return the plugin instance itself instead of the internal list snapshot.
 // This allows external callers to always use the proxy method `Match`, which delegates
@@ -197,6 +223,31 @@ func (p *SiSet) Match(addr netip.Addr) bool {
 		return false
 	}
 	return m.Match(addr)
+}
+
+func (p *SiSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
+		return err
+	}
+	if effective.LocalConfig == "" {
+		return fmt.Errorf("%s: 'local_config' must be specified", PluginType)
+	}
+
+	httpClient, err := newHTTPClient(effective.Socks5)
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	p.localConfigFile = effective.LocalConfig
+	p.httpClient = httpClient
+	p.mu.Unlock()
+
+	if err := p.loadConfig(); err != nil {
+		return err
+	}
+	return p.reloadAllRules()
 }
 
 // Close gracefully shuts down the plugin.
@@ -274,7 +325,6 @@ func (p *SiSet) saveConfig() error {
 	}
 	return nil
 }
-
 
 // reloadAllRules re-parses all enabled local SRS files into a new matcher.
 func (p *SiSet) reloadAllRules() error {
@@ -366,6 +416,7 @@ func (p *SiSet) downloadAndUpdateLocalFile(ctx context.Context, sourceName strin
 	// Make copies of fields to use outside the lock
 	sourceURL := source.URL
 	localFile := source.Files
+	httpClient := p.httpClient
 	p.mu.RUnlock()
 
 	if sourceURL == "" {
@@ -381,7 +432,7 @@ func (p *SiSet) downloadAndUpdateLocalFile(ctx context.Context, sourceName strin
 		return fmt.Errorf("failed to create request for '%s': %w", sourceName, err)
 	}
 
-	resp, err := p.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http request failed for '%s': %w", sourceName, err)
 	}

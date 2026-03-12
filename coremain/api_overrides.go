@@ -155,9 +155,9 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		}
 	}
 
-	message := "Global overrides saved."
+	message := "全局覆盖配置已保存。"
 	if m != nil {
-		message = "Global overrides saved and applied."
+		message = "全局覆盖配置已保存并生效。"
 	}
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": message,

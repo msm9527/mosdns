@@ -67,6 +67,10 @@ var _ netlist.Matcher = (*IPSet)(nil)
 
 // IPSet implements IPMatcherProvider and holds state
 type IPSet struct {
+	bp        *coremain.BP
+	pluginTag string
+	baseArgs  *Args
+
 	matcherVal atomic.Value
 
 	list  *netlist.List
@@ -76,6 +80,8 @@ type IPSet struct {
 
 	mutex sync.Mutex
 }
+
+var _ coremain.RuntimeConfigReloader = (*IPSet)(nil)
 
 func (d *IPSet) GetIPMatcher() netlist.Matcher {
 	return d
@@ -101,7 +107,18 @@ func Init(bp *coremain.BP, args any) (any, error) {
 
 // NewIPSet creates a new IPSet
 func NewIPSet(bp *coremain.BP, args *Args) (*IPSet, error) {
-	p := &IPSet{files: args.Files, list: netlist.NewList()}
+	baseArgs := cloneArgs(args)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
+
+	p := &IPSet{
+		bp:        bp,
+		pluginTag: bp.Tag(),
+		baseArgs:  baseArgs,
+		files:     append([]string(nil), args.Files...),
+		list:      netlist.NewList(),
+	}
 
 	// load IPs and files
 	// 直接传递 p.list，由于变长参数签名匹配，它现在符合 IPReceiver 接口。
@@ -130,6 +147,18 @@ func NewIPSet(bp *coremain.BP, args *Args) (*IPSet, error) {
 	return p, nil
 }
 
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	dst := &Args{
+		IPs:   append([]string(nil), src.IPs...),
+		Sets:  append([]string(nil), src.Sets...),
+		Files: append([]string(nil), src.Files...),
+	}
+	return dst
+}
+
 func (d *IPSet) rebuildSnapshot() {
 	var mg MatcherGroup
 
@@ -142,6 +171,42 @@ func (d *IPSet) rebuildSnapshot() {
 	}
 
 	d.matcherVal.Store(mg)
+}
+
+func (d *IPSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(d.pluginTag, d.baseArgs, effective, global); err != nil {
+		return err
+	}
+
+	list := netlist.NewList()
+	if err := LoadFromIPsAndFiles(effective.IPs, effective.Files, list); err != nil {
+		return err
+	}
+	list.Sort()
+
+	otherSets := make([]netlist.Matcher, 0, len(effective.Sets))
+	for _, tag := range effective.Sets {
+		provider, _ := d.bp.M().GetPlugin(tag).(data_provider.IPMatcherProvider)
+		if provider == nil {
+			return fmt.Errorf("%s is not an IPMatcherProvider", tag)
+		}
+		otherSets = append(otherSets, provider.GetIPMatcher())
+	}
+
+	d.mutex.Lock()
+	d.list = list
+	d.files = append([]string(nil), effective.Files...)
+	d.otherSets = otherSets
+	d.rebuildSnapshot()
+	d.mutex.Unlock()
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		coremain.ManualGC()
+	}()
+
+	return nil
 }
 
 // api registers HTTP routes: show, save, flush, post
@@ -192,7 +257,9 @@ func (d *IPSet) api() *chi.Mux {
 
 	// POST /post: replace in-memory list with provided values and save
 	r.Post("/post", func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Values []string `json:"values"` }
+		var body struct {
+			Values []string `json:"values"`
+		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, "invalid JSON", http.StatusBadRequest)
 			return

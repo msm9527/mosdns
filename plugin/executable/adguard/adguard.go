@@ -78,6 +78,9 @@ func (rule *OnlineRule) MarshalJSON() ([]byte, error) {
 
 // AdguardRule 是插件的主结构体
 type AdguardRule struct {
+	pluginTag string
+	baseArgs  *Args
+
 	mu           sync.RWMutex
 	reloadMu     sync.Mutex
 	dir          string
@@ -98,8 +101,9 @@ type AdguardRule struct {
 }
 
 // 确保实现了必要的接口
-var _ data_provider.RuleExporter = (*AdguardRule)(nil)        // 新增接口
+var _ data_provider.RuleExporter = (*AdguardRule)(nil)          // 新增接口
 var _ data_provider.DomainMatcherProvider = (*AdguardRule)(nil) // 原有接口
+var _ coremain.RuntimeConfigReloader = (*AdguardRule)(nil)
 
 // RuleReceiver 接口用于解耦解析和存储逻辑，使 parseRules 既能用于构建 Matcher 也能用于导出
 type RuleReceiver interface {
@@ -172,13 +176,13 @@ func (p *AdguardRule) notifySubscribers() {
 		go cb()
 	}
 
-    // 新增：给订阅者一点时间完成它们的重载工作，然后统一回收
-    if len(subs) > 0 {
-        time.AfterFunc(time.Second*5, func() {
-            log.Println("[adguard_rule] post-notification GC triggered")
-            coremain.ManualGC()
-        })
-    }
+	// 新增：给订阅者一点时间完成它们的重载工作，然后统一回收
+	if len(subs) > 0 {
+		time.AfterFunc(time.Second*5, func() {
+			log.Println("[adguard_rule] post-notification GC triggered")
+			coremain.ManualGC()
+		})
+	}
 }
 
 // newAdguardRule 是插件的初始化函数
@@ -193,37 +197,21 @@ func newAdguardRule(bp *coremain.BP, args any) (any, error) {
 	}
 	log.Printf("[adguard_rule] working directory is: %s", cfg.Dir)
 
-	// 创建带 SOCKS5 支持的 HTTP Client
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-	if cfg.Socks5 != "" {
-		log.Printf("[adguard_rule] using SOCKS5 proxy: %s", cfg.Socks5)
-		dialer, err := proxy.SOCKS5("tcp", cfg.Socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("adguard_rule: failed to create SOCKS5 dialer: %w", err)
-		}
-		contextDialer, ok := dialer.(proxy.ContextDialer)
-		if !ok {
-			return nil, errors.New("adguard_rule: created dialer does not support context")
-		}
-		transport.DialContext = contextDialer.DialContext
-		transport.Proxy = nil
-	}
-	httpClient := &http.Client{
-		Timeout:   downloadTimeout,
-		Transport: transport,
+	httpClient, err := newHTTPClient(cfg.Socks5)
+	if err != nil {
+		return nil, err
 	}
 
 	// 创建可取消的上下文，用于优雅关闭
 	ctx, cancel := context.WithCancel(context.Background())
+	baseArgs := cloneArgs(cfg)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 
 	p := &AdguardRule{
+		pluginTag:    bp.Tag(),
+		baseArgs:     baseArgs,
 		dir:          cfg.Dir,
 		configFile:   filepath.Join(cfg.Dir, configFile),
 		onlineRules:  make(map[string]*OnlineRule),
@@ -246,6 +234,44 @@ func newAdguardRule(bp *coremain.BP, args any) (any, error) {
 	go p.backgroundUpdater()
 
 	return p, nil
+}
+
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	return &Args{
+		Dir:    src.Dir,
+		Socks5: src.Socks5,
+	}
+}
+
+func newHTTPClient(socks5 string) (*http.Client, error) {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	if socks5 != "" {
+		log.Printf("[adguard_rule] using SOCKS5 proxy: %s", socks5)
+		dialer, err := proxy.SOCKS5("tcp", socks5, nil, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("adguard_rule: failed to create SOCKS5 dialer: %w", err)
+		}
+		contextDialer, ok := dialer.(proxy.ContextDialer)
+		if !ok {
+			return nil, errors.New("adguard_rule: created dialer does not support context")
+		}
+		transport.DialContext = contextDialer.DialContext
+		transport.Proxy = nil
+	}
+	return &http.Client{
+		Timeout:   downloadTimeout,
+		Transport: transport,
+	}, nil
 }
 
 // Close 实现了 io.Closer 接口，用于 mosdns 关闭时回收资源
@@ -292,6 +318,36 @@ func (p *AdguardRule) Match(domainStr string) (value struct{}, ok bool) {
 	}
 
 	return struct{}{}, false
+}
+
+func (p *AdguardRule) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
+		return err
+	}
+	if effective.Dir == "" {
+		return errors.New("adguard_rule: 'dir' must be specified")
+	}
+	if err := os.MkdirAll(effective.Dir, 0755); err != nil {
+		return fmt.Errorf("adguard_rule: failed to create directory %s: %w", effective.Dir, err)
+	}
+
+	httpClient, err := newHTTPClient(effective.Socks5)
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	p.dir = effective.Dir
+	p.configFile = filepath.Join(effective.Dir, configFile)
+	p.httpClient = httpClient
+	p.mu.Unlock()
+
+	if err := p.loadConfig(); err != nil {
+		return err
+	}
+	p.reloadAllRules(context.Background(), true)
+	return nil
 }
 
 // loadConfig 从 config.json 加载规则列表配置
@@ -418,19 +474,20 @@ func (p *AdguardRule) reloadAllRules(ctx context.Context, initialLoad bool) {
 	p.mu.Unlock()
 
 	log.Printf("[adguard_rule] finished reloading. Total active rules from enabled lists: %d", totalRuleCount)
-	
-        newAllowMatcher = nil
-        newDenyMatcher = nil
+
+	newAllowMatcher = nil
+	newDenyMatcher = nil
 
 	// [关键]: 更新完成后，通知所有订阅者 (如 domain_mapper)
 	// 因为 Add/Delete/Enable/Disable/Update 最终都会走到这里，所以都能触发通知
 	p.notifySubscribers()
-        coremain.ManualGC()
+	coremain.ManualGC()
 }
 
 type counterCollector struct {
 	count int
 }
+
 func (c *counterCollector) Add(_ string, _ struct{}) error {
 	c.count++
 	return nil
@@ -451,12 +508,12 @@ func (p *AdguardRule) updateAllRuleCounts() {
 			}
 			continue
 		}
-		
+
 		// --- 关键修改开始 ---
 		// 使用计数器代替真实的 Matcher。
 		// 这样 parseRules 在运行过程中不会构建复杂的 Trie 树和正则对象
 		counter := &counterCollector{}
-		count, _ := parseRules(file, counter, counter) 
+		count, _ := parseRules(file, counter, counter)
 		file.Close()
 		// --- 关键修改结束 ---
 
@@ -486,6 +543,7 @@ func (p *AdguardRule) downloadRule(ctx context.Context, ruleID string) error {
 	ruleName := rule.Name
 	ruleURL := rule.URL
 	localPath := rule.localPath
+	httpClient := p.httpClient
 	p.mu.RUnlock()
 
 	log.Printf("[adguard_rule] downloading rule '%s' from %s", ruleName, ruleURL)
@@ -495,7 +553,7 @@ func (p *AdguardRule) downloadRule(ctx context.Context, ruleID string) error {
 		return err
 	}
 
-	resp, err := p.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("http request failed for rule '%s': %w", ruleName, err)
 	}
@@ -874,7 +932,7 @@ func (p *AdguardRule) api() *chi.Mux {
 			log.Println("[adguard_rule] Manual update process finished.")
 			// 更新完成触发 reload (进而触发 notify)
 			p.triggerReload(p.ctx)
-			coremain.ManualGC() 
+			coremain.ManualGC()
 		}()
 
 		w.WriteHeader(http.StatusAccepted)

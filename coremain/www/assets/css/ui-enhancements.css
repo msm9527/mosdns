@@ -378,3 +378,13 @@ body {
         max-width: none;
     }
 }
+
+#overrides-module .button span,
+#socks-ecs-module .button span,
+#replacements-card .button span {
+    width: auto;
+    display: inline;
+    color: inherit !important;
+    font-size: inherit;
+    line-height: inherit;
+}

@@ -401,13 +401,12 @@ func (m *Mosdns) loadPluginsFromCfg(cfg *Config, includeDepth int) error {
 	}
 
 	for i, pc := range cfg.Plugins {
-		// <<< MODIFIED: Pass tag and apply overrides
+		rawPC := pc
 		if overrides := m.getGlobalOverridesRef(); overrides != nil {
 			ApplyOverrides(pc.Tag, &pc, overrides)
 		}
-		// <<< END MODIFICATION
 
-		if err := m.newPlugin(pc); err != nil {
+		if err := m.newPlugin(rawPC, pc); err != nil {
 			return fmt.Errorf("failed to init plugin #%d %s, %w", i, pc.Tag, err)
 		}
 	}

@@ -100,6 +100,9 @@ type UpstreamConfig struct {
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	baseArgs := cloneArgs(args.(*Args))
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 	effectiveArgs := buildEffectiveArgs(bp.Tag(), baseArgs, bp.M().GetGlobalOverrides(), coremain.GetUpstreamOverrides(bp.Tag()), bp.L())
 
 	f, err := NewAliAPI(effectiveArgs, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})

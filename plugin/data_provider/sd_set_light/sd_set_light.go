@@ -57,6 +57,9 @@ type RuleSource struct {
 }
 
 type SdSetLight struct {
+	pluginTag string
+	baseArgs  *Args
+
 	// [优化] 移除 matcher atomic.Value
 
 	mu      sync.RWMutex
@@ -74,6 +77,7 @@ type SdSetLight struct {
 var _ data_provider.DomainMatcherProvider = (*SdSetLight)(nil)
 var _ io.Closer = (*SdSetLight)(nil)
 var _ data_provider.RuleExporter = (*SdSetLight)(nil)
+var _ coremain.RuntimeConfigReloader = (*SdSetLight)(nil)
 
 // 接口定义，用于解耦
 type RuleReceiver interface {
@@ -155,35 +159,20 @@ func newSdSetLight(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("%s: 'local_config' must be specified", PluginType)
 	}
 
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-	if cfg.Socks5 != "" {
-		log.Printf("[%s] using SOCKS5 proxy: %s", PluginType, cfg.Socks5)
-		dialer, err := proxy.SOCKS5("tcp", cfg.Socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("%s: failed to create SOCKS5 dialer: %w", PluginType, err)
-		}
-		contextDialer, ok := dialer.(proxy.ContextDialer)
-		if !ok {
-			return nil, fmt.Errorf("%s: created dialer does not support context", PluginType)
-		}
-		transport.DialContext = contextDialer.DialContext
-		transport.Proxy = nil
-	}
-	httpClient := &http.Client{
-		Timeout:   downloadTimeout,
-		Transport: transport,
+	httpClient, err := newHTTPClient(cfg.Socks5)
+	if err != nil {
+		return nil, err
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	baseArgs := cloneArgs(cfg)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 
 	p := &SdSetLight{
+		pluginTag:       bp.Tag(),
+		baseArgs:        baseArgs,
 		sources:         make(map[string]*RuleSource),
 		localConfigFile: cfg.LocalConfig,
 		httpClient:      httpClient,
@@ -207,6 +196,44 @@ func newSdSetLight(bp *coremain.BP, args any) (any, error) {
 	return p, nil
 }
 
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	return &Args{
+		Socks5:      src.Socks5,
+		LocalConfig: src.LocalConfig,
+	}
+}
+
+func newHTTPClient(socks5 string) (*http.Client, error) {
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	}
+	if socks5 != "" {
+		log.Printf("[%s] using SOCKS5 proxy: %s", PluginType, socks5)
+		dialer, err := proxy.SOCKS5("tcp", socks5, nil, proxy.Direct)
+		if err != nil {
+			return nil, fmt.Errorf("%s: failed to create SOCKS5 dialer: %w", PluginType, err)
+		}
+		contextDialer, ok := dialer.(proxy.ContextDialer)
+		if !ok {
+			return nil, fmt.Errorf("%s: created dialer does not support context", PluginType)
+		}
+		transport.DialContext = contextDialer.DialContext
+		transport.Proxy = nil
+	}
+	return &http.Client{
+		Timeout:   downloadTimeout,
+		Transport: transport,
+	}, nil
+}
+
 func (p *SdSetLight) Close() error {
 	log.Printf("[%s] closing...", PluginType)
 	p.cancel()
@@ -220,6 +247,31 @@ func (p *SdSetLight) GetDomainMatcher() domain.Matcher[struct{}] {
 // Match [重要修改] 恒定返回 false
 func (p *SdSetLight) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
+}
+
+func (p *SdSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
+		return err
+	}
+	if effective.LocalConfig == "" {
+		return fmt.Errorf("%s: 'local_config' must be specified", PluginType)
+	}
+
+	httpClient, err := newHTTPClient(effective.Socks5)
+	if err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	p.localConfigFile = effective.LocalConfig
+	p.httpClient = httpClient
+	p.mu.Unlock()
+
+	if err := p.loadConfig(); err != nil {
+		return err
+	}
+	return p.reloadAllRules()
 }
 
 func (p *SdSetLight) loadConfig() error {
@@ -362,6 +414,7 @@ func (p *SdSetLight) downloadAndUpdateLocalFile(ctx context.Context, sourceName 
 	sourceURL := source.URL
 	localFile := source.Files
 	enableRegexp := source.EnableRegexp
+	httpClient := p.httpClient
 	p.mu.RUnlock()
 
 	log.Printf("[%s] downloading %s", PluginType, sourceName)
@@ -370,7 +423,7 @@ func (p *SdSetLight) downloadAndUpdateLocalFile(ctx context.Context, sourceName 
 		return err
 	}
 
-	resp, err := p.httpClient.Do(req)
+	resp, err := httpClient.Do(req)
 	if err != nil {
 		return err
 	}

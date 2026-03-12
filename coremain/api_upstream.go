@@ -382,11 +382,11 @@ func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Reques
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved and applied."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "上游配置已保存并生效。"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "上游配置已保存。"})
 }
 
 func handleApplyUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
@@ -411,7 +411,7 @@ func handleApplyUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request,
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Runtime apply failed: "+err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration applied."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "上游配置已生效。"})
 }
 
 func handleGetUpstreamItems(w http.ResponseWriter, r *http.Request) {
@@ -496,11 +496,11 @@ func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusCreated, map[string]string{"message": "Upstream created and applied."})
+		writeJSON(w, http.StatusCreated, map[string]string{"message": "上游已新增并生效。"})
 		return
 	}
 
-	writeJSON(w, http.StatusCreated, map[string]string{"message": "Upstream created."})
+	writeJSON(w, http.StatusCreated, map[string]string{"message": "上游已新增。"})
 }
 
 func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
@@ -593,10 +593,10 @@ func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream updated and applied."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "上游已更新并生效。"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream updated."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "上游已更新。"})
 }
 
 func handleDeleteUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
@@ -652,10 +652,10 @@ func handleDeleteUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream deleted and applied."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "上游已删除并生效。"})
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream deleted."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "上游已删除。"})
 }
 
 // handleSetUpstreamConfig 核心保存逻辑
@@ -724,9 +724,9 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved and applied."})
+		writeJSON(w, http.StatusOK, map[string]string{"message": "上游配置已保存并生效。"})
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{"message": "Upstream configuration saved."})
+	writeJSON(w, http.StatusOK, map[string]string{"message": "上游配置已保存。"})
 }

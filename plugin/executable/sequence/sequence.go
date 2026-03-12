@@ -24,6 +24,8 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
@@ -54,15 +56,26 @@ type fastExecutor interface {
 }
 
 type Sequence struct {
+	mu               sync.RWMutex
 	chain            []*ChainNode
 	anonymousPlugins []any
+	bq               BQ
+	baseArgs         []RuleArgs
+	pluginTag        string
 	logger           *zap.Logger
 	isInline         bool
 	instructions     []instruction
 }
 
 func (s *Sequence) Close() error {
-	for _, plugin := range s.anonymousPlugins {
+	s.mu.Lock()
+	plugins := s.anonymousPlugins
+	s.anonymousPlugins = nil
+	s.chain = nil
+	s.instructions = nil
+	s.mu.Unlock()
+
+	for _, plugin := range plugins {
 		closePlugin(plugin)
 	}
 	return nil
@@ -71,16 +84,28 @@ func (s *Sequence) Close() error {
 type Args = []RuleArgs
 
 func Init(bp *coremain.BP, args any) (any, error) {
-	return NewSequence(NewBQ(bp.M(), bp.L()), *args.(*Args))
+	baseArgs := cloneRuleArgs(*args.(*Args))
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneRuleArgs(*rawArgs)
+	}
+	effectiveArgs := buildEffectiveRuleArgs(bp.Tag(), baseArgs, bp.M().GetGlobalOverrides())
+	return newSequenceWithBase(NewBQ(bp.M(), bp.L()), bp.Tag(), baseArgs, effectiveArgs)
 }
 
 func NewSequence(bq BQ, ra []RuleArgs) (*Sequence, error) {
+	return newSequenceWithBase(bq, "", ra, ra)
+}
+
+func newSequenceWithBase(bq BQ, pluginTag string, baseArgs []RuleArgs, effectiveArgs []RuleArgs) (*Sequence, error) {
 	s := &Sequence{
-		logger: bq.L(),
+		bq:        bq,
+		baseArgs:  cloneRuleArgs(baseArgs),
+		pluginTag: pluginTag,
+		logger:    bq.L(),
 	}
 
 	var rc []RuleConfig
-	for _, ra := range ra {
+	for _, ra := range effectiveArgs {
 		rc = append(rc, parseArgs(ra))
 	}
 	if err := s.buildChain(bq, rc); err != nil {
@@ -89,6 +114,54 @@ func NewSequence(bq BQ, ra []RuleArgs) (*Sequence, error) {
 	}
 	s.compile()
 	return s, nil
+}
+
+func cloneRuleArgs(src []RuleArgs) []RuleArgs {
+	if src == nil {
+		return nil
+	}
+	dst := make([]RuleArgs, len(src))
+	for i, rule := range src {
+		dst[i].Matches = append([]string(nil), rule.Matches...)
+		switch exec := rule.Exec.(type) {
+		case []interface{}:
+			dst[i].Exec = append([]interface{}(nil), exec...)
+		case []string:
+			cloned := append([]string(nil), exec...)
+			dst[i].Exec = cloned
+		default:
+			dst[i].Exec = exec
+		}
+	}
+	return dst
+}
+
+func buildEffectiveRuleArgs(pluginTag string, baseArgs []RuleArgs, global *coremain.GlobalOverrides) []RuleArgs {
+	effective := cloneRuleArgs(baseArgs)
+	for i := range effective {
+		for mi, match := range effective[i].Matches {
+			effective[i].Matches[mi] = coremain.ApplyOverrideString(pluginTag, match, global)
+		}
+		switch exec := effective[i].Exec.(type) {
+		case string:
+			effective[i].Exec = coremain.ApplyOverrideString(pluginTag, exec, global)
+		case []interface{}:
+			nextExec := append([]interface{}(nil), exec...)
+			for idx, item := range nextExec {
+				if s, ok := item.(string); ok {
+					nextExec[idx] = coremain.ApplyOverrideString(pluginTag, s, global)
+				}
+			}
+			effective[i].Exec = nextExec
+		case []string:
+			nextExec := append([]string(nil), exec...)
+			for idx, item := range nextExec {
+				nextExec[idx] = coremain.ApplyOverrideString(pluginTag, item, global)
+			}
+			effective[i].Exec = nextExec
+		}
+	}
+	return effective
 }
 
 func (s *Sequence) compile() {
@@ -193,9 +266,44 @@ func (s *Sequence) compile() {
 
 // Exec 执行序列逻辑
 func (s *Sequence) Exec(ctx context.Context, qCtx *query_context.Context) error {
+	s.mu.RLock()
+	instructions := s.instructions
+	chain := s.chain
+	logger := s.logger
+	s.mu.RUnlock()
+
 	// 组装并启动已经进化完毕的高性能 Walker
-	walker := NewChainWalker(s.instructions, s.chain, nil, s.logger)
+	walker := NewChainWalker(instructions, chain, nil, logger)
 	return walker.ExecNext(ctx, qCtx)
+}
+
+func (s *Sequence) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	s.mu.RLock()
+	bq := s.bq
+	baseArgs := cloneRuleArgs(s.baseArgs)
+	pluginTag := s.pluginTag
+	s.mu.RUnlock()
+
+	rebuilt, err := newSequenceWithBase(bq, pluginTag, baseArgs, buildEffectiveRuleArgs(pluginTag, baseArgs, global))
+	if err != nil {
+		return err
+	}
+
+	s.mu.Lock()
+	oldAnonymous := s.anonymousPlugins
+	s.chain = rebuilt.chain
+	s.anonymousPlugins = rebuilt.anonymousPlugins
+	s.instructions = rebuilt.instructions
+	s.mu.Unlock()
+
+	go func(plugins []any) {
+		time.Sleep(2 * time.Second)
+		for _, plugin := range plugins {
+			closePlugin(plugin)
+		}
+	}(oldAnonymous)
+
+	return nil
 }
 
 func (s *Sequence) buildChain(bq BQ, rs []RuleConfig) error {

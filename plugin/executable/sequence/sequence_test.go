@@ -22,6 +22,7 @@ package sequence
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -35,6 +36,24 @@ type dummy struct {
 	wantR      *dns.Msg
 	dropR      bool
 	wantReturn bool
+}
+
+type captureExec struct {
+	arg string
+}
+
+func (c *captureExec) Exec(ctx context.Context, qCtx *query_context.Context, next ChainWalker) error {
+	return nil
+}
+
+var registerCaptureExecOnce sync.Once
+
+func registerCaptureExecQuickSetup() {
+	registerCaptureExecOnce.Do(func() {
+		MustRegExecQuickSetup("capture_exec_arg", func(bq BQ, args string) (any, error) {
+			return &captureExec{arg: args}, nil
+		})
+	})
 }
 
 func (d *dummy) Match(ctx context.Context, qCtx *query_context.Context) (bool, error) {
@@ -195,5 +214,48 @@ func Test_sequence_Exec(t *testing.T) {
 				t.Errorf("Exec() getTarget = %v, wantTarget %v", getTarget, tt.wantTarget)
 			}
 		})
+	}
+}
+
+func TestSequenceReloadRuntimeConfigRebuildsFromRawArgs(t *testing.T) {
+	registerCaptureExecQuickSetup()
+
+	m := coremain.NewTestMosdnsWithPlugins(make(map[string]any))
+	baseArgs := []RuleArgs{
+		{Exec: "capture_exec_arg old"},
+	}
+	overrides := &coremain.GlobalOverrides{
+		Replacements: []*coremain.ReplacementRule{
+			{Original: "capture_exec_arg old", New: "capture_exec_arg new"},
+		},
+	}
+	overrides.Prepare()
+	s, err := newSequenceWithBase(NewBQ(m, m.Logger()), "test_sequence", baseArgs, buildEffectiveRuleArgs("test_sequence", baseArgs, overrides))
+	if err != nil {
+		t.Fatalf("newSequenceWithBase failed: %v", err)
+	}
+
+	if got := s.chain[0].PluginName; got != "anonymous_exec(capture_exec_arg: new)" {
+		t.Fatalf("unexpected overridden plugin name: %q", got)
+	}
+
+	if err := s.ReloadRuntimeConfig(nil, nil); err != nil {
+		t.Fatalf("ReloadRuntimeConfig failed: %v", err)
+	}
+	if got := s.chain[0].PluginName; got != "anonymous_exec(capture_exec_arg: old)" {
+		t.Fatalf("unexpected rebuilt plugin name: %q", got)
+	}
+}
+
+func TestBuildEffectiveRuleArgsAppliesECSOverride(t *testing.T) {
+	baseArgs := []RuleArgs{
+		{Exec: "ecs 1.1.1.1"},
+	}
+	effective := buildEffectiveRuleArgs("test_sequence", baseArgs, &coremain.GlobalOverrides{ECS: "2.2.2.2"})
+	if got := effective[0].Exec; got != "ecs 2.2.2.2" {
+		t.Fatalf("unexpected ecs override result: %#v", got)
+	}
+	if got := baseArgs[0].Exec; got != "ecs 1.1.1.1" {
+		t.Fatalf("base args should remain unchanged, got %#v", got)
 	}
 }

@@ -49,7 +49,7 @@ func (g *GlobalOverrides) Prepare() {
 	g.lookupMap = make(map[string]*ReplacementRule)
 	if g.Replacements != nil {
 		for _, r := range g.Replacements {
-			if r.Original == "" { 
+			if r.Original == "" {
 				continue
 			}
 			g.lookupMap[r.Original] = r
@@ -78,8 +78,8 @@ func DiscoverAndCacheSettings(cfg *Config) {
 			return
 		}
 
-		mlog.L().Info("[Debug Discovery] Scanning config scope", 
-			zap.String("source", sourceFile), 
+		mlog.L().Info("[Debug Discovery] Scanning config scope",
+			zap.String("source", sourceFile),
 			zap.Int("plugins_count", len(c.Plugins)),
 			zap.Int("includes_count", len(c.Include)))
 
@@ -112,9 +112,9 @@ func DiscoverAndCacheSettings(cfg *Config) {
 			if len(c.baseDir) > 0 && !filepath.IsAbs(includePath) {
 				resolvedPath = filepath.Join(c.baseDir, includePath)
 			}
-			
+
 			mlog.L().Info("[Debug Discovery] Reading include file", zap.String("path", resolvedPath))
-			
+
 			subCfg, _, err := loadConfig(resolvedPath)
 			if err == nil {
 				discover(subCfg, resolvedPath)
@@ -125,8 +125,8 @@ func DiscoverAndCacheSettings(cfg *Config) {
 	}
 
 	discover(cfg, "root_config")
-	
-	mlog.L().Info("[Debug Discovery] <<< Discovery finished", 
+
+	mlog.L().Info("[Debug Discovery] <<< Discovery finished",
 		zap.Strings("all_aliapi_tags", discoveredAliAPITags),
 		zap.String("socks5", discoveredSocks5),
 		zap.String("ecs", discoveredECS))
@@ -177,6 +177,28 @@ func ApplyOverrides(tag string, pluginConf *PluginConfig, overrides *GlobalOverr
 	pluginConf.Args = applyRecursive(tag, pluginConf.Args, overrides)
 }
 
+// ApplyOverrideString applies ECS and replacement rules to a single string value.
+func ApplyOverrideString(tag string, currentVal string, overrides *GlobalOverrides) string {
+	if overrides == nil {
+		return currentVal
+	}
+	if overrides.ECS != "" && strings.HasPrefix(currentVal, "ecs ") {
+		currentVal = "ecs " + overrides.ECS
+	}
+	if overrides.lookupMap != nil {
+		if rule, ok := overrides.lookupMap[currentVal]; ok {
+			atomic.AddInt64(&rule.appliedCount, 1)
+			mlog.L().Info("config replacement applied",
+				zap.String("plugin_tag", tag),
+				zap.String("original", rule.Original),
+				zap.String("new", rule.New),
+				zap.String("comment", rule.Comment))
+			return rule.New
+		}
+	}
+	return currentVal
+}
+
 // applyRecursive is a generic function that traverses and modifies the config data structure.
 func applyRecursive(tag string, data any, overrides *GlobalOverrides) any {
 	if data == nil {
@@ -200,22 +222,7 @@ func applyRecursive(tag string, data any, overrides *GlobalOverrides) any {
 		}
 		return v
 	case string:
-		currentVal := v
-		if overrides.ECS != "" && strings.HasPrefix(currentVal, "ecs ") {
-			currentVal = "ecs " + overrides.ECS
-		}
-		if overrides.lookupMap != nil {
-			if rule, ok := overrides.lookupMap[currentVal]; ok {
-				atomic.AddInt64(&rule.appliedCount, 1)
-				mlog.L().Info("config replacement applied",
-					zap.String("plugin_tag", tag),
-					zap.String("original", rule.Original),
-					zap.String("new", rule.New),
-					zap.String("comment", rule.Comment))
-				return rule.New
-			}
-		}
-		return currentVal
+		return ApplyOverrideString(tag, v, overrides)
 	default:
 		return data
 	}

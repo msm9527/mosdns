@@ -3100,12 +3100,17 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
             const els = this.getElements();
             if (!els.socks5) return;
 
-            // 1. 隐藏旧按钮
-            if (els.oldSaveBtn) els.oldSaveBtn.style.display = 'none';
-            if (els.oldLoadBtn) els.oldLoadBtn.style.display = 'none';
-
-            // 2. 注入新板块
+            // 1. 注入新板块
             this.injectNewCard();
+
+            if (els.oldLoadBtn && !els.oldLoadBtn.dataset.bound) {
+                els.oldLoadBtn.dataset.bound = 'true';
+                els.oldLoadBtn.addEventListener('click', () => this.load());
+            }
+            if (els.oldSaveBtn && !els.oldSaveBtn.dataset.bound) {
+                els.oldSaveBtn.dataset.bound = 'true';
+                els.oldSaveBtn.addEventListener('click', () => this.save(els.oldSaveBtn));
+            }
 
             try {
                 const data = await api.fetch('/api/v1/overrides');
@@ -3169,7 +3174,7 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
                 <div class="button-group" style="margin-top: 1rem; justify-content: flex-end;">
                     <span style="color: var(--color-text-secondary); font-size: 0.85em; margin-right: auto;">保存应用SOCKS5/ECS IP/上游DNS设置</span>
                     <button class="button primary" id="rep-save-btn">
-                        <span>保存并生效</span>
+                        <span style="color: inherit !important; display: inline; width: auto;">保存并生效</span>
                     </button>
                 </div>
             `;
@@ -3291,12 +3296,13 @@ renderReplacementsTable() {
             }).join('');
         },
 
-        async save() {
+        async save(triggerBtn) {
             const els = this.getElements();
             if (!els.socks5 || !els.ecs) return;
 
-            const btn = document.getElementById('rep-save-btn');
-            ui.setLoading(btn, true);
+            const repBtn = document.getElementById('rep-save-btn');
+            const btns = [triggerBtn, repBtn].filter(Boolean);
+            btns.forEach((btn) => ui.setLoading(btn, true));
 
             const socks5 = els.socks5.value.trim();
             const ecs = els.ecs.value.trim();
@@ -3324,7 +3330,7 @@ renderReplacementsTable() {
                 ui.showToast('保存配置失败', 'error');
                 console.error("Save Error:", e);
             } finally {
-                ui.setLoading(btn, false);
+                btns.forEach((btn) => ui.setLoading(btn, false));
             }
         }
     };

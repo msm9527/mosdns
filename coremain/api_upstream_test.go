@@ -104,7 +104,7 @@ func TestHandleSetUpstreamConfigWithMosdns_NoDeadlockOnRuntimeApply(t *testing.T
 	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status code: got %d, body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "saved and applied") {
+	if !strings.Contains(w.Body.String(), "上游配置已保存并生效") {
 		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 }
@@ -171,7 +171,7 @@ func TestHandleReplaceUpstreamConfigWithMosdns_SaveAndApply(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("unexpected status code: got %d, body=%s", w.Code, w.Body.String())
 	}
-	if !strings.Contains(w.Body.String(), "saved and applied") {
+	if !strings.Contains(w.Body.String(), "上游配置已保存并生效") {
 		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 

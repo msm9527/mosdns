@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
@@ -40,10 +41,15 @@ type domainPayload struct {
 
 var _ data_provider.DomainMatcherProvider = (*DomainSet)(nil)
 var _ domain.Matcher[struct{}] = (*DomainSet)(nil)
+
 // 确保实现了 RuleExporter 接口
 var _ data_provider.RuleExporter = (*DomainSet)(nil)
 
 type DomainSet struct {
+	bp        *coremain.BP
+	pluginTag string
+	baseArgs  *Args
+
 	mu     sync.RWMutex
 	mixM   *domain.MixMatcher[struct{}]
 	otherM []domain.Matcher[struct{}]
@@ -54,6 +60,8 @@ type DomainSet struct {
 	// 新增：订阅者列表
 	subscribers []func()
 }
+
+var _ coremain.RuntimeConfigReloader = (*DomainSet)(nil)
 
 // GetRules 实现 RuleExporter 接口
 func (d *DomainSet) GetRules() ([]string, error) {
@@ -151,7 +159,14 @@ func (d *DomainSet) loadFileInternal(f string) ([]string, error) {
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
+	baseArgs := cloneArgs(cfg)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 	ds := &DomainSet{
+		bp:          bp,
+		pluginTag:   bp.Tag(),
+		baseArgs:    baseArgs,
 		mixM:        domain.NewDomainMixMatcher(),
 		otherM:      make([]domain.Matcher[struct{}], 0, len(cfg.Sets)),
 		subscribers: make([]func(), 0), // 初始化订阅者列表
@@ -167,7 +182,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
 	ds.rules = loadedRules
-                coremain.ManualGC()
+	coremain.ManualGC()
 
 	for _, tag := range cfg.Sets {
 		provider, ok := bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
@@ -179,6 +194,17 @@ func Init(bp *coremain.BP, args any) (any, error) {
 
 	bp.RegAPI(ds.api())
 	return ds, nil
+}
+
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	return &Args{
+		Exps:  append([]string(nil), src.Exps...),
+		Sets:  append([]string(nil), src.Sets...),
+		Files: append([]string(nil), src.Files...),
+	}
 }
 
 func (d *DomainSet) GetDomainMatcher() domain.Matcher[struct{}] {
@@ -201,6 +227,48 @@ func (d *DomainSet) Match(domainStr string) (value struct{}, ok bool) {
 	}
 
 	return struct{}{}, false
+}
+
+func (d *DomainSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(d.pluginTag, d.baseArgs, effective, global); err != nil {
+		return err
+	}
+
+	tmpMatcher := domain.NewDomainMixMatcher()
+	tmp := &DomainSet{mixM: tmpMatcher}
+	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files)
+	if err != nil {
+		return fmt.Errorf("failed to load rules: %w", err)
+	}
+
+	otherM := make([]domain.Matcher[struct{}], 0, len(effective.Sets))
+	for _, tag := range effective.Sets {
+		provider, ok := d.bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
+		if !ok || provider == nil {
+			return fmt.Errorf("%s is not a DomainMatcherProvider", tag)
+		}
+		otherM = append(otherM, provider.GetDomainMatcher())
+	}
+
+	ruleFile := ""
+	if len(effective.Files) > 0 {
+		ruleFile = effective.Files[0]
+	}
+
+	d.mu.Lock()
+	d.mixM = tmpMatcher
+	d.otherM = otherM
+	d.ruleFile = ruleFile
+	d.rules = loadedRules
+	d.mu.Unlock()
+
+	d.notifySubscribers()
+	go func() {
+		time.Sleep(1 * time.Second)
+		coremain.ManualGC()
+	}()
+	return nil
 }
 
 func (d *DomainSet) api() *chi.Mux {
@@ -254,18 +322,18 @@ func (d *DomainSet) api() *chi.Mux {
 		d.rules = tmpRules
 		d.mu.Unlock()
 
-        tmpMix = nil
-        tmpRules = nil
+		tmpMix = nil
+		tmpRules = nil
 
 		if err := writeRulesToFile(d.ruleFile, d.rules); err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		
+
 		// 规则更新成功，通知订阅者
 		d.notifySubscribers()
 
-        coremain.ManualGC()
+		coremain.ManualGC()
 
 		w.WriteHeader(http.StatusOK)
 		fmt.Fprintf(w, "domain_set replaced with %d entries", len(d.rules))

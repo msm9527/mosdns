@@ -68,6 +68,9 @@ type Args struct {
 
 // Rewrite is the main struct for the plugin, holding its state and configuration.
 type Rewrite struct {
+	pluginTag string
+	baseArgs  *Args
+
 	mu            sync.RWMutex // Protects access to matcher and rules
 	matcher       *domain.MixMatcher[*rewriteTarget]
 	dnsClient     *dns.Client
@@ -78,6 +81,8 @@ type Rewrite struct {
 	rules    []string
 }
 
+var _ coremain.RuntimeConfigReloader = (*Rewrite)(nil)
+
 // apiPayload is used for decoding JSON from the /post API endpoint.
 type apiPayload struct {
 	Values []string `json:"values"`
@@ -86,6 +91,10 @@ type apiPayload struct {
 // Init initializes the plugin from the configuration.
 func Init(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
+	baseArgs := cloneArgs(cfg)
+	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
+		baseArgs = cloneArgs(rawArgs)
+	}
 	if len(cfg.Files) == 0 {
 		return nil, fmt.Errorf("at least one rule file must be specified in `files`")
 	}
@@ -101,6 +110,8 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	}
 
 	r := &Rewrite{
+		pluginTag:     bp.Tag(),
+		baseArgs:      baseArgs,
 		matcher:       domain.NewMixMatcher[*rewriteTarget](),
 		dnsClient:     dnsClient,
 		dnsServerAddr: dnsServerAddr,
@@ -119,6 +130,16 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	bp.RegAPI(r.api())
 
 	return r, nil
+}
+
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return new(Args)
+	}
+	return &Args{
+		Files: append([]string(nil), src.Files...),
+		Dns:   src.Dns,
+	}
 }
 
 // loadRulesFromFiles populates the matcher and raw rules list from file paths.
@@ -206,13 +227,54 @@ func (r *Rewrite) Exec(ctx context.Context, qCtx *query_context.Context, next se
 		return next.ExecNext(ctx, qCtx)
 	}
 
-    qCtx.StoreValue(query_context.KeyDomainSet, "重定向")
+	qCtx.StoreValue(query_context.KeyDomainSet, "重定向")
 
 	if target.isIP {
 		r.handleIPRewrite(qCtx, target.ip)
 	} else {
 		r.handleDomainRewrite(ctx, qCtx, target.domain)
 	}
+	return nil
+}
+
+func (r *Rewrite) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(r.pluginTag, r.baseArgs, effective, global); err != nil {
+		return err
+	}
+	if len(effective.Files) == 0 {
+		return fmt.Errorf("at least one rule file must be specified in `files`")
+	}
+
+	dnsServerAddr, err := parseUpstreamAddr(effective.Dns)
+	if err != nil {
+		return fmt.Errorf("invalid upstream dns server: %w", err)
+	}
+
+	dnsClient := &dns.Client{
+		Net:     "udp",
+		Timeout: defaultDNSTimeout,
+	}
+
+	tmp := &Rewrite{}
+	loadedRules, err := tmp.loadRulesFromFiles(effective.Files)
+	if err != nil {
+		return err
+	}
+	tmpMatcher := tmp.matcher
+
+	r.mu.Lock()
+	r.matcher = tmpMatcher
+	r.dnsClient = dnsClient
+	r.dnsServerAddr = dnsServerAddr
+	r.ruleFile = effective.Files[0]
+	r.rules = loadedRules
+	r.mu.Unlock()
+
+	go func() {
+		time.Sleep(1 * time.Second)
+		coremain.ManualGC()
+	}()
 	return nil
 }
 
@@ -267,7 +329,7 @@ func (r *Rewrite) handleDomainRewrite(ctx context.Context, qCtx *query_context.C
 
 	upstreamQuery := new(dns.Msg)
 	upstreamQuery.SetQuestion(targetDomain, qType)
-	upstreamQuery.AuthenticatedData = originalQuery.AuthenticatedData 
+	upstreamQuery.AuthenticatedData = originalQuery.AuthenticatedData
 
 	upstreamQuery.RecursionDesired = originalQuery.RecursionDesired
 	upstreamQuery.CheckingDisabled = originalQuery.CheckingDisabled
@@ -339,15 +401,15 @@ func (r *Rewrite) handlePost(w http.ResponseWriter, req *http.Request) {
 	r.rules = tmpRules
 	r.mu.Unlock()
 
-        tmpMatcher = nil 
-        tmpRules = nil
+	tmpMatcher = nil
+	tmpRules = nil
 
 	if err := writeRulesToFile(r.ruleFile, r.rules); err != nil {
 		http.Error(w, fmt.Sprintf("In-memory rules updated, but failed to write to file: %s", err), http.StatusInternalServerError)
 		return
 	}
 
-        coremain.ManualGC() 
+	coremain.ManualGC()
 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
