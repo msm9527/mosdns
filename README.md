@@ -52,6 +52,12 @@ dig @127.0.0.1 -p 53 example.com A +time=2 +tries=1
 curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
 ```
 
+返回会包含：
+- `memory_entries`
+- `retention_days`
+- `max_disk_size_mb`
+- `current_disk_size_bytes`
+
 4. 压测（注意：`stress dns` 是 mosdns 内置子命令，不是独立 `stress` 程序）：
 
 ```bash

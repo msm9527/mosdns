@@ -28,6 +28,7 @@ demo/
 /.spec-workflow/
 /config/cache/*.dump
 /config/cache/*.wal
+/config/audit_logs/*.ndjson
 /reports/
 /config/gen/*
 !/config/gen/.gitkeep

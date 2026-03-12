@@ -1382,12 +1382,20 @@
                             <path
                                 d="M2 20h20v-4H2v4zm2-3h2v2H4v-2zM2 4v4h20V4H2zm4 3H4V5h2v2zm-4 7h20v-4H2v4zm2-3h2v2H4v-2z">
                             </path>
-                        </svg>日志容量</h3>
+                        </svg>审计存储</h3>
                     <div class="control-item">
-                        <strong>当前容量:</strong> <span id="audit-capacity">查询中...</span>
+                        <strong>当前内存窗口上限:</strong> <span id="audit-capacity">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>当前内存日志数:</strong> <span id="audit-current-count">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>当前磁盘占用:</strong> <span id="audit-disk-usage">查询中...</span>
                     </div>
                     <form id="capacity-form">
-                        <input type="number" id="new-capacity" required min="1" max="400000">
+                        <input type="number" id="new-capacity" required min="1" max="400000" placeholder="内存窗口条数">
+                        <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="保留天数">
+                        <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="磁盘上限(MB)">
                         <button type="submit" class="button primary" data-default-text="设置"><span>设置</span></button>
                     </form>
                     <div class="control-item tip-inline" style="margin-top: -0.25rem;">
@@ -1399,7 +1407,7 @@
                                 </path>
                             </svg>
                         </span>
-                        <small class="tip-text">设置新容量将清空日志。</small>
+                        <small class="tip-text">内存窗口上限和保留策略保存后立即生效，无需重启；历史日志会落盘保存，并按天数和磁盘大小自动清理。</small>
                     </div>
                 </div>
                 <div class="control-module control-module--mini" id="auto-refresh-module">

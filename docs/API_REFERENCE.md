@@ -58,8 +58,8 @@
 | `GET` | `/status` | 获取采集状态 |
 | `GET` | `/logs` | 获取审计日志 |
 | `POST` | `/clear` | 清空审计日志 |
-| `GET` | `/capacity` | 获取日志容量 |
-| `POST` | `/capacity` | 设置日志容量 |
+| `GET` | `/capacity` | 获取审计存储设置 |
+| `POST` | `/capacity` | 设置审计存储设置 |
 
 示例：
 
@@ -71,17 +71,34 @@
 
 ```json
 {
+  "memory_entries": 100000,
+  "current_memory_entries": 527,
+  "retention_days": 30,
+  "max_disk_size_mb": 10,
+  "current_disk_size_bytes": 1048576,
   "capacity": 100000
 }
 ```
 
-设置容量请求体：
+设置审计存储请求体：
 
 ```json
 {
-  "capacity": 100000
+  "memory_entries": 100000,
+  "retention_days": 30,
+  "max_disk_size_mb": 10
 }
 ```
+
+说明：
+
+- `memory_entries`：内存窗口条数，用于 UI 快速查询。
+- `current_memory_entries`：当前实际保存在内存窗口里的日志条数。
+- `retention_days`：磁盘日志保留天数。
+- `max_disk_size_mb`：磁盘日志总占用上限。
+- `capacity`：兼容旧前端，等同于 `memory_entries`。
+- `POST /clear`：会同时清空内存窗口和已落盘的审计历史。
+- `POST /capacity`：设置保存后立即生效，无需重启服务。
 
 ### 2.4 审计 API v2
 
@@ -1024,6 +1041,8 @@
 - `GET /api/v2/audit/rank/slowest`
 - `GET /api/v2/audit/logs`
 - `GET /metrics`
+
+其中 `GET /api/v1/audit/capacity` 现在返回的是“审计存储设置 + 当前磁盘占用”，不再只是单一条目容量。
 
 ### 5.2 系统控制
 

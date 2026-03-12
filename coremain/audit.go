@@ -3,10 +3,8 @@ package coremain
 import (
 	"container/heap"
 	"container/list"
-	"encoding/json"
 	"math"
 	"net"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -134,15 +132,23 @@ type ResponseFlags struct {
 }
 
 const (
-	defaultAuditCapacity   = 100000
-	maxAuditCapacity       = 400000
-	slowestQueriesCapacity = 300
-	auditChannelCapacity   = 10240 
-	auditSettingsFilename  = "audit_settings.json"
+	defaultAuditMemoryEntries = 100000
+	maxAuditMemoryEntries     = 400000
+	defaultAuditRetentionDays = 30
+	maxAuditRetentionDays     = 365
+	defaultAuditMaxDiskSizeMB = 10
+	maxAuditMaxDiskSizeMB     = 10240
+	slowestQueriesCapacity    = 300
+	auditChannelCapacity      = 10240
+	auditSettingsFilename     = "audit_settings.json"
+	auditLogsDirname          = "audit_logs"
 )
 
 type AuditSettings struct {
-	Capacity int `json:"capacity"`
+	MemoryEntries int `json:"memory_entries"`
+	RetentionDays int `json:"retention_days"`
+	MaxDiskSizeMB int `json:"max_disk_size_mb"`
+	Capacity      int `json:"capacity,omitempty"`
 }
 
 type slowestQueryHeap []AuditLog
@@ -177,46 +183,39 @@ type AuditCollector struct {
 	totalQueryDuration float64
 	ctxChan            chan *auditContext
 	workerDone         chan struct{}
+	configBaseDir      string
+	logDir             string
+	settings           AuditSettings
 
 	// Lazy Sync Control
 	lastSyncTime time.Time
+	lastDiskCleanup time.Time
 	
 	// Global Statistics for monitoring without mutex pressure
 	totalQueryCountGlobal    atomic.Uint64
 	totalQueryDurationGlobal atomic.Uint64 // Stored in microseconds
 }
 
-var GlobalAuditCollector = NewAuditCollector(defaultAuditCapacity)
+var GlobalAuditCollector = NewAuditCollector(AuditSettings{
+	MemoryEntries: defaultAuditMemoryEntries,
+	RetentionDays: defaultAuditRetentionDays,
+	MaxDiskSizeMB: defaultAuditMaxDiskSizeMB,
+}, "")
 
 func InitializeAuditCollector(configBaseDir string) {
-	initialCapacity := defaultAuditCapacity
-	settingsPath := filepath.Join(configBaseDir, auditSettingsFilename)
-	settings := &AuditSettings{}
-	data, err := os.ReadFile(settingsPath)
-
-	if err == nil {
-		if json.Unmarshal(data, settings) == nil {
-			initialCapacity = settings.Capacity
-			if initialCapacity < 0 {
-				initialCapacity = 0
-			}
-			if initialCapacity > maxAuditCapacity {
-				initialCapacity = maxAuditCapacity
-			}
-			mlog.S().Infof("Loaded audit log capacity: %d", initialCapacity)
-		}
-	}
-
-	if initialCapacity != defaultAuditCapacity {
-		GlobalAuditCollector = NewAuditCollector(initialCapacity)
+	settings := loadAuditSettings(configBaseDir)
+	GlobalAuditCollector = NewAuditCollector(settings, configBaseDir)
+	if err := GlobalAuditCollector.restoreFromDisk(); err != nil {
+		mlog.L().Warn("failed to restore audit logs from disk", zap.Error(err))
 	}
 }
 
-func NewAuditCollector(capacity int) *AuditCollector {
+func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditCollector {
+	settings = normalizeAuditSettings(settings)
 	c := &AuditCollector{
 		capturing:          true,
-		capacity:           capacity,
-		logs:               make([]AuditLog, 0, capacity),
+		capacity:           settings.MemoryEntries,
+		logs:               make([]AuditLog, 0, settings.MemoryEntries),
 		slowestQueries:     make(slowestQueryHeap, 0, slowestQueriesCapacity),
 		domainCounts:       make(map[string]int),
 		clientCounts:       make(map[string]int),
@@ -225,6 +224,9 @@ func NewAuditCollector(capacity int) *AuditCollector {
 		totalQueryDuration: 0.0,
 		ctxChan:            make(chan *auditContext, auditChannelCapacity),
 		workerDone:         make(chan struct{}),
+		configBaseDir:      configBaseDir,
+		logDir:             filepath.Join(configBaseDir, auditLogsDirname),
+		settings:           settings,
 	}
 	heap.Init(&c.slowestQueries)
 	return c
@@ -278,7 +280,7 @@ func (c *AuditCollector) worker() {
 
 func (c *AuditCollector) processBatch(batch []*auditContext) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
+	persistedLogs := make([]AuditLog, 0, len(batch))
 
 	for _, wrappedCtx := range batch {
 		if wrappedCtx == nil || wrappedCtx.Ctx == nil {
@@ -371,21 +373,37 @@ func (c *AuditCollector) processBatch(batch []*auditContext) {
 			log.ResponseCode = "NO_RESPONSE"
 		}
 
-		// Circular array logic for fixed-memory logging
-		if len(c.logs) < c.capacity {
-			c.logs = append(c.logs, log)
-		} else {
-			c.logs[c.head] = log
-			c.head = (c.head + 1) % c.capacity
-		}
+		c.appendLogLocked(log)
+		persistedLogs = append(persistedLogs, log)
+	}
+	c.mu.Unlock()
 
-		// Update slowest queries heap (Priority Queue)
-		if c.slowestQueries.Len() < slowestQueriesCapacity {
-			heap.Push(&c.slowestQueries, log)
-		} else if log.DurationMs > c.slowestQueries[0].DurationMs {
-			c.slowestQueries[0] = log
-			heap.Fix(&c.slowestQueries, 0)
+	if len(persistedLogs) > 0 {
+		if err := c.appendBatchToDisk(persistedLogs); err != nil {
+			mlog.L().Warn("failed to persist audit logs", zap.Error(err))
 		}
+		if err := c.maybeEnforceDiskRetention(); err != nil {
+			mlog.L().Warn("failed to enforce audit log retention", zap.Error(err))
+		}
+	}
+}
+
+func (c *AuditCollector) appendLogLocked(log AuditLog) {
+	if c.capacity <= 0 {
+		return
+	}
+	if len(c.logs) < c.capacity {
+		c.logs = append(c.logs, log)
+	} else {
+		c.logs[c.head] = log
+		c.head = (c.head + 1) % c.capacity
+	}
+
+	if c.slowestQueries.Len() < slowestQueriesCapacity {
+		heap.Push(&c.slowestQueries, log)
+	} else if log.DurationMs > c.slowestQueries[0].DurationMs {
+		c.slowestQueries[0] = log
+		heap.Fix(&c.slowestQueries, 0)
 	}
 }
 
@@ -446,30 +464,49 @@ func (c *AuditCollector) IsCapturing() bool {
 	return c.capturing
 }
 
-func (c *AuditCollector) GetLogs() []AuditLog {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
+func (c *AuditCollector) snapshotChronologicalLocked() []AuditLog {
 	if c.capacity == 0 || len(c.logs) == 0 {
 		return []AuditLog{}
 	}
-
 	if len(c.logs) < c.capacity {
 		logsCopy := make([]AuditLog, len(c.logs))
 		copy(logsCopy, c.logs)
 		return logsCopy
 	}
-
 	logsCopy := make([]AuditLog, c.capacity)
 	copy(logsCopy, c.logs[c.head:])
 	copy(logsCopy[c.capacity-c.head:], c.logs[:c.head])
 	return logsCopy
 }
 
-func (c *AuditCollector) ClearLogs() {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+func (c *AuditCollector) rebuildDerivedLocked() {
+	c.slowestQueries = make(slowestQueryHeap, 0, slowestQueriesCapacity)
+	heap.Init(&c.slowestQueries)
+	c.domainCounts = make(map[string]int)
+	c.clientCounts = make(map[string]int)
+	c.domainSetCounts = make(map[string]int)
+	c.totalQueryCount = 0
+	c.totalQueryDuration = 0.0
+	c.lastSyncTime = time.Time{}
+	for _, log := range c.snapshotChronologicalLocked() {
+		if c.slowestQueries.Len() < slowestQueriesCapacity {
+			heap.Push(&c.slowestQueries, log)
+		} else if log.DurationMs > c.slowestQueries[0].DurationMs {
+			c.slowestQueries[0] = log
+			heap.Fix(&c.slowestQueries, 0)
+		}
+	}
+	c.syncStatsLocked()
+}
 
+func (c *AuditCollector) GetLogs() []AuditLog {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshotChronologicalLocked()
+}
+
+func (c *AuditCollector) ClearLogs(clearDisk bool) {
+	c.mu.Lock()
 	if c.logs != nil {
 		c.logs = c.logs[:0]
 	}
@@ -482,6 +519,13 @@ func (c *AuditCollector) ClearLogs() {
 	c.domainSetCounts = make(map[string]int)
 	c.totalQueryCount = 0
 	c.totalQueryDuration = 0.0
+	c.mu.Unlock()
+
+	if clearDisk {
+		if err := c.clearDiskLogs(); err != nil {
+			mlog.L().Warn("failed to clear persisted audit logs", zap.Error(err))
+		}
+	}
 }
 
 func (c *AuditCollector) GetCapacity() int {
@@ -490,44 +534,47 @@ func (c *AuditCollector) GetCapacity() int {
 	return c.capacity
 }
 
-func (c *AuditCollector) SetCapacity(newCapacity int, configBaseDir string) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if newCapacity < 0 {
-		newCapacity = 0
-	}
-	if newCapacity > maxAuditCapacity {
-		newCapacity = maxAuditCapacity
-	}
-
-	c.saveSettings(newCapacity, configBaseDir)
-
-	c.capacity = newCapacity
-	c.logs = make([]AuditLog, 0, newCapacity)
-	c.head = 0
-	c.slowestQueries = make(slowestQueryHeap, 0, slowestQueriesCapacity)
-	heap.Init(&c.slowestQueries)
-	c.domainCounts = make(map[string]int)
-	c.clientCounts = make(map[string]int)
-	c.domainSetCounts = make(map[string]int)
-	c.totalQueryCount = 0
-	c.totalQueryDuration = 0.0
+func (c *AuditCollector) GetSettings() AuditSettings {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.settings
 }
 
-func (c *AuditCollector) saveSettings(capacityToSave int, configBaseDir string) {
-	settings := AuditSettings{Capacity: capacityToSave}
-	data, err := json.MarshalIndent(settings, "", "  ")
-	if err != nil {
-		mlog.L().Error("failed to marshal audit settings", zap.Error(err))
-		return
+func (c *AuditCollector) GetCurrentMemoryEntries() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return len(c.logs)
+}
+
+func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) error {
+	next = normalizeAuditSettings(next)
+	if configBaseDir == "" {
+		configBaseDir = c.configBaseDir
 	}
-	settingsPath := filepath.Join(configBaseDir, auditSettingsFilename)
-	if err := os.WriteFile(settingsPath, data, 0644); err != nil {
-		mlog.L().Error("failed to write audit settings file", zap.String("path", settingsPath), zap.Error(err))
-	} else {
-		mlog.L().Info("successfully saved audit settings", zap.String("path", settingsPath), zap.Int("capacity", capacityToSave))
+
+	c.mu.Lock()
+	logs := c.snapshotChronologicalLocked()
+	if len(logs) > next.MemoryEntries {
+		logs = append([]AuditLog(nil), logs[len(logs)-next.MemoryEntries:]...)
 	}
+
+	c.capacity = next.MemoryEntries
+	c.logs = make([]AuditLog, len(logs), next.MemoryEntries)
+	copy(c.logs, logs)
+	c.head = 0
+	c.settings = next
+	c.configBaseDir = configBaseDir
+	c.logDir = filepath.Join(configBaseDir, auditLogsDirname)
+	c.rebuildDerivedLocked()
+	c.mu.Unlock()
+
+	if err := saveAuditSettings(configBaseDir, next); err != nil {
+		return err
+	}
+	if err := c.maybeEnforceDiskRetention(); err != nil {
+		return err
+	}
+	return nil
 }
 
 type V2GetLogsParams struct {
@@ -544,18 +591,7 @@ type V2GetLogsParams struct {
 func (c *AuditCollector) getLogsSnapshot() []AuditLog {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-
-	if c.capacity == 0 || len(c.logs) == 0 {
-		return []AuditLog{}
-	}
-
-	snapshot := make([]AuditLog, len(c.logs))
-	if len(c.logs) < c.capacity {
-		copy(snapshot, c.logs)
-	} else {
-		copy(snapshot, c.logs[c.head:])
-		copy(snapshot[c.capacity-c.head:], c.logs[:c.head])
-	}
+	snapshot := c.snapshotChronologicalLocked()
 
 	for i, j := 0, len(snapshot)-1; i < j; i, j = i+1, j-1 {
 		snapshot[i], snapshot[j] = snapshot[j], snapshot[i]

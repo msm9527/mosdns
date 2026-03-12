@@ -57,27 +57,36 @@ func handleGetAuditLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleClearAuditLogs(w http.ResponseWriter, r *http.Request) {
-	GlobalAuditCollector.ClearLogs()
+	GlobalAuditCollector.ClearLogs(true)
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "In-memory audit logs cleared.")
+	fmt.Fprint(w, "审计日志已清空。")
 }
 
-// ADDED: Handler to get current audit log capacity.
+type auditStorageResponse struct {
+	MemoryEntries        int   `json:"memory_entries"`
+	CurrentMemoryEntries int   `json:"current_memory_entries,omitempty"`
+	RetentionDays        int   `json:"retention_days"`
+	MaxDiskSizeMB        int   `json:"max_disk_size_mb"`
+	Capacity             int   `json:"capacity,omitempty"`
+	CurrentDiskSize      int64 `json:"current_disk_size_bytes"`
+}
+
 func handleGetAuditCapacity(w http.ResponseWriter, r *http.Request) {
-	capacity := struct {
-		Capacity int `json:"capacity"`
-	}{
-		Capacity: GlobalAuditCollector.GetCapacity(),
+	settings := GlobalAuditCollector.GetSettings()
+	resp := auditStorageResponse{
+		MemoryEntries:        settings.MemoryEntries,
+		CurrentMemoryEntries: GlobalAuditCollector.GetCurrentMemoryEntries(),
+		RetentionDays:        settings.RetentionDays,
+		MaxDiskSizeMB:        settings.MaxDiskSizeMB,
+		Capacity:             settings.MemoryEntries,
+		CurrentDiskSize:      GlobalAuditCollector.GetDiskUsageBytes(),
 	}
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(capacity)
+	json.NewEncoder(w).Encode(resp)
 }
 
-// MODIFIED: Handler to set new audit log capacity.
 func handleSetAuditCapacity(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Capacity int `json:"capacity"`
-	}
+	var req auditStorageResponse
 
 	if err := decodeJSONBodyStrict(w, r, &req, false); err != nil {
 		if errors.Is(err, errJSONBodyTooLarge) {
@@ -88,9 +97,17 @@ func handleSetAuditCapacity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// <<< MODIFIED: Pass the MainConfigBaseDir to the SetCapacity function >>>
-	GlobalAuditCollector.SetCapacity(req.Capacity, MainConfigBaseDir)
+	settings := AuditSettings{
+		MemoryEntries: req.MemoryEntries,
+		RetentionDays: req.RetentionDays,
+		MaxDiskSizeMB: req.MaxDiskSizeMB,
+		Capacity:      req.Capacity,
+	}
+	if err := GlobalAuditCollector.SetSettings(settings, MainConfigBaseDir); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "SET_AUDIT_SETTINGS_FAILED", "Failed to save audit settings: "+err.Error())
+		return
+	}
 
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Audit log capacity set to %d. Existing logs have been cleared.", req.Capacity)
+	fmt.Fprint(w, "审计存储设置已保存并生效。")
 }
