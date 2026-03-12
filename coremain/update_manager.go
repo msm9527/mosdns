@@ -27,7 +27,7 @@ import (
 )
 
 const (
-	githubOwner          = "yyysuo"
+	githubOwner          = "msm9527"
 	githubRepo           = "mosdns"
 	defaultReleaseTag    = "msm-v5.0.7"
 	githubReleaseAPI     = "https://api.github.com/repos/%s/%s/releases/tags/%s"
@@ -51,6 +51,7 @@ var (
 	expandedTagRegex  = regexp.MustCompile(`/releases/expanded_assets/([^"'<>\s]+)`)
 	assetHashRegex    = regexp.MustCompile(`sha256:([a-fA-F0-9]{64})`)
 	relativeTimeRegex = regexp.MustCompile(`<relative-time[^>]+datetime="([^\"]+)"`)
+	versionCoreRegex  = regexp.MustCompile(`(?i)(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)`)
 )
 
 type UpdateStatus struct {
@@ -121,12 +122,12 @@ func (m *UpdateManager) preferredReleaseTag() string {
 	m.mu.Lock()
 	current := strings.TrimSpace(m.currentVersion)
 	m.mu.Unlock()
-	if current != "" && !strings.EqualFold(current, "dev") {
-		return current
+	if tag := canonicalReleaseTag(current); tag != "" {
+		return tag
 	}
 	buildVer := strings.TrimSpace(GetBuildVersion())
-	if buildVer != "" && !strings.EqualFold(buildVer, "dev") {
-		return buildVer
+	if tag := canonicalReleaseTag(buildVer); tag != "" {
+		return tag
 	}
 	return defaultReleaseTag
 }
@@ -591,8 +592,25 @@ func (m *UpdateManager) updateAvailableLocked(latest, signature string) bool {
 
 func normalizeVersion(v string) string {
 	s := strings.ToLower(strings.TrimSpace(v))
+	if s == "" {
+		return ""
+	}
+	if match := versionCoreRegex.FindStringSubmatch(s); len(match) == 2 {
+		return strings.TrimPrefix(strings.ToLower(match[1]), "v")
+	}
 	s = strings.TrimPrefix(s, "v")
 	return s
+}
+
+func canonicalReleaseTag(v string) string {
+	raw := strings.TrimSpace(v)
+	if raw == "" || strings.EqualFold(raw, "dev") {
+		return ""
+	}
+	if norm := normalizeVersion(raw); norm != "" {
+		return "msm-v" + norm
+	}
+	return raw
 }
 
 func (m *UpdateManager) fetchReleaseInfo(ctx context.Context) (releaseInfo, error) {

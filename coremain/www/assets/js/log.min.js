@@ -818,88 +818,15 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const updateManager = {
+        hasAutoChecked: false,
+
         init() {
             if (!elements.updateModule) return;
-            const autoCfg = this.loadAutoConfig();
-            state.update.auto.enabled = autoCfg.enabled;
-            state.update.auto.intervalMinutes = autoCfg.interval;
-            elements.updateAutoToggle.checked = autoCfg.enabled;
-            elements.updateIntervalInput.value = autoCfg.interval;
-            elements.updateAutoToggle.addEventListener('change', () => {
-                state.update.auto.enabled = elements.updateAutoToggle.checked;
-                this.persistAutoConfig();
-                this.applyAutoSchedule(true);
-            });
-            elements.updateIntervalInput.addEventListener('change', () => {
-                const val = parseInt(elements.updateIntervalInput.value, 10);
-                if (!Number.isFinite(val) || val < 5) {
-                    elements.updateIntervalInput.value = state.update.auto.intervalMinutes;
-                    ui.showToast('自动检查间隔至少为 5 分钟', 'error');
-                    return;
-                }
-                state.update.auto.intervalMinutes = Math.min(val, 720);
-                this.persistAutoConfig();
-                this.applyAutoSchedule(true);
-            });
             elements.updateCheckBtn?.addEventListener('click', () => this.forceCheck());
             elements.updateApplyBtn?.addEventListener('click', () => this.applyUpdate());
-            this.applyAutoSchedule(false);
             // 延迟到用户进入“系统控制”页或后台定时器触发时再检查更新，避免首屏加载转圈变慢
             elements.updateForceBtn?.addEventListener('click', () => this.applyUpdate(true, elements.updateForceBtn));
             elements.updateV3Btn?.addEventListener('click', () => this.applyUpdate(true, elements.updateV3Btn, true));
-        },
-
-        loadAutoConfig() {
-            try {
-                const raw = localStorage.getItem('mosdns-update-auto');
-                if (!raw) throw new Error('empty');
-                const parsed = JSON.parse(raw);
-                return {
-                    enabled: Boolean(parsed.enabled),
-                    interval: Number.isFinite(parsed.interval) ? parsed.interval : CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT,
-                };
-            } catch (e) {
-                return { enabled: true, interval: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT };
-            }
-        },
-
-        persistAutoConfig() {
-            const payload = {
-                enabled: state.update.auto.enabled,
-                interval: state.update.auto.intervalMinutes,
-            };
-            try {
-                localStorage.setItem('mosdns-update-auto', JSON.stringify(payload));
-            } catch (e) {
-                console.warn('无法保存自动更新配置:', e);
-            }
-        },
-
-        applyAutoSchedule(resetTimer) {
-            if (resetTimer && state.update.auto.timerId) {
-                clearInterval(state.update.auto.timerId);
-                state.update.auto.timerId = null;
-            }
-            if (elements.updateIntervalInput) {
-                elements.updateIntervalInput.disabled = !state.update.auto.enabled;
-            }
-            if (!state.update.auto.enabled) {
-                this.setHint('自动检查已关闭。您可以随时手动检查更新。');
-                return;
-            }
-            const intervalMs = Math.max(state.update.auto.intervalMinutes, 5) * 60 * 1000;
-            this.setHint(`自动检查已启用，每 ${state.update.auto.intervalMinutes} 分钟检查一次。`);
-            if (!state.update.auto.timerId) {
-                state.update.auto.timerId = setInterval(() => {
-                    this.refreshStatus();
-                }, intervalMs);
-            }
-        },
-
-        setHint(text) {
-            if (elements.updateHintText) {
-                elements.updateHintText.textContent = text;
-            }
         },
 
         // 监听自重启完成：服务可用且版本变化 / 不再 pending_restart 即视为成功
@@ -970,7 +897,10 @@ document.addEventListener('DOMContentLoaded', () => {
         // 前端冗余保护：即使后端误报，也以版本号等价判断为准
         normalizeVer(v) {
             if (!v) return '';
-            return String(v).trim().toLowerCase().replace(/^v/, '');
+            const raw = String(v).trim().toLowerCase();
+            const match = raw.match(/(\d+\.\d+\.\d+(?:[-+][0-9a-z.-]+)?)/i);
+            if (match && match[1]) return match[1].toLowerCase().replace(/^v/, '');
+            return raw.replace(/^v/, '');
         },
 
         updateStatusUI(status) {
@@ -1013,7 +943,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 const isWindows = (status.architecture || '').startsWith('windows/');
                 const msg = isWindows ? '更新已安装，等待手动重启生效。' : '更新已安装，正在自重启…';
                 elements.updateStatusText.textContent = msg;
-                this.setHint(msg);
             } else if (!effectiveUpdate) {
                 // 已是最新：在“最新版本”行右侧显示小徽标，隐藏“立即更新”按钮与冗余横幅
                 if (elements.updateInlineBadge) {
@@ -1049,7 +978,11 @@ document.addEventListener('DOMContentLoaded', () => {
         async refreshStatus(force = false) {
             if (!elements.updateModule) return;
             try {
-                const status = force ? await updateApi.forceCheck() : await updateApi.getStatus();
+                const shouldForceCheck = force || !this.hasAutoChecked;
+                const status = shouldForceCheck ? await updateApi.forceCheck() : await updateApi.getStatus();
+                if (shouldForceCheck) {
+                    this.hasAutoChecked = true;
+                }
                 this.updateStatusUI(status);
             } catch (error) {
                 console.error('检查更新失败:', error);
@@ -1062,6 +995,7 @@ document.addEventListener('DOMContentLoaded', () => {
             this.setUpdateLoading(true, elements.updateCheckBtn);
             try {
                 const status = await updateApi.forceCheck();
+                this.hasAutoChecked = true;
                 ui.showToast('已刷新最新版本信息', 'success');
                 this.updateStatusUI(status);
             } catch (error) {
@@ -1069,7 +1003,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 ui.showToast('强制检查失败', 'error');
             } finally {
                 this.setUpdateLoading(false, elements.updateCheckBtn);
-                this.applyAutoSchedule(true);
             }
         },
 
@@ -1096,7 +1029,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 ui.showToast('更新失败，请检查日志', 'error');
             } finally {
                 this.setUpdateLoading(false, button || elements.updateApplyBtn);
-                this.applyAutoSchedule(true);
                 // 若不存在可更新，确保隐藏“立即更新”按钮的显示残留
                 const st = state.update.status;
                 if (elements.updateApplyBtn && st && !st.update_available) {
