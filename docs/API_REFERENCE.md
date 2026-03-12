@@ -139,10 +139,21 @@
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
-| `POST` | `/api/v1/config/export` | 导出配置目录为 zip |
-| `POST` | `/api/v1/config/update_from_url` | 从 URL 下载 zip 覆盖配置并触发重启 |
+| `GET` | `/api/v1/config/info` | 获取当前运行中的配置目录、默认远程源和覆盖提醒 |
+| `POST` | `/api/v1/config/export` | 导出当前运行中的配置目录为 zip |
+| `POST` | `/api/v1/config/update_from_url` | 从远程配置源拉取配置覆盖当前目录并触发重启 |
 
-导出请求体：
+`GET /api/v1/config/info` 返回示例：
+
+```json
+{
+  "dir": "/path/to/current/config",
+  "remote_source": "https://github.com/msm9527/mosdns/tree/main/config",
+  "warning": "远程更新会覆盖所有配置，请提前备份。"
+}
+```
+
+`POST /api/v1/config/export` 请求体：
 
 ```json
 {
@@ -150,12 +161,47 @@
 }
 ```
 
-在线更新配置请求体：
+说明：
+
+- `dir` 可省略。
+- 省略时自动使用当前运行中的 `mosdns` 工作目录。
+
+`POST /api/v1/config/update_from_url` 请求体：
 
 ```json
 {
-  "url": "https://example.com/config.zip",
-  "dir": "/path/to/mosdns"
+  "url": "https://github.com/msm9527/mosdns/tree/main/config"
+}
+```
+
+支持的 `url` 类型：
+
+- GitHub `tree` 地址  
+  例如：`https://github.com/msm9527/mosdns/tree/main/config`
+- 直接可下载的 `zip` 地址  
+  例如：`https://example.com/mosdns-config.zip`
+
+更新行为：
+
+- 请求体中的 `dir` 可省略，默认使用当前运行中的配置目录。
+- 如果 `url` 为空，默认使用：
+  - `https://github.com/msm9527/mosdns/tree/main/config`
+- 当 `url` 为 GitHub `tree` 地址时：
+  - 后端会自动转换为对应仓库分支的源码归档下载地址
+  - 然后只提取 `tree` 指向的子目录内容进行覆盖
+- 当 `url` 为 `zip` 地址时：
+  - 后端直接下载该 zip
+  - 如果 zip 只有一层顶级包裹目录，会自动剥离该目录后再覆盖
+- 更新前会先把当前配置完整备份到工作目录下的 `backup/`
+- 更新失败会回滚已覆盖文件
+- 更新成功后会自动重启 `mosdns`
+
+成功返回示例：
+
+```json
+{
+  "message": "配置更新成功，已覆盖 12 个文件。MosDNS 即将自动重启。",
+  "status": "success"
 }
 ```
 
