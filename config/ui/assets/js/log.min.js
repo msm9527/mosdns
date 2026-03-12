@@ -2843,10 +2843,14 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
 
     // Config Manager: MosDNS 远程配置更新及本地备份
     const configManager = {
+        state: {
+            info: null
+        },
+
         init() {
             this.injectCard();
-            this.loadSettings();
             this.bindEvents();
+            this.loadInfo();
         },
 
         injectCard() {
@@ -2867,16 +2871,31 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
                     </svg>
                     配置管理
                 </h3>
-                <p class="module-desc">管理 MosDNS 的本地配置。您可以备份当前配置到本地，或者从远程 URL 下载配置包覆盖当前设置。</p>
+                <p class="module-desc">当前工作目录会根据 MosDNS 运行状态自动获取。远程更新会直接拉取 <code>msm9527/mosdns</code> 仓库主分支的 <code>config</code> 目录并覆盖本地配置。</p>
                 
                 <div class="control-item">
-                    <label for="cfg-local-dir" class="field-label">MosDNS 本地工作目录</label>
-                    <input type="text" id="cfg-local-dir" class="input" placeholder="例如: /etc/mosdns 或 C:\\mosdns">
+                    <label for="cfg-local-dir-display" class="field-label">当前 MosDNS 工作目录</label>
+                    <input type="text" id="cfg-local-dir-display" class="input" readonly placeholder="读取中...">
                 </div>
 
                 <div class="control-item">
-                    <label for="cfg-remote-url" class="field-label">远程配置下载 URL (ZIP)</label>
-                    <input type="text" id="cfg-remote-url" class="input" placeholder="例如: https://github.com/user/repo/archive/master.zip">
+                    <label for="cfg-remote-source-mode" class="field-label">远程配置模式</label>
+                    <select id="cfg-remote-source-mode" class="input">
+                        <option value="official">默认官方 config</option>
+                        <option value="github_tree">自定义 GitHub tree</option>
+                        <option value="zip">自定义 ZIP</option>
+                    </select>
+                </div>
+
+                <div class="control-item">
+                    <label for="cfg-remote-source" class="field-label">远程配置源</label>
+                    <input type="text" id="cfg-remote-source" class="input" placeholder="支持 GitHub tree 地址或 ZIP 下载地址">
+                </div>
+
+                <div class="control-item">
+                    <div style="padding: 0.875rem 1rem; border-radius: 12px; background: rgba(255, 184, 0, 0.12); color: #7a4b00; font-size: 0.92rem; line-height: 1.6;">
+                        更新会覆盖所有配置，请提前备份。
+                    </div>
                 </div>
 
                 <div class="button-group" style="margin-top: 1rem; justify-content: flex-end;">
@@ -2886,7 +2905,7 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
                     </button>
                     <button class="button primary" id="cfg-update-btn">
                         <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 4V1L8 5l4 4V6c3.31 0 6 2.69 6 6 0 1.01-.25 1.97-.7 2.8l1.46 1.46C19.54 15.03 20 13.57 20 12c0-4.42-3.58-8-8-8zm0 14c-3.31 0-6-2.69-6-6 0-1.01.25-1.97.7-2.8L5.24 7.74C4.46 8.97 4 10.43 4 12c0 4.42 3.58 8 8 8v3l4-4-4-4v3z"/></svg>
-                        <span>应用远程配置</span>
+                        <span>覆盖更新配置</span>
                     </button>
                 </div>
             `;
@@ -2895,51 +2914,70 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
             updateModule.parentNode.insertBefore(card, updateModule.nextSibling);
         },
 
-        loadSettings() {
-            const savedDir = localStorage.getItem('mosdns-config-dir');
-            const savedUrl = localStorage.getItem('mosdns-config-url');
-            const dirInput = document.getElementById('cfg-local-dir');
-            const urlInput = document.getElementById('cfg-remote-url');
+        async loadInfo() {
+            const dirInput = document.getElementById('cfg-local-dir-display');
+            const modeSelect = document.getElementById('cfg-remote-source-mode');
+            const sourceInput = document.getElementById('cfg-remote-source');
 
-            if (dirInput && savedDir) dirInput.value = savedDir;
-            if (urlInput && savedUrl) urlInput.value = savedUrl;
-        },
-
-        saveSettings() {
-            const dirInput = document.getElementById('cfg-local-dir');
-            const urlInput = document.getElementById('cfg-remote-url');
-            if (dirInput) localStorage.setItem('mosdns-config-dir', dirInput.value.trim());
-            if (urlInput) localStorage.setItem('mosdns-config-url', urlInput.value.trim());
+            try {
+                const info = await api.fetch('/api/v1/config/info');
+                this.state.info = info;
+                if (dirInput) dirInput.value = info.dir || '';
+                if (sourceInput && info.remote_source) sourceInput.value = info.remote_source;
+                const savedMode = localStorage.getItem('mosdns-config-remote-source-mode') || 'official';
+                const savedSource = localStorage.getItem('mosdns-config-remote-source');
+                if (modeSelect) modeSelect.value = savedMode;
+                if (savedMode !== 'official' && sourceInput && savedSource) sourceInput.value = savedSource;
+                this.syncSourceMode();
+            } catch (error) {
+                console.error('Load config info failed:', error);
+                if (dirInput) dirInput.value = '读取失败';
+                ui.showToast(`读取配置管理信息失败: ${error.message}`, 'error');
+            }
         },
 
         bindEvents() {
             const backupBtn = document.getElementById('cfg-backup-btn');
             const updateBtn = document.getElementById('cfg-update-btn');
-            const dirInput = document.getElementById('cfg-local-dir');
-            const urlInput = document.getElementById('cfg-remote-url');
-
-            // 自动保存输入
-            dirInput?.addEventListener('change', () => this.saveSettings());
-            urlInput?.addEventListener('change', () => this.saveSettings());
+            const modeSelect = document.getElementById('cfg-remote-source-mode');
+            const sourceInput = document.getElementById('cfg-remote-source');
 
             backupBtn?.addEventListener('click', () => this.handleBackup(backupBtn));
             updateBtn?.addEventListener('click', () => this.handleUpdate(updateBtn));
+            modeSelect?.addEventListener('change', () => this.syncSourceMode());
+            sourceInput?.addEventListener('change', () => {
+                localStorage.setItem('mosdns-config-remote-source', sourceInput.value.trim());
+            });
+        },
+
+        syncSourceMode() {
+            const modeSelect = document.getElementById('cfg-remote-source-mode');
+            const sourceInput = document.getElementById('cfg-remote-source');
+            if (!modeSelect || !sourceInput) return;
+
+            const mode = modeSelect.value || 'official';
+            localStorage.setItem('mosdns-config-remote-source-mode', mode);
+
+            if (mode === 'official') {
+                sourceInput.value = this.state.info?.remote_source || 'https://github.com/msm9527/mosdns/tree/main/config';
+                sourceInput.readOnly = true;
+                return;
+            }
+
+            sourceInput.readOnly = false;
+            if (!sourceInput.value.trim() || sourceInput.value.trim() === (this.state.info?.remote_source || '')) {
+                sourceInput.value = mode === 'zip' ? 'https://example.com/mosdns-config.zip' : 'https://github.com/msm9527/mosdns/tree/main/config';
+            }
         },
 
         async handleBackup(btn) {
-            const dir = document.getElementById('cfg-local-dir').value.trim();
-            if (!dir) {
-                ui.showToast('请先输入 MosDNS 本地工作目录', 'error');
-                return;
-            }
-            this.saveSettings();
             ui.setLoading(btn, true);
 
             try {
                 const response = await fetch('/api/v1/config/export', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ dir })
+                    body: JSON.stringify({})
                 });
 
                 if (!response.ok) {
@@ -2976,29 +3014,28 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
         },
 
         async handleUpdate(btn) {
-            const dir = document.getElementById('cfg-local-dir').value.trim();
-            const url = document.getElementById('cfg-remote-url').value.trim();
+            const currentDir = this.state.info?.dir || document.getElementById('cfg-local-dir-display')?.value || '';
+            const remoteSource = document.getElementById('cfg-remote-source')?.value.trim() || this.state.info?.remote_source || '';
 
-            if (!dir || !url) {
-                ui.showToast('请完整填写本地目录和远程 URL', 'error');
+            if (!remoteSource) {
+                ui.showToast('请填写远程配置源', 'error');
                 return;
             }
 
-            if (!confirm('确定要从远程 URL 更新配置吗？\n\n1. 当前配置将备份到 backup 子目录。\n2. 新配置将覆盖现有文件。\n3. MosDNS 将自动重启。\n\n此操作存在风险，请确保 URL 可信。')) {
+            if (!confirm(`确定要覆盖更新当前配置吗？\n\n工作目录：${currentDir || '读取失败'}\n远程来源：${remoteSource}\n\n1. 更新会覆盖所有配置，请提前备份。\n2. 当前配置会先备份到 backup 子目录。\n3. 支持 GitHub tree 地址和 ZIP 下载地址。\n4. MosDNS 将自动重启。`)) {
                 return;
             }
 
-            this.saveSettings();
             ui.setLoading(btn, true);
 
             try {
                 const res = await api.fetch('/api/v1/config/update_from_url', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ url, dir })
+                    body: JSON.stringify({ url: remoteSource })
                 });
 
-                ui.showToast(res.message || '更新成功，4秒后重启...', 'success');
+                ui.showToast(res.message || '配置更新成功，MosDNS 即将自动重启。', 'success');
 
                 // 等待重启
                 setTimeout(() => {

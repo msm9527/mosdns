@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -28,6 +29,7 @@ const (
 	maxConfigZipEntryBytes uint64 = 20 << 20 // 20 MiB
 	maxConfigZipTotalBytes uint64 = 200 << 20
 	configBackupDirName           = "backup"
+	configRemoteSourceURL         = "https://github.com/msm9527/mosdns/tree/main/config"
 )
 
 // ConfigManagerRequest 定义前端传入的参数
@@ -36,16 +38,42 @@ type ConfigManagerRequest struct {
 	Dir string `json:"dir"` // 本地配置所在的目录
 }
 
+type ConfigManagerInfo struct {
+	Dir          string `json:"dir"`
+	RemoteSource string `json:"remote_source"`
+	Warning      string `json:"warning"`
+}
+
+type configRemoteSourceSpec struct {
+	DisplayURL  string
+	DownloadURL string
+	Subtree     string
+}
+
 // RegisterConfigManagerAPI 注册配置管理相关的 API
 func RegisterConfigManagerAPI(router *chi.Mux) {
+	router.Get("/api/v1/config/info", handleConfigInfo)
 	router.Post("/api/v1/config/export", handleConfigExport)
 	router.Post("/api/v1/config/update_from_url", handleConfigUpdateFromURL)
+}
+
+func handleConfigInfo(w http.ResponseWriter, r *http.Request) {
+	dir, err := resolveConfigTargetDir("")
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "CONFIG_DIR_UNAVAILABLE", "current config dir unavailable: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, ConfigManagerInfo{
+		Dir:          dir,
+		RemoteSource: configRemoteSourceURL,
+		Warning:      "远程更新会覆盖所有配置，请提前备份。",
+	})
 }
 
 // handleConfigExport 对应需求：把本地目录打包下载
 func handleConfigExport(w http.ResponseWriter, r *http.Request) {
 	var req ConfigManagerRequest
-	if err := decodeJSONBodyStrict(w, r, &req, false); err != nil {
+	if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
 		if errors.Is(err, errJSONBodyTooLarge) {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
 			return
@@ -53,7 +81,7 @@ func handleConfigExport(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
 		return
 	}
-	validatedDir, err := validateConfigTargetDir(req.Dir)
+	validatedDir, err := resolveConfigTargetDir(req.Dir)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_TARGET_DIR", "invalid dir: "+err.Error())
 		return
@@ -115,7 +143,7 @@ func handleConfigExport(w http.ResponseWriter, r *http.Request) {
 // handleConfigUpdateFromURL 对应需求：下载 -> 备份 -> 覆盖 -> 重启
 func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 	var req ConfigManagerRequest
-	if err := decodeJSONBodyStrict(w, r, &req, false); err != nil {
+	if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
 		if errors.Is(err, errJSONBodyTooLarge) {
 			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
 			return
@@ -123,25 +151,22 @@ func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
 		return
 	}
-	if req.URL == "" || req.Dir == "" {
-		writeAPIError(w, http.StatusBadRequest, "URL_AND_DIR_REQUIRED", "url and dir are required")
-		return
-	}
-	validatedDir, err := validateConfigTargetDir(req.Dir)
+	validatedDir, err := resolveConfigTargetDir(req.Dir)
 	if err != nil {
 		writeAPIError(w, http.StatusBadRequest, "INVALID_TARGET_DIR", "invalid dir: "+err.Error())
 		return
 	}
 	req.Dir = validatedDir
-	if err := validateConfigUpdateURL(req.URL); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_UPDATE_URL", "invalid url: "+err.Error())
+	sourceSpec, err := resolveConfigRemoteSource(req.URL)
+	if err != nil {
+		writeAPIError(w, http.StatusBadRequest, "INVALID_UPDATE_URL", "invalid remote source: "+err.Error())
 		return
 	}
 
 	lg := mlog.L()
 
 	// --- 1. 下载文件 (包含代理检测和降级逻辑) ---
-	zipData, err := downloadWithFallback(req.URL)
+	zipData, err := downloadWithFallback(sourceSpec.DownloadURL)
 	if err != nil {
 		lg.Error("download config failed", zap.Error(err))
 		writeAPIError(w, http.StatusInternalServerError, "DOWNLOAD_CONFIG_FAILED", "Download failed: "+err.Error())
@@ -157,7 +182,7 @@ func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// --- 3. 解压并覆盖（先 staging 再原子写入；失败自动回滚） ---
-	updatedCount, err := extractAndOverwriteWithRollback(zipData, req.Dir, backupDir)
+	updatedCount, err := extractRemoteConfigWithRollback(zipData, req.Dir, backupDir, sourceSpec)
 	if err != nil {
 		lg.Error("extract and overwrite failed", zap.Error(err))
 		writeAPIError(w, http.StatusInternalServerError, "UPDATE_FILES_FAILED", "Update files failed: "+err.Error())
@@ -168,7 +193,7 @@ func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 	lg.Info("config update successful", zap.Int("files_updated", updatedCount))
 
 	writeJSON(w, http.StatusOK, map[string]any{
-		"message": fmt.Sprintf("Update successful. %d files updated. Restarting...", updatedCount),
+		"message": fmt.Sprintf("配置更新成功，已覆盖 %d 个文件。MosDNS 即将自动重启。", updatedCount),
 		"status":  "success",
 	})
 
@@ -351,6 +376,56 @@ func extractAndOverwriteWithRollback(zipData []byte, targetDir, backupDir string
 	}
 
 	return applyStagedFilesWithRollback(stageDir, targetDir, backupDir)
+}
+
+func extractRemoteConfigWithRollback(zipData []byte, targetDir, backupDir string, spec configRemoteSourceSpec) (int, error) {
+	stageDir, err := os.MkdirTemp("", "mosdns-update-stage-*")
+	if err != nil {
+		return 0, fmt.Errorf("create staging dir failed: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
+
+	if spec.Subtree != "" {
+		if _, err := extractZipSubtreeWithLimits(
+			zipData,
+			stageDir,
+			spec.Subtree,
+			maxConfigZipEntries,
+			maxConfigZipEntryBytes,
+			maxConfigZipTotalBytes,
+		); err != nil {
+			return 0, err
+		}
+	} else {
+		if _, err := extractAndOverwriteWithLimits(
+			zipData,
+			stageDir,
+			maxConfigZipEntries,
+			maxConfigZipEntryBytes,
+			maxConfigZipTotalBytes,
+		); err != nil {
+			return 0, err
+		}
+
+		trimmedStageDir, err := trimSingleRootDir(stageDir)
+		if err != nil {
+			return 0, err
+		}
+		stageDir = trimmedStageDir
+	}
+
+	return applyStagedFilesWithRollback(stageDir, targetDir, backupDir)
+}
+
+func trimSingleRootDir(stageDir string) (string, error) {
+	entries, err := os.ReadDir(stageDir)
+	if err != nil {
+		return "", fmt.Errorf("read staging dir failed: %w", err)
+	}
+	if len(entries) != 1 || !entries[0].IsDir() {
+		return stageDir, nil
+	}
+	return filepath.Join(stageDir, entries[0].Name()), nil
 }
 
 func applyStagedFilesWithRollback(stageDir, targetDir, backupDir string) (int, error) {
@@ -579,20 +654,187 @@ func extractAndOverwriteWithLimits(
 	return count, nil
 }
 
-func validateConfigUpdateURL(rawURL string) error {
-	u, err := url.Parse(strings.TrimSpace(rawURL))
+func extractZipSubtreeWithLimits(
+	zipData []byte,
+	targetDir string,
+	subtree string,
+	maxEntries int,
+	maxEntryBytes uint64,
+	maxTotalBytes uint64,
+) (int, error) {
+	zipReader, err := zip.NewReader(bytes.NewReader(zipData), int64(len(zipData)))
 	if err != nil {
-		return err
+		return 0, fmt.Errorf("invalid zip data: %w", err)
+	}
+	if len(zipReader.File) > maxEntries {
+		return 0, fmt.Errorf("zip has too many entries: %d > %d", len(zipReader.File), maxEntries)
+	}
+
+	subtree = strings.Trim(strings.ReplaceAll(subtree, "\\", "/"), "/")
+	if subtree == "" {
+		return 0, fmt.Errorf("subtree is required")
+	}
+
+	count := 0
+	totalBytes := uint64(0)
+	cleanTargetDir := filepath.Clean(targetDir)
+	absTargetDir, err := filepath.Abs(cleanTargetDir)
+	if err != nil {
+		return 0, fmt.Errorf("resolve target dir failed: %w", err)
+	}
+
+	for _, f := range zipReader.File {
+		if f.FileInfo().IsDir() {
+			continue
+		}
+		if !f.FileInfo().Mode().IsRegular() {
+			return count, fmt.Errorf("unsupported zip entry type: %s", f.Name)
+		}
+		if f.UncompressedSize64 > maxEntryBytes {
+			return count, fmt.Errorf("zip entry too large: %s", f.Name)
+		}
+
+		relPath, matched, err := normalizeGitHubArchiveSubtreePath(f.Name, subtree)
+		if err != nil {
+			return count, err
+		}
+		if !matched {
+			continue
+		}
+
+		totalBytes += f.UncompressedSize64
+		if totalBytes > maxTotalBytes {
+			return count, fmt.Errorf("zip total uncompressed size too large: %d > %d", totalBytes, maxTotalBytes)
+		}
+
+		fullPath := filepath.Join(cleanTargetDir, relPath)
+		absFullPath, err := filepath.Abs(fullPath)
+		if err != nil {
+			return count, fmt.Errorf("resolve target file path failed: %s: %w", relPath, err)
+		}
+		if absFullPath != absTargetDir && !strings.HasPrefix(absFullPath, absTargetDir+string(os.PathSeparator)) {
+			return count, fmt.Errorf("zip entry escapes target dir: %s", relPath)
+		}
+		if err := os.MkdirAll(filepath.Dir(fullPath), 0755); err != nil {
+			return count, fmt.Errorf("create dir failed for %s: %w", relPath, err)
+		}
+
+		rc, err := f.Open()
+		if err != nil {
+			return count, err
+		}
+
+		dst, err := os.Create(fullPath)
+		if err != nil {
+			rc.Close()
+			return count, fmt.Errorf("create file %s failed: %w", relPath, err)
+		}
+
+		written, err := io.Copy(dst, io.LimitReader(rc, int64(maxEntryBytes)+1))
+		dst.Close()
+		rc.Close()
+		if err != nil {
+			return count, fmt.Errorf("write file %s failed: %w", relPath, err)
+		}
+		if uint64(written) > maxEntryBytes {
+			return count, fmt.Errorf("zip entry exceeded max size while writing: %s", relPath)
+		}
+		if err := os.Chmod(fullPath, f.Mode().Perm()); err != nil {
+			return count, fmt.Errorf("set file mode %s failed: %w", relPath, err)
+		}
+		count++
+	}
+
+	if count == 0 {
+		return 0, fmt.Errorf("config subtree %q not found in archive", subtree)
+	}
+	return count, nil
+}
+
+func normalizeGitHubArchiveSubtreePath(entryName, subtree string) (string, bool, error) {
+	cleanName := path.Clean(strings.ReplaceAll(entryName, "\\", "/"))
+	if cleanName == "." || cleanName == ".." || strings.HasPrefix(cleanName, "../") {
+		return "", false, fmt.Errorf("invalid zip entry path: %s", entryName)
+	}
+	if strings.HasPrefix(cleanName, "/") {
+		return "", false, fmt.Errorf("absolute zip entry path is not allowed: %s", entryName)
+	}
+
+	parts := strings.Split(cleanName, "/")
+	if len(parts) < 3 {
+		return "", false, nil
+	}
+	if parts[1] != subtree {
+		return "", false, nil
+	}
+
+	relPath := path.Clean(strings.Join(parts[2:], "/"))
+	if relPath == "." || relPath == "" || relPath == ".." || strings.HasPrefix(relPath, "../") {
+		return "", false, fmt.Errorf("invalid config subtree path: %s", entryName)
+	}
+	return filepath.FromSlash(relPath), true, nil
+}
+
+func validateConfigUpdateURL(rawURL string) error {
+	_, err := resolveConfigRemoteSource(rawURL)
+	return err
+}
+
+func resolveConfigRemoteSource(rawURL string) (configRemoteSourceSpec, error) {
+	trimmed := strings.TrimSpace(rawURL)
+	if trimmed == "" {
+		trimmed = configRemoteSourceURL
+	}
+
+	u, err := url.Parse(trimmed)
+	if err != nil {
+		return configRemoteSourceSpec{}, err
 	}
 	switch u.Scheme {
 	case "http", "https":
 	default:
-		return fmt.Errorf("unsupported scheme %q", u.Scheme)
+		return configRemoteSourceSpec{}, fmt.Errorf("unsupported scheme %q", u.Scheme)
 	}
 	if u.Host == "" {
-		return fmt.Errorf("missing host")
+		return configRemoteSourceSpec{}, fmt.Errorf("missing host")
 	}
-	return nil
+	if strings.EqualFold(u.Host, "github.com") || strings.EqualFold(u.Host, "www.github.com") {
+		spec, ok, err := resolveGitHubTreeSource(trimmed, u)
+		if err != nil {
+			return configRemoteSourceSpec{}, err
+		}
+		if ok {
+			return spec, nil
+		}
+	}
+	if strings.HasSuffix(strings.ToLower(u.Path), ".zip") {
+		return configRemoteSourceSpec{
+			DisplayURL:  trimmed,
+			DownloadURL: trimmed,
+		}, nil
+	}
+	return configRemoteSourceSpec{}, fmt.Errorf("only GitHub tree URLs and zip URLs are supported")
+}
+
+func resolveGitHubTreeSource(rawURL string, u *url.URL) (configRemoteSourceSpec, bool, error) {
+	segments := strings.Split(strings.Trim(strings.TrimSpace(u.Path), "/"), "/")
+	if len(segments) < 5 || segments[2] != "tree" {
+		return configRemoteSourceSpec{}, false, nil
+	}
+
+	owner := strings.TrimSpace(segments[0])
+	repo := strings.TrimSpace(segments[1])
+	ref := strings.TrimSpace(segments[3])
+	subtree := strings.Trim(strings.Join(segments[4:], "/"), "/")
+	if owner == "" || repo == "" || ref == "" || subtree == "" {
+		return configRemoteSourceSpec{}, false, fmt.Errorf("invalid GitHub tree URL")
+	}
+
+	return configRemoteSourceSpec{
+		DisplayURL:  rawURL,
+		DownloadURL: fmt.Sprintf("https://codeload.github.com/%s/%s/zip/refs/heads/%s", owner, repo, ref),
+		Subtree:     subtree,
+	}, true, nil
 }
 
 func validateConfigTargetDir(rawDir string) (string, error) {
@@ -609,6 +851,16 @@ func validateConfigTargetDir(rawDir string) (string, error) {
 		return "", fmt.Errorf("not a directory")
 	}
 	return dir, nil
+}
+
+func resolveConfigTargetDir(rawDir string) (string, error) {
+	if strings.TrimSpace(rawDir) != "" {
+		return validateConfigTargetDir(rawDir)
+	}
+	if strings.TrimSpace(MainConfigBaseDir) == "" {
+		return "", fmt.Errorf("main config base dir is empty")
+	}
+	return validateConfigTargetDir(MainConfigBaseDir)
 }
 
 // triggerRestart 尝试重启服务，逻辑对齐 update_manager.go

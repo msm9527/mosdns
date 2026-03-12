@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -19,8 +20,10 @@ func TestValidateConfigUpdateURL(t *testing.T) {
 		rawURL  string
 		wantErr bool
 	}{
-		{name: "http", rawURL: "http://example.com/config.zip", wantErr: false},
-		{name: "https", rawURL: "https://example.com/config.zip", wantErr: false},
+		{name: "zip http", rawURL: "http://example.com/config.zip", wantErr: false},
+		{name: "zip https", rawURL: "https://example.com/config.zip", wantErr: false},
+		{name: "github tree", rawURL: "https://github.com/msm9527/mosdns/tree/main/config", wantErr: false},
+		{name: "plain page url", rawURL: "https://example.com/config", wantErr: true},
 		{name: "unsupported scheme", rawURL: "ftp://example.com/config.zip", wantErr: true},
 		{name: "missing host", rawURL: "https:///config.zip", wantErr: true},
 		{name: "invalid url", rawURL: "://bad url", wantErr: true},
@@ -38,6 +41,50 @@ func TestValidateConfigUpdateURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestResolveConfigRemoteSource(t *testing.T) {
+	t.Run("default source", func(t *testing.T) {
+		spec, err := resolveConfigRemoteSource("")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if spec.DisplayURL != configRemoteSourceURL {
+			t.Fatalf("unexpected display url: %q", spec.DisplayURL)
+		}
+		if spec.Subtree != "config" {
+			t.Fatalf("unexpected subtree: %q", spec.Subtree)
+		}
+		if spec.DownloadURL != "https://codeload.github.com/msm9527/mosdns/zip/refs/heads/main" {
+			t.Fatalf("unexpected download url: %q", spec.DownloadURL)
+		}
+	})
+
+	t.Run("github tree source", func(t *testing.T) {
+		spec, err := resolveConfigRemoteSource("https://github.com/foo/bar/tree/dev/config/rules")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if spec.DownloadURL != "https://codeload.github.com/foo/bar/zip/refs/heads/dev" {
+			t.Fatalf("unexpected download url: %q", spec.DownloadURL)
+		}
+		if spec.Subtree != "config/rules" {
+			t.Fatalf("unexpected subtree: %q", spec.Subtree)
+		}
+	})
+
+	t.Run("zip source", func(t *testing.T) {
+		spec, err := resolveConfigRemoteSource("https://example.com/mosdns-config.zip")
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if spec.DownloadURL != "https://example.com/mosdns-config.zip" {
+			t.Fatalf("unexpected download url: %q", spec.DownloadURL)
+		}
+		if spec.Subtree != "" {
+			t.Fatalf("unexpected subtree: %q", spec.Subtree)
+		}
+	})
 }
 
 func TestValidateConfigTargetDir(t *testing.T) {
@@ -70,6 +117,22 @@ func TestValidateConfigTargetDir(t *testing.T) {
 				t.Fatalf("expected no error for %q, got %v", tc.rawDir, err)
 			}
 		})
+	}
+}
+
+func TestResolveConfigTargetDir(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	got, err := resolveConfigTargetDir("")
+	if err != nil {
+		t.Fatalf("resolve current config dir failed: %v", err)
+	}
+	if got != MainConfigBaseDir {
+		t.Fatalf("unexpected dir: got %q, want %q", got, MainConfigBaseDir)
 	}
 }
 
@@ -134,6 +197,37 @@ func TestHandleConfigExport_SkipsOnlyRootBackupDir(t *testing.T) {
 	}
 	if !slices.Contains(names, "normal.txt") {
 		t.Fatalf("normal file missing, names=%v", names)
+	}
+}
+
+func TestHandleConfigInfo(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/config/info", nil)
+	w := httptest.NewRecorder()
+
+	handleConfigInfo(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: got %d, want %d", w.Code, http.StatusOK)
+	}
+
+	var resp ConfigManagerInfo
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("unmarshal response failed: %v", err)
+	}
+	if resp.Dir != MainConfigBaseDir {
+		t.Fatalf("unexpected dir: got %q, want %q", resp.Dir, MainConfigBaseDir)
+	}
+	if resp.RemoteSource != configRemoteSourceURL {
+		t.Fatalf("unexpected remote source: got %q", resp.RemoteSource)
+	}
+	if !strings.Contains(resp.Warning, "覆盖所有配置") {
+		t.Fatalf("unexpected warning: %q", resp.Warning)
 	}
 }
 
@@ -228,6 +322,78 @@ func TestExtractAndOverwriteWithLimits(t *testing.T) {
 			t.Fatalf("expected extracted file missing: %v", err)
 		}
 	})
+}
+
+func TestExtractZipSubtreeWithLimits(t *testing.T) {
+	t.Run("extract config subtree from github archive", func(t *testing.T) {
+		target := t.TempDir()
+		zipData := mustBuildZip(t, map[string]string{
+			"mosdns-main/config/config.yaml":      "a: 1",
+			"mosdns-main/config/sub/rules.txt":    "rule",
+			"mosdns-main/docs/readme.md":          "ignored",
+			"mosdns-main/config/backup/keep.json": "backup-data",
+		})
+
+		n, err := extractZipSubtreeWithLimits(zipData, target, "config", 10, 1024, 4096)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if n != 3 {
+			t.Fatalf("unexpected extracted count: got %d, want 3", n)
+		}
+		if _, err := os.Stat(filepath.Join(target, "config.yaml")); err != nil {
+			t.Fatalf("expected config.yaml extracted: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(target, "sub", "rules.txt")); err != nil {
+			t.Fatalf("expected nested rule extracted: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(target, "docs", "readme.md")); !os.IsNotExist(err) {
+			t.Fatalf("unexpected docs file extracted, stat err=%v", err)
+		}
+	})
+
+	t.Run("missing subtree", func(t *testing.T) {
+		zipData := mustBuildZip(t, map[string]string{
+			"mosdns-main/docs/readme.md": "ignored",
+		})
+		_, err := extractZipSubtreeWithLimits(zipData, t.TempDir(), "config", 10, 1024, 4096)
+		if err == nil {
+			t.Fatal("expected missing subtree error, got nil")
+		}
+		if !strings.Contains(err.Error(), "not found") {
+			t.Fatalf("unexpected error: %v", err)
+		}
+	})
+}
+
+func TestExtractRemoteConfigWithRollback_ZipSourceStripsSingleRootDir(t *testing.T) {
+	targetDir := t.TempDir()
+	backupDir := filepath.Join(targetDir, configBackupDirName)
+	if err := os.MkdirAll(backupDir, 0755); err != nil {
+		t.Fatalf("mkdir backup failed: %v", err)
+	}
+
+	zipData := mustBuildZip(t, map[string]string{
+		"mosdns-config/config.yaml": "a: 1",
+		"mosdns-config/rules.txt":   "rule",
+	})
+
+	n, err := extractRemoteConfigWithRollback(zipData, targetDir, backupDir, configRemoteSourceSpec{
+		DisplayURL:  "https://example.com/mosdns-config.zip",
+		DownloadURL: "https://example.com/mosdns-config.zip",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if n != 2 {
+		t.Fatalf("unexpected applied count: got %d, want 2", n)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "config.yaml")); err != nil {
+		t.Fatalf("expected config file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "rules.txt")); err != nil {
+		t.Fatalf("expected rules file missing: %v", err)
+	}
 }
 
 func TestRollbackAppliedFiles(t *testing.T) {
