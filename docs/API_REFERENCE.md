@@ -616,6 +616,9 @@
 - `config.workflow.mode`
 - `config.scheduler.enabled`
 - `config.scheduler.interval_minutes`
+- `config.recovery.auto_resume`
+- `config.recovery.checkpoint_batch_size`
+- `config.recovery.resume_delay_ms`
 - `config.execution_settings.queries_per_second`
 - `config.execution_settings.quick_queries_per_second`
 - `config.execution_settings.prewarm_queries_per_second`
@@ -668,6 +671,7 @@
 - `status.last_run_mode`
 - `status.progress`
 - `status.pending_queue`
+- `full_rebuild_task`
 
 `POST /plugins/requery/trigger` 请求体示例：
 
@@ -773,12 +777,18 @@
 - `refresh_resolver_pool` 用于给 `quick_rebuild / full_rebuild` 提供多个刷新解析地址，任务执行时会轮询分配给 worker。
 - `full_rebuild_priority_limit` 用于限制完整重建第一阶段的高优先级候选规模；超出的候选与源文件长尾一起进入第二阶段。
 - 运行时高优先级候选来自分流记忆库的内存状态，而不是单纯全量扫描文本源文件。
+- `recovery` 仅用于 `full_rebuild` 的断点恢复。
+- `recovery.auto_resume` 默认为 `true`，重启后会自动尝试恢复中断的完整重建任务。
+- `recovery.checkpoint_batch_size` 默认为 `256`，表示每处理多少个域名落一次 checkpoint。
+- `recovery.resume_delay_ms` 默认为 `1500`，表示服务启动后延迟多久自动恢复任务。
+- `full_rebuild_task` 是内部持久化的完整重建快照，包含剩余高优先级/长尾候选、阶段、已完成数量等信息。
 
 优化说明与推荐配置：
 
 - 相对旧版本，当前实现的主要优化点：
   - `quick_prewarm / quick_rebuild` 优先使用运行时 `dirty / stale / hot / refresh_due` 候选，不再默认先扫完整源文件
   - `full_rebuild` 改为两阶段：先跑高优先级候选，再补源文件长尾
+  - `full_rebuild` 支持 checkpoint 和重启自动恢复，不再因为服务重启直接丢整轮任务
   - `save / flush / verify` 优先 direct-call 插件能力，不再优先走本机 HTTP 自调用
   - `refresh_resolver_pool` 支持多刷新解析地址轮询，降低单点瓶颈
   - `summary` 聚合接口收口前端状态请求，减少页面多路轮询
@@ -806,6 +816,10 @@
   - `quick_prewarm` 对正常使用影响最小
   - `quick_rebuild` 影响通常可控
   - `full_rebuild` 仍然属于后台重查任务，建议安排在低峰时段
+- 恢复语义说明：
+  - 只对 `full_rebuild` 做持久化恢复
+  - 服务重启后会从最近一个 checkpoint 继续
+  - 如果在一个 checkpoint 批次中途重启，最多重跑该批次，不会从整轮任务起点重新开始
 - 注意：
   - 这套任务会真实发 DNS 查询重建分流结果，不是单纯内存刷新
   - 即使做了增量优化，`full_rebuild` 也不应被当成“秒级无感操作”

@@ -75,14 +75,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("requery: failed to load initial config from %s: %w", p.filePath, err)
 	}
 
-	// Resiliency check: If mosdns was stopped while a task was running, mark it as failed.
-	p.mu.Lock()
-	if p.status.TaskState == "running" {
-		log.Println("[requery] WARN: Found task in 'running' state on startup. Marking as 'failed'.")
-		p.status.TaskState = "failed"
-		p.status.LastRunEndTime = time.Now().UTC()
-	}
-	p.mu.Unlock()
+	p.prepareRecoveryOnStartup()
 
 	// Start the scheduler's goroutine once. It will run forever.
 	p.scheduler.Start()
@@ -93,6 +86,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	if err := p.setupScheduler(); err != nil {
 		log.Printf("[requery] WARN: Failed to setup initial scheduler job, it will be disabled: %v", err)
 	}
+	p.scheduleRecoveryIfNeeded()
 
 	bp.RegAPI(p.api())
 
@@ -119,6 +113,7 @@ type Requery struct {
 	queue      refreshJobHeap
 	queueIndex map[string]struct{}
 	queueKick  chan struct{}
+	resumeOnce sync.Once
 }
 
 // Config maps directly to the requeryconfig.json file structure.
@@ -127,8 +122,10 @@ type Config struct {
 	URLActions        URLActions        `json:"url_actions"`
 	Workflow          WorkflowSettings  `json:"workflow"`
 	Scheduler         SchedulerConfig   `json:"scheduler"`
+	Recovery          RecoverySettings  `json:"recovery,omitempty"`
 	ExecutionSettings ExecutionSettings `json:"execution_settings"`
 	Status            Status            `json:"status"`
+	FullRebuildTask   *FullRebuildTask  `json:"full_rebuild_task,omitempty"`
 }
 
 type DomainProcessing struct {
@@ -157,6 +154,12 @@ type SchedulerConfig struct {
 	Enabled         bool   `json:"enabled"`
 	StartDatetime   string `json:"start_datetime"` // ISO 8601 format
 	IntervalMinutes int    `json:"interval_minutes"`
+}
+
+type RecoverySettings struct {
+	AutoResume          *bool `json:"auto_resume,omitempty"`
+	CheckpointBatchSize int   `json:"checkpoint_batch_size,omitempty"`
+	ResumeDelayMS       int   `json:"resume_delay_ms,omitempty"`
 }
 
 type ExecutionSettings struct {
@@ -200,6 +203,21 @@ type Status struct {
 type Progress struct {
 	Processed int64 `json:"processed"`
 	Total     int64 `json:"total"`
+}
+
+type FullRebuildTask struct {
+	TaskID      string            `json:"task_id"`
+	Mode        string            `json:"mode"`
+	Stage       string            `json:"stage"`
+	StageLabel  string            `json:"stage_label,omitempty"`
+	StartedAt   time.Time         `json:"started_at,omitempty"`
+	UpdatedAt   time.Time         `json:"updated_at,omitempty"`
+	Total       int               `json:"total"`
+	Completed   int               `json:"completed"`
+	Primary     []domainCandidate `json:"primary,omitempty"`
+	Secondary   []domainCandidate `json:"secondary,omitempty"`
+	LastError   string            `json:"last_error,omitempty"`
+	ResumeCount int               `json:"resume_count,omitempty"`
 }
 
 type statusSnapshot struct {
@@ -356,6 +374,10 @@ func priorityForReason(reason string) int {
 // ----------------------------------------------------------------------------
 
 func (p *Requery) startTask(profile taskProfile) bool {
+	return p.startTaskWithRecovery(profile, nil)
+}
+
+func (p *Requery) startTaskWithRecovery(profile taskProfile, recovery *FullRebuildTask) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -363,12 +385,12 @@ func (p *Requery) startTask(profile taskProfile) bool {
 		return false
 	}
 	p.taskCtx, p.taskCancel = context.WithCancel(context.Background())
-	go p.runTask(p.taskCtx, profile)
+	go p.runTask(p.taskCtx, profile, recovery)
 	return true
 }
 
 // runTask executes the entire requery workflow. It's designed to be run in a goroutine.
-func (p *Requery) runTask(ctx context.Context, profile taskProfile) {
+func (p *Requery) runTask(ctx context.Context, profile taskProfile, recovery *FullRebuildTask) {
 	p.mu.Lock()
 	if p.status.TaskState == "running" {
 		log.Println("[requery] Task trigger ignored: a task is already running.")
@@ -420,9 +442,13 @@ func (p *Requery) runTask(ctx context.Context, profile taskProfile) {
 		coremain.ManualGC()
 	}()
 
-	log.Printf("[requery] Starting a new task: %s.", profile.Mode)
+	if recovery != nil {
+		log.Printf("[requery] Resuming task: %s.", profile.Mode)
+	} else {
+		log.Printf("[requery] Starting a new task: %s.", profile.Mode)
+	}
 
-	if profile.SaveBefore {
+	if recovery == nil && profile.SaveBefore {
 		log.Println("[requery] Step 1: Saving current rule state...")
 		if result := p.callURLs(ctx, "save_rules", p.config.URLActions.SaveRules); result.Failed > 0 {
 			p.setFailedState("failed during save_rules step: %d/%d targets failed", result.Failed, result.Total)
@@ -430,20 +456,29 @@ func (p *Requery) runTask(ctx context.Context, profile taskProfile) {
 		}
 	}
 
-	// Step 2 & 3: Consolidate domains (Merge only, no backup read/write)
-	log.Println("[requery] Step 2 & 3: Collecting candidate domains...")
-	plan, err := p.buildTaskCandidatePlan(ctx, profile)
-	if err != nil {
-		p.setFailedState("failed during domain merge: %v", err)
-		return
+	var (
+		plan taskCandidatePlan
+		err  error
+	)
+	if recovery != nil {
+		plan = planFromRecovery(recovery)
+	} else {
+		// Step 2 & 3: Consolidate domains (Merge only, no backup read/write)
+		log.Println("[requery] Step 2 & 3: Collecting candidate domains...")
+		plan, err = p.buildTaskCandidatePlan(ctx, profile)
+		if err != nil {
+			p.setFailedState("failed during domain merge: %v", err)
+			return
+		}
 	}
 	totalDomains := len(plan.Primary) + len(plan.Secondary)
-	if totalDomains == 0 {
+	if totalDomains == 0 && !(recovery != nil && recovery.Stage == "publish") {
 		log.Println("[requery] No domains found to process. Task finished.")
+		p.clearFullRebuildTask()
 		return
 	}
 
-	if profile.FlushBefore {
+	if recovery == nil && profile.FlushBefore {
 		log.Println("[requery] Step 4: Flushing old rules (legacy mode)...")
 		if result := p.callURLs(ctx, "flush_rules", p.config.URLActions.FlushRules); result.Failed > 0 {
 			p.setFailedState("failed during flush_rules step: %d/%d targets failed", result.Failed, result.Total)
@@ -452,16 +487,52 @@ func (p *Requery) runTask(ctx context.Context, profile taskProfile) {
 	}
 
 	// Update status with total domain count
-	p.mu.Lock()
-	p.status.LastRunDomainCount = totalDomains
-	p.status.Progress.Total = int64(totalDomains)
-	p.mu.Unlock()
+	if recovery != nil {
+		p.mu.Lock()
+		p.status.LastRunDomainCount = recovery.Total
+		p.status.Progress.Total = int64(recovery.Total)
+		p.status.Progress.Processed = int64(recovery.Completed)
+		p.status.TaskStage = recovery.Stage
+		p.status.TaskStageLabel = recovery.StageLabel
+		p.status.TaskStageProcessed = stageProcessed(recovery)
+		p.status.TaskStageTotal = stageTotal(recovery)
+		p.lastError = ""
+		p.mu.Unlock()
+	} else {
+		p.mu.Lock()
+		p.status.LastRunDomainCount = totalDomains
+		p.status.Progress.Total = int64(totalDomains)
+		p.mu.Unlock()
+	}
+
+	if profile.Mode == "full_rebuild" {
+		if recovery == nil {
+			recovery = newFullRebuildTask(plan)
+		} else {
+			recovery = cloneFullRebuildTask(recovery)
+			recovery.ResumeCount++
+			recovery.UpdatedAt = time.Now().UTC()
+		}
+		if err := p.persistFullRebuildTask(recovery); err != nil {
+			p.setFailedState("failed to persist full rebuild snapshot: %v", err)
+			return
+		}
+	}
 
 	// Step 6: Re-query domains
 	if len(plan.Primary) > 0 {
 		p.setTaskStage("priority", "高优先级阶段", int64(len(plan.Primary)))
 		log.Printf("[requery] Step 6.1: %s 高优先级阶段，处理 %d 个域名...", profile.ProgressMode, len(plan.Primary))
-		err = p.resendDNSQueries(ctx, plan.Primary, true, profile)
+		if recovery != nil {
+			recovery.Stage = "priority"
+			recovery.StageLabel = stageLabel(recovery.Stage)
+			recovery.UpdatedAt = time.Now().UTC()
+			if err := p.persistFullRebuildTask(recovery); err != nil {
+				p.setFailedState("failed to persist priority stage snapshot: %v", err)
+				return
+			}
+		}
+		err = p.runStageWithCheckpoint(ctx, profile, recovery, "priority", plan.Primary, &plan.Primary, &plan.Secondary)
 		if err != nil {
 			log.Printf("[requery] Task stopped during high-priority query phase: %v", err)
 			return
@@ -470,9 +541,30 @@ func (p *Requery) runTask(ctx context.Context, profile taskProfile) {
 	if len(plan.Secondary) > 0 {
 		p.setTaskStage("tail", "长尾补全阶段", int64(len(plan.Secondary)))
 		log.Printf("[requery] Step 6.2: %s 长尾补全阶段，处理 %d 个域名...", profile.ProgressMode, len(plan.Secondary))
-		err = p.resendDNSQueries(ctx, plan.Secondary, true, profile)
+		if recovery != nil {
+			recovery.Stage = "tail"
+			recovery.StageLabel = stageLabel(recovery.Stage)
+			recovery.UpdatedAt = time.Now().UTC()
+			if err := p.persistFullRebuildTask(recovery); err != nil {
+				p.setFailedState("failed to persist tail stage snapshot: %v", err)
+				return
+			}
+		}
+		err = p.runStageWithCheckpoint(ctx, profile, recovery, "tail", plan.Secondary, &plan.Primary, &plan.Secondary)
 		if err != nil {
 			log.Printf("[requery] Task stopped during long-tail query phase: %v", err)
+			return
+		}
+	}
+
+	if recovery != nil {
+		recovery.Stage = "publish"
+		recovery.StageLabel = stageLabel(recovery.Stage)
+		recovery.Primary = nil
+		recovery.Secondary = nil
+		recovery.UpdatedAt = time.Now().UTC()
+		if err := p.persistFullRebuildTask(recovery); err != nil {
+			p.setFailedState("failed to persist publish stage snapshot: %v", err)
 			return
 		}
 	}
@@ -485,6 +577,7 @@ func (p *Requery) runTask(ctx context.Context, profile taskProfile) {
 		}
 	}
 
+	p.clearFullRebuildTask()
 	log.Println("[requery] Task completed successfully.")
 }
 
@@ -495,6 +588,192 @@ func (p *Requery) setTaskStage(stage, label string, total int64) {
 	p.status.TaskStageProcessed = 0
 	p.status.TaskStageTotal = total
 	p.mu.Unlock()
+}
+
+func newFullRebuildTask(plan taskCandidatePlan) *FullRebuildTask {
+	total := len(plan.Primary) + len(plan.Secondary)
+	return &FullRebuildTask{
+		TaskID:     strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
+		Mode:       "full_rebuild",
+		Stage:      "priority",
+		StageLabel: stageLabel("priority"),
+		StartedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Total:      total,
+		Primary:    cloneDomainCandidates(plan.Primary),
+		Secondary:  cloneDomainCandidates(plan.Secondary),
+	}
+}
+
+func planFromRecovery(task *FullRebuildTask) taskCandidatePlan {
+	if task == nil {
+		return taskCandidatePlan{}
+	}
+	return taskCandidatePlan{
+		Primary:   cloneDomainCandidates(task.Primary),
+		Secondary: cloneDomainCandidates(task.Secondary),
+	}
+}
+
+func cloneDomainCandidates(in []domainCandidate) []domainCandidate {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]domainCandidate, len(in))
+	copy(out, in)
+	return out
+}
+
+func cloneFullRebuildTask(task *FullRebuildTask) *FullRebuildTask {
+	if task == nil {
+		return nil
+	}
+	cp := *task
+	cp.Primary = cloneDomainCandidates(task.Primary)
+	cp.Secondary = cloneDomainCandidates(task.Secondary)
+	return &cp
+}
+
+func stageLabel(stage string) string {
+	switch stage {
+	case "priority":
+		return "高优先级阶段"
+	case "tail":
+		return "长尾补全阶段"
+	case "publish":
+		return "发布阶段"
+	default:
+		return "恢复阶段"
+	}
+}
+
+func stageTotal(task *FullRebuildTask) int64 {
+	if task == nil {
+		return 0
+	}
+	switch task.Stage {
+	case "priority":
+		return int64(task.Completed + len(task.Primary))
+	case "tail", "publish":
+		return int64(task.Completed + len(task.Secondary))
+	default:
+		return int64(task.Total)
+	}
+}
+
+func stageProcessed(task *FullRebuildTask) int64 {
+	if task == nil {
+		return 0
+	}
+	switch task.Stage {
+	case "priority":
+		return 0
+	case "tail", "publish":
+		return int64(task.Total - len(task.Secondary))
+	default:
+		return int64(task.Completed)
+	}
+}
+
+func (p *Requery) checkpointBatchSize() int {
+	if p.config.Recovery.CheckpointBatchSize > 0 {
+		return p.config.Recovery.CheckpointBatchSize
+	}
+	return 256
+}
+
+func (p *Requery) autoResumeEnabled() bool {
+	if p.config.Recovery.AutoResume != nil {
+		return *p.config.Recovery.AutoResume
+	}
+	return true
+}
+
+func (p *Requery) resumeDelay() time.Duration {
+	if p.config.Recovery.ResumeDelayMS > 0 {
+		return time.Duration(p.config.Recovery.ResumeDelayMS) * time.Millisecond
+	}
+	return 1500 * time.Millisecond
+}
+
+func (p *Requery) persistFullRebuildTask(task *FullRebuildTask) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.config.FullRebuildTask = cloneFullRebuildTask(task)
+	p.config.Status = p.status
+	return p.saveConfigUnlocked()
+}
+
+func (p *Requery) clearFullRebuildTask() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.config == nil || p.config.FullRebuildTask == nil {
+		return
+	}
+	p.config.FullRebuildTask = nil
+	p.config.Status = p.status
+	if err := p.saveConfigUnlocked(); err != nil {
+		log.Printf("[requery] WARN: failed to clear full rebuild snapshot: %v", err)
+	}
+}
+
+func (p *Requery) prepareRecoveryOnStartup() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.config == nil {
+		return
+	}
+
+	if task := p.config.FullRebuildTask; task != nil {
+		if task.Mode == "" {
+			task.Mode = "full_rebuild"
+		}
+		if task.StageLabel == "" {
+			task.StageLabel = stageLabel(task.Stage)
+		}
+		p.status.TaskState = "failed"
+		p.status.TaskMode = task.Mode
+		p.status.TaskStage = task.Stage
+		p.status.TaskStageLabel = task.StageLabel
+		p.status.TaskStageProcessed = stageProcessed(task)
+		p.status.TaskStageTotal = stageTotal(task)
+		p.status.Progress.Total = int64(task.Total)
+		p.status.Progress.Processed = int64(task.Completed)
+		p.status.LastRunDomainCount = task.Total
+		p.status.LastRunEndTime = time.Now().UTC()
+		p.lastError = "检测到中断的完整重建任务，等待恢复。"
+		_ = p.saveConfigUnlocked()
+		return
+	}
+
+	if p.status.TaskState == "running" {
+		log.Println("[requery] WARN: Found task in 'running' state on startup. Marking as 'failed'.")
+		p.status.TaskState = "failed"
+		p.status.LastRunEndTime = time.Now().UTC()
+		_ = p.saveConfigUnlocked()
+	}
+}
+
+func (p *Requery) scheduleRecoveryIfNeeded() {
+	p.mu.RLock()
+	task := cloneFullRebuildTask(p.config.FullRebuildTask)
+	autoResume := p.autoResumeEnabled()
+	delay := p.resumeDelay()
+	p.mu.RUnlock()
+
+	if task == nil || !autoResume {
+		return
+	}
+
+	p.resumeOnce.Do(func() {
+		time.AfterFunc(delay, func() {
+			profile := p.profileForMode("full_rebuild", 0)
+			if ok := p.startTaskWithRecovery(profile, task); !ok {
+				log.Println("[requery] Resume skipped: another task is already running.")
+			}
+		})
+	})
 }
 
 // mergeAndFilterDomains builds the effective candidate set for the task.
@@ -785,6 +1064,46 @@ func splitCandidatePlan(runtimeDomains []domainCandidate, merged []domainCandida
 		Primary:   primary,
 		Secondary: secondary,
 	}
+}
+
+func (p *Requery) runStageWithCheckpoint(ctx context.Context, profile taskProfile, recovery *FullRebuildTask, stage string, domains []domainCandidate, primaryRef *[]domainCandidate, secondaryRef *[]domainCandidate) error {
+	if len(domains) == 0 {
+		return nil
+	}
+	if recovery == nil {
+		return p.resendDNSQueries(ctx, domains, true, profile)
+	}
+
+	batchSize := p.checkpointBatchSize()
+	for start := 0; start < len(domains); start += batchSize {
+		end := start + batchSize
+		if end > len(domains) {
+			end = len(domains)
+		}
+		batch := domains[start:end]
+		if err := p.resendDNSQueries(ctx, batch, true, profile); err != nil {
+			return err
+		}
+
+		recovery.Completed += len(batch)
+		recovery.UpdatedAt = time.Now().UTC()
+		switch stage {
+		case "priority":
+			recovery.Primary = cloneDomainCandidates(domains[end:])
+			if primaryRef != nil {
+				*primaryRef = cloneDomainCandidates(domains[end:])
+			}
+		case "tail":
+			recovery.Secondary = cloneDomainCandidates(domains[end:])
+			if secondaryRef != nil {
+				*secondaryRef = cloneDomainCandidates(domains[end:])
+			}
+		}
+		if err := p.persistFullRebuildTask(recovery); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // resendDNSQueries handles step 6 of the workflow.
@@ -1801,6 +2120,11 @@ func (p *Requery) loadConfig() error {
 			p.config.ExecutionSettings.QuickRebuildLimit = 2000
 			p.config.ExecutionSettings.PrewarmLimit = 1000
 			p.config.ExecutionSettings.FullRebuildPriorityLimit = 4000
+			p.config.Recovery = RecoverySettings{
+				AutoResume:          boolPtr(true),
+				CheckpointBatchSize: 256,
+				ResumeDelayMS:       1500,
+			}
 			p.status = p.config.Status
 			return p.saveConfigUnlocked()
 		}
@@ -1867,6 +2191,18 @@ func (p *Requery) loadConfig() error {
 	}
 	if p.config.ExecutionSettings.FullRebuildPriorityLimit <= 0 {
 		p.config.ExecutionSettings.FullRebuildPriorityLimit = 4000
+		configChanged = true
+	}
+	if p.config.Recovery.AutoResume == nil {
+		p.config.Recovery.AutoResume = boolPtr(true)
+		configChanged = true
+	}
+	if p.config.Recovery.CheckpointBatchSize <= 0 {
+		p.config.Recovery.CheckpointBatchSize = 256
+		configChanged = true
+	}
+	if p.config.Recovery.ResumeDelayMS <= 0 {
+		p.config.Recovery.ResumeDelayMS = 1500
 		configChanged = true
 	}
 	normalizedPool := uniqueResolverAddresses(splitResolverAddressesSlice(p.config.ExecutionSettings.RefreshResolverPool))
@@ -2139,6 +2475,11 @@ func (p *Requery) setFailedState(format string, args ...any) {
 	defer p.mu.Unlock()
 	p.status.TaskState = "failed"
 	p.lastError = fmt.Sprintf(format, args...)
+	if p.config != nil && p.config.FullRebuildTask != nil {
+		p.config.FullRebuildTask.LastError = p.lastError
+		p.config.FullRebuildTask = nil
+		_ = p.saveConfigUnlocked()
+	}
 	log.Printf("[requery] ERROR: Task failed: "+format, args...)
 }
 
@@ -2147,6 +2488,10 @@ func (p *Requery) setCancelledState(reason string) {
 	defer p.mu.Unlock()
 	p.status.TaskState = "cancelled"
 	p.lastError = reason
+	if p.config != nil && p.config.FullRebuildTask != nil {
+		p.config.FullRebuildTask = nil
+		_ = p.saveConfigUnlocked()
+	}
 	log.Println("[requery] INFO: Task cancelled:", reason)
 }
 

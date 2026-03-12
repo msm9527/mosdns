@@ -198,7 +198,7 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 		status: Status{TaskState: "idle"},
 	}
 
-	p.runTask(context.Background(), p.profileForMode("full_rebuild", 0))
+	p.runTask(context.Background(), p.profileForMode("full_rebuild", 0), nil)
 
 	mu.Lock()
 	gotHits := append([]string(nil), hits...)
@@ -318,6 +318,67 @@ func TestResolverAddressesForProfileUsesPool(t *testing.T) {
 	}
 	if got[0] != "127.0.0.1:5301" || got[1] != "127.0.0.1:5302" || got[2] != "127.0.0.1:5303" {
 		t.Fatalf("unexpected resolver list: %#v", got)
+	}
+}
+
+func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "requery.json")
+
+	persist := &Requery{
+		filePath: cfgFile,
+		config: &Config{
+			Workflow: WorkflowSettings{
+				Mode:              "hybrid",
+				SaveBeforeRefresh: boolPtr(true),
+				SaveAfterRefresh:  boolPtr(true),
+			},
+			Recovery: RecoverySettings{
+				AutoResume:          boolPtr(true),
+				CheckpointBatchSize: 2,
+				ResumeDelayMS:       1,
+			},
+			Status: Status{TaskState: "running"},
+		},
+		status: Status{TaskState: "running"},
+	}
+
+	task := &FullRebuildTask{
+		TaskID:     "task-1",
+		Mode:       "full_rebuild",
+		Stage:      "tail",
+		StageLabel: "长尾补全阶段",
+		StartedAt:  time.Now().UTC(),
+		UpdatedAt:  time.Now().UTC(),
+		Total:      3,
+		Completed:  1,
+		Secondary: []domainCandidate{
+			{Name: "resume.example", QTypeMask: qtypeMaskA},
+		},
+	}
+	if err := persist.persistFullRebuildTask(task); err != nil {
+		t.Fatalf("persistFullRebuildTask: %v", err)
+	}
+
+	reloaded := &Requery{filePath: cfgFile}
+	if err := reloaded.loadConfig(); err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	reloaded.prepareRecoveryOnStartup()
+
+	if reloaded.config.FullRebuildTask == nil {
+		t.Fatal("expected persisted full rebuild task")
+	}
+	if reloaded.status.TaskState != "failed" {
+		t.Fatalf("expected failed state for interrupted task, got %q", reloaded.status.TaskState)
+	}
+	if reloaded.status.TaskStage != "tail" || reloaded.status.TaskStageLabel != "长尾补全阶段" {
+		t.Fatalf("unexpected recovered stage: %+v", reloaded.status)
+	}
+	if reloaded.status.Progress.Total != 3 || reloaded.status.Progress.Processed != 1 {
+		t.Fatalf("unexpected recovered progress: %+v", reloaded.status.Progress)
 	}
 }
 
