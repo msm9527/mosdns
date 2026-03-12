@@ -3109,7 +3109,7 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
             }
             if (els.oldSaveBtn && !els.oldSaveBtn.dataset.bound) {
                 els.oldSaveBtn.dataset.bound = 'true';
-                els.oldSaveBtn.addEventListener('click', () => this.save(els.oldSaveBtn));
+                els.oldSaveBtn.addEventListener('click', () => this.save(els.oldSaveBtn, { restart: false }));
             }
 
             try {
@@ -3172,9 +3172,9 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
                 </div>
 
                 <div class="button-group" style="margin-top: 1rem; justify-content: flex-end;">
-                    <span style="color: var(--color-text-secondary); font-size: 0.85em; margin-right: auto;">保存应用SOCKS5/ECS IP/上游DNS设置</span>
+                    <span style="color: var(--color-text-secondary); font-size: 0.85em; margin-right: auto;">保存后会自动重启 MosDNS，确保其它设置完全生效</span>
                     <button class="button primary" id="rep-save-btn">
-                        <span style="color: inherit !important; display: inline; width: auto;">保存并生效</span>
+                        <span style="color: inherit !important; display: inline; width: auto;">保存并重启</span>
                     </button>
                 </div>
             `;
@@ -3189,7 +3189,7 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
                 this.renderReplacementsTable();
             });
 
-            newCard.querySelector('#rep-save-btn').addEventListener('click', () => this.save());
+            newCard.querySelector('#rep-save-btn').addEventListener('click', () => this.save(null, { restart: true }));
 
             const tbody = newCard.querySelector('#rep-tbody');
             tbody.addEventListener('click', (e) => {
@@ -3296,9 +3296,21 @@ renderReplacementsTable() {
             }).join('');
         },
 
-        async save(triggerBtn) {
+        async requestRestart() {
+            await api.fetch('/api/v1/system/restart', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ delay_ms: 500 })
+            });
+            ui.showToast('配置已保存，正在重启 MosDNS...', 'success');
+            setTimeout(() => location.reload(), 4000);
+        },
+
+        async save(triggerBtn, options = {}) {
             const els = this.getElements();
             if (!els.socks5 || !els.ecs) return;
+            const restart = Boolean(options.restart);
+            if (restart && !confirm('保存后将重启 MosDNS，是否继续？')) return;
 
             const repBtn = document.getElementById('rep-save-btn');
             const btns = [triggerBtn, repBtn].filter(Boolean);
@@ -3323,11 +3335,16 @@ renderReplacementsTable() {
 
             try {
                 const result = await api.fetch('/api/v1/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                const msg = (result && typeof result === 'object' && result.message) ? result.message : '配置已保存并生效';
-                ui.showToast(msg, 'success');
-                await this.load(true);
+                if (restart) {
+                    await this.requestRestart();
+                } else {
+                    const msg = (result && typeof result === 'object' && result.message) ? result.message : '配置已保存并生效';
+                    ui.showToast(msg, 'success');
+                    await this.load(true);
+                }
             } catch (e) {
-                ui.showToast('保存配置失败', 'error');
+                const msg = restart ? '保存或重启失败' : '保存配置失败';
+                ui.showToast(msg, 'error');
                 console.error("Save Error:", e);
             } finally {
                 btns.forEach((btn) => ui.setLoading(btn, false));
