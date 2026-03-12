@@ -1,4 +1,13 @@
 {
+  "agent_test_plugin": null,
+  "cnfake": [
+    {
+      "tag": "cnfake",
+      "enabled": false,
+      "protocol": "udp",
+      "addr": "udp://127.0.0.1:1053"
+    }
+  ],
   "domestic": [
     {
       "tag": "阿里私享DOH",
@@ -37,7 +46,7 @@
     },
     {
       "tag": "运营商",
-      "enabled": true,
+      "enabled": false,
       "protocol": "udp",
       "addr": "114.114.114.114"
     }
@@ -53,7 +62,7 @@
     },
     {
       "tag": "cloudflare",
-      "enabled": true,
+      "enabled": false,
       "protocol": "https",
       "addr": "https://1.1.1.1/dns-query",
       "socks5": "127.0.0.1:7891"
@@ -75,14 +84,6 @@
       "enabled": true,
       "protocol": "udp",
       "addr": "udp://127.0.0.1:6666"
-    }
-  ],
-  "cnfake": [
-    {
-      "tag": "cnfake",
-      "enabled": false,
-      "protocol": "udp",
-      "addr": "udp://127.0.0.1:1053"
     }
   ]
 }
