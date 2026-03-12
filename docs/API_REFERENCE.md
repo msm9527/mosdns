@@ -774,6 +774,42 @@
 - `full_rebuild_priority_limit` 用于限制完整重建第一阶段的高优先级候选规模；超出的候选与源文件长尾一起进入第二阶段。
 - 运行时高优先级候选来自分流记忆库的内存状态，而不是单纯全量扫描文本源文件。
 
+优化说明与推荐配置：
+
+- 相对旧版本，当前实现的主要优化点：
+  - `quick_prewarm / quick_rebuild` 优先使用运行时 `dirty / stale / hot / refresh_due` 候选，不再默认先扫完整源文件
+  - `full_rebuild` 改为两阶段：先跑高优先级候选，再补源文件长尾
+  - `save / flush / verify` 优先 direct-call 插件能力，不再优先走本机 HTTP 自调用
+  - `refresh_resolver_pool` 支持多刷新解析地址轮询，降低单点瓶颈
+  - `summary` 聚合接口收口前端状态请求，减少页面多路轮询
+- 字段推荐理解：
+  - `queries_per_second`：完整重建的基础 QPS，上限不要盲目拉高
+  - `quick_queries_per_second`：快速重建的 QPS，适合高于完整重建
+  - `prewarm_queries_per_second`：快速预热的 QPS，通常可以最高
+  - `quick_rebuild_limit`：快速重建最多处理多少个高价值候选
+  - `prewarm_limit`：快速预热最多预热多少个热点域名
+  - `full_rebuild_priority_limit`：完整重建第一阶段最多先处理多少个高优先级候选
+  - `date_range_days`：仅影响完整重建第二阶段源文件长尾补全的扫描范围
+- 推荐配置思路：
+  - 日常巡检：使用 `quick_rebuild`
+  - 用户切换模式或更新后快速回暖：使用 `quick_prewarm`
+  - 全量修正：只在低峰期跑 `full_rebuild`
+  - 如果存在多个可用刷新解析地址，优先配置 `refresh_resolver_pool`
+- 推荐起点：
+  - `queries_per_second`: `80 ~ 150`
+  - `quick_queries_per_second`: `200 ~ 400`
+  - `prewarm_queries_per_second`: `300 ~ 600`
+  - `quick_rebuild_limit`: `1000 ~ 3000`
+  - `prewarm_limit`: `500 ~ 1500`
+  - `full_rebuild_priority_limit`: `2000 ~ 6000`
+- 资源影响说明：
+  - `quick_prewarm` 对正常使用影响最小
+  - `quick_rebuild` 影响通常可控
+  - `full_rebuild` 仍然属于后台重查任务，建议安排在低峰时段
+- 注意：
+  - 这套任务会真实发 DNS 查询重建分流结果，不是单纯内存刷新
+  - 即使做了增量优化，`full_rebuild` 也不应被当成“秒级无感操作”
+
 `GET /plugins/requery/stats/source_file_counts` 返回示例：
 
 ```json
