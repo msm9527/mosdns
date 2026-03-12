@@ -738,22 +738,36 @@ func (c *Cache) dumpCache() error {
 	return nil
 }
 
+func (c *Cache) SaveToDisk(_ context.Context) error {
+	if len(c.args.DumpFile) == 0 {
+		return errors.New("dump_file is not configured in config file")
+	}
+	c.logger.Info("saving cache to disk via direct action")
+	return c.dumpCache()
+}
+
+func (c *Cache) FlushRuntime(_ context.Context) error {
+	c.logger.Info("flushing cache via direct action")
+	c.backend.Flush()
+	c.resetL1()
+	c.updatedKey.Store(0)
+	go func() {
+		if err := c.dumpCache(); err != nil {
+			c.logger.Error("failed to dump cache after direct flush", zap.Error(err))
+		}
+	}()
+	return nil
+}
+
 func (c *Cache) Api() *chi.Mux {
 	r := chi.NewRouter()
 
 	// 清空缓存 API：执行后打扫卫生
 	r.Get("/flush", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
-		c.logger.Info("flushing cache via api")
-		c.backend.Flush()
-		c.resetL1()
-
-		c.updatedKey.Store(0)
-
-		go func() {
-			if err := c.dumpCache(); err != nil {
-				c.logger.Error("failed to dump cache after flushing", zap.Error(err))
-			}
-		}()
+		if err := c.FlushRuntime(req.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Cache flushed and a background dump has been triggered.\n"))
@@ -769,14 +783,7 @@ func (c *Cache) Api() *chi.Mux {
 	}))
 
 	r.Get("/save", func(w http.ResponseWriter, req *http.Request) {
-		if len(c.args.DumpFile) == 0 {
-			http.Error(w, "dump_file is not configured in config file", http.StatusBadRequest)
-			return
-		}
-
-		c.logger.Info("saving cache to disk via api")
-		err := c.dumpCache()
-		if err != nil {
+		if err := c.SaveToDisk(req.Context()); err != nil {
 			c.logger.Error("failed to save cache via api", zap.Error(err))
 			http.Error(w, fmt.Sprintf("failed to save cache: %v", err), http.StatusInternalServerError)
 			return

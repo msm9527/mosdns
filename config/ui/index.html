@@ -414,7 +414,105 @@
             }
         }
 
-        /* Requery 进度条样式 */
+        /* Requery 模块样式 */
+        .requery-shell {
+            display: grid;
+            gap: 1rem;
+        }
+        .requery-hero {
+            display: grid;
+            grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+            gap: 1rem;
+            align-items: stretch;
+        }
+        .requery-hero-copy,
+        .requery-overview-panel,
+        .requery-phase-panel,
+        .requery-settings-panel,
+        .requery-memory-panel,
+        .requery-important {
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius-md);
+            background: linear-gradient(180deg, color-mix(in srgb, var(--color-bg-card) 88%, transparent), var(--color-bg-card));
+            box-shadow: var(--shadow-sm);
+        }
+        .requery-hero-copy {
+            padding: 1.1rem 1.15rem;
+            display: flex;
+            flex-direction: column;
+            gap: 0.8rem;
+            justify-content: space-between;
+        }
+        .requery-hero-copy h3 {
+            margin: 0;
+        }
+        .requery-mode-pills {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        .requery-mode-pill {
+            padding: 0.28rem 0.65rem;
+            border-radius: 999px;
+            font-size: 0.78rem;
+            font-weight: 600;
+            border: 1px solid color-mix(in srgb, var(--color-border) 75%, transparent);
+            background: color-mix(in srgb, var(--color-bg-alt) 90%, transparent);
+            color: var(--color-text-secondary);
+        }
+        .requery-actions {
+            display: flex;
+            gap: 0.75rem;
+            flex-wrap: wrap;
+        }
+        .requery-overview-panel {
+            padding: 1rem;
+            display: grid;
+            gap: 0.85rem;
+        }
+        .requery-overview-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.75rem;
+        }
+        .requery-overview-card {
+            border-radius: var(--border-radius-md);
+            padding: 0.85rem 0.9rem;
+            background: color-mix(in srgb, var(--color-bg-alt) 92%, transparent);
+            border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+            min-height: 110px;
+        }
+        .requery-overview-card strong {
+            display: block;
+            font-size: 0.8rem;
+            margin-bottom: 0.45rem;
+            color: var(--color-text-secondary);
+        }
+        .requery-overview-card span {
+            display: block;
+            line-height: 1.55;
+        }
+        .requery-stage-meta {
+            margin-top: 0.55rem;
+            font-size: 0.78rem;
+            color: var(--color-text-secondary);
+        }
+        .requery-phase-panel {
+            padding: 1rem 1.1rem;
+            display: grid;
+            gap: 0.7rem;
+        }
+        .requery-phase-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .requery-phase-caption {
+            font-size: 0.84rem;
+            color: var(--color-text-secondary);
+        }
         .requery-progress-bar {
             width: 100%;
             background-color: var(--color-bg-alt);
@@ -440,6 +538,111 @@
             font-weight: 600;
             font-size: 0.8rem;
             white-space: nowrap;
+        }
+        .requery-settings-panel {
+            padding: 1rem 1.1rem;
+            display: grid;
+            gap: 0.95rem;
+        }
+        .requery-settings-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        .requery-settings-grid {
+            display: grid;
+            grid-template-columns: repeat(3, minmax(0, 1fr));
+            gap: 0.85rem;
+        }
+        .requery-settings-card {
+            border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+            border-radius: var(--border-radius-md);
+            background: color-mix(in srgb, var(--color-bg-alt) 92%, transparent);
+            padding: 0.95rem;
+            display: grid;
+            gap: 0.8rem;
+            align-content: start;
+        }
+        .requery-settings-card h4 {
+            margin: 0;
+            font-size: 0.95rem;
+        }
+        .requery-inline-toggle {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+        }
+        .requery-field-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) minmax(92px, 120px);
+            gap: 0.6rem 0.8rem;
+            align-items: center;
+        }
+        .requery-field-grid textarea {
+            grid-column: 1 / -1;
+        }
+        .requery-field-note {
+            margin: 0;
+            font-size: 0.8rem;
+            color: var(--color-text-secondary);
+            line-height: 1.5;
+        }
+        .requery-memory-panel,
+        .requery-important {
+            padding: 1rem 1.1rem;
+        }
+        #system-control-tab #requery-module {
+            grid-column: 1 / -1 !important;
+            order: 40;
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }
+        #system-control-tab #domain-stats-module {
+            grid-column: 1 / -1 !important;
+            order: 41;
+            flex: 1 1 100% !important;
+            width: 100% !important;
+            min-width: 100% !important;
+            max-width: 100% !important;
+        }
+        .requery-memory-panel h4,
+        .requery-important strong {
+            display: block;
+            margin-bottom: 0.7rem;
+        }
+        .requery-important {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+        @media (max-width: 1200px) {
+            .requery-hero,
+            .requery-settings-grid,
+            .requery-overview-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+        @media (max-width: 768px) {
+            .requery-actions,
+            .requery-important-actions {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                width: 100%;
+            }
+            .requery-actions button,
+            .requery-important-actions button {
+                width: 100%;
+            }
+            .requery-field-grid {
+                grid-template-columns: 1fr;
+            }
         }
         
         [hidden] { display: none !important; }
@@ -1303,7 +1506,163 @@
                 </div>
 
                 <!-- Row 3: Data Management Section -->
-                <div class="control-module" id="domain-stats-module">
+                <div class="control-module" id="requery-module" style="display: none; grid-column: 1 / -1;">
+                    <div class="requery-shell">
+                        <div class="requery-hero">
+                            <div class="requery-hero-copy">
+                                <div>
+                                    <h3>
+                                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20"
+                                            height="20">
+                                            <path
+                                                d="M12 4C16.97 4 21 8.03 21 13C21 17.97 16.97 22 12 22C7.03 22 3 17.97 3 13C3 8.03 7.03 4 12 4ZM12 2C5.925 2 1 6.925 1 13C1 19.075 5.925 24 12 24C18.075 24 23 19.075 23 13C23 6.925 18.075 2 12 2ZM12 14.5L8 10.5L9.41 9.09L11 10.67V6H13V10.67L14.59 9.09L16 10.5L12 14.5Z" />
+                                        </svg>
+                                        批量重建分流
+                                    </h3>
+                                    <p class="module-desc">这里不是简单“刷新缓存”，而是对域名集合执行重建或预热任务。快速预热只回灌缓存，快速重建优先处理热点与脏数据，完整重建会先跑高优先级阶段，再补长尾域名。</p>
+                                </div>
+                                <div class="requery-mode-pills">
+                                    <span class="requery-mode-pill">快速预热: 热点缓存回灌</span>
+                                    <span class="requery-mode-pill">快速重建: 热点与脏数据收敛</span>
+                                    <span class="requery-mode-pill">完整重建: 高优先级 + 长尾补全</span>
+                                </div>
+                                <div class="requery-actions">
+                                    <button id="requery-prewarm-btn" class="button requery-primary-btn"
+                                        data-default-text="快速预热"><span>快速预热</span></button>
+                                    <button id="requery-quick-trigger-btn" class="button requery-primary-btn"
+                                        data-default-text="快速重建"><span>快速重建</span></button>
+                                    <button id="requery-trigger-btn" class="button primary requery-primary-btn"
+                                        data-default-text="完整重建"><span>完整重建</span></button>
+                                    <button id="requery-cancel-btn" class="button danger requery-primary-btn"
+                                        data-default-text="取消任务" hidden><span>取消任务</span></button>
+                                </div>
+                            </div>
+
+                            <div class="requery-overview-panel">
+                                <div class="requery-overview-grid">
+                                    <div class="requery-overview-card">
+                                        <strong>当前状态</strong>
+                                        <span id="requery-status-text" class="chip">查询中...</span>
+                                        <div id="requery-stage-meta" class="requery-stage-meta">等待加载阶段信息...</div>
+                                    </div>
+                                    <div class="requery-overview-card">
+                                        <strong>最近批量刷新</strong>
+                                        <span id="requery-last-run">查询中...</span>
+                                    </div>
+                                    <div class="requery-overview-card">
+                                        <strong>按需刷新队列</strong>
+                                        <span id="requery-queue-summary">查询中...</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div id="requery-progress-container" class="requery-phase-panel" hidden>
+                            <div class="requery-phase-header">
+                                <strong>执行阶段</strong>
+                                <span id="requery-stage-caption" class="requery-phase-caption">等待任务开始...</span>
+                            </div>
+                            <div class="requery-progress-bar">
+                                <div id="requery-progress-bar-fill" class="requery-progress-bar-fill"></div>
+                                <span id="requery-progress-bar-text" class="requery-progress-bar-text"></span>
+                            </div>
+                        </div>
+
+                        <form id="requery-scheduler-form" class="requery-settings-panel">
+                            <div class="requery-settings-header">
+                                <strong>执行参数</strong>
+                                <span class="requery-field-note">修改后会直接保存到运行时配置，后续任务按新参数执行。</span>
+                            </div>
+                            <div class="requery-settings-grid">
+                                <section class="requery-settings-card">
+                                    <h4>任务模式</h4>
+                                    <div class="requery-inline-toggle">
+                                        <label for="requery-mode-select" class="field-label">刷新模式</label>
+                                        <select id="requery-mode-select" style="min-width: 148px;">
+                                            <option value="hybrid">混合模式</option>
+                                            <option value="manual">仅按需刷新</option>
+                                            <option value="scheduled">仅低频巡检</option>
+                                        </select>
+                                    </div>
+                                    <div class="requery-inline-toggle">
+                                        <span class="field-label">启用低频巡检</span>
+                                        <label class="switch">
+                                            <input type="checkbox" id="requery-scheduler-toggle">
+                                            <span class="slider"></span>
+                                        </label>
+                                    </div>
+                                    <div class="requery-field-grid">
+                                        <label for="requery-interval-input" class="field-label">巡检间隔 (分钟)</label>
+                                        <input type="number" id="requery-interval-input" min="1">
+                                        <label for="requery-date-range-input" class="field-label" title="仅刷新最近 N 天内查询过的域名">域名刷新天数</label>
+                                        <input type="number" id="requery-date-range-input" min="1" value="30" style="text-align: center;">
+                                    </div>
+                                </section>
+
+                                <section class="requery-settings-card">
+                                    <h4>速度与范围</h4>
+                                    <div class="requery-field-grid">
+                                        <label for="requery-full-qps-input" class="field-label">完整重建 QPS</label>
+                                        <input type="number" id="requery-full-qps-input" min="1" value="100" style="text-align: center;">
+                                        <label for="requery-full-priority-limit-input" class="field-label">完整重建高优先级上限</label>
+                                        <input type="number" id="requery-full-priority-limit-input" min="1" value="4000" style="text-align: center;">
+                                        <label for="requery-quick-qps-input" class="field-label">快速重建 QPS</label>
+                                        <input type="number" id="requery-quick-qps-input" min="1" value="300" style="text-align: center;">
+                                        <label for="requery-quick-limit-input" class="field-label">快速重建域名上限</label>
+                                        <input type="number" id="requery-quick-limit-input" min="1" value="2000" style="text-align: center;">
+                                        <label for="requery-prewarm-qps-input" class="field-label">快速预热 QPS</label>
+                                        <input type="number" id="requery-prewarm-qps-input" min="1" value="500" style="text-align: center;">
+                                        <label for="requery-prewarm-limit-input" class="field-label">快速预热域名上限</label>
+                                        <input type="number" id="requery-prewarm-limit-input" min="1" value="1000" style="text-align: center;">
+                                    </div>
+                                </section>
+
+                                <section class="requery-settings-card">
+                                    <h4>刷新解析链</h4>
+                                    <div class="requery-field-grid">
+                                        <label for="requery-refresh-resolver-pool-input" class="field-label">刷新解析地址池</label>
+                                        <textarea id="requery-refresh-resolver-pool-input" rows="4" placeholder="每行一个地址，或用逗号分隔"></textarea>
+                                    </div>
+                                    <p class="requery-field-note">完整重建和快速重建会轮询这里的地址。留空时回退到单个 `refresh_resolver_address`。</p>
+                                </section>
+                            </div>
+                        </form>
+
+                        <div class="requery-memory-panel">
+                            <h4>分流记忆统计</h4>
+                            <div class="scrollable-table-container" style="max-height: none; overflow-y: visible;">
+                                <table id="requery-memory-stats-table">
+                                    <thead>
+                                        <tr>
+                                            <th>列表</th>
+                                            <th class="text-right">条目</th>
+                                            <th class="text-right">已发布</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="requery-memory-stats-tbody">
+                                        <tr>
+                                            <td colspan="3">正在加载分流记忆统计...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="requery-important">
+                            <div>
+                                <strong>重要操作</strong>
+                                <p class="requery-field-note">保存会将当前分流记忆库落盘，清空会直接移除运行时动态分流结果。</p>
+                            </div>
+                            <div class="button-group requery-important-actions">
+                                <button id="save-shunt-rules-btn" class="button primary"
+                                    data-default-text="保存分流规则"><span>保存分流规则</span></button>
+                                <button id="clear-shunt-rules-btn" class="button danger"
+                                    data-default-text="清空分流规则"><span>清空分流规则</span></button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="control-module" id="domain-stats-module" style="grid-column: 1 / -1;">
                     <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
                             <path
                                 d="M4 19h16v-7h2v8a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-8h2v7zM20 3H4v7h2V5h12v5h2V4a1 1 0 0 0-1-1zm-8 4h-2v2H8v2h2v2h2v-2h2v-2h-2V7z">
@@ -1348,101 +1707,6 @@
                                 </tr>
                             </tbody>
                         </table>
-                    </div>
-                </div>
-                <div class="control-module" id="requery-module" style="display: none;">
-                    <h3>
-                        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="20"
-                            height="20">
-                            <path
-                                d="M12 4C16.97 4 21 8.03 21 13C21 17.97 16.97 22 12 22C7.03 22 3 17.97 3 13C3 8.03 7.03 4 12 4ZM12 2C5.925 2 1 6.925 1 13C1 19.075 5.925 24 12 24C18.075 24 23 19.075 23 13C23 6.925 18.075 2 12 2ZM12 14.5L8 10.5L9.41 9.09L11 10.67V6H13V10.67L14.59 9.09L16 10.5L12 14.5Z" />
-                        </svg>
-                        刷新分流缓存
-                    </h3>
-
-                    <!-- 顶部状态 + 主操作按钮 -->
-                    <div class="requery-header">
-                        <div class="requery-status-group">
-                            <div class="control-item"><strong>当前状态</strong> <span id="requery-status-text"
-                                    class="chip">查询中...</span></div>
-                            <div class="control-item"><strong>上次运行</strong> <span id="requery-last-run">查询中...</span>
-                            </div>
-                            <div class="control-item"><strong>按需队列</strong> <span id="requery-queue-summary">查询中...</span>
-                            </div>
-                        </div>
-                        <div class="requery-actions">
-                            <button id="requery-trigger-btn" class="button primary requery-primary-btn"
-                                data-default-text="开始全新任务"><span>开始全新任务</span></button>
-                            <button id="requery-cancel-btn" class="button danger requery-primary-btn"
-                                data-default-text="取消任务" hidden><span>取消任务</span></button>
-                        </div>
-                    </div>
-
-                    <!-- 进度条 -->
-                    <div id="requery-progress-container" class="requery-progress-row" hidden>
-                        <div class="requery-progress-bar">
-                            <div id="requery-progress-bar-fill" class="requery-progress-bar-fill"></div>
-                            <span id="requery-progress-bar-text" class="requery-progress-bar-text"></span>
-                        </div>
-                    </div>
-
-                    <!-- 刷新模式 -->
-                    <form id="requery-scheduler-form" class="requery-scheduler">
-                        <div class="control-item">
-                            <strong>刷新模式</strong>
-                            <select id="requery-mode-select" style="margin-left:auto; min-width: 140px;">
-                                <option value="hybrid">混合模式</option>
-                                <option value="manual">仅按需刷新</option>
-                                <option value="scheduled">仅低频巡检</option>
-                            </select>
-                        </div>
-                        <div class="control-item">
-                            <strong>启用低频巡检</strong>
-                            <label class="switch" style="margin-left:auto;">
-                                <input type="checkbox" id="requery-scheduler-toggle">
-                                <span class="slider"></span>
-                            </label>
-                        </div>
-                        <div class="requery-scheduler-grid">
-                            <label for="requery-interval-input" class="field-label">巡检间隔 (分钟)</label>
-                            <input type="number" id="requery-interval-input" min="1">
-                            <label for="requery-date-range-input" class="field-label" title="仅刷新最近 N 天内查询过的域名">
-                                域名刷新天数
-                                <!-- 图标已移动到文字右侧，并将 margin-right 改为了 margin-left -->
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="16" height="16" style="margin-left: 4px; color: var(--color-text-secondary); vertical-align: middle;">
-                                    <path d="M19 3h-1V1h-2v2H8V1H6v2H5c-1.11 0-2 .9-2 2v14c0 1.1.89 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 16H5V8h14v11zM7 10h5v5H7z"/>
-                                </svg>
-                            </label>
-                            <input type="number" id="requery-date-range-input" min="1" value="30" style="text-align: center;">
-                        </div>
-                    </form>
-
-                    <div class="scrollable-table-container" style="max-height: none; overflow-y: visible;">
-                        <table id="requery-memory-stats-table">
-                            <thead>
-                                <tr>
-                                    <th>列表</th>
-                                    <th class="text-right">条目</th>
-                                    <th class="text-right">已发布</th>
-                                </tr>
-                            </thead>
-                            <tbody id="requery-memory-stats-tbody">
-                                <tr>
-                                    <td colspan="3">正在加载分流记忆统计...</td>
-                                </tr>
-                            </tbody>
-                        </table>
-                    </div>
-
-                    <!-- 重要操作按钮区 -->
-                    <div class="requery-important">
-                        <strong>重要操作</strong>
-                        <div class="button-group requery-important-actions">
-                            <button id="save-shunt-rules-btn" class="button primary"
-                                data-default-text="保存分流规则"><span>保存分流规则</span></button>
-                            <button id="clear-shunt-rules-btn" class="button danger"
-                                data-default-text="清空分流规则"><span>清空分流规则</span></button>
-                        </div>
                     </div>
                 </div>
 

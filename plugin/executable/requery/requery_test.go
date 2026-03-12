@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/miekg/dns"
 )
 
@@ -27,12 +28,124 @@ func TestMergeAndFilterDomainsParsesQTypeMask(t *testing.T) {
 	}
 
 	p := &Requery{config: &Config{DomainProcessing: DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}}, ExecutionSettings: ExecutionSettings{DateRangeDays: 30}}}
-	got, err := p.mergeAndFilterDomains(context.Background())
+	got, err := p.mergeAndFilterDomains(context.Background(), taskProfile{Mode: "full_rebuild"})
 	if err != nil {
 		t.Fatalf("mergeAndFilterDomains: %v", err)
 	}
 	if len(got) != 1 || got[0].Name != "example.com" || got[0].QTypeMask != qtypeMaskA {
 		t.Fatalf("unexpected candidates: %#v", got)
+	}
+}
+
+func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T) {
+	t.Parallel()
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "dirty.example", QTypeMask: qtypeMaskA, Weight: 9000, Reason: "stale"},
+				{Domain: "hot.example", QTypeMask: qtypeMaskAAAA, Weight: 1000},
+			},
+		},
+	})
+
+	p := &Requery{
+		m: m,
+		config: &Config{
+			URLActions: URLActions{SaveRules: []string{"/plugins/my_realiplist/save"}},
+		},
+	}
+
+	got, err := p.mergeAndFilterDomains(context.Background(), taskProfile{Mode: "quick_rebuild", Limit: 1})
+	if err != nil {
+		t.Fatalf("mergeAndFilterDomains: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "dirty.example" || got[0].QTypeMask != qtypeMaskA {
+		t.Fatalf("unexpected runtime candidates: %#v", got)
+	}
+}
+
+func TestMergeAndFilterDomainsMergesRuntimeCandidatesForFullMode(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "top.txt")
+	content := "0000000002 2026-03-06 file.example qmask=1 score=2 promoted=1\n"
+	if err := os.WriteFile(source, []byte(content), 0644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "runtime.example", QTypeMask: qtypeMaskAAAA, Weight: 9000, Reason: "stale"},
+			},
+		},
+	})
+
+	p := &Requery{
+		m: m,
+		config: &Config{
+			DomainProcessing:  DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
+			ExecutionSettings: ExecutionSettings{DateRangeDays: 30},
+			URLActions:        URLActions{SaveRules: []string{"/plugins/my_realiplist/save"}},
+		},
+	}
+
+	got, err := p.mergeAndFilterDomains(context.Background(), taskProfile{Mode: "full_rebuild"})
+	if err != nil {
+		t.Fatalf("mergeAndFilterDomains: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("expected merged candidates, got %#v", got)
+	}
+	if got[0].Name != "runtime.example" || got[1].Name != "file.example" {
+		t.Fatalf("unexpected candidate order: %#v", got)
+	}
+}
+
+func TestBuildTaskCandidatePlanSplitsFullRebuildStages(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	source := filepath.Join(dir, "top.txt")
+	content := "" +
+		"0000000002 2026-03-06 file-a.example qmask=1 score=2 promoted=1\n" +
+		"0000000001 2026-03-06 file-b.example qmask=1 score=1 promoted=1\n"
+	if err := os.WriteFile(source, []byte(content), 0644); err != nil {
+		t.Fatalf("write source file: %v", err)
+	}
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "runtime-a.example", QTypeMask: qtypeMaskA, Weight: 9000, Reason: "stale"},
+				{Domain: "runtime-b.example", QTypeMask: qtypeMaskAAAA, Weight: 8000, Reason: "refresh_due"},
+			},
+		},
+	})
+
+	p := &Requery{
+		m: m,
+		config: &Config{
+			DomainProcessing: DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
+			ExecutionSettings: ExecutionSettings{
+				DateRangeDays:            30,
+				FullRebuildPriorityLimit: 1,
+			},
+			URLActions: URLActions{SaveRules: []string{"/plugins/my_realiplist/save"}},
+		},
+	}
+
+	plan, err := p.buildTaskCandidatePlan(context.Background(), taskProfile{Mode: "full_rebuild"})
+	if err != nil {
+		t.Fatalf("buildTaskCandidatePlan: %v", err)
+	}
+	if len(plan.Primary) != 1 || plan.Primary[0].Name != "runtime-a.example" {
+		t.Fatalf("unexpected primary stage: %#v", plan.Primary)
+	}
+	if len(plan.Secondary) != 3 || plan.Secondary[0].Name != "runtime-b.example" {
+		t.Fatalf("unexpected secondary stage: %#v", plan.Secondary)
 	}
 }
 
@@ -82,9 +195,10 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 			},
 			Status: Status{TaskState: "idle"},
 		},
+		status: Status{TaskState: "idle"},
 	}
 
-	p.runTask(context.Background())
+	p.runTask(context.Background(), p.profileForMode("full_rebuild", 0))
 
 	mu.Lock()
 	gotHits := append([]string(nil), hits...)
@@ -95,8 +209,8 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 	if count := len(queries()); count != 1 {
 		t.Fatalf("expected one A query via refresh resolver, got %d", count)
 	}
-	if p.config.Status.Progress.Total != 1 || p.config.Status.TaskState != "idle" {
-		t.Fatalf("unexpected status after run: %+v", p.config.Status)
+	if p.status.Progress.Total != 1 || p.status.TaskState != "idle" {
+		t.Fatalf("unexpected status after run: %+v", p.status)
 	}
 }
 
@@ -150,6 +264,7 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 			},
 			Status: Status{TaskState: "idle"},
 		},
+		status: Status{TaskState: "idle"},
 	}
 
 	if ok := p.enqueueRefreshJob(refreshJob{
@@ -162,11 +277,11 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 		t.Fatal("expected enqueue to succeed")
 	}
 
-	job, ok := p.dequeueRefreshJob()
-	if !ok {
-		t.Fatal("expected a queued job")
+	jobs := p.dequeueRefreshBatch(8)
+	if len(jobs) != 1 {
+		t.Fatalf("expected one queued job, got %d", len(jobs))
 	}
-	p.processOnDemandJob(job)
+	p.processOnDemandBatch(jobs)
 
 	if count := len(queries()); count != 1 {
 		t.Fatalf("expected one on-demand refresh query, got %d", count)
@@ -179,8 +294,30 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 	if len(verifyHit) != 1 || verifyHit[0] != "example.com" {
 		t.Fatalf("unexpected verify hits: %#v", verifyHit)
 	}
-	if p.config.Status.OnDemandProcessed != 1 || p.config.Status.PendingQueue != 0 {
-		t.Fatalf("unexpected on-demand status: %+v", p.config.Status)
+	if p.status.OnDemandProcessed != 1 || p.status.PendingQueue != 0 {
+		t.Fatalf("unexpected on-demand status: %+v", p.status)
+	}
+}
+
+func TestResolverAddressesForProfileUsesPool(t *testing.T) {
+	t.Parallel()
+
+	p := &Requery{
+		config: &Config{
+			ExecutionSettings: ExecutionSettings{
+				ResolverAddress:        "127.0.0.1:5300",
+				RefreshResolverAddress: "127.0.0.1:5301",
+				RefreshResolverPool:    []string{"127.0.0.1:5302", "127.0.0.1:5303", "127.0.0.1:5302"},
+			},
+		},
+	}
+
+	got := p.resolverAddressesForProfile(taskProfile{Mode: "full_rebuild", ResolverAddr: p.refreshResolverAddress()})
+	if len(got) != 3 {
+		t.Fatalf("expected 3 unique resolvers, got %#v", got)
+	}
+	if got[0] != "127.0.0.1:5301" || got[1] != "127.0.0.1:5302" || got[2] != "127.0.0.1:5303" {
+		t.Fatalf("unexpected resolver list: %#v", got)
 	}
 }
 
@@ -227,4 +364,15 @@ func startTestDNSServer(t *testing.T) (string, func() []uint16, func()) {
 			_ = server.Shutdown()
 			_ = pc.Close()
 		}
+}
+
+type mockRefreshCandidateProvider struct {
+	candidates []coremain.DomainRefreshCandidate
+}
+
+func (m mockRefreshCandidateProvider) SnapshotRefreshCandidates(req coremain.DomainRefreshCandidateRequest) []coremain.DomainRefreshCandidate {
+	if req.Limit > 0 && len(m.candidates) > req.Limit {
+		return append([]coremain.DomainRefreshCandidate(nil), m.candidates[:req.Limit]...)
+	}
+	return append([]coremain.DomainRefreshCandidate(nil), m.candidates...)
 }

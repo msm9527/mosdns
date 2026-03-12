@@ -547,19 +547,202 @@
 
 下面这些是当前前端和运维会实际调用的插件接口。
 
-### 4.1 Requery / 刷新任务
+### 4.1 Requery / 批量重建分流任务
 
 根路径：`/plugins/requery`
 
+这组接口用于“批量重建分流 / 快速预热缓存”流程本身，不负责直接读写具体分流列表内容。
+
+当前推荐优先使用聚合接口，减少前端请求次数：
+
+- `GET /plugins/requery/summary`
+- `POST /plugins/requery/rules/save`
+- `POST /plugins/requery/rules/flush`
+
+典型调用链：
+
+1. `GET /plugins/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
+2. `POST /plugins/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
+3. `POST /plugins/requery/enqueue` 入队单域名按需刷新
+4. `POST /plugins/requery/cancel` 取消当前任务
+5. `POST /plugins/requery/scheduler/config` 更新定时刷新配置
+6. `POST /plugins/requery/rules/save` 批量保存当前分流规则
+7. `POST /plugins/requery/rules/flush` 批量清空动态分流规则
+8. `GET /plugins/requery/stats/source_file_counts` 获取刷新源文件统计
+
+三种任务模式：
+
+- `full_rebuild`
+  - 优先处理运行时 `dirty / stale / 热点 / 验证到期` 候选，再补源文件长尾
+  - 默认分两阶段执行：高优先级阶段 + 长尾补全阶段
+  - 使用 `refresh_resolver_address` 和可选 `refresh_resolver_pool`
+  - 适合完整重算分流结果
+- `quick_rebuild`
+  - 优先只取运行时 `dirty / stale / 热点 / 验证到期` 候选
+  - 使用 `refresh_resolver_address` 和可选 `refresh_resolver_pool`
+  - 适合日常快速收敛热点分流
+- `quick_prewarm`
+  - 优先只取运行时热点域名子集
+  - 使用 `resolver_address`
+  - 只预热缓存，不保存/清空/重写分流规则
+
+其中 `full_rebuild` / `quick_rebuild` 会按配置执行：
+
+1. 调用 `url_actions.save_rules` 先保存当前分流规则
+2. 汇总运行时候选域名与 `domain_processing.source_files`
+3. 按 `workflow.flush_mode` 决定是否先清空旧规则
+4. 执行 DNS 重新查询
+5. 再把新结果发布到分流记忆库
+
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
+| `GET` | `/summary` | 获取刷新分流聚合摘要 |
 | `GET` | `/` | 获取完整 requery 配置 |
 | `GET` | `/status` | 获取运行状态 |
 | `POST` | `/trigger` | 手动触发一次刷新任务 |
 | `POST` | `/enqueue` | 入队单域名刷新任务 |
 | `POST` | `/cancel` | 取消当前任务 |
 | `POST` | `/scheduler/config` | 更新调度配置 |
+| `POST` | `/rules/save` | 批量保存 `url_actions.save_rules` 中的目标 |
+| `POST` | `/rules/flush` | 批量清空 `url_actions.flush_rules` 中的目标 |
 | `GET` | `/stats/source_file_counts` | 获取各源文件条目统计 |
+
+`GET /plugins/requery/summary` 返回核心字段：
+
+- `config.domain_processing.source_files`
+- `config.url_actions.save_rules`
+- `config.url_actions.flush_rules`
+- `config.workflow.flush_mode`
+- `config.workflow.mode`
+- `config.scheduler.enabled`
+- `config.scheduler.interval_minutes`
+- `config.execution_settings.queries_per_second`
+- `config.execution_settings.quick_queries_per_second`
+- `config.execution_settings.prewarm_queries_per_second`
+- `config.execution_settings.quick_rebuild_limit`
+- `config.execution_settings.prewarm_limit`
+- `config.execution_settings.full_rebuild_priority_limit`
+- `config.execution_settings.refresh_resolver_pool`
+- `config.execution_settings.url_call_concurrency`
+- `config.execution_settings.on_demand_batch_size`
+- `status.task_state`
+- `status.task_mode`
+- `status.task_stage`
+- `status.task_stage_label`
+- `status.task_stage_processed`
+- `status.task_stage_total`
+- `status.last_run_mode`
+- `status.progress`
+- `status.pending_queue`
+- `status.max_queue_size`
+- `status.queue_preview`
+- `status.last_error`
+- `memory_stats`
+
+`GET /plugins/requery` 返回核心字段：
+
+- `domain_processing.source_files`
+- `url_actions.save_rules`
+- `url_actions.flush_rules`
+- `workflow.flush_mode`
+- `workflow.mode`
+- `scheduler.enabled`
+- `scheduler.start_datetime`
+- `scheduler.interval_minutes`
+- `execution_settings.queries_per_second`
+- `execution_settings.quick_queries_per_second`
+- `execution_settings.prewarm_queries_per_second`
+- `execution_settings.resolver_address`
+- `execution_settings.refresh_resolver_address`
+- `execution_settings.refresh_resolver_pool`
+- `execution_settings.query_mode`
+- `execution_settings.date_range_days`
+- `execution_settings.quick_rebuild_limit`
+- `execution_settings.prewarm_limit`
+- `execution_settings.full_rebuild_priority_limit`
+- `execution_settings.url_call_concurrency`
+- `execution_settings.on_demand_batch_size`
+- `status.task_state`
+- `status.task_mode`
+- `status.last_run_mode`
+- `status.progress`
+- `status.pending_queue`
+
+`POST /plugins/requery/trigger` 请求体示例：
+
+```json
+{
+  "mode": "quick_prewarm",
+  "limit": 1000
+}
+```
+
+`mode` 支持：
+
+- `full_rebuild`
+- `quick_rebuild`
+- `quick_prewarm`
+
+`POST /plugins/requery/trigger` 成功返回示例：
+
+```json
+{
+  "status": "success",
+  "message": "快速预热任务已开始。",
+  "task_mode": "quick_prewarm"
+}
+```
+
+`POST /plugins/requery/enqueue` 请求体示例：
+
+```json
+{
+  "domain": "example.com",
+  "memory_id": "my_fakeiplist",
+  "qtype_mask": 1,
+  "reason": "observed",
+  "verify_url": "http://127.0.0.1:9099/plugins/my_fakeiplist/verify",
+  "observed_at": "2026-03-12T10:00:00Z"
+}
+```
+
+说明：
+
+- `domain` 是必填项
+- `memory_id` 用于标记回写目标分流记忆库
+- `reason` 会影响队列优先级，常见值：`observed`、`stale`、`conflict`、`error`
+- 如果队列判定为重复或无需处理，接口会返回 `202 Accepted` 且 `status=skipped`
+
+`POST /plugins/requery/enqueue` 成功返回示例：
+
+```json
+{
+  "status": "queued",
+  "domain": "example.com",
+  "pending_queue": 3
+}
+```
+
+`POST /plugins/requery/rules/save` / `POST /plugins/requery/rules/flush` 返回示例：
+
+```json
+{
+  "action": "save_rules",
+  "total": 8,
+  "success": 8,
+  "failed": 0,
+  "duration_ms": 112,
+  "items": [
+    {
+      "url": "http://127.0.0.1:9099/plugins/my_fakeiplist/save",
+      "tag": "my_fakeiplist",
+      "ok": true,
+      "status_code": 200,
+      "duration_ms": 9
+    }
+  ]
+}
+```
 
 `POST /plugins/requery/scheduler/config` 示例：
 
@@ -569,7 +752,38 @@
   "start_datetime": "2026-03-11T03:00:00Z",
   "interval_minutes": 1440,
   "date_range_days": 30,
-  "mode": "hybrid"
+  "mode": "hybrid",
+  "queries_per_second": 100,
+  "quick_queries_per_second": 300,
+  "prewarm_queries_per_second": 500,
+  "refresh_resolver_address": "127.0.0.1:7767",
+  "refresh_resolver_pool": [
+    "127.0.0.1:7767",
+    "127.0.0.1:7768"
+  ],
+  "quick_rebuild_limit": 2000,
+  "prewarm_limit": 1000,
+  "full_rebuild_priority_limit": 4000
+}
+```
+
+说明：
+
+- `refresh_resolver_pool` 用于给 `quick_rebuild / full_rebuild` 提供多个刷新解析地址，任务执行时会轮询分配给 worker。
+- `full_rebuild_priority_limit` 用于限制完整重建第一阶段的高优先级候选规模；超出的候选与源文件长尾一起进入第二阶段。
+- 运行时高优先级候选来自分流记忆库的内存状态，而不是单纯全量扫描文本源文件。
+
+`GET /plugins/requery/stats/source_file_counts` 返回示例：
+
+```json
+{
+  "status": "success",
+  "data": [
+    {
+      "alias": "top_domains",
+      "count": 128
+    }
+  ]
 }
 ```
 
@@ -588,9 +802,22 @@
 
 `/show` 支持：`q, limit, offset`
 
-### 4.3 domain_output / 域名输出与记忆库
+### 4.3 domain_output / 分流记忆库与域名输出
 
 根路径：`/plugins/{memory_tag}`
+
+这组接口是“刷新分流”真正读写的数据面。`requery` 任务最终会把结果发布到这些记忆库。
+
+常见 tag：
+
+- `top_domains`
+- `my_fakeiplist`
+- `my_realiplist`
+- `my_nov4list`
+- `my_nov6list`
+- `my_nodenov4list`
+- `my_nodenov6list`
+- `my_notinlist`
 
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
@@ -609,6 +836,25 @@
   "verified_at": "2026-03-11T12:00:00Z"
 }
 ```
+
+`GET /plugins/{memory_tag}/stats` 返回核心字段：
+
+- `memory_id`
+- `kind`
+- `total_entries`
+- `dirty_entries`
+- `promoted_entries`
+- `published_rules`
+- `total_observations`
+- `dropped_observations`
+- `dropped_by_buffer`
+- `dropped_by_cap`
+
+`POST /verify` 用途：
+
+- 把指定域名从 `dirty` 标记回写为 `clean`
+- 记录 `verified_at`
+- 会立即保存当前记忆库内容
 
 ### 4.4 规则列表类：IPSet / DomainSet / Light 版本
 
@@ -729,11 +975,40 @@
 
 ### 5.3 刷新与缓存
 
+批量重建 / 预热主流程：
+
+- `GET /plugins/requery/summary`
 - `GET /plugins/requery`
 - `GET /plugins/requery/status`
 - `POST /plugins/requery/trigger`
+- `POST /plugins/requery/enqueue`
 - `POST /plugins/requery/cancel`
 - `POST /plugins/requery/scheduler/config`
+- `POST /plugins/requery/rules/save`
+- `POST /plugins/requery/rules/flush`
+- `GET /plugins/requery/stats/source_file_counts`
+
+分流记忆库保存 / 清空 / 校验：
+
+- `GET /plugins/{memory_tag}/stats`
+- `GET /plugins/{memory_tag}/show`
+- `GET /plugins/{memory_tag}/save`
+- `GET /plugins/{memory_tag}/flush`
+- `POST /plugins/{memory_tag}/verify`
+
+当前前端内置批量保存 / 批量清空会覆盖这些常见 tag：
+
+- `top_domains`
+- `my_fakeiplist`
+- `my_realiplist`
+- `my_nov4list`
+- `my_nov6list`
+- `my_nodenov4list`
+- `my_nodenov6list`
+- `my_notinlist`
+
+缓存清理：
+
 - `GET /plugins/cache_all/flush`
 - `GET /plugins/cache_all_noleak/flush`
 

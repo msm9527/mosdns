@@ -33,7 +33,7 @@ function closeAndUnlock(dialogElement) {
 
 document.addEventListener('DOMContentLoaded', () => {
     const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: {}, pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
         colorSwatches: document.querySelectorAll('.color-swatch'),
@@ -96,6 +96,10 @@ document.addEventListener('DOMContentLoaded', () => {
         requeryProgressBarText: document.getElementById('requery-progress-bar-text'),
         requeryLastRun: document.getElementById('requery-last-run'),
         requeryQueueSummary: document.getElementById('requery-queue-summary'),
+        requeryStageMeta: document.getElementById('requery-stage-meta'),
+        requeryStageCaption: document.getElementById('requery-stage-caption'),
+        requeryPrewarmBtn: document.getElementById('requery-prewarm-btn'),
+        requeryQuickTriggerBtn: document.getElementById('requery-quick-trigger-btn'),
         requeryTriggerBtn: document.getElementById('requery-trigger-btn'),
         requeryCancelBtn: document.getElementById('requery-cancel-btn'),
         requerySchedulerForm: document.getElementById('requery-scheduler-form'),
@@ -103,6 +107,13 @@ document.addEventListener('DOMContentLoaded', () => {
         requerySchedulerToggle: document.getElementById('requery-scheduler-toggle'),
         requeryIntervalInput: document.getElementById('requery-interval-input'),
         requeryDateRangeInput: document.getElementById('requery-date-range-input'),
+        requeryFullQpsInput: document.getElementById('requery-full-qps-input'),
+        requeryQuickQpsInput: document.getElementById('requery-quick-qps-input'),
+        requeryQuickLimitInput: document.getElementById('requery-quick-limit-input'),
+        requeryPrewarmQpsInput: document.getElementById('requery-prewarm-qps-input'),
+        requeryPrewarmLimitInput: document.getElementById('requery-prewarm-limit-input'),
+        requeryFullPriorityLimitInput: document.getElementById('requery-full-priority-limit-input'),
+        requeryRefreshResolverPoolInput: document.getElementById('requery-refresh-resolver-pool-input'),
         requeryMemoryStatsTbody: document.getElementById('requery-memory-stats-tbody'),
         updateModule: document.getElementById('update-module'),
         updateCurrentVersion: document.getElementById('update-current-version'),
@@ -157,15 +168,6 @@ document.addEventListener('DOMContentLoaded', () => {
     };
     let toastTimeout;
 
-    const SHUNT_RULE_SAVE_PATHS = ['top_domains/save', 'my_fakeiplist/save', 'my_nodenov4list/save', 'my_nodenov6list/save', 'my_notinlist/save', 'my_nov4list/save', 'my_nov6list/save', 'my_realiplist/save'];
-    const SHUNT_RULE_FLUSH_PATHS = ['top_domains/flush', 'my_fakeiplist/flush', 'my_nodenov4list/flush', 'my_nodenov6list/flush', 'my_notinlist/flush', 'my_nov4list/flush', 'my_nov6list/flush', 'my_realiplist/flush'];
-    const SHUNT_MEMORY_PROFILES = [
-        { key: 'fakeip', title: 'FakeIP 域名', statsEndpoint: '/plugins/my_fakeiplist/stats' },
-        { key: 'realip', title: 'RealIP 域名', statsEndpoint: '/plugins/my_realiplist/stats' },
-        { key: 'nov4', title: '无 V4 域名', statsEndpoint: '/plugins/my_nov4list/stats' },
-        { key: 'nov6', title: '无 V6 域名', statsEndpoint: '/plugins/my_nov6list/stats' },
-    ];
-
     const debounce = (func, wait) => { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func(...args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; };
 
     // 轻量级请求器 + /metrics 简易缓存，减少同一时段的重复请求
@@ -173,12 +175,14 @@ document.addEventListener('DOMContentLoaded', () => {
     const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (capacity) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ capacity: parseInt(capacity, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/plugins/core_mode/show', { signal }), getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/plugins/${cacheTag}/flush`), getCacheContents: (cacheTag, signal) => api.fetch(`/plugins/${cacheTag}/show`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
 
     const requeryApi = {
+        getSummary: (signal) => api.fetch(`/plugins/requery/summary`, { signal }),
         getConfig: (signal) => api.fetch(`/plugins/requery`, { signal }),
         getStatus: (signal) => api.fetch(`/plugins/requery/status`, { signal }),
-        getMemoryStats: (endpoint, signal) => api.fetch(endpoint, { signal }),
-        trigger: () => api.fetch(`/plugins/requery/trigger`, { method: 'POST' }),
+        trigger: (mode = 'full_rebuild', limit = 0) => api.fetch(`/plugins/requery/trigger`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, limit }) }),
         cancel: () => api.fetch(`/plugins/requery/cancel`, { method: 'POST' }),
         updateSchedulerConfig: (config) => api.fetch(`/plugins/requery/scheduler/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }),
+        saveRules: () => api.fetch(`/plugins/requery/rules/save`, { method: 'POST' }),
+        flushRules: () => api.fetch(`/plugins/requery/rules/flush`, { method: 'POST' }),
     };
 
     const updateApi = {
@@ -371,7 +375,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const requeryManager = {
         init() {
             const debouncedUpdate = debounce(this.handleUpdateSchedulerConfig.bind(this), 1500);
-            elements.requeryTriggerBtn.addEventListener('click', this.handleTrigger.bind(this));
+            elements.requeryPrewarmBtn.addEventListener('click', (e) => this.handleTrigger(e, 'quick_prewarm'));
+            elements.requeryQuickTriggerBtn.addEventListener('click', (e) => this.handleTrigger(e, 'quick_rebuild'));
+            elements.requeryTriggerBtn.addEventListener('click', (e) => this.handleTrigger(e, 'full_rebuild'));
             elements.requeryCancelBtn.addEventListener('click', this.handleCancel.bind(this));
             elements.requeryModeSelect.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
             elements.requerySchedulerToggle.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
@@ -379,27 +385,22 @@ document.addEventListener('DOMContentLoaded', () => {
             if (elements.requeryDateRangeInput) {
                 elements.requeryDateRangeInput.addEventListener('change', debouncedUpdate);
             }
+            ['requeryFullQpsInput', 'requeryQuickQpsInput', 'requeryQuickLimitInput', 'requeryPrewarmQpsInput', 'requeryPrewarmLimitInput', 'requeryFullPriorityLimitInput', 'requeryRefreshResolverPoolInput'].forEach((key) => {
+                if (elements[key]) elements[key].addEventListener('change', debouncedUpdate);
+            });
         },
 
         async updateStatus(signal) {
             try {
-                const [status, config, memoryResults] = await Promise.all([
-                    requeryApi.getStatus(signal),
-                    requeryApi.getConfig(signal),
-                    Promise.allSettled(SHUNT_MEMORY_PROFILES.map(profile => requeryApi.getMemoryStats(profile.statsEndpoint, signal)))
-                ]);
-                state.requery.status = status;
-                state.requery.config = config;
-                state.requery.memoryStats = SHUNT_MEMORY_PROFILES.reduce((acc, profile, index) => {
-                    const result = memoryResults[index];
-                    acc[profile.key] = result && result.status === 'fulfilled' ? result.value : null;
-                    return acc;
-                }, {});
+                const summary = await requeryApi.getSummary(signal);
+                state.requery.status = summary.status || null;
+                state.requery.config = summary.config || null;
+                state.requery.memoryStats = Array.isArray(summary.memory_stats) ? summary.memory_stats : [];
                 updateDomainListStats(signal);
                 this.render();
             } catch (error) {
                 if (error.name !== 'AbortError') {
-                    state.requery.memoryStats = {};
+                    state.requery.memoryStats = [];
                     this.render();
                 }
             }
@@ -412,28 +413,34 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!status || !config) {
                 elements.requeryStatusText.textContent = '获取状态失败';
                 elements.requeryStatusText.style.color = 'var(--color-danger)';
-                elements.requeryTriggerBtn.disabled = true;
+                [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach(btn => btn.disabled = true);
                 this.renderMemoryStats();
                 return;
             }
 
             const isRunning = status.task_state === 'running';
+            const activeModeLabel = this.modeLabel(status.task_mode || status.last_run_mode);
 
             let statusText = '空闲';
             let statusColor = 'var(--color-success)';
             switch (status.task_state) {
                 case 'running':
-                    statusText = '正在执行...';
+                    statusText = `正在执行${activeModeLabel}`;
+                    if (status.task_stage_label) {
+                        const stageProcessed = this.formatCount(status.task_stage_processed);
+                        const stageTotal = this.formatCount(status.task_stage_total);
+                        statusText += ` · ${status.task_stage_label} ${stageProcessed}/${stageTotal}`;
+                    }
                     statusColor = 'var(--color-warning)';
                     this.startPolling();
                     break;
                 case 'failed':
-                    statusText = '上次执行失败';
+                    statusText = `${activeModeLabel}失败`;
                     statusColor = 'var(--color-danger)';
                     this.stopPolling();
                     break;
                 case 'cancelled':
-                    statusText = '上次任务已取消';
+                    statusText = `${activeModeLabel}已取消`;
                     statusColor = 'var(--color-text-secondary)';
                     this.stopPolling();
                     break;
@@ -443,31 +450,63 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             elements.requeryStatusText.textContent = statusText;
             elements.requeryStatusText.style.color = statusColor;
+            if (elements.requeryStageMeta) {
+                if (isRunning && status.task_stage_label) {
+                    elements.requeryStageMeta.textContent = `当前阶段: ${status.task_stage_label}`;
+                } else if (status.last_run_mode) {
+                    elements.requeryStageMeta.textContent = `最近任务: ${this.modeLabel(status.last_run_mode)}`;
+                } else {
+                    elements.requeryStageMeta.textContent = '等待任务开始';
+                }
+            }
 
             elements.requeryProgressContainer.hidden = !isRunning;
             if (isRunning) {
                 const percent = status.progress.total > 0 ? (status.progress.processed / status.progress.total) * 100 : 0;
                 elements.requeryProgressBarFill.style.width = `${percent}%`;
                 elements.requeryProgressBarText.textContent = `${Math.floor(percent)}% (${status.progress.processed.toLocaleString()} / ${status.progress.total.toLocaleString()})`;
+                if (elements.requeryStageCaption) {
+                    const stageProcessed = this.formatCount(status.task_stage_processed);
+                    const stageTotal = this.formatCount(status.task_stage_total);
+                    elements.requeryStageCaption.textContent = status.task_stage_label
+                        ? `${status.task_stage_label} · ${stageProcessed} / ${stageTotal}`
+                        : `${activeModeLabel}执行中`;
+                }
+            } else if (elements.requeryStageCaption) {
+                elements.requeryStageCaption.textContent = status.last_run_mode
+                    ? `${this.modeLabel(status.last_run_mode)}已结束`
+                    : '等待任务开始...';
             }
 
             if (status.last_run_start_time && !status.last_run_start_time.startsWith('0001-01-01')) {
-                let lastRunText = `开始于 ${formatRelativeTime(status.last_run_start_time)}`;
+                let lastRunText = `${this.modeLabel(status.last_run_mode)}开始于 ${formatRelativeTime(status.last_run_start_time)}`;
                 if (status.last_run_end_time && !status.last_run_end_time.startsWith('0001-01-01')) {
                     const startDate = new Date(status.last_run_start_time);
                     const endDate = new Date(status.last_run_end_time);
                     const durationSeconds = Math.round((endDate - startDate) / 1000);
-                    lastRunText = `完成于 ${formatRelativeTime(status.last_run_end_time)} (耗时 ${durationSeconds}秒)`;
+                    const processedDomains = this.formatCount(status.last_run_domain_count);
+                    lastRunText = `${this.modeLabel(status.last_run_mode)}最近一次完成于 ${formatRelativeTime(status.last_run_end_time)}，耗时 ${durationSeconds} 秒，处理 ${processedDomains} 个域名`;
                 }
                 elements.requeryLastRun.textContent = lastRunText;
             } else {
-                elements.requeryLastRun.textContent = '从未执行';
+                elements.requeryLastRun.textContent = '还没有执行过批量重建或预热任务';
             }
 
-            elements.requeryQueueSummary.textContent = `${this.formatCount(status.pending_queue)} 待处理 / ${this.formatCount(status.on_demand_processed)} 已完成`;
+            const queueLimit = status.max_queue_size ? this.formatCount(status.max_queue_size) : '--';
+            const skippedText = status.on_demand_skipped > 0 ? `，累计跳过 ${this.formatCount(status.on_demand_skipped)}` : '';
+            elements.requeryQueueSummary.textContent = `当前排队 ${this.formatCount(status.pending_queue)} / ${queueLimit}，累计完成 ${this.formatCount(status.on_demand_processed)}${skippedText}`;
 
             if (config.execution_settings && elements.requeryDateRangeInput) {
                 elements.requeryDateRangeInput.value = config.execution_settings.date_range_days || 30;
+                elements.requeryFullQpsInput.value = config.execution_settings.queries_per_second || 100;
+                elements.requeryQuickQpsInput.value = config.execution_settings.quick_queries_per_second || 300;
+                elements.requeryQuickLimitInput.value = config.execution_settings.quick_rebuild_limit || 2000;
+                elements.requeryPrewarmQpsInput.value = config.execution_settings.prewarm_queries_per_second || 500;
+                elements.requeryPrewarmLimitInput.value = config.execution_settings.prewarm_limit || 1000;
+                elements.requeryFullPriorityLimitInput.value = config.execution_settings.full_rebuild_priority_limit || 4000;
+                elements.requeryRefreshResolverPoolInput.value = Array.isArray(config.execution_settings.refresh_resolver_pool)
+                    ? config.execution_settings.refresh_resolver_pool.join('\n')
+                    : '';
             }
 
             elements.requeryModeSelect.value = (config.workflow && config.workflow.mode) ? config.workflow.mode : 'hybrid';
@@ -476,10 +515,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const schedulerInputsDisabled = !config.scheduler.enabled;
             elements.requeryIntervalInput.disabled = schedulerInputsDisabled;
-
-            elements.requeryTriggerBtn.hidden = isRunning;
+            [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach(btn => {
+                btn.disabled = isRunning;
+                btn.hidden = false;
+            });
             elements.requeryCancelBtn.hidden = !isRunning;
-            elements.requeryTriggerBtn.disabled = isRunning;
 
             this.renderMemoryStats();
         },
@@ -488,30 +528,41 @@ document.addEventListener('DOMContentLoaded', () => {
             const tbody = elements.requeryMemoryStatsTbody;
             if (!tbody) return;
 
-            const statsMap = state.requery.memoryStats || {};
-            tbody.innerHTML = SHUNT_MEMORY_PROFILES.map(profile => {
-                const stats = statsMap[profile.key];
-                if (!stats) {
-                    return `
-                        <tr>
-                            <td><strong>${profile.title}</strong></td>
-                            <td class="text-right" colspan="2" style="color: var(--color-text-secondary);">统计不可用</td>
-                        </tr>
-                    `;
-                }
-
-                return `
+            const statsList = Array.isArray(state.requery.memoryStats) ? state.requery.memoryStats : [];
+            if (!statsList.length) {
+                tbody.innerHTML = `
                     <tr>
-                        <td><strong>${profile.title}</strong></td>
-                        <td class="text-right"><a href="#" class="control-item-link" data-list-type="${profile.key}" data-list-title="${profile.title}">${this.formatCount(stats.total_entries)}</a></td>
-                        <td class="text-right">${this.formatCount(stats.published_rules)}</td>
+                        <td><strong>分流记忆库</strong></td>
+                        <td class="text-right" colspan="2" style="color: var(--color-text-secondary);">统计不可用</td>
                     </tr>
                 `;
-            }).join('');
+                return;
+            }
+
+            tbody.innerHTML = statsList.map((stats) => `
+                <tr>
+                    <td><strong>${stats.name || stats.tag || stats.key}</strong></td>
+                    <td class="text-right"><a href="#" class="control-item-link" data-list-tag="${stats.tag}" data-list-title="${stats.name || stats.tag || stats.key}">${this.formatCount(stats.total_entries)}</a></td>
+                    <td class="text-right">${this.formatCount(stats.published_rules)}</td>
+                </tr>
+            `).join('');
         },
 
         formatCount(value) {
             return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '--';
+        },
+
+        modeLabel(mode) {
+            switch ((mode || '').toLowerCase()) {
+                case 'quick_prewarm':
+                    return '快速预热';
+                case 'quick_rebuild':
+                    return '快速重建';
+                case 'full_rebuild':
+                    return '完整重建';
+                default:
+                    return '任务';
+            }
         },
 
         startPolling() {
@@ -526,14 +577,23 @@ document.addEventListener('DOMContentLoaded', () => {
             state.requery.pollId = null;
         },
 
-        async handleTrigger(e, silent = false) {
-            const confirmed = silent ? true : confirm('确定要开始一个全新的刷新任务吗？\n这将完整执行所有步骤，可能需要一些时间。');
+        async handleTrigger(e, mode = 'full_rebuild', silent = false) {
+            const modeLabel = this.modeLabel(mode);
+            const limit = mode === 'quick_prewarm'
+                ? parseInt(elements.requeryPrewarmLimitInput.value, 10) || 0
+                : (mode === 'quick_rebuild' ? parseInt(elements.requeryQuickLimitInput.value, 10) || 0 : 0);
+            const hint = mode === 'quick_prewarm'
+                ? '这会通过常规解析链快速预热缓存，不会重写分流规则。'
+                : (mode === 'quick_rebuild'
+                    ? '这会只处理热点域名，优先提升速度。'
+                    : '这会执行完整重建，适合规则整体重算。');
+            const confirmed = silent ? true : confirm(`确定要开始${modeLabel}吗？\n${hint}`);
             if (confirmed) {
                 const btn = e ? e.currentTarget : elements.requeryTriggerBtn;
                 ui.setLoading(btn, true);
                 try {
-                    await requeryApi.trigger();
-                    ui.showToast('刷新任务已开始', 'success');
+                    const result = await requeryApi.trigger(mode, limit);
+                    ui.showToast(result.message || `${modeLabel}已开始`, 'success');
                     await this.updateStatus();
                 } catch (error) {
                 } finally {
@@ -562,6 +622,16 @@ document.addEventListener('DOMContentLoaded', () => {
             const isEnabled = elements.requerySchedulerToggle.checked;
             const interval = parseInt(elements.requeryIntervalInput.value, 10);
             const dateRangeDays = parseInt(elements.requeryDateRangeInput.value, 10);
+            const fullQps = parseInt(elements.requeryFullQpsInput.value, 10);
+            const quickQps = parseInt(elements.requeryQuickQpsInput.value, 10);
+            const quickLimit = parseInt(elements.requeryQuickLimitInput.value, 10);
+            const prewarmQps = parseInt(elements.requeryPrewarmQpsInput.value, 10);
+            const prewarmLimit = parseInt(elements.requeryPrewarmLimitInput.value, 10);
+            const fullPriorityLimit = parseInt(elements.requeryFullPriorityLimitInput.value, 10);
+            const refreshResolverPool = (elements.requeryRefreshResolverPoolInput.value || '')
+                .split(/\r?\n|,|;/)
+                .map(item => item.trim())
+                .filter(Boolean);
             const mode = elements.requeryModeSelect.value || 'hybrid';
 
             if (isEnabled && (!interval || interval <= 0)) {
@@ -573,13 +643,32 @@ document.addEventListener('DOMContentLoaded', () => {
                 ui.showToast('域名刷新天数必须大于 0', 'error');
                 return;
             }
+            if (!fullQps || fullQps < 1 || !quickQps || quickQps < 1 || !prewarmQps || prewarmQps < 1) {
+                ui.showToast('所有 QPS 配置都必须大于 0', 'error');
+                return;
+            }
+            if (!quickLimit || quickLimit < 1 || !prewarmLimit || prewarmLimit < 1) {
+                ui.showToast('快速重建和快速预热的域名上限都必须大于 0', 'error');
+                return;
+            }
+            if (!fullPriorityLimit || fullPriorityLimit < 1) {
+                ui.showToast('完整重建高优先级域名上限必须大于 0', 'error');
+                return;
+            }
 
             const newConfig = {
                 mode: mode,
                 enabled: isEnabled,
                 interval_minutes: interval || 0,
                 start_datetime: '',
-                date_range_days: dateRangeDays
+                date_range_days: dateRangeDays,
+                queries_per_second: fullQps,
+                quick_queries_per_second: quickQps,
+                prewarm_queries_per_second: prewarmQps,
+                quick_rebuild_limit: quickLimit,
+                prewarm_limit: prewarmLimit,
+                full_rebuild_priority_limit: fullPriorityLimit,
+                refresh_resolver_pool: refreshResolverPool
             };
 
             try {
@@ -591,6 +680,13 @@ document.addEventListener('DOMContentLoaded', () => {
                     state.requery.config.workflow.mode = mode;
                     if (!state.requery.config.execution_settings) state.requery.config.execution_settings = {};
                     state.requery.config.execution_settings.date_range_days = dateRangeDays;
+                    state.requery.config.execution_settings.queries_per_second = fullQps;
+                    state.requery.config.execution_settings.quick_queries_per_second = quickQps;
+                    state.requery.config.execution_settings.prewarm_queries_per_second = prewarmQps;
+                    state.requery.config.execution_settings.quick_rebuild_limit = quickLimit;
+                    state.requery.config.execution_settings.prewarm_limit = prewarmLimit;
+                    state.requery.config.execution_settings.full_rebuild_priority_limit = fullPriorityLimit;
+                    state.requery.config.execution_settings.refresh_resolver_pool = refreshResolverPool;
                     this.render();
                 }
             } catch (error) {
@@ -727,8 +823,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 const result = await api.fetch(`/plugins/switches/${tag}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 this.render();
-                ui.showToast('核心模式已切换，即将开始刷新分流缓存...', 'success');
-                await requeryManager.handleTrigger(null, true);
+                ui.showToast('核心模式已切换，即将开始快速预热缓存...', 'success');
+                await requeryManager.handleTrigger(null, 'quick_prewarm', true);
 
             } catch (error) {
                 ui.showToast('切换核心模式失败!', 'error');
@@ -2338,7 +2434,7 @@ function renderRuleTable(tbody, rules, mode) {
     }
 
     async function openDataViewModal(config, isLoadMore = false) {
-        const { listType, cacheTag, title } = config;
+        const { listType, listTag, cacheTag, title } = config;
         if (!isLoadMore) {
             state.dataView.currentOffset = 0;
             state.dataView.rawEntries = [];
@@ -2360,7 +2456,10 @@ function renderRuleTable(tbody, rules, mode) {
             const limit = state.dataView.currentLimit;
             let result;
             let viewType = 'domain';
-            if (listType) {
+            if (listTag) {
+                result = await api.fetch(`/plugins/${listTag}/show?q=${q}&offset=${offset}&limit=${limit}`);
+                viewType = 'domain';
+            } else if (listType) {
                 const endpointMap = { fakeip: '/plugins/my_fakeiplist/show', realip: '/plugins/my_realiplist/show', nov4: '/plugins/my_nov4list/show', nov6: '/plugins/my_nov6list/show', total: '/plugins/top_domains/show' };
                 result = await api.fetch(`${endpointMap[listType]}?q=${q}&offset=${offset}&limit=${limit}`);
                 viewType = 'domain';
@@ -2449,13 +2548,10 @@ function renderRuleTable(tbody, rules, mode) {
         ui.setLoading(elements.saveShuntRulesBtn, true);
         ui.showToast('正在后台保存所有分流规则...');
         try {
-            const requests = SHUNT_RULE_SAVE_PATHS.map(path => api.fetch(`/plugins/${path}`));
-            const results = await Promise.allSettled(requests);
-
-            const failed = results.filter(r => r.status === 'rejected');
-            if (failed.length > 0) {
-                ui.showToast(`部分规则保存失败 (${failed.length}/${results.length})`, 'error');
-                console.error("Failed to save some rules:", failed);
+            const result = await requeryApi.saveRules();
+            if (result.failed > 0) {
+                ui.showToast(`部分规则保存失败 (${result.failed}/${result.total})`, 'error');
+                console.error('Failed to save some shunt rules:', result.items);
             } else {
                 ui.showToast('所有分流规则已成功保存', 'success');
             }
@@ -2471,9 +2567,13 @@ function renderRuleTable(tbody, rules, mode) {
         ui.setLoading(elements.clearShuntRulesBtn, true);
         ui.showToast('正在后台清空所有分流规则...');
         try {
-            const requests = SHUNT_RULE_FLUSH_PATHS.map(path => api.fetch(`/plugins/${path}`));
-            await Promise.allSettled(requests);
-            ui.showToast('所有分流规则已清空', 'success');
+            const result = await requeryApi.flushRules();
+            if (result.failed > 0) {
+                ui.showToast(`部分规则清空失败 (${result.failed}/${result.total})`, 'error');
+                console.error('Failed to flush some shunt rules:', result.items);
+            } else {
+                ui.showToast('所有分流规则已清空', 'success');
+            }
             await updateDomainListStats();
         } catch (e) {
             ui.showToast('清空操作时发生未知错误', 'error');
@@ -4161,7 +4261,7 @@ const handleInteractiveClick = (e) => {
 
 
         document.body.addEventListener('click', (e) => {
-            const domainListLink = e.target.closest('a.control-item-link[data-list-type]');
+            const domainListLink = e.target.closest('a.control-item-link[data-list-type], a.control-item-link[data-list-tag]');
             const cacheListLink = e.target.closest('a.control-item-link[data-cache-tag]');
             const clearCacheBtn = e.target.closest('.clear-cache-btn[data-cache-tag]');
 
@@ -4169,6 +4269,7 @@ const handleInteractiveClick = (e) => {
                 e.preventDefault();
                 openDataViewModal({
                     listType: domainListLink.dataset.listType,
+                    listTag: domainListLink.dataset.listTag,
                     title: domainListLink.dataset.listTitle
                 });
             } else if (cacheListLink) {

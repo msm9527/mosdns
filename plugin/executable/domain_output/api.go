@@ -2,6 +2,7 @@ package domain_output
 
 import (
 	"container/heap"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -74,22 +75,203 @@ func (d *domainOutput) SnapshotDomainStats() coremain.DomainStatsSnapshot {
 	}
 }
 
+func (d *domainOutput) SnapshotRefreshCandidates(req coremain.DomainRefreshCandidateRequest) []coremain.DomainRefreshCandidate {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	now := time.Now().UTC()
+	candidates := make([]coremain.DomainRefreshCandidate, 0, len(d.stats))
+	for key, entry := range d.stats {
+		domain := strings.TrimSpace(key)
+		if domain == "" {
+			continue
+		}
+
+		reason, state := d.classifyRefreshCandidate(entry, now)
+		include := false
+		weight := entry.Score*100 + entry.Count
+		if entry.Promoted {
+			weight += 50000
+		}
+
+		switch reason {
+		case "conflict", "error":
+			weight += 1000000
+		case "stale":
+			weight += 900000
+		case "refresh_due":
+			weight += 700000
+		case "observed", "dirty":
+			weight += 800000
+		}
+
+		if req.IncludeDirty && (state == "dirty" || reason == "observed" || reason == "dirty" || reason == "conflict" || reason == "error") {
+			include = true
+		}
+		if req.IncludeStale && reason == "stale" {
+			include = true
+		}
+		if req.IncludeHot && (entry.Promoted || entry.Score > 0 || entry.Count > 0) {
+			include = true
+		}
+		if !include {
+			continue
+		}
+
+		qmask := entry.QTypeMask
+		if qmask == 0 {
+			qmask = qtypeMaskA | qtypeMaskAAAA
+		}
+
+		candidates = append(candidates, coremain.DomainRefreshCandidate{
+			Domain:         domain,
+			QTypeMask:      qmask,
+			Weight:         weight,
+			MemoryID:       d.memoryID,
+			Reason:         reason,
+			RefreshState:   state,
+			LastSeenAt:     entry.LastSeenAt,
+			LastDirtyAt:    entry.LastDirtyAt,
+			LastVerifiedAt: entry.LastVerifiedAt,
+			CooldownUntil:  entry.CooldownUntil,
+			Promoted:       entry.Promoted,
+		})
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if candidates[i].Weight == candidates[j].Weight {
+			return candidates[i].Domain < candidates[j].Domain
+		}
+		return candidates[i].Weight > candidates[j].Weight
+	})
+	if req.Limit > 0 && len(candidates) > req.Limit {
+		candidates = candidates[:req.Limit]
+	}
+	return candidates
+}
+
+func (d *domainOutput) classifyRefreshCandidate(entry *statEntry, now time.Time) (reason string, state string) {
+	state = strings.ToLower(strings.TrimSpace(entry.RefreshState))
+	reason = strings.ToLower(strings.TrimSpace(entry.DirtyReason))
+
+	if state == "dirty" {
+		if reason == "" {
+			reason = "dirty"
+		}
+		return reason, state
+	}
+
+	if d.policy.staleAfterMinutes > 0 && entry.LastDirtyAt != "" {
+		if ts, err := time.Parse(time.RFC3339, entry.LastDirtyAt); err == nil &&
+			now.Sub(ts) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
+			return "stale", "stale"
+		}
+	}
+
+	if d.isVerificationDue(entry, now) {
+		return "refresh_due", "due"
+	}
+
+	if reason != "" {
+		return reason, state
+	}
+	return "", state
+}
+
+func (d *domainOutput) isVerificationDue(entry *statEntry, now time.Time) bool {
+	if !entry.Promoted && entry.Count < 3 {
+		return false
+	}
+
+	threshold := 30 * time.Minute
+	if d.policy.staleAfterMinutes > 0 {
+		candidate := time.Duration(d.policy.staleAfterMinutes) * time.Minute / 2
+		if candidate > threshold {
+			threshold = candidate
+		}
+	}
+
+	lastStamp := entry.LastVerifiedAt
+	if lastStamp == "" {
+		lastStamp = entry.LastDirtyAt
+	}
+	if lastStamp == "" {
+		lastStamp = entry.LastSeenAt
+	}
+	if lastStamp == "" {
+		return entry.Promoted
+	}
+
+	ts, err := time.Parse(time.RFC3339, lastStamp)
+	if err != nil {
+		return false
+	}
+	return now.Sub(ts) >= threshold
+}
+
 type verifyRequest struct {
 	Domain     string `json:"domain"`
 	VerifiedAt string `json:"verified_at,omitempty"`
+}
+
+func (d *domainOutput) SaveToDisk(_ context.Context) error {
+	d.performWrite(WriteModeSave)
+	return nil
+}
+
+func (d *domainOutput) FlushRuntime(_ context.Context) error {
+	d.performWrite(WriteModeFlush)
+	return nil
+}
+
+func (d *domainOutput) MarkDomainVerified(_ context.Context, domain, verifiedAt string) (int, error) {
+	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
+	if domain == "" {
+		return 0, fmt.Errorf("domain is empty")
+	}
+	if verifiedAt == "" {
+		verifiedAt = time.Now().UTC().Format(time.RFC3339)
+	}
+
+	d.mu.Lock()
+	updated := 0
+	for key, entry := range d.stats {
+		if strings.Split(key, "|")[0] != domain {
+			continue
+		}
+		entry.LastVerifiedAt = verifiedAt
+		entry.RefreshState = "clean"
+		entry.DirtyReason = ""
+		entry.CooldownUntil = ""
+		entry.LastDirtyAt = verifiedAt
+		d.stats[key] = entry
+		updated++
+	}
+	d.mu.Unlock()
+	if updated == 0 {
+		return 0, fmt.Errorf("domain not found")
+	}
+	d.performWrite(WriteModeSave)
+	return updated, nil
 }
 
 func (d *domainOutput) Api() *chi.Mux {
 	r := chi.NewRouter()
 
 	r.Get("/flush", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		d.performWrite(WriteModeFlush)
+		if err := d.FlushRuntime(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("domain_output flushed"))
 	}))
 
 	r.Get("/save", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		d.performWrite(WriteModeSave)
+		if err := d.SaveToDisk(r.Context()); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("domain_output saved"))
 	}))
@@ -179,32 +361,15 @@ func (d *domainOutput) Api() *chi.Mux {
 			http.Error(w, "invalid verify request", http.StatusBadRequest)
 			return
 		}
-		domain := strings.TrimSpace(strings.TrimSuffix(req.Domain, "."))
-		verifiedAt := req.VerifiedAt
-		if verifiedAt == "" {
-			verifiedAt = time.Now().UTC().Format(time.RFC3339)
-		}
-
-		d.mu.Lock()
-		updated := 0
-		for key, entry := range d.stats {
-			if strings.Split(key, "|")[0] != domain {
-				continue
+		updated, err := d.MarkDomainVerified(r.Context(), req.Domain, req.VerifiedAt)
+		if err != nil {
+			if err.Error() == "domain not found" {
+				http.Error(w, err.Error(), http.StatusNotFound)
+				return
 			}
-			entry.LastVerifiedAt = verifiedAt
-			entry.RefreshState = "clean"
-			entry.DirtyReason = ""
-			entry.CooldownUntil = ""
-			entry.LastDirtyAt = verifiedAt
-			d.stats[key] = entry
-			updated++
-		}
-		d.mu.Unlock()
-		if updated == 0 {
-			http.Error(w, "domain not found", http.StatusNotFound)
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
-		d.performWrite(WriteModeSave)
 		w.Header().Set("Content-Type", "application/json; charset=utf-8")
 		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "updated": updated})
 	}))
