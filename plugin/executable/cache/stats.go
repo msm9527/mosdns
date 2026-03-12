@@ -3,6 +3,8 @@ package cache
 import (
 	"sync"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
 
 type cacheOpStatus struct {
@@ -131,5 +133,32 @@ func (c *Cache) snapshotStats() cacheStatsResponse {
 			"dump_interval":     c.args.DumpInterval,
 			"wal_sync_interval": c.args.WALSyncInterval,
 		},
+	}
+}
+
+func cacheOpStatusToMap(op cacheOpStatus) map[string]any {
+	return map[string]any{
+		"status":   op.Status,
+		"at":       op.At,
+		"duration": op.Duration,
+		"entries":  op.Entries,
+		"error":    op.Error,
+	}
+}
+
+func (c *Cache) SnapshotCacheStats() coremain.CacheStatsSnapshot {
+	snap := c.snapshotStats()
+	return coremain.CacheStatsSnapshot{
+		Tag:          snap.Tag,
+		SnapshotFile: snap.SnapshotFile,
+		WALFile:      snap.WALFile,
+		BackendSize:  snap.BackendSize,
+		L1Size:       snap.L1Size,
+		UpdatedKeys:  snap.UpdatedKeys,
+		Counters:     snap.Counters,
+		LastDump:     cacheOpStatusToMap(snap.LastDump),
+		LastLoad:     cacheOpStatusToMap(snap.LastLoad),
+		LastReplay:   cacheOpStatusToMap(snap.LastReplay),
+		Config:       snap.Config,
 	}
 }

@@ -49,6 +49,31 @@ type statsResponse struct {
 	DroppedByCap           int64  `json:"dropped_by_cap"`
 }
 
+func (d *domainOutput) SnapshotDomainStats() coremain.DomainStatsSnapshot {
+	d.mu.Lock()
+	totalEntries := len(d.stats)
+	dirtyEntries := 0
+	for _, entry := range d.stats {
+		if entry.RefreshState == "dirty" {
+			dirtyEntries++
+		}
+	}
+	d.mu.Unlock()
+
+	return coremain.DomainStatsSnapshot{
+		MemoryID:            d.memoryID,
+		Kind:                d.policy.kind,
+		TotalEntries:        totalEntries,
+		DirtyEntries:        dirtyEntries,
+		PromotedEntries:     atomic.LoadInt64(&d.promotedCount),
+		PublishedRules:      atomic.LoadInt64(&d.publishedCount),
+		TotalObservations:   atomic.LoadInt64(&d.totalCount),
+		DroppedObservations: atomic.LoadInt64(&d.droppedCount),
+		DroppedByBuffer:     atomic.LoadInt64(&d.droppedBufferCount),
+		DroppedByCap:        atomic.LoadInt64(&d.droppedByCapCount),
+	}
+}
+
 type verifyRequest struct {
 	Domain     string `json:"domain"`
 	VerifiedAt string `json:"verified_at,omitempty"`

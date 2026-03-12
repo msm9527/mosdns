@@ -234,6 +234,120 @@
 - `update_available`
 - `pending_restart`
 - `checked_at`
+
+### 2.8 运行时聚合统计
+
+这组接口用于减少前端请求次数。
+
+- 缓存管理页不再分别请求多个 `/plugins/{cache_tag}/stats`
+- 域名统计卡片不再分别请求多个 `/plugins/.../show?limit=1`
+- 前端改为各调用 1 次聚合接口
+
+| 方法 | 路径 | 说明 |
+| --- | --- | --- |
+| `GET` | `/api/v1/cache/stats` | 一次性获取所有缓存实例统计 |
+| `GET` | `/api/v1/data/domain_stats` | 一次性获取所有域名统计实例计数 |
+
+`GET /api/v1/cache/stats` 返回示例：
+
+```json
+{
+  "items": [
+    {
+      "key": "cache_all",
+      "name": "全部缓存 (兼容)",
+      "tag": "cache_all",
+      "snapshot_file": "cache/cache_all.dump",
+      "wal_file": "cache/cache_all.wal",
+      "backend_size": 0,
+      "l1_size": 0,
+      "updated_keys": 0,
+      "counters": {
+        "query_total": 0,
+        "hit_total": 0,
+        "l1_hit_total": 0,
+        "l2_hit_total": 0,
+        "lazy_hit_total": 0,
+        "lazy_update_total": 0,
+        "lazy_update_dropped_total": 0
+      },
+      "last_dump": {
+        "status": "ok",
+        "at": "2026-03-12T13:51:25+08:00",
+        "duration": "8ms",
+        "entries": 0,
+        "error": ""
+      },
+      "last_load": {
+        "status": "ok"
+      },
+      "last_wal_replay": {
+        "status": "ok"
+      },
+      "config": {
+        "size": 800000,
+        "lazy_cache_ttl": 259200000,
+        "l1_enabled": true,
+        "l1_total_cap": 8192,
+        "l1_shard_cap": 32,
+        "enable_ecs": false,
+        "dump_interval": 36000,
+        "wal_sync_interval": 1
+      }
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `key`: 前端使用的稳定标识
+- `name`: 展示名称
+- `tag`: 对应缓存插件 tag
+- `backend_size`: L2 后端缓存条目数
+- `l1_size`: L1 热缓存条目数
+- `updated_keys`: 自上次 dump 以来变更的 key 数
+- `counters`: 查询、命中、lazy 更新等累计统计
+- `last_dump / last_load / last_wal_replay`: 最近一次持久化相关操作状态
+- `config`: 当前缓存实例的关键运行参数快照
+
+`GET /api/v1/data/domain_stats` 返回示例：
+
+```json
+{
+  "items": [
+    {
+      "key": "fakeip",
+      "name": "FakeIP 域名",
+      "tag": "my_fakeiplist",
+      "memory_id": "fakeip",
+      "kind": "fakeip",
+      "total_entries": 26982,
+      "dirty_entries": 1113,
+      "promoted_entries": 26723,
+      "published_rules": 26723,
+      "total_observations": 127517,
+      "dropped_observations": 0,
+      "dropped_by_buffer": 0,
+      "dropped_by_cap": 0
+    }
+  ]
+}
+```
+
+字段说明：
+
+- `key`: 前端使用的稳定标识
+- `name`: 展示名称
+- `tag`: 对应 domain_output 插件 tag
+- `memory_id`: 插件内部内存实例标识
+- `kind`: 统计类型，例如 `fakeip`、`realip`、`nov4`、`nov6`、`generic`
+- `total_entries`: 当前内存中统计条目数
+- `dirty_entries`: 当前脏条目数
+- `promoted_entries`: 已达到发布条件的条目数
+- `published_rules`: 当前已发布规则数
+- `total_observations`: 总观察次数
+- `dropped_observations / dropped_by_buffer / dropped_by_cap`: 丢弃统计
 - `cache_expires_at`
 - `message`
 

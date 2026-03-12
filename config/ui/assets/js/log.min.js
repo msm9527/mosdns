@@ -170,7 +170,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 轻量级请求器 + /metrics 简易缓存，减少同一时段的重复请求
     let __metricsInflight = null; let __metricsStamp = 0;
-    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (capacity) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ capacity: parseInt(capacity, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/plugins/core_mode/show', { signal }), clearCache: (cacheTag) => api.fetch(`/plugins/${cacheTag}/flush`), getCacheContents: (cacheTag, signal) => api.fetch(`/plugins/${cacheTag}/show`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
+    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (capacity) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ capacity: parseInt(capacity, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/plugins/core_mode/show', { signal }), getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/plugins/${cacheTag}/flush`), getCacheContents: (cacheTag, signal) => api.fetch(`/plugins/${cacheTag}/show`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
 
     const requeryApi = {
         getConfig: (signal) => api.fetch(`/plugins/requery`, { signal }),
@@ -2179,28 +2179,36 @@ function renderRuleTable(tbody, rules, mode) {
     }
 
     async function updateDomainListStats(signal) {
-        const listMap = {
-            fakeip: { element: elements.fakeipDomainCount, endpoint: '/plugins/my_fakeiplist/show' },
-            realip: { element: elements.realipDomainCount, endpoint: '/plugins/my_realiplist/show' },
-            nov4: { element: elements.nov4DomainCount, endpoint: '/plugins/my_nov4list/show' },
-            nov6: { element: elements.nov6DomainCount, endpoint: '/plugins/my_nov6list/show' },
-            total: { element: elements.totalDomainCount, endpoint: '/plugins/top_domains/show' },
+        const elementMap = {
+            fakeip: elements.fakeipDomainCount,
+            realip: elements.realipDomainCount,
+            nov4: elements.nov4DomainCount,
+            nov6: elements.nov6DomainCount,
+            total: elements.totalDomainCount,
         };
 
-        for (const key of Object.keys(listMap)) {
-            const { element, endpoint } = listMap[key];
-            try {
-                // 使用 api.fetch 获取带 Header 的结果，并加上 limit=1 极大地减少网络开销
-                const res = await api.fetch(endpoint + '?limit=1', { signal });
-                if (res && typeof res === 'object' && res.totalCount !== undefined) {
-                    element.textContent = res.totalCount.toLocaleString();
+        try {
+            const res = await api.getDomainStats(signal);
+            const items = Array.isArray(res?.items) ? res.items : [];
+            const itemMap = items.reduce((acc, item) => {
+                if (item?.key) acc[item.key] = item;
+                return acc;
+            }, {});
+
+            Object.entries(elementMap).forEach(([key, element]) => {
+                if (!element) return;
+                const item = itemMap[key];
+                if (item && !item.error) {
+                    element.textContent = Number(item.total_entries || 0).toLocaleString();
                 } else {
-                    // 兜底逻辑：如果 Header 获取失败，尝试原来的流式计数（由于后端限制，此时可能仍显示 100）
-                    const count = await countLinesStreaming(endpoint, signal);
-                    element.textContent = count.toLocaleString();
+                    element.textContent = '获取失败';
                 }
-            } catch (e) {
-                if (e.name !== 'AbortError') element.textContent = '获取失败';
+            });
+        } catch (e) {
+            if (e.name !== 'AbortError') {
+                Object.values(elementMap).forEach((element) => {
+                    if (element) element.textContent = '获取失败';
+                });
             }
         }
 
@@ -2604,9 +2612,23 @@ const cacheManager = {
 
         async updateStats(signal) {
             try {
-                const results = await Promise.all(this.config.map(cache => this.fetchStats(cache, signal)));
-                results.forEach(({ key, stats }) => {
-                    state.cacheStats[key] = stats;
+                const res = await api.getAllCacheStats(signal);
+                const items = Array.isArray(res?.items) ? res.items : [];
+                const itemMap = items.reduce((acc, item) => {
+                    if (item?.key) acc[item.key] = item;
+                    return acc;
+                }, {});
+
+                this.config.forEach((cache) => {
+                    const raw = itemMap[cache.key];
+                    if (raw) {
+                        state.cacheStats[cache.key] = this.normalizeStats(raw, cache.tag);
+                    } else {
+                        state.cacheStats[cache.key] = {
+                            ...this.emptyStats(cache.tag),
+                            error: '加载失败'
+                        };
+                    }
                 });
                 this.renderTable();
             } catch (error) {
