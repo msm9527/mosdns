@@ -845,6 +845,7 @@
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | `GET` | `/flush` | 清空缓存并触发后台 dump |
+| `POST` | `/purge_domain` | 按域名精确删除缓存项并立即 checkpoint |
 | `GET` | `/dump` | 下载缓存 dump |
 | `GET` | `/save` | 保存缓存到 dump 文件 |
 | `POST` | `/load_dump` | 从请求体加载 dump |
@@ -852,6 +853,26 @@
 | `GET` | `/show` | 按文本查看缓存内容 |
 
 `/show` 支持：`q, limit, offset`
+
+`POST /purge_domain` 请求体示例：
+
+```json
+{
+  "qname": "example.com",
+  "qtype": 1
+}
+```
+
+说明：
+
+- `qname` 必填，会自动规范化为 FQDN。
+- `qtype` 选填。
+- 省略 `qtype` 时，会删除该域名在当前缓存实例中的所有记录。
+- 该接口会同步清理内存缓存并立即执行 checkpoint，避免重启后旧 WAL 把条目放回来。
+
+补充：
+
+- 命中 `DDNS域名` 标签的缓存项，过期后不会再走 lazy stale 返回旧值，而是直接回源重查。
 
 ### 4.3 domain_output / 分流记忆库与域名输出
 

@@ -187,14 +187,18 @@ func (dm *DomainMapper) rebuild() {
 		}
 
 		for _, ruleStr := range rules {
-			if ruleCfg.Mark > 0 && ruleCfg.Mark <= 63 {
-				markMap[ruleStr] |= (1 << (ruleCfg.Mark - 1))
+			ruleKey := normalizeRuleKey(ruleStr)
+			if ruleKey == "" {
+				continue
 			}
-			oldTags := tagMap[ruleStr]
+			if ruleCfg.Mark > 0 && ruleCfg.Mark <= 63 {
+				markMap[ruleKey] |= (1 << (ruleCfg.Mark - 1))
+			}
+			oldTags := tagMap[ruleKey]
 			if oldTags == "" {
-				tagMap[ruleStr] = targetTag
+				tagMap[ruleKey] = targetTag
 			} else if !strings.Contains(oldTags, targetTag) {
-				tagMap[ruleStr] = oldTags + "|" + targetTag
+				tagMap[ruleKey] = oldTags + "|" + targetTag
 			}
 		}
 		totalRules += len(rules)
@@ -206,6 +210,13 @@ func (dm *DomainMapper) rebuild() {
 			continue
 		}
 		dName := ruleStr[dotPos+1:]
+		if strings.HasPrefix(ruleStr, "full:") {
+			directDomainKey := "domain:" + dName
+			if aMask, ok := markMap[directDomainKey]; ok {
+				markMap[ruleStr] |= aMask
+				tagMap[ruleStr] = mergeTagStrings(tagMap[ruleStr], tagMap[directDomainKey])
+			}
+		}
 
 		for {
 			nextDot := strings.Index(dName, ".")
@@ -217,15 +228,7 @@ func (dm *DomainMapper) rebuild() {
 
 			if aMask, ok := markMap[ancestorKey]; ok {
 				markMap[ruleStr] |= aMask
-				aTags := tagMap[ancestorKey]
-				if aTags != "" {
-					cTags := tagMap[ruleStr]
-					if cTags == "" {
-						tagMap[ruleStr] = aTags
-					} else if !strings.Contains(cTags, aTags) {
-						tagMap[ruleStr] = cTags + "|" + aTags
-					}
-				}
+				tagMap[ruleStr] = mergeTagStrings(tagMap[ruleStr], tagMap[ancestorKey])
 			}
 		}
 	}
@@ -263,6 +266,30 @@ func (dm *DomainMapper) rebuild() {
 		time.Sleep(3 * time.Second)
 		coremain.ManualGC()
 	}()
+}
+
+func normalizeRuleKey(rule string) string {
+	rule = strings.TrimSpace(rule)
+	if rule == "" {
+		return ""
+	}
+	if strings.Contains(rule, ":") {
+		return rule
+	}
+	return "domain:" + rule
+}
+
+func mergeTagStrings(current, next string) string {
+	if next == "" {
+		return current
+	}
+	if current == "" {
+		return next
+	}
+	if strings.Contains(current, next) {
+		return current
+	}
+	return current + "|" + next
 }
 
 func (dm *DomainMapper) triggerUpdate() {

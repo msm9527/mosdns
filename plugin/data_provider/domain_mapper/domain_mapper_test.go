@@ -56,6 +56,24 @@ func TestDomainMapperExecSetsDefaultMarkAndTagOnMiss(t *testing.T) {
 	}
 }
 
+func TestNormalizeRuleKeySupportsBareDomain(t *testing.T) {
+	if got := normalizeRuleKey("st.doumao.fun"); got != "domain:st.doumao.fun" {
+		t.Fatalf("unexpected normalized key: %q", got)
+	}
+	if got := normalizeRuleKey("full:st.doumao.fun"); got != "full:st.doumao.fun" {
+		t.Fatalf("expected prefixed rule to stay unchanged, got %q", got)
+	}
+}
+
+func TestMergeTagStringsAppendsWithoutLosingExistingTags(t *testing.T) {
+	if got := mergeTagStrings("记忆直连", "DDNS域名"); got != "记忆直连|DDNS域名" {
+		t.Fatalf("unexpected merged tags: %q", got)
+	}
+	if got := mergeTagStrings("记忆直连|DDNS域名", "DDNS域名"); got != "记忆直连|DDNS域名" {
+		t.Fatalf("expected duplicate tag to be ignored, got %q", got)
+	}
+}
+
 func TestDomainMapperExecAppliesMatchedMarksAndTag(t *testing.T) {
 	dm := newTestMapper(17, "未命中", &MatchResult{
 		Marks:      []uint8{7, 8},

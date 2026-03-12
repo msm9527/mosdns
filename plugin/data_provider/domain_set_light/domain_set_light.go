@@ -22,10 +22,13 @@ import (
 	"github.com/go-chi/chi/v5"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
+	"go.uber.org/zap"
 )
 
 // [修改] 插件类型名称
 const PluginType = "domain_set_light"
+
+var fileWatchInterval = 2 * time.Second
 
 func init() {
 	coremain.RegNewPluginFunc(PluginType, Init, func() any { return new(Args) })
@@ -61,10 +64,17 @@ func (c *stringCollector) Add(s string, _ struct{}) error {
 	return nil
 }
 
+type watchedFileState struct {
+	exists  bool
+	size    int64
+	modTime time.Time
+}
+
 type DomainSetLight struct {
 	bp        *coremain.BP
 	pluginTag string
 	baseArgs  *Args
+	curArgs   *Args
 
 	mu sync.RWMutex
 	// [优化] 移除了 heavy 的 mixM 和 otherM
@@ -76,6 +86,7 @@ type DomainSetLight struct {
 
 	// 新增：订阅者列表
 	subscribers []func()
+	fileStates  map[string]watchedFileState
 }
 
 var _ coremain.RuntimeConfigReloader = (*DomainSetLight)(nil)
@@ -179,7 +190,9 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		bp:          bp,
 		pluginTag:   bp.Tag(),
 		baseArgs:    baseArgs,
+		curArgs:     cloneArgs(cfg),
 		subscribers: make([]func(), 0),
+		fileStates:  make(map[string]watchedFileState),
 	}
 
 	if len(cfg.Files) > 0 {
@@ -192,11 +205,13 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
 	ds.rules = loadedRules
+	ds.updateWatchedFilesLocked(cfg.Files)
 
 	// [注意] 这里故意忽略了 cfg.Sets 的处理
 	// 因为本插件不负责匹配，不需要持有其他插件的引用
 
 	bp.RegAPI(ds.api())
+	ds.startFileWatcher()
 	return ds, nil
 }
 
@@ -238,8 +253,10 @@ func (d *DomainSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _
 	}
 
 	d.mu.Lock()
+	d.curArgs = cloneArgs(effective)
 	d.ruleFile = ruleFile
 	d.rules = loadedRules
+	d.updateWatchedFilesLocked(effective.Files)
 	d.mu.Unlock()
 
 	d.notifySubscribers()
@@ -248,6 +265,102 @@ func (d *DomainSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _
 		coremain.ManualGC()
 	}()
 	return nil
+}
+
+func (d *DomainSetLight) startFileWatcher() {
+	go func() {
+		ticker := time.NewTicker(fileWatchInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := d.pollWatchedFiles(); err != nil {
+				d.bp.L().Warn("domain_set_light file watcher reload failed",
+					zap.String("plugin", d.pluginTag),
+					zap.Error(err))
+			}
+		}
+	}()
+}
+
+func (d *DomainSetLight) pollWatchedFiles() error {
+	d.mu.RLock()
+	files := append([]string(nil), d.curArgs.Files...)
+	prevStates := make(map[string]watchedFileState, len(d.fileStates))
+	for k, v := range d.fileStates {
+		prevStates[k] = v
+	}
+	d.mu.RUnlock()
+
+	changed := false
+	newStates := make(map[string]watchedFileState, len(files))
+	for _, file := range files {
+		state, err := statWatchedFile(file)
+		if err != nil {
+			return err
+		}
+		newStates[file] = state
+		if prev, ok := prevStates[file]; !ok || prev != state {
+			changed = true
+		}
+	}
+	if !changed && len(prevStates) != len(newStates) {
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return d.reloadCurrentArgs(newStates)
+}
+
+func (d *DomainSetLight) reloadCurrentArgs(fileStates map[string]watchedFileState) error {
+	d.mu.RLock()
+	effective := cloneArgs(d.curArgs)
+	d.mu.RUnlock()
+
+	tmp := &DomainSetLight{}
+	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files)
+	if err != nil {
+		return fmt.Errorf("failed to reload rules from files: %w", err)
+	}
+
+	ruleFile := ""
+	if len(effective.Files) > 0 {
+		ruleFile = effective.Files[0]
+	}
+
+	d.mu.Lock()
+	d.ruleFile = ruleFile
+	d.rules = loadedRules
+	d.fileStates = fileStates
+	d.mu.Unlock()
+
+	d.notifySubscribers()
+	return nil
+}
+
+func (d *DomainSetLight) updateWatchedFilesLocked(files []string) {
+	d.fileStates = make(map[string]watchedFileState, len(files))
+	for _, file := range files {
+		state, err := statWatchedFile(file)
+		if err != nil {
+			continue
+		}
+		d.fileStates[file] = state
+	}
+}
+
+func statWatchedFile(path string) (watchedFileState, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return watchedFileState{}, nil
+		}
+		return watchedFileState{}, err
+	}
+	return watchedFileState{
+		exists:  true,
+		size:    info.Size(),
+		modTime: info.ModTime(),
+	}, nil
 }
 
 // ================== API FUNCTION (CORRECTED) ==================

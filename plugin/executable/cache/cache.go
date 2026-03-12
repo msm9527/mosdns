@@ -3,6 +3,7 @@ package cache
 import (
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash/maphash"
@@ -46,7 +47,11 @@ func init() {
 
 const (
 	defaultLazyUpdateTimeout = time.Second * 5
+	defaultLazyWaitTimeout   = 250 * time.Millisecond
 	expiredMsgTtl            = 5
+	prefetchMinLead          = 3 * time.Second
+	prefetchMaxLead          = 30 * time.Second
+	prefetchLeadDivisor      = 5
 
 	minimumChangesToDump   = 1024
 	dumpHeader             = "mosdns_cache_v2"
@@ -122,6 +127,27 @@ type l1Shard struct {
 	pos     int
 	ref     map[key]bool
 	maxSize int
+}
+
+type lazyRefreshState struct {
+	done chan struct{}
+
+	staleServed atomic.Bool
+
+	mu  sync.RWMutex
+	err error
+}
+
+func (s *lazyRefreshState) setErr(err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.err = err
+}
+
+func (s *lazyRefreshState) getErr() error {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.err
 }
 
 type Args struct {
@@ -287,6 +313,9 @@ type Cache struct {
 
 	// 性能补丁：后台更新并发限制信号量
 	lazyUpdateLimit chan struct{}
+
+	lazyRefreshMu sync.Mutex
+	lazyRefresh   map[string]*lazyRefreshState
 }
 
 type Opts struct {
@@ -355,6 +384,7 @@ func NewCache(args *Args, opts Opts) *Cache {
 		lazyUpdateLimit: make(chan struct{}, maxConcurrentLazyUpdate),
 		l1Enabled:       l1Enabled,
 		l1ShardCap:      l1ShardCap,
+		lazyRefresh:     make(map[string]*lazyRefreshState),
 	}
 	p.persistence = newPersistenceManager(args, logger)
 	p.initMetrics(lb)
@@ -549,6 +579,8 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			qCtx.StoreValue(query_context.KeyDomainSet, v1.domainSet)
 		}
 
+		c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedTime, v1.expirationTime, v1.domainSet)
+
 		// 归还 Key 缓冲区
 		keyBufferPool.Put(bufPtr)
 		return nil
@@ -562,11 +594,35 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	keyBufferPool.Put(bufPtr)
 
 	// --- L2 路径查询 ---
+	cachedItem, _, _ := c.backend.Get(kReal)
 	cachedResp, lazyHit, domainSet := getRespFromCache(msgKey, c.backend, c.args.LazyCacheTTL > 0, expiredMsgTtl)
 	if lazyHit {
-		c.lazyHitTotal.Inc()
-		c.lazyHitCount.Add(1)
-		c.doLazyUpdate(msgKey, qCtx, next)
+		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
+		if state.staleServed.CompareAndSwap(false, true) {
+			c.lazyHitTotal.Inc()
+			c.lazyHitCount.Add(1)
+		} else {
+			if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
+				refreshedResp, refreshedLazy, refreshedDomainSet := getRespFromCache(msgKey, c.backend, false, expiredMsgTtl)
+				if refreshedResp != nil && !refreshedLazy {
+					c.hitTotal.Inc()
+					c.hitCount.Add(1)
+					c.l2HitTotalMetric.Inc()
+					c.l2HitCount.Add(1)
+					refreshedResp.Id = q.Id
+					qCtx.SetResponse(refreshedResp)
+					if refreshedDomainSet != "" {
+						qCtx.StoreValue(query_context.KeyDomainSet, refreshedDomainSet)
+					}
+					return nil
+				}
+				if err := state.getErr(); err != nil && !errors.Is(err, sequence.ErrExit) {
+					c.logger.Debug("lazy refresh wait completed without fresh cache", zap.String("key", msgKey), zap.Error(err))
+				}
+			}
+			cachedResp = nil
+			lazyHit = false
+		}
 	}
 	if cachedResp != nil {
 		c.hitTotal.Inc()
@@ -584,9 +640,29 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			v2, _, _ := c.backend.Get(kReal)
 			if v2 != nil {
 				shard.updateL1(kReal, cachedResp, v2.storedTime, v2.expirationTime, v2.domainSet)
+				c.maybePrefetch(msgKey, qCtx, next, now, v2.storedTime, v2.expirationTime, v2.domainSet)
 			}
 		}
 		return nil
+	}
+
+	if cachedItem != nil && now.After(cachedItem.expirationTime) && domainSetContainsToken(cachedItem.domainSet, "DDNS域名") {
+		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
+		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
+			refreshedResp, refreshedLazy, refreshedDomainSet := getRespFromCache(msgKey, c.backend, false, expiredMsgTtl)
+			if refreshedResp != nil && !refreshedLazy {
+				c.hitTotal.Inc()
+				c.hitCount.Add(1)
+				c.l2HitTotalMetric.Inc()
+				c.l2HitCount.Add(1)
+				refreshedResp.Id = q.Id
+				qCtx.SetResponse(refreshedResp)
+				if refreshedDomainSet != "" {
+					qCtx.StoreValue(query_context.KeyDomainSet, refreshedDomainSet)
+				}
+				return nil
+			}
+		}
 	}
 
 	err := next.ExecNext(ctx, qCtx)
@@ -613,60 +689,120 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	return err
 }
 
-func (c *Cache) doLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) {
-	qCtxCopy := qCtx.Copy()
-	lazyUpdateFunc := func() (any, error) {
-		c.lazyUpdateTotalMetric.Inc()
-		c.lazyUpdateCount.Add(1)
-
-		// 性能补丁：并发信号量控制
-		select {
-		case c.lazyUpdateLimit <- struct{}{}:
-			defer func() { <-c.lazyUpdateLimit }()
-		default:
-			c.lazyUpdateDroppedMetric.Inc()
-			c.lazyUpdateDroppedCount.Add(1)
-			return nil, nil // 负载过高，放弃此次异步更新，保护 CPU
-		}
-
-		defer c.lazyUpdateSF.Forget(msgKey)
-		qCtx := qCtxCopy
-
-		c.logger.Debug("start lazy cache update", qCtx.InfoField())
-		ctx, cancel := context.WithTimeout(context.Background(), defaultLazyUpdateTimeout)
-		defer cancel()
-
-		err := next.ExecNext(ctx, qCtx)
-		if err != nil {
-			if err != sequence.ErrExit {
-				c.logger.Warn("failed to update lazy cache", qCtx.InfoField(), zap.Error(err))
-			}
-		}
-
-		r := qCtx.R()
-		if r != nil && !c.containsExcluded(r) {
-			if c.saveRespToCache(msgKey, qCtx) {
-				c.updatedKey.Add(1)
-				// 更新 L1
-				if c.l1Enabled {
-					k := key(msgKey)
-					h := k.Sum()
-					shard := c.shards[h%shardCount]
-					minTTL := dnsutils.GetMinimalTTL(r)
-					var dset string
-					if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
-						if s, isString := val.(string); isString {
-							dset = s
-						}
-					}
-					shard.updateL1(k, r, time.Now(), time.Now().Add(time.Duration(minTTL)*time.Second), dset)
-				}
-			}
-		}
-		c.logger.Debug("lazy cache updated", qCtx.InfoField())
-		return nil, nil
+func (c *Cache) waitForLazyRefresh(state *lazyRefreshState, wait time.Duration) bool {
+	if state == nil {
+		return false
 	}
-	c.lazyUpdateSF.DoChan(msgKey, lazyUpdateFunc)
+	if wait <= 0 {
+		wait = defaultLazyWaitTimeout
+	}
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-state.done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
+
+func (c *Cache) shouldPrefetch(now, storedTime, expirationTime time.Time, domainSet string) bool {
+	if expirationTime.IsZero() || storedTime.IsZero() || !expirationTime.After(now) {
+		return false
+	}
+	totalTTL := expirationTime.Sub(storedTime)
+	if totalTTL <= 0 {
+		return false
+	}
+	remaining := expirationTime.Sub(now)
+	lead := totalTTL / prefetchLeadDivisor
+	if lead < prefetchMinLead {
+		lead = prefetchMinLead
+	}
+	if lead > prefetchMaxLead {
+		lead = prefetchMaxLead
+	}
+	if domainSetContainsToken(domainSet, "DDNS域名") && lead < 10*time.Second {
+		lead = 10 * time.Second
+	}
+	return remaining <= lead
+}
+
+func (c *Cache) maybePrefetch(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker, now, storedTime, expirationTime time.Time, domainSet string) {
+	if msgKey == "" || qCtx == nil || !c.shouldPrefetch(now, storedTime, expirationTime, domainSet) {
+		return
+	}
+	c.ensureLazyUpdate(msgKey, qCtx, next)
+}
+
+func (c *Cache) ensureLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) (*lazyRefreshState, bool) {
+	c.lazyRefreshMu.Lock()
+	if state, ok := c.lazyRefresh[msgKey]; ok {
+		c.lazyRefreshMu.Unlock()
+		return state, false
+	}
+	state := &lazyRefreshState{done: make(chan struct{})}
+	c.lazyRefresh[msgKey] = state
+	c.lazyRefreshMu.Unlock()
+
+	qCtxCopy := qCtx.Copy()
+	go func() {
+		defer close(state.done)
+		defer func() {
+			c.lazyRefreshMu.Lock()
+			delete(c.lazyRefresh, msgKey)
+			c.lazyRefreshMu.Unlock()
+		}()
+		state.setErr(c.runLazyUpdate(msgKey, qCtxCopy, next))
+	}()
+
+	return state, true
+}
+
+func (c *Cache) runLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) error {
+	c.lazyUpdateTotalMetric.Inc()
+	c.lazyUpdateCount.Add(1)
+
+	select {
+	case c.lazyUpdateLimit <- struct{}{}:
+		defer func() { <-c.lazyUpdateLimit }()
+	default:
+		c.lazyUpdateDroppedMetric.Inc()
+		c.lazyUpdateDroppedCount.Add(1)
+		return nil
+	}
+
+	c.logger.Debug("start lazy cache update", qCtx.InfoField())
+	ctx, cancel := context.WithTimeout(context.Background(), defaultLazyUpdateTimeout)
+	defer cancel()
+
+	err := next.ExecNext(ctx, qCtx)
+	if err != nil && !errors.Is(err, sequence.ErrExit) {
+		c.logger.Warn("failed to update lazy cache", qCtx.InfoField(), zap.Error(err))
+	}
+
+	r := qCtx.R()
+	if r != nil && !c.containsExcluded(r) {
+		if c.saveRespToCache(msgKey, qCtx) {
+			c.updatedKey.Add(1)
+			if c.l1Enabled {
+				k := key(msgKey)
+				h := k.Sum()
+				shard := c.shards[h%shardCount]
+				minTTL := dnsutils.GetMinimalTTL(r)
+				var dset string
+				if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
+					if s, isString := val.(string); isString {
+						dset = s
+					}
+				}
+				now := time.Now()
+				shard.updateL1(k, r, now, now.Add(time.Duration(minTTL)*time.Second), dset)
+			}
+		}
+	}
+	c.logger.Debug("lazy cache updated", qCtx.InfoField())
+	return err
 }
 
 func (c *Cache) Close() error {
@@ -759,6 +895,50 @@ func (c *Cache) FlushRuntime(_ context.Context) error {
 	return nil
 }
 
+func (c *Cache) PurgeDomainRuntime(_ context.Context, qname string, qtype uint16) (int, error) {
+	qname = strings.TrimSpace(qname)
+	if qname == "" {
+		return 0, errors.New("qname is required")
+	}
+	qname = dns.Fqdn(qname)
+
+	now := time.Now()
+	purgeKeys := make([]key, 0, 8)
+	if err := c.backend.Range(func(k key, _ *item, cacheExpirationTime time.Time) error {
+		if cacheExpirationTime.Before(now) {
+			return nil
+		}
+		meta, ok := parseCacheKeyMeta(k)
+		if !ok {
+			return nil
+		}
+		if !strings.EqualFold(meta.QName, qname) {
+			return nil
+		}
+		if qtype != 0 && meta.QType != qtype {
+			return nil
+		}
+		purgeKeys = append(purgeKeys, k)
+		return nil
+	}); err != nil {
+		return 0, err
+	}
+
+	for _, k := range purgeKeys {
+		c.backend.Delete(k)
+	}
+	c.deleteL1Keys(purgeKeys)
+
+	if len(purgeKeys) > 0 {
+		c.updatedKey.Add(uint64(len(purgeKeys)))
+		if err := c.dumpCache(); err != nil {
+			return 0, err
+		}
+	}
+
+	return len(purgeKeys), nil
+}
+
 func (c *Cache) Api() *chi.Mux {
 	r := chi.NewRouter()
 
@@ -771,6 +951,37 @@ func (c *Cache) Api() *chi.Mux {
 
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("Cache flushed and a background dump has been triggered.\n"))
+	}))
+
+	r.Post("/purge_domain", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
+		type purgeDomainRequest struct {
+			QName string `json:"qname"`
+			QType uint16 `json:"qtype,omitempty"`
+		}
+		type purgeDomainResponse struct {
+			QName  string `json:"qname"`
+			QType  uint16 `json:"qtype,omitempty"`
+			Purged int    `json:"purged"`
+		}
+
+		var body purgeDomainRequest
+		if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		purged, err := c.PurgeDomainRuntime(req.Context(), body.QName, body.QType)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(purgeDomainResponse{
+			QName:  dns.Fqdn(strings.TrimSpace(body.QName)),
+			QType:  body.QType,
+			Purged: purged,
+		})
 	}))
 
 	r.Get("/dump", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
@@ -1221,7 +1432,7 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCache
 			return r, false, v.domainSet
 		}
 
-		if lazyCacheEnabled {
+		if lazyCacheEnabled && !domainSetContainsToken(v.domainSet, "DDNS域名") {
 			r := m.Copy()
 			dnsutils.SetTTL(r, uint32(lazyTtl))
 			return r, true, v.domainSet

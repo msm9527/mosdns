@@ -21,8 +21,8 @@ package cache
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
-	"github.com/miekg/dns"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,7 +31,9 @@ import (
 	"testing"
 	"time"
 
+	pcache "github.com/IrineSistiana/mosdns/v5/pkg/cache"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/miekg/dns"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -108,6 +110,134 @@ func Test_cachePlugin_WALReplay(t *testing.T) {
 	}
 	if lazy {
 		t.Fatal("expected restored response to be fresh")
+	}
+}
+
+func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
+	backend := pcache.New[key, *item](pcache.Opts{Size: 64})
+	defer backend.Close()
+
+	msg := new(dns.Msg)
+	msg.SetQuestion("ddns.example.", dns.TypeA)
+	msg.Answer = append(msg.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "ddns.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   net.IPv4(1, 2, 3, 4),
+	})
+	packed, err := msg.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	backend.Store("ddns-key", &item{
+		resp:           packed,
+		storedTime:     now.Add(-10 * time.Minute),
+		expirationTime: now.Add(-1 * time.Minute),
+		domainSet:      "DDNS域名",
+	}, now.Add(time.Hour))
+
+	resp, lazy, domainSet := getRespFromCache("ddns-key", backend, true, expiredMsgTtl)
+	if resp != nil || lazy || domainSet != "" {
+		t.Fatalf("expected ddns stale cache to be bypassed, got resp=%v lazy=%v domainSet=%q", resp != nil, lazy, domainSet)
+	}
+}
+
+func Test_cachePlugin_PurgeDomainRuntime(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            64,
+		DumpFile:        filepath.Join(dir, "cache.dump"),
+		DumpInterval:    3600,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 1,
+	}
+	c := NewCache(args, Opts{})
+	defer c.Close()
+
+	qCtxA := testQueryContext(t, "purge.example.", net.IPv4(1, 1, 1, 1))
+	qCtxAAAA := testAAAAQueryContext(t, "purge.example.", net.ParseIP("2001:db8::1"))
+	qCtxOther := testQueryContext(t, "keep.example.", net.IPv4(2, 2, 2, 2))
+
+	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false)
+	keyAAAABuf, ptrAAAA := getMsgKeyBytes(qCtxAAAA.Q(), qCtxAAAA, false)
+	keyOtherBuf, ptrOther := getMsgKeyBytes(qCtxOther.Q(), qCtxOther, false)
+	defer keyBufferPool.Put(ptrA)
+	defer keyBufferPool.Put(ptrAAAA)
+	defer keyBufferPool.Put(ptrOther)
+
+	if !c.saveRespToCache(string(keyABuf), qCtxA) {
+		t.Fatal("expected A response to be cached")
+	}
+	if !c.saveRespToCache(string(keyAAAABuf), qCtxAAAA) {
+		t.Fatal("expected AAAA response to be cached")
+	}
+	if !c.saveRespToCache(string(keyOtherBuf), qCtxOther) {
+		t.Fatal("expected other response to be cached")
+	}
+
+	purged, err := c.PurgeDomainRuntime(context.Background(), "purge.example", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purged != 2 {
+		t.Fatalf("expected to purge 2 entries, got %d", purged)
+	}
+
+	if resp, _, _ := getRespFromCache(string(keyABuf), c.backend, false, expiredMsgTtl); resp != nil {
+		t.Fatal("expected A entry to be purged")
+	}
+	if resp, _, _ := getRespFromCache(string(keyAAAABuf), c.backend, false, expiredMsgTtl); resp != nil {
+		t.Fatal("expected AAAA entry to be purged")
+	}
+	if resp, _, _ := getRespFromCache(string(keyOtherBuf), c.backend, false, expiredMsgTtl); resp == nil {
+		t.Fatal("expected unrelated entry to remain")
+	}
+}
+
+func Test_cachePlugin_PurgeDomainAPI(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	qCtx := testQueryContext(t, "api-purge.example.", net.IPv4(3, 3, 3, 3))
+	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
+	defer keyBufferPool.Put(bufPtr)
+	if !c.saveRespToCache(string(keyBuf), qCtx) {
+		t.Fatal("expected response to be cached")
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/purge_domain", bytes.NewBufferString(`{"qname":"api-purge.example"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	c.Api().ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d: %s", resp.Code, resp.Body.String())
+	}
+
+	var body struct {
+		QName  string `json:"qname"`
+		Purged int    `json:"purged"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if body.QName != "api-purge.example." || body.Purged != 1 {
+		t.Fatalf("unexpected purge response: %+v", body)
+	}
+}
+
+func Test_cachePlugin_ShouldPrefetch(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	now := time.Now()
+	if !c.shouldPrefetch(now, now.Add(-60*time.Second), now.Add(2*time.Second), "未命中") {
+		t.Fatal("expected near-expiration item to trigger prefetch")
+	}
+	if c.shouldPrefetch(now, now.Add(-60*time.Second), now.Add(40*time.Second), "未命中") {
+		t.Fatal("did not expect long-remaining item to trigger prefetch")
+	}
+	if !c.shouldPrefetch(now, now.Add(-20*time.Second), now.Add(8*time.Second), "DDNS域名") {
+		t.Fatal("expected ddns item to use more aggressive prefetch window")
 	}
 }
 
@@ -283,6 +413,28 @@ func testQueryContext(t testingHelper, name string, ip net.IP) *query_context.Co
 			Ttl:    60,
 		},
 		A: ip.To4(),
+	})
+	qCtx.SetResponse(resp)
+	return qCtx
+}
+
+func testAAAAQueryContext(t testingHelper, name string, ip net.IP) *query_context.Context {
+	t.Helper()
+	q := new(dns.Msg)
+	q.SetQuestion(name, dns.TypeAAAA)
+	q.Id = 1
+	qCtx := query_context.NewContext(q)
+
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = append(resp.Answer, &dns.AAAA{
+		Hdr: dns.RR_Header{
+			Name:   name,
+			Rrtype: dns.TypeAAAA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		AAAA: ip,
 	})
 	qCtx.SetResponse(resp)
 	return qCtx

@@ -21,9 +21,12 @@ import (
 	"github.com/go-chi/chi/v5"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
+	"go.uber.org/zap"
 )
 
 const PluginType = "domain_set"
+
+var fileWatchInterval = 2 * time.Second
 
 func init() {
 	coremain.RegNewPluginFunc(PluginType, Init, func() any { return new(Args) })
@@ -39,6 +42,12 @@ type domainPayload struct {
 	Values []string `json:"values"`
 }
 
+type watchedFileState struct {
+	exists  bool
+	size    int64
+	modTime time.Time
+}
+
 var _ data_provider.DomainMatcherProvider = (*DomainSet)(nil)
 var _ domain.Matcher[struct{}] = (*DomainSet)(nil)
 
@@ -49,6 +58,7 @@ type DomainSet struct {
 	bp        *coremain.BP
 	pluginTag string
 	baseArgs  *Args
+	curArgs   *Args
 
 	mu     sync.RWMutex
 	mixM   *domain.MixMatcher[struct{}]
@@ -59,6 +69,7 @@ type DomainSet struct {
 
 	// 新增：订阅者列表
 	subscribers []func()
+	fileStates  map[string]watchedFileState
 }
 
 var _ coremain.RuntimeConfigReloader = (*DomainSet)(nil)
@@ -167,9 +178,11 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		bp:          bp,
 		pluginTag:   bp.Tag(),
 		baseArgs:    baseArgs,
+		curArgs:     cloneArgs(cfg),
 		mixM:        domain.NewDomainMixMatcher(),
 		otherM:      make([]domain.Matcher[struct{}], 0, len(cfg.Sets)),
 		subscribers: make([]func(), 0), // 初始化订阅者列表
+		fileStates:  make(map[string]watchedFileState),
 	}
 
 	if len(cfg.Files) > 0 {
@@ -182,6 +195,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
 	ds.rules = loadedRules
+	ds.updateWatchedFilesLocked(cfg.Files)
 	coremain.ManualGC()
 
 	for _, tag := range cfg.Sets {
@@ -193,6 +207,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	}
 
 	bp.RegAPI(ds.api())
+	ds.startFileWatcher()
 	return ds, nil
 }
 
@@ -257,10 +272,12 @@ func (d *DomainSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []co
 	}
 
 	d.mu.Lock()
+	d.curArgs = cloneArgs(effective)
 	d.mixM = tmpMatcher
 	d.otherM = otherM
 	d.ruleFile = ruleFile
 	d.rules = loadedRules
+	d.updateWatchedFilesLocked(effective.Files)
 	d.mu.Unlock()
 
 	d.notifySubscribers()
@@ -269,6 +286,114 @@ func (d *DomainSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []co
 		coremain.ManualGC()
 	}()
 	return nil
+}
+
+func (d *DomainSet) startFileWatcher() {
+	go func() {
+		ticker := time.NewTicker(fileWatchInterval)
+		defer ticker.Stop()
+		for range ticker.C {
+			if err := d.pollWatchedFiles(); err != nil {
+				d.bp.L().Warn("domain_set file watcher reload failed",
+					zap.String("plugin", d.pluginTag),
+					zap.Error(err))
+			}
+		}
+	}()
+}
+
+func (d *DomainSet) pollWatchedFiles() error {
+	d.mu.RLock()
+	files := append([]string(nil), d.curArgs.Files...)
+	prevStates := make(map[string]watchedFileState, len(d.fileStates))
+	for k, v := range d.fileStates {
+		prevStates[k] = v
+	}
+	d.mu.RUnlock()
+
+	changed := false
+	newStates := make(map[string]watchedFileState, len(files))
+	for _, file := range files {
+		state, err := statWatchedFile(file)
+		if err != nil {
+			return err
+		}
+		newStates[file] = state
+		if prev, ok := prevStates[file]; !ok || prev != state {
+			changed = true
+		}
+	}
+	if !changed && len(prevStates) != len(newStates) {
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	return d.reloadCurrentArgs(newStates)
+}
+
+func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) error {
+	d.mu.RLock()
+	effective := cloneArgs(d.curArgs)
+	d.mu.RUnlock()
+
+	tmpMatcher := domain.NewDomainMixMatcher()
+	tmp := &DomainSet{mixM: tmpMatcher}
+	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files)
+	if err != nil {
+		return fmt.Errorf("failed to reload rules from files: %w", err)
+	}
+
+	otherM := make([]domain.Matcher[struct{}], 0, len(effective.Sets))
+	for _, tag := range effective.Sets {
+		provider, ok := d.bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
+		if !ok || provider == nil {
+			return fmt.Errorf("%s is not a DomainMatcherProvider", tag)
+		}
+		otherM = append(otherM, provider.GetDomainMatcher())
+	}
+
+	ruleFile := ""
+	if len(effective.Files) > 0 {
+		ruleFile = effective.Files[0]
+	}
+
+	d.mu.Lock()
+	d.mixM = tmpMatcher
+	d.otherM = otherM
+	d.ruleFile = ruleFile
+	d.rules = loadedRules
+	d.fileStates = fileStates
+	d.mu.Unlock()
+
+	d.notifySubscribers()
+	return nil
+}
+
+func (d *DomainSet) updateWatchedFilesLocked(files []string) {
+	d.fileStates = make(map[string]watchedFileState, len(files))
+	for _, file := range files {
+		state, err := statWatchedFile(file)
+		if err != nil {
+			continue
+		}
+		d.fileStates[file] = state
+	}
+}
+
+func statWatchedFile(path string) (watchedFileState, error) {
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return watchedFileState{}, nil
+		}
+		return watchedFileState{}, err
+	}
+	return watchedFileState{
+		exists:  true,
+		size:    info.Size(),
+		modTime: info.ModTime(),
+	}, nil
 }
 
 func (d *DomainSet) api() *chi.Mux {
