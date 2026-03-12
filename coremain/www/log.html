@@ -1594,9 +1594,10 @@
                                     <div class="requery-field-grid">
                                         <label for="requery-interval-input" class="field-label">巡检间隔 (分钟)</label>
                                         <input type="number" id="requery-interval-input" min="1">
-                                        <label for="requery-date-range-input" class="field-label" title="仅刷新最近 N 天内查询过的域名">域名刷新天数</label>
+                                        <label for="requery-date-range-input" class="field-label" title="仅影响完整重建第二阶段的源文件长尾补全范围">长尾补全天数</label>
                                         <input type="number" id="requery-date-range-input" min="1" value="30" style="text-align: center;">
                                     </div>
+                                    <p class="requery-field-note">这个值不会限制快速预热或快速重建，主要用于完整重建第二阶段扫描源文件时裁剪长尾范围。</p>
                                 </section>
 
                                 <section class="requery-settings-card">

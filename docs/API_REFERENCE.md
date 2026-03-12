@@ -657,6 +657,7 @@
 - `execution_settings.refresh_resolver_pool`
 - `execution_settings.query_mode`
 - `execution_settings.date_range_days`
+  - 仅影响完整重建第二阶段扫描源文件时的长尾补全范围
 - `execution_settings.quick_rebuild_limit`
 - `execution_settings.prewarm_limit`
 - `execution_settings.full_rebuild_priority_limit`

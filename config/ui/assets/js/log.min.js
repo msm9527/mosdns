@@ -640,7 +640,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (!dateRangeDays || dateRangeDays < 1) {
-                ui.showToast('域名刷新天数必须大于 0', 'error');
+                ui.showToast('长尾补全天数必须大于 0', 'error');
                 return;
             }
             if (!fullQps || fullQps < 1 || !quickQps || quickQps < 1 || !prewarmQps || prewarmQps < 1) {
