@@ -190,7 +190,6 @@ func newSdSetLight(bp *coremain.BP, args any) (any, error) {
 		log.Printf("[%s] failed to perform initial rule load: %v", PluginType, err)
 	}
 
-	bp.RegAPI(p.api())
 	go p.backgroundUpdater()
 
 	return p, nil
@@ -247,6 +246,134 @@ func (p *SdSetLight) GetDomainMatcher() domain.Matcher[struct{}] {
 // Match [重要修改] 恒定返回 false
 func (p *SdSetLight) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
+}
+
+func (p *SdSetLight) ListDiversionRules() ([]coremain.DiversionRuleItem, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	items := make([]coremain.DiversionRuleItem, 0, len(p.sources))
+	for _, src := range p.sources {
+		items = append(items, coremain.DiversionRuleItem{
+			Name:                src.Name,
+			Type:                src.Type,
+			Files:               src.Files,
+			URL:                 src.URL,
+			Enabled:             src.Enabled,
+			EnableRegexp:        src.EnableRegexp,
+			AutoUpdate:          src.AutoUpdate,
+			UpdateIntervalHours: src.UpdateIntervalHours,
+			RuleCount:           src.RuleCount,
+			LastUpdated:         src.LastUpdated,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return items, nil
+}
+
+func (p *SdSetLight) UpsertDiversionRule(name string, item coremain.DiversionRuleItem) (coremain.DiversionRuleItem, bool, error) {
+	if strings.TrimSpace(item.Files) == "" || strings.TrimSpace(item.URL) == "" {
+		return coremain.DiversionRuleItem{}, false, coremain.NewRuleAPIError(http.StatusBadRequest, "RULES_DIVERSION_INVALID", "'files' and 'url' fields are required")
+	}
+
+	reqData := RuleSource{
+		Name:                name,
+		Type:                item.Type,
+		Files:               item.Files,
+		URL:                 item.URL,
+		Enabled:             item.Enabled,
+		EnableRegexp:        item.EnableRegexp,
+		AutoUpdate:          item.AutoUpdate,
+		UpdateIntervalHours: item.UpdateIntervalHours,
+	}
+
+	var created bool
+	var updatedSource *RuleSource
+	p.mu.Lock()
+	existing, isUpdate := p.sources[name]
+	if isUpdate {
+		existing.Type = reqData.Type
+		existing.Files = reqData.Files
+		existing.URL = reqData.URL
+		existing.Enabled = reqData.Enabled
+		existing.EnableRegexp = reqData.EnableRegexp
+		existing.AutoUpdate = reqData.AutoUpdate
+		existing.UpdateIntervalHours = reqData.UpdateIntervalHours
+		updatedSource = existing
+	} else {
+		reqData.RuleCount = 0
+		reqData.LastUpdated = time.Time{}
+		p.sources[name] = &reqData
+		updatedSource = &reqData
+		created = true
+	}
+	p.mu.Unlock()
+
+	if err := p.saveConfig(); err != nil {
+		return coremain.DiversionRuleItem{}, false, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_DIVERSION_SAVE_FAILED", "failed to save config")
+	}
+
+	go p.reloadAllRules()
+
+	return coremain.DiversionRuleItem{
+		Name:                updatedSource.Name,
+		Type:                updatedSource.Type,
+		Files:               updatedSource.Files,
+		URL:                 updatedSource.URL,
+		Enabled:             updatedSource.Enabled,
+		EnableRegexp:        updatedSource.EnableRegexp,
+		AutoUpdate:          updatedSource.AutoUpdate,
+		UpdateIntervalHours: updatedSource.UpdateIntervalHours,
+		RuleCount:           updatedSource.RuleCount,
+		LastUpdated:         updatedSource.LastUpdated,
+	}, created, nil
+}
+
+func (p *SdSetLight) DeleteDiversionRule(name string) error {
+	var srcToDelete *RuleSource
+	p.mu.Lock()
+	src, ok := p.sources[name]
+	if ok {
+		srcToDelete = src
+		delete(p.sources, name)
+	}
+	p.mu.Unlock()
+	if !ok {
+		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_DIVERSION_NOT_FOUND", "source not found")
+	}
+	if srcToDelete.Files != "" {
+		if err := os.Remove(srcToDelete.Files); err != nil && !os.IsNotExist(err) {
+			log.Printf("[%s] WARN: failed to delete srs file %s: %v", PluginType, srcToDelete.Files, err)
+		}
+	}
+	if err := p.saveConfig(); err != nil {
+		return coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_DIVERSION_SAVE_FAILED", "failed to save config")
+	}
+	go p.reloadAllRules()
+	return nil
+}
+
+func (p *SdSetLight) TriggerDiversionRuleUpdate(name string) error {
+	p.mu.RLock()
+	_, ok := p.sources[name]
+	p.mu.RUnlock()
+	if !ok {
+		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_DIVERSION_NOT_FOUND", "source not found")
+	}
+
+	go func() {
+		log.Printf("[%s] manual update triggered for source '%s'.", PluginType, name)
+		updateCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout)
+		defer cancel()
+		if err := p.downloadAndUpdateLocalFile(updateCtx, name); err != nil {
+			log.Printf("[%s] ERROR: failed to manually update source '%s': %v", PluginType, name, err)
+			return
+		}
+		log.Printf("[%s] manual update for '%s' successful, triggering reload.", PluginType, name)
+		p.reloadAllRules()
+		coremain.ManualGC()
+	}()
+	return nil
 }
 
 func (p *SdSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {

@@ -201,40 +201,40 @@
 
 ## 4.5 在线分流规则源
 
-适用插件包括：
+适用类型包括：
 
-- `sd_set_light`
-- `si_set`
-- `sd_set`
+- `geositecn`
+- `geositenocn`
+- `geoipcn`
+- `cuscn`
+- `cusnocn`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/{tag}/config` | `compat` | 获取规则源配置 |
-| `PUT` | `/plugins/{tag}/config/{name}` | `compat` | 新增/更新规则源 |
-| `DELETE` | `/plugins/{tag}/config/{name}` | `compat` | 删除规则源 |
-| `POST` | `/plugins/{tag}/update/{name}` | `compat` | 后台更新指定规则源 |
-
-问题：
-
-- 前端需要知道不同类型规则对应哪个插件 tag
+| `GET` | `/api/v1/rules/diversion` | `stable` | 聚合获取所有规则源 |
+| `PUT` | `/api/v1/rules/diversion/{type}/{name}` | `stable` | 新增/更新规则源 |
+| `DELETE` | `/api/v1/rules/diversion/{type}/{name}` | `stable` | 删除规则源 |
+| `POST` | `/api/v1/rules/diversion/{type}/{name}/update` | `stable` | 后台更新指定规则源 |
 
 建议：
 
-- 中期收口到 `/api/v1/rules/diversion/*`
+- 旧的插件规则源接口已移除
+- 统一只保留 `/api/v1/rules/diversion/*`
 
 ## 4.6 AdGuard 规则
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/adguard/rules` | `compat` | 获取规则列表 |
-| `POST` | `/plugins/adguard/rules` | `compat` | 新增规则 |
-| `PUT` | `/plugins/adguard/rules/{id}` | `compat` | 更新规则 |
-| `DELETE` | `/plugins/adguard/rules/{id}` | `compat` | 删除规则 |
-| `POST` | `/plugins/adguard/update` | `compat` | 后台更新启用规则 |
+| `GET` | `/api/v1/rules/adguard` | `stable` | 获取规则列表 |
+| `POST` | `/api/v1/rules/adguard` | `stable` | 新增规则 |
+| `PUT` | `/api/v1/rules/adguard/{id}` | `stable` | 更新规则 |
+| `DELETE` | `/api/v1/rules/adguard/{id}` | `stable` | 删除规则 |
+| `POST` | `/api/v1/rules/adguard/update` | `stable` | 后台更新启用规则 |
 
 建议：
 
-- 中期收口到 `/api/v1/rules/adguard/*`
+- 旧的 AdGuard 插件接口已移除
+- 统一只保留 `/api/v1/rules/adguard/*`
 
 ## 4.7 其他插件接口
 

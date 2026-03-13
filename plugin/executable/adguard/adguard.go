@@ -229,8 +229,6 @@ func newAdguardRule(bp *coremain.BP, args any) (any, error) {
 
 	p.reloadAllRules(context.Background(), true)
 
-	bp.RegAPI(p.api())
-
 	go p.backgroundUpdater()
 
 	return p, nil
@@ -244,6 +242,176 @@ func cloneArgs(src *Args) *Args {
 		Dir:    src.Dir,
 		Socks5: src.Socks5,
 	}
+}
+
+func (p *AdguardRule) ListAdguardRules() ([]coremain.AdguardRuleItem, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	items := make([]coremain.AdguardRuleItem, 0, len(p.onlineRules))
+	for _, rule := range p.onlineRules {
+		items = append(items, coremain.AdguardRuleItem{
+			ID:                  rule.ID,
+			Name:                rule.Name,
+			URL:                 rule.URL,
+			Enabled:             rule.Enabled,
+			AutoUpdate:          rule.AutoUpdate,
+			UpdateIntervalHours: rule.UpdateIntervalHours,
+			RuleCount:           rule.RuleCount,
+			LastUpdated:         rule.LastUpdated,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return items, nil
+}
+
+func (p *AdguardRule) CreateAdguardRule(item coremain.AdguardRuleItem) (coremain.AdguardRuleItem, error) {
+	newRule := OnlineRule{
+		Name:                strings.TrimSpace(item.Name),
+		URL:                 strings.TrimSpace(item.URL),
+		Enabled:             item.Enabled,
+		AutoUpdate:          item.AutoUpdate,
+		UpdateIntervalHours: item.UpdateIntervalHours,
+	}
+	if newRule.Name == "" || newRule.URL == "" {
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusBadRequest, "RULES_ADGUARD_INVALID", "name and url are required")
+	}
+	if newRule.UpdateIntervalHours < 0 {
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusBadRequest, "RULES_ADGUARD_INVALID", "update_interval_hours cannot be negative")
+	}
+
+	newRule.ID = uuid.New().String()
+	newRule.localPath = filepath.Join(p.dir, newRule.ID+".rules")
+	newRule.LastUpdated = time.Time{}
+
+	p.mu.Lock()
+	p.onlineRules[newRule.ID] = &newRule
+	p.mu.Unlock()
+
+	if err := p.saveConfig(); err != nil {
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
+	}
+
+	go func(ruleID string, enabled bool) {
+		if !enabled {
+			return
+		}
+		downloadCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout)
+		defer cancel()
+		if err := p.downloadRule(downloadCtx, ruleID); err != nil {
+			log.Printf("[adguard_rule] ERROR: failed to download new rule: %v", err)
+		}
+		p.triggerReload(p.ctx)
+	}(newRule.ID, newRule.Enabled)
+
+	return coremain.AdguardRuleItem{
+		ID:                  newRule.ID,
+		Name:                newRule.Name,
+		URL:                 newRule.URL,
+		Enabled:             newRule.Enabled,
+		AutoUpdate:          newRule.AutoUpdate,
+		UpdateIntervalHours: newRule.UpdateIntervalHours,
+		RuleCount:           newRule.RuleCount,
+		LastUpdated:         newRule.LastUpdated,
+	}, nil
+}
+
+func (p *AdguardRule) UpdateAdguardRule(id string, item coremain.AdguardRuleItem) (coremain.AdguardRuleItem, error) {
+	name := strings.TrimSpace(item.Name)
+	url := strings.TrimSpace(item.URL)
+	if name == "" || url == "" {
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusBadRequest, "RULES_ADGUARD_INVALID", "name and url are required")
+	}
+	if item.UpdateIntervalHours < 0 {
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusBadRequest, "RULES_ADGUARD_INVALID", "update_interval_hours cannot be negative")
+	}
+
+	p.mu.Lock()
+	rule, ok := p.onlineRules[id]
+	if !ok {
+		p.mu.Unlock()
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusNotFound, "RULES_ADGUARD_NOT_FOUND", "rule not found")
+	}
+	rule.Name = name
+	rule.URL = url
+	rule.Enabled = item.Enabled
+	rule.AutoUpdate = item.AutoUpdate
+	rule.UpdateIntervalHours = item.UpdateIntervalHours
+	out := coremain.AdguardRuleItem{
+		ID:                  rule.ID,
+		Name:                rule.Name,
+		URL:                 rule.URL,
+		Enabled:             rule.Enabled,
+		AutoUpdate:          rule.AutoUpdate,
+		UpdateIntervalHours: rule.UpdateIntervalHours,
+		RuleCount:           rule.RuleCount,
+		LastUpdated:         rule.LastUpdated,
+	}
+	p.mu.Unlock()
+
+	if err := p.saveConfig(); err != nil {
+		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
+	}
+
+	p.triggerReload(context.Background())
+	return out, nil
+}
+
+func (p *AdguardRule) DeleteAdguardRule(id string) error {
+	p.mu.Lock()
+	rule, ok := p.onlineRules[id]
+	if !ok {
+		p.mu.Unlock()
+		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_ADGUARD_NOT_FOUND", "rule not found")
+	}
+	localPath := rule.localPath
+	delete(p.onlineRules, id)
+	p.mu.Unlock()
+
+	if err := os.Remove(localPath); err != nil && !os.IsNotExist(err) {
+		log.Printf("[adguard_rule] WARN: failed to delete rule file %s: %v", localPath, err)
+	}
+	if err := p.saveConfig(); err != nil {
+		return coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
+	}
+
+	p.triggerReload(context.Background())
+	return nil
+}
+
+func (p *AdguardRule) TriggerAdguardUpdate() error {
+	go func() {
+		log.Println("[adguard_rule] Manual update triggered for all enabled rules.")
+
+		p.mu.RLock()
+		rulesToUpdate := make([]*OnlineRule, 0)
+		for _, rule := range p.onlineRules {
+			if rule.Enabled {
+				rulesToUpdate = append(rulesToUpdate, rule)
+			}
+		}
+		p.mu.RUnlock()
+
+		var wg sync.WaitGroup
+		for _, rule := range rulesToUpdate {
+			wg.Add(1)
+			go func(ruleID string) {
+				defer wg.Done()
+				downloadCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout)
+				defer cancel()
+				if err := p.downloadRule(downloadCtx, ruleID); err != nil {
+					log.Printf("[adguard_rule] ERROR: failed to update rule during manual update: %v", err)
+				}
+			}(rule.ID)
+		}
+		wg.Wait()
+
+		log.Println("[adguard_rule] Manual update process finished.")
+		p.triggerReload(p.ctx)
+		coremain.ManualGC()
+	}()
+
+	return nil
 }
 
 func newHTTPClient(socks5 string) (*http.Client, error) {

@@ -160,7 +160,6 @@ func newSiSet(bp *coremain.BP, args any) (any, error) {
 		log.Printf("[%s] failed to perform initial rule load: %v", PluginType, err)
 	}
 
-	bp.RegAPI(p.api())
 	go p.backgroundUpdater()
 
 	return p, nil
@@ -223,6 +222,128 @@ func (p *SiSet) Match(addr netip.Addr) bool {
 		return false
 	}
 	return m.Match(addr)
+}
+
+func (p *SiSet) ListDiversionRules() ([]coremain.DiversionRuleItem, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	items := make([]coremain.DiversionRuleItem, 0, len(p.sources))
+	for _, src := range p.sources {
+		items = append(items, coremain.DiversionRuleItem{
+			Name:                src.Name,
+			Type:                src.Type,
+			Files:               src.Files,
+			URL:                 src.URL,
+			Enabled:             src.Enabled,
+			AutoUpdate:          src.AutoUpdate,
+			UpdateIntervalHours: src.UpdateIntervalHours,
+			RuleCount:           src.RuleCount,
+			LastUpdated:         src.LastUpdated,
+		})
+	}
+	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
+	return items, nil
+}
+
+func (p *SiSet) UpsertDiversionRule(name string, item coremain.DiversionRuleItem) (coremain.DiversionRuleItem, bool, error) {
+	reqData := RuleSource{
+		Name:                name,
+		Type:                item.Type,
+		Files:               item.Files,
+		URL:                 item.URL,
+		Enabled:             item.Enabled,
+		AutoUpdate:          item.AutoUpdate,
+		UpdateIntervalHours: item.UpdateIntervalHours,
+	}
+
+	var created bool
+	var updatedSource *RuleSource
+	p.mu.Lock()
+	existing, isUpdate := p.sources[name]
+	if isUpdate {
+		existing.Type = reqData.Type
+		existing.Files = reqData.Files
+		existing.URL = reqData.URL
+		existing.Enabled = reqData.Enabled
+		existing.AutoUpdate = reqData.AutoUpdate
+		existing.UpdateIntervalHours = reqData.UpdateIntervalHours
+		updatedSource = existing
+	} else {
+		reqData.RuleCount = 0
+		reqData.LastUpdated = time.Time{}
+		p.sources[name] = &reqData
+		updatedSource = &reqData
+		created = true
+	}
+	p.mu.Unlock()
+
+	if err := p.saveConfig(); err != nil {
+		return coremain.DiversionRuleItem{}, false, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_DIVERSION_SAVE_FAILED", "failed to save config")
+	}
+
+	go p.reloadAllRules()
+
+	return coremain.DiversionRuleItem{
+		Name:                updatedSource.Name,
+		Type:                updatedSource.Type,
+		Files:               updatedSource.Files,
+		URL:                 updatedSource.URL,
+		Enabled:             updatedSource.Enabled,
+		AutoUpdate:          updatedSource.AutoUpdate,
+		UpdateIntervalHours: updatedSource.UpdateIntervalHours,
+		RuleCount:           updatedSource.RuleCount,
+		LastUpdated:         updatedSource.LastUpdated,
+	}, created, nil
+}
+
+func (p *SiSet) DeleteDiversionRule(name string) error {
+	var srcToDelete *RuleSource
+	p.mu.Lock()
+	src, ok := p.sources[name]
+	if ok {
+		srcToDelete = src
+		delete(p.sources, name)
+	}
+	p.mu.Unlock()
+	if !ok {
+		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_DIVERSION_NOT_FOUND", "source not found")
+	}
+	if srcToDelete.Files != "" {
+		if err := os.Remove(srcToDelete.Files); err != nil && !os.IsNotExist(err) {
+			log.Printf("[%s] WARN: failed to delete srs file %s: %v", PluginType, srcToDelete.Files, err)
+		}
+	}
+	if err := p.saveConfig(); err != nil {
+		return coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_DIVERSION_SAVE_FAILED", "failed to save config")
+	}
+	go p.reloadAllRules()
+	return nil
+}
+
+func (p *SiSet) TriggerDiversionRuleUpdate(name string) error {
+	p.mu.RLock()
+	_, ok := p.sources[name]
+	p.mu.RUnlock()
+	if !ok {
+		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_DIVERSION_NOT_FOUND", "source not found")
+	}
+
+	go func() {
+		log.Printf("[%s] manual update triggered for source '%s'.", PluginType, name)
+		updateCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout*2)
+		defer cancel()
+		if err := p.downloadAndUpdateLocalFile(updateCtx, name); err != nil {
+			log.Printf("[%s] ERROR: failed to manually update source '%s': %v", PluginType, name, err)
+			return
+		}
+		log.Printf("[%s] manual update for '%s' successful, triggering reload.", PluginType, name)
+		if err := p.reloadAllRules(); err != nil {
+			log.Printf("[%s] ERROR: failed to reload rules after manual update: %v", PluginType, err)
+		}
+		coremain.ManualGC()
+	}()
+	return nil
 }
 
 func (p *SiSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {

@@ -940,16 +940,14 @@
         };
 
         // --- 在线黑名单管理 (Adguard) ---
-        const adguardPluginTag = 'adguard'; 
-        const adguardApiBaseUrl = `/plugins/${adguardPluginTag}`;
         let adguardState = { rules: [], isInitialized: false };
 
         const adguardApi = {
-            getRules: () => ruleApiFetch(`${adguardApiBaseUrl}/rules`),
-            addRule: (data) => ruleApiFetch(`${adguardApiBaseUrl}/rules`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
-            updateRule: (id, data) => ruleApiFetch(`${adguardApiBaseUrl}/rules/${id}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
-            deleteRule: (id) => ruleApiFetch(`${adguardApiBaseUrl}/rules/${id}`, { method: 'DELETE' }),
-            triggerUpdate: () => ruleApiFetch(`${adguardApiBaseUrl}/update`, { method: 'POST' }),
+            getRules: () => ruleApiFetch('/api/v1/rules/adguard'),
+            addRule: (data) => ruleApiFetch('/api/v1/rules/adguard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
+            updateRule: (id, data) => ruleApiFetch(`/api/v1/rules/adguard/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(data) }),
+            deleteRule: (id) => ruleApiFetch(`/api/v1/rules/adguard/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+            triggerUpdate: () => ruleApiFetch('/api/v1/rules/adguard/update', { method: 'POST' }),
         };
 
         const adguardUI = {
@@ -1085,22 +1083,17 @@
         }
         
         // --- [RESTORED] 分流规则管理 (sd_set) ---
-        const sdSetInstanceMap = {
-            'geositecn': 'geosite_cn',
-            'geositenocn': 'geosite_no_cn',
-            'geoipcn': 'geoip_cn'
-        };
         let diversionState = { rules: [], isInitialized: false };
 
         const diversionApi = {
-            getRulesForTag: (tag) => ruleApiFetch(`/plugins/${tag}/config`),
-            updateRule: (tag, name, data) => ruleApiFetch(`/plugins/${tag}/config/${name}`, {
+            getRules: () => ruleApiFetch('/api/v1/rules/diversion'),
+            updateRule: (type, name, data) => ruleApiFetch(`/api/v1/rules/diversion/${encodeURIComponent(type)}/${encodeURIComponent(name)}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
             }),
-            deleteRule: (tag, name) => ruleApiFetch(`/plugins/${tag}/config/${name}`, { method: 'DELETE' }),
-            triggerUpdate: (tag, name) => ruleApiFetch(`/plugins/${tag}/update/${name}`, { method: 'POST' }),
+            deleteRule: (type, name) => ruleApiFetch(`/api/v1/rules/diversion/${encodeURIComponent(type)}/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+            triggerUpdate: (type, name) => ruleApiFetch(`/api/v1/rules/diversion/${encodeURIComponent(type)}/${encodeURIComponent(name)}/update`, { method: 'POST' }),
         };
 
         const diversionUI = {
@@ -1162,13 +1155,13 @@
         };
 
         async function loadDiversionRules() {
-            const promises = Object.values(sdSetInstanceMap).map(tag => diversionApi.getRulesForTag(tag));
-            const results = await Promise.allSettled(promises);
-            const allRules = results
-                .filter(result => result.status === 'fulfilled' && Array.isArray(result.value))
-                .flatMap(result => result.value);
-            diversionState.rules = allRules;
-            diversionUI.renderTable();
+            try {
+                diversionState.rules = await diversionApi.getRules() || [];
+                diversionUI.renderTable();
+            } catch (error) {
+                diversionState.rules = [];
+                diversionUI.renderTable();
+            }
         }
 
         async function handleDiversionFormSubmit(event) {
@@ -1180,8 +1173,7 @@
             const ruleName = form.elements['diversion-rule-name'].value;
             const ruleType = form.elements['diversion-rule-type'].value;
 
-            const targetPluginTag = sdSetInstanceMap[ruleType];
-            if (!targetPluginTag) {
+            if (!ruleType) {
                 ui.showToast('错误：请选择一个有效的规则类型', 'error');
                 ui.setLoading(saveBtn, false);
                 return;
@@ -1198,7 +1190,7 @@
             };
 
             try {
-                await diversionApi.updateRule(targetPluginTag, ruleName, data);
+                await diversionApi.updateRule(ruleType, ruleName, data);
                 ui.showToast(`规则 "${ruleName}" 保存成功`);
                 diversionUI.closeModal();
                 await loadDiversionRules();
@@ -1219,8 +1211,6 @@
             const ruleName = tr.dataset.ruleName;
             const rule = diversionState.rules.find(r => r.name === ruleName);
             if (!rule) return;
-            
-            const targetPluginTag = sdSetInstanceMap[rule.type];
 
             if (target.classList.contains('edit-btn')) {
                 diversionUI.openModal(rule);
@@ -1229,7 +1219,7 @@
                 if (confirm(`确定要删除分流规则 "${ruleName}" 吗？此操作不可恢复。`)) {
                     ui.setLoading(target, true);
                     try {
-                        await diversionApi.deleteRule(targetPluginTag, ruleName);
+                        await diversionApi.deleteRule(rule.type, ruleName);
                         ui.showToast('分流规则已删除');
                         await loadDiversionRules();
                     } finally {
@@ -1241,7 +1231,7 @@
                 ui.setLoading(target, true);
                 ui.showToast(`正在后台更新规则 "${rule.name}"...`);
                 try {
-                    await diversionApi.triggerUpdate(targetPluginTag, rule.name);
+                    await diversionApi.triggerUpdate(rule.type, rule.name);
                     ui.showToast('更新请求已发送，5秒后自动刷新', 'success');
                     setTimeout(() => loadDiversionRules(), 5000);
                 } finally {
@@ -1252,7 +1242,7 @@
                 const updatedRule = { ...rule, enabled: target.checked };
                 target.disabled = true;
                 try {
-                    await diversionApi.updateRule(targetPluginTag, ruleName, updatedRule);
+                    await diversionApi.updateRule(rule.type, ruleName, updatedRule);
                     rule.enabled = target.checked;
                     ui.showToast(`规则 "${ruleName}" 已${target.checked ? '启用' : '禁用'}`);
                 } catch (error) {

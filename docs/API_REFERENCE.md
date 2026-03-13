@@ -1017,7 +1017,7 @@
 - `DomainSet` 返回和接收的是域名规则文本
 - `DomainSetLight` 的 `/show` 额外支持 `q, limit, offset`
 
-### 4.5 在线规则源管理：`sd_set` / `si_set`（`compat`）
+### 4.5 在线分流规则源（`stable`）
 
 适用于：
 
@@ -1027,26 +1027,31 @@
 - `cuscn`
 - `cusnocn`
 
-常见路径：
+根路径：`/api/v1/rules/diversion`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/{tag}/config` | `compat` | 获取规则源配置列表 |
-| `PUT` | `/plugins/{tag}/config/{name}` | `compat` | 新增或更新规则源 |
-| `DELETE` | `/plugins/{tag}/config/{name}` | `compat` | 删除规则源 |
-| `POST` | `/plugins/{tag}/update/{name}` | `compat` | 触发指定规则源后台更新 |
+| `GET` | `/api/v1/rules/diversion` | `stable` | 聚合获取所有在线分流规则源 |
+| `PUT` | `/api/v1/rules/diversion/{type}/{name}` | `stable` | 新增或更新指定类型规则源 |
+| `DELETE` | `/api/v1/rules/diversion/{type}/{name}` | `stable` | 删除指定类型规则源 |
+| `POST` | `/api/v1/rules/diversion/{type}/{name}/update` | `stable` | 触发指定规则源后台更新 |
 
-### 4.6 AdGuard 在线广告规则（`compat`）
+说明：
 
-根路径：`/plugins/adguard`
+- 旧的 `/plugins/{tag}/config*` 和 `/plugins/{tag}/update/{name}` 已移除
+- 前端不再需要知道 `geosite_cn`、`geoip_cn` 这类插件 tag
+
+### 4.6 AdGuard 在线广告规则（`stable`）
+
+根路径：`/api/v1/rules/adguard`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/rules` | `compat` | 获取规则列表 |
-| `POST` | `/rules` | `compat` | 新增规则 |
-| `PUT` | `/rules/{id}` | `compat` | 更新规则 |
-| `DELETE` | `/rules/{id}` | `compat` | 删除规则 |
-| `POST` | `/update` | `compat` | 更新所有启用规则 |
+| `GET` | `/api/v1/rules/adguard` | `stable` | 获取规则列表 |
+| `POST` | `/api/v1/rules/adguard` | `stable` | 新增规则 |
+| `PUT` | `/api/v1/rules/adguard/{id}` | `stable` | 更新规则 |
+| `DELETE` | `/api/v1/rules/adguard/{id}` | `stable` | 删除规则 |
+| `POST` | `/api/v1/rules/adguard/update` | `stable` | 更新所有启用规则 |
 
 新增 / 更新请求体核心字段：
 
@@ -1147,19 +1152,19 @@
 
 ### 5.4 规则与列表管理
 
-- `GET /plugins/adguard/rules`
-- `POST /plugins/adguard/rules`
-- `PUT /plugins/adguard/rules/{id}`
-- `DELETE /plugins/adguard/rules/{id}`
-- `POST /plugins/adguard/update`
+- `GET /api/v1/rules/adguard`
+- `POST /api/v1/rules/adguard`
+- `PUT /api/v1/rules/adguard/{id}`
+- `DELETE /api/v1/rules/adguard/{id}`
+- `POST /api/v1/rules/adguard/update`
+- `GET /api/v1/rules/diversion`
+- `PUT /api/v1/rules/diversion/{type}/{name}`
+- `DELETE /api/v1/rules/diversion/{type}/{name}`
+- `POST /api/v1/rules/diversion/{type}/{name}/update`
 - `GET /plugins/{tag}/show`
 - `POST /plugins/{tag}/post`
 - `GET /plugins/{tag}/save`
 - `GET /plugins/{tag}/flush`
-- `GET /plugins/{tag}/config`
-- `PUT /plugins/{tag}/config/{name}`
-- `DELETE /plugins/{tag}/config/{name}`
-- `POST /plugins/{tag}/update/{name}`
 
 ## 6. 迁移说明
 
