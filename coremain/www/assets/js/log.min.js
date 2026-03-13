@@ -2491,15 +2491,15 @@ function renderRuleTable(tbody, rules, mode) {
                 result = await api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries?q=${q}&offset=${offset}&limit=${limit}`);
                 viewType = 'cache';
             }
-            let text = '';
-            if (result && typeof result === 'object' && result.totalCount !== undefined) {
-                text = result.body;
-                state.dataView.totalCount = result.totalCount;
-            } else {
-                text = result;
-            }
             let newEntries = [];
             if (viewType === 'cache') {
+                let text = '';
+                if (result && typeof result === 'object' && result.totalCount !== undefined) {
+                    text = result.body;
+                    state.dataView.totalCount = result.totalCount;
+                } else {
+                    text = result;
+                }
                 const entries = text.trim() ? text.trim().split('----- Cache Entry -----').filter(entry => entry.trim() !== '') : [];
                 newEntries = entries.map((entryText, index) => {
                     const questionMatch = entryText.match(/;; QUESTION SECTION:\s*;\s*([^\s]+)/);
@@ -2509,15 +2509,12 @@ function renderRuleTable(tbody, rules, mode) {
                     return { headerTitle, fullText: entryText };
                 });
             } else {
-                const lines = text.trim() ? text.trim().split('\n') : [];
-                newEntries = lines.map((line) => {
-                    const trimmed = line.trim();
-                    const match3 = trimmed.match(/^(\S+)\s+(\S+)\s+(.*)$/);
-                    if (match3) return { count: match3[1], date: match3[2], domain: match3[3] };
-                    const match2 = trimmed.match(/^(\S+)\s+(.*)$/);
-                    if (match2) return { count: match2[1], date: '-', domain: match2[2] };
-                    return { count: '-', date: '-', domain: trimmed };
-                });
+                state.dataView.totalCount = typeof result?.total === 'number' ? result.total : 0;
+                newEntries = Array.isArray(result?.items) ? result.items.map((item) => ({
+                    count: item.count ?? '-',
+                    date: item.date || '-',
+                    domain: item.domain || item.value || '-'
+                })) : [];
             }
             state.dataView.lastBatchSize = newEntries.length;
             state.dataView.rawEntries = isLoadMore ? [...state.dataView.rawEntries, ...newEntries] : newEntries;
@@ -2896,60 +2893,16 @@ const cacheManager = {
             ui.setLoading(elements.listSaveBtn, true);
 
             try {
-                // 流式读取，最多加载 MAX_LINES 行，避免一次性 split 大字符串拖慢主线程
-// 这里的 this.MAX_LINES 是 10000
-const res = await fetch(`/api/v1/lists/${encodeURIComponent(tag)}`, { 
-    signal: this._abortController.signal 
-});
-
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                const reader = res.body?.getReader();
-                let totalLines = 0, shownLines = 0;
-                let buffer = '';
-                const CHUNK_LIMIT = this.MAX_LINES; // 达到就停止
-                let cancelled = false;
-                if (reader) {
-                    const decoder = new TextDecoder();
-                    while (true) {
-                        const { value, done } = await reader.read();
-                        if (done) break;
-                        buffer += decoder.decode(value, { stream: true });
-                        let nl;
-                        while ((nl = buffer.indexOf('\n')) !== -1) {
-                            totalLines++;
-                            const line = buffer.slice(0, nl);
-                            buffer = buffer.slice(nl + 1);
-                            if (shownLines < CHUNK_LIMIT) {
-                                elements.listContentTextArea.value += (shownLines ? '\n' : '') + line;
-                                shownLines++;
-                            }
-                            if (shownLines >= CHUNK_LIMIT) {
-                                // 够了，取消后续读取
-                                cancelled = true;
-                                try { reader.cancel(); } catch (_) { }
-                                break;
-                            }
-                        }
-                        if (cancelled) break;
-                    }
-                    // 剩余缓冲
-                    if (!cancelled && buffer.length > 0) {
-                        totalLines++;
-                        if (shownLines < CHUNK_LIMIT) {
-                            elements.listContentTextArea.value += (shownLines ? '\n' : '') + buffer;
-                            shownLines++;
-                        }
-                    }
-                } else {
-                    // 兼容不支持流式的环境
-                    const text = await res.text();
-                    const parts = text.split('\n');
-                    totalLines = parts.length;
-                    elements.listContentTextArea.value = parts.slice(0, CHUNK_LIMIT).join('\n');
-                    shownLines = Math.min(totalLines, CHUNK_LIMIT);
-                }
+                const CHUNK_LIMIT = this.MAX_LINES;
+                const payload = await api.fetch(`/api/v1/lists/${encodeURIComponent(tag)}?limit=${CHUNK_LIMIT}&offset=0`, {
+                    signal: this._abortController.signal
+                });
+                const items = Array.isArray(payload?.items) ? payload.items : [];
+                const totalLines = typeof payload?.total === 'number' ? payload.total : items.length;
+                const shownLines = Math.min(items.length, CHUNK_LIMIT);
+                elements.listContentTextArea.value = items.map(item => item.value || '').join('\n');
                 if (shownLines >= CHUNK_LIMIT) elements.listContentInfo.textContent = `内容较长，已仅加载前 ${CHUNK_LIMIT} 行。`;
-                else elements.listContentInfo.textContent = `共 ${shownLines} 行。`;
+                else elements.listContentInfo.textContent = `共 ${totalLines} 行。`;
             } catch (error) {
                 if (error?.name === 'AbortError') {
                     // 用户快速切换导致的中断，不提示错误

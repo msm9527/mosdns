@@ -4,9 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
-	"net/http"
 	"sort"
-	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -248,8 +246,7 @@ func (d *domainOutput) MarkDomainVerified(_ context.Context, domain, verifiedAt 
 	return updated, nil
 }
 
-func (d *domainOutput) WriteEntries(w http.ResponseWriter, query string, offset, limit int) error {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+func (d *domainOutput) MemoryEntries(query string, offset, limit int) ([]coremain.MemoryEntry, int, error) {
 	query = strings.ToLower(query)
 	if limit <= 0 {
 		limit = 100
@@ -278,19 +275,28 @@ func (d *domainOutput) WriteEntries(w http.ResponseWriter, query string, offset,
 	}
 	d.mu.Unlock()
 
-	w.Header().Set("X-Total-Count", strconv.Itoa(totalFiltered))
-	w.Header().Set("Access-Control-Expose-Headers", "X-Total-Count")
-
 	resultCount := h.Len()
 	sortedResult := make([]outputRankItem, resultCount)
 	for i := resultCount - 1; i >= 0; i-- {
 		sortedResult[i] = heap.Pop(h).(outputRankItem)
 	}
+	capHint := resultCount - offset
+	if capHint < 0 {
+		capHint = 0
+	}
+	items := make([]coremain.MemoryEntry, 0, capHint)
 	for i := offset; i < resultCount; i++ {
 		stat := sortedResult[i]
-		_, _ = fmt.Fprintf(w, "%010d %s %s qmask=%d score=%d promoted=%d\n", stat.Count, stat.Date, stat.Domain, stat.QMask, stat.Score, boolToInt(stat.Prom))
+		items = append(items, coremain.MemoryEntry{
+			Domain:    stat.Domain,
+			Count:     stat.Count,
+			Date:      stat.Date,
+			QTypeMask: stat.QMask,
+			Score:     stat.Score,
+			Promoted:  stat.Prom,
+		})
 	}
-	return nil
+	return items, totalFiltered, nil
 }
 
 func (d *domainOutput) sortedDomains() []string {

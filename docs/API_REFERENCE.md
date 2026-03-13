@@ -9,6 +9,16 @@
 > - `compat`：兼容接口，仍可用，但不建议新代码继续依赖
 > - `internal`：内部/插件层接口，不保证长期稳定
 
+## 0. 当前稳定接口优先顺序
+
+- 配置与系统：优先使用 `/api/v1/*`
+- 开关：优先使用 `/api/v1/switches/*`
+- 上游与规则：优先使用 `/api/v1/upstream/*`、`/api/v1/rules/*`
+- 缓存：优先使用 `/api/v1/cache/*`
+- 分流记忆库：优先使用 `/api/v1/memory/*`
+- 可编辑列表：优先使用 `/api/v1/lists/*`
+- `clientname` / `reverse_lookup`：优先使用 `/api/v1/clientname`、`/api/v1/reverse_lookup`
+
 ## 1. 基础约定
 
 - 默认根地址：`http://127.0.0.1:9099`
@@ -975,6 +985,27 @@
 - `dropped_by_buffer`
 - `dropped_by_cap`
 
+`GET /api/v1/memory/{memory_tag}/entries?limit=2` 返回示例：
+
+```json
+{
+  "tag": "my_fakeiplist",
+  "total": 27423,
+  "offset": 0,
+  "limit": 2,
+  "items": [
+    {
+      "domain": "www.jetbrains.com",
+      "count": 3226,
+      "date": "2026-03-12",
+      "qtype_mask": 1,
+      "score": 3226,
+      "promoted": true
+    }
+  ]
+}
+```
+
 `POST /verify` 用途：
 
 - 把指定域名从 `dirty` 标记回写为 `clean`
@@ -1017,12 +1048,24 @@
 
 - 旧的 `/plugins/{tag}/show` 和 `/plugins/{tag}/post` 在上述可编辑列表标签上已移除。
 - `save/flush` 这类历史动作不再由列表管理页直接使用。
-
-说明：
-
 - `IPSet` 返回和接收的是 IP / CIDR
 - `DomainSet` 返回和接收的是域名规则文本
-- `DomainSetLight` 的 `/show` 额外支持 `q, limit, offset`
+- `GET /api/v1/lists/{tag}?limit=2` 返回结构化 JSON，不再返回纯文本
+
+`GET /api/v1/lists/{tag}?limit=2` 返回示例：
+
+```json
+{
+  "tag": "whitelist",
+  "total": 2,
+  "offset": 0,
+  "limit": 2,
+  "items": [
+    { "value": "full:localhost.pan.baidu.com" },
+    { "value": "domain:alibabachengdun.com" }
+  ]
+}
+```
 
 ### 4.5 在线分流规则源（`stable`）
 

@@ -3,6 +3,7 @@ package coremain
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,15 +13,15 @@ import (
 )
 
 type mockListController struct {
-	text      string
-	values    []string
-	replaced  int
+	items      []ListEntry
+	total      int
+	values     []string
+	replaced   int
 	replaceErr error
 }
 
-func (m *mockListController) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
-	_, _ = w.Write([]byte(m.text))
-	return nil
+func (m *mockListController) ListEntries(query string, offset, limit int) ([]ListEntry, int, error) {
+	return m.items, m.total, nil
 }
 
 func (m *mockListController) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {
@@ -29,7 +30,7 @@ func (m *mockListController) ReplaceListRuntime(ctx context.Context, values []st
 }
 
 func TestListsAPI_Get(t *testing.T) {
-	m := &Mosdns{plugins: map[string]any{"whitelist": &mockListController{text: "a\nb\n"}}}
+	m := &Mosdns{plugins: map[string]any{"whitelist": &mockListController{items: []ListEntry{{Value: "a"}, {Value: "b"}}, total: 2}}}
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/lists/whitelist", nil)
 	rctx := chi.NewRouteContext()
 	rctx.URLParams.Add("tag", "whitelist")
@@ -41,8 +42,12 @@ func TestListsAPI_Get(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("unexpected status %d", rr.Code)
 	}
-	if rr.Body.String() != "a\nb\n" {
-		t.Fatalf("unexpected body %q", rr.Body.String())
+	var body ListEntriesResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode body: %v", err)
+	}
+	if body.Total != 2 || len(body.Items) != 2 || body.Items[0].Value != "a" || body.Items[1].Value != "b" {
+		t.Fatalf("unexpected body %#v", body)
 	}
 }
 
@@ -67,4 +72,3 @@ func TestListsAPI_Put(t *testing.T) {
 		t.Fatalf("unexpected body %q", rr.Body.String())
 	}
 }
-

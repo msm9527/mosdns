@@ -9,9 +9,26 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+type MemoryEntry struct {
+	Domain    string `json:"domain"`
+	Count     int    `json:"count"`
+	Date      string `json:"date,omitempty"`
+	QTypeMask uint8  `json:"qtype_mask,omitempty"`
+	Score     int    `json:"score,omitempty"`
+	Promoted  bool   `json:"promoted,omitempty"`
+}
+
+type MemoryEntriesResponse struct {
+	Tag    string        `json:"tag"`
+	Total  int           `json:"total"`
+	Offset int           `json:"offset"`
+	Limit  int           `json:"limit"`
+	Items  []MemoryEntry `json:"items"`
+}
+
 type MemoryRuntimeController interface {
 	DomainStatsProvider
-	WriteEntries(w http.ResponseWriter, query string, offset, limit int) error
+	MemoryEntries(query string, offset, limit int) ([]MemoryEntry, int, error)
 	SaveToDisk(ctx context.Context) error
 	FlushRuntime(ctx context.Context) error
 	MarkDomainVerified(ctx context.Context, domain, verifiedAt string) (int, error)
@@ -51,10 +68,18 @@ func handleMemoryEntriesByTag(m *Mosdns) http.HandlerFunc {
 
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		if err := controller.WriteEntries(w, r.URL.Query().Get("q"), offset, limit); err != nil {
+		items, total, err := controller.MemoryEntries(r.URL.Query().Get("q"), offset, limit)
+		if err != nil {
 			writeAPIErrorFromErr(w, http.StatusInternalServerError, "memory_entries_failed", err)
 			return
 		}
+		writeJSON(w, http.StatusOK, MemoryEntriesResponse{
+			Tag:    chi.URLParam(r, "tag"),
+			Total:  total,
+			Offset: offset,
+			Limit:  limit,
+			Items:  items,
+		})
 	}
 }
 

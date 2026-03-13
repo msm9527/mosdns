@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -394,14 +393,29 @@ func statWatchedFile(path string) (watchedFileState, error) {
 	}, nil
 }
 
-func (d *DomainSet) WriteListContent(w http.ResponseWriter, _ string, _ int, _ int) error {
+func (d *DomainSet) ListEntries(_ string, offset, limit int) ([]coremain.ListEntry, int, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	items := make([]coremain.ListEntry, 0, len(d.rules))
 	for _, rule := range d.rules {
-		fmt.Fprintln(w, rule)
+		items = append(items, coremain.ListEntry{Value: rule})
 	}
-	return nil
+	total := len(items)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 0 && offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		items = items[offset:end]
+	} else if offset > 0 && offset < total {
+		items = items[offset:]
+	} else if offset >= total {
+		items = []coremain.ListEntry{}
+	}
+	return items, total, nil
 }
 
 func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int, error) {

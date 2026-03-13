@@ -292,18 +292,33 @@ func (d *IPSet) api() *chi.Mux {
 	return r
 }
 
-func (d *IPSet) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
+func (d *IPSet) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {
 	d.mutex.Lock()
 	l := d.list
 	d.mutex.Unlock()
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	items := make([]coremain.ListEntry, 0)
 	if l != nil {
 		l.ForEach(func(pfx netip.Prefix) {
-			_, _ = io.WriteString(w, normalizePrefix(pfx).String()+"\n")
+			items = append(items, coremain.ListEntry{Value: normalizePrefix(pfx).String()})
 		})
 	}
-	return nil
+	total := len(items)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 0 && offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		items = items[offset:end]
+	} else if offset > 0 && offset < total {
+		items = items[offset:]
+	} else if offset >= total {
+		items = []coremain.ListEntry{}
+	}
+	return items, total, nil
 }
 
 func (d *IPSet) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {

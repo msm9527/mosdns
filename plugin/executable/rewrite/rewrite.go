@@ -413,12 +413,33 @@ func (r *Rewrite) handlePost(w http.ResponseWriter, req *http.Request) {
 	fmt.Fprintf(w, "rewrite rules replaced with %d entries", len(r.rules))
 }
 
-func (r *Rewrite) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
+func (r *Rewrite) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, err := w.Write([]byte(strings.Join(r.rules, "\n")))
-	return err
+	items := make([]coremain.ListEntry, 0, len(r.rules))
+	q := strings.ToLower(strings.TrimSpace(query))
+	for _, rule := range r.rules {
+		if q != "" && !strings.Contains(strings.ToLower(rule), q) {
+			continue
+		}
+		items = append(items, coremain.ListEntry{Value: rule})
+	}
+	total := len(items)
+	if offset < 0 {
+		offset = 0
+	}
+	if limit > 0 && offset < total {
+		end := offset + limit
+		if end > total {
+			end = total
+		}
+		items = items[offset:end]
+	} else if offset > 0 && offset < total {
+		items = items[offset:]
+	} else if offset >= total {
+		items = []coremain.ListEntry{}
+	}
+	return items, total, nil
 }
 
 func (r *Rewrite) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {

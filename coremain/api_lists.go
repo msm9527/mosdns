@@ -4,12 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 )
 
+type ListEntry struct {
+	Value string `json:"value"`
+}
+
+type ListEntriesResponse struct {
+	Tag    string      `json:"tag"`
+	Total  int         `json:"total"`
+	Offset int         `json:"offset"`
+	Limit  int         `json:"limit"`
+	Items  []ListEntry `json:"items"`
+}
+
 type ListContentController interface {
-	WriteListContent(w http.ResponseWriter, query string, offset, limit int) error
+	ListEntries(query string, offset, limit int) ([]ListEntry, int, error)
 	ReplaceListRuntime(ctx context.Context, values []string) (int, error)
 }
 
@@ -29,10 +42,20 @@ func handleGetListContent(m *Mosdns) http.HandlerFunc {
 			writeAPIError(w, http.StatusNotFound, "list_not_found", "list plugin not found")
 			return
 		}
-		if err := controller.WriteListContent(w, r.URL.Query().Get("q"), 0, 0); err != nil {
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		items, total, err := controller.ListEntries(r.URL.Query().Get("q"), offset, limit)
+		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "list_read_failed", err.Error())
 			return
 		}
+		writeJSON(w, http.StatusOK, ListEntriesResponse{
+			Tag:    chi.URLParam(r, "tag"),
+			Total:  total,
+			Offset: offset,
+			Limit:  limit,
+			Items:  items,
+		})
 	}
 }
 
@@ -63,4 +86,3 @@ func handleReplaceListContent(m *Mosdns) http.HandlerFunc {
 		})
 	}
 }
-

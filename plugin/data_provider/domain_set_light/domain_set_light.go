@@ -462,19 +462,22 @@ func (d *DomainSetLight) api() *chi.Mux {
 	return r
 }
 
-func (d *DomainSetLight) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
+func (d *DomainSetLight) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {
 	d.mu.RLock()
 	defer d.mu.RUnlock()
 
 	query = strings.ToLower(query)
 	if limit <= 0 {
-		limit = 100
+		limit = len(d.rules)
+		if limit <= 0 {
+			limit = 1
+		}
 	}
 	if offset < 0 {
 		offset = 0
 	}
 
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	items := make([]coremain.ListEntry, 0)
 	matchedCount := 0
 	sentCount := 0
 	for _, rule := range d.rules {
@@ -486,13 +489,13 @@ func (d *DomainSetLight) WriteListContent(w http.ResponseWriter, query string, o
 		if matchedCount <= offset {
 			continue
 		}
-		fmt.Fprintln(w, rule)
+		items = append(items, coremain.ListEntry{Value: rule})
 		sentCount++
 		if sentCount >= limit {
 			break
 		}
 	}
-	return nil
+	return items, matchedCount, nil
 }
 
 func (d *DomainSetLight) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {

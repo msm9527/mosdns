@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -23,17 +24,23 @@ type mockMemoryController struct {
 	lastDomain    string
 	lastVerified  string
 	verifiedCount int
+	items         []MemoryEntry
+	total         int
 }
 
 func (m *mockMemoryController) SnapshotDomainStats() DomainStatsSnapshot { return m.stats }
-func (m *mockMemoryController) WriteEntries(w http.ResponseWriter, query string, offset, limit int) error {
+func (m *mockMemoryController) MemoryEntries(query string, offset, limit int) ([]MemoryEntry, int, error) {
 	m.lastQuery, m.lastOffset, m.lastLimit = query, offset, limit
 	if m.writeErr != nil {
-		return m.writeErr
+		return nil, 0, m.writeErr
 	}
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	_, _ = w.Write([]byte("example.com\n"))
-	return nil
+	if len(m.items) == 0 {
+		m.items = []MemoryEntry{{Domain: "example.com", Count: 1, Date: "2026-03-13"}}
+	}
+	if m.total == 0 {
+		m.total = len(m.items)
+	}
+	return m.items, m.total, nil
 }
 func (m *mockMemoryController) SaveToDisk(context.Context) error     { return m.saveErr }
 func (m *mockMemoryController) FlushRuntime(context.Context) error   { return m.flushErr }
@@ -67,6 +74,13 @@ func TestMemoryAPI_EntriesAndStats(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("entries status = %d", rec.Code)
+	}
+	var body MemoryEntriesResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode entries: %v", err)
+	}
+	if body.Total != 1 || len(body.Items) != 1 || body.Items[0].Domain != "example.com" {
+		t.Fatalf("unexpected body %#v", body)
 	}
 }
 

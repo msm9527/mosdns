@@ -1360,8 +1360,8 @@
             const fetchPromises = allProfiles.map(profile => 
                 fetch(`/api/v1/lists/${profile.tag}`).then(res => {
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    return res.text();
-                }).then(text => ({ status: 'fulfilled', value: text, profile }))
+                    return res.json();
+                }).then(payload => ({ status: 'fulfilled', value: payload, profile }))
                   .catch(error => ({ status: 'rejected', reason: error, profile }))
             );
 
@@ -1374,10 +1374,12 @@
                 const saveBtn = getById(`save-btn-${profile.tag}`);
 
                 if (result.status === 'fulfilled') {
-                    const fullText = result.value;
-                    const lines = fullText.trim() === '' ? [] : fullText.split('\n');
+                    const items = Array.isArray(result.value?.items) ? result.value.items : [];
+                    const total = typeof result.value?.total === 'number' ? result.value.total : items.length;
+                    const lines = items.map(item => item.value || '');
+                    const fullText = lines.join('\n');
                     
-                    if (lines.length > MAX_LINES_TO_DISPLAY) {
+                    if (total > MAX_LINES_TO_DISPLAY) {
                         textarea.value = lines.slice(0, MAX_LINES_TO_DISPLAY).join('\n');
                         const statusContainer = getById(`status-${profile.tag}`);
                         const downloadBtn = createElement('button', 'btn download-btn');
@@ -1389,14 +1391,14 @@
                             D.body.appendChild(a); a.click(); D.body.removeChild(a); URL.revokeObjectURL(url);
                         };
                         if(!statusContainer.querySelector('.download-btn')) statusContainer.appendChild(downloadBtn);
-                        statusEl.textContent = `已截断显示前 ${MAX_LINES_TO_DISPLAY} 行 (共 ${lines.length} 行)`;
-                    } else if (lines.length === 0) {
+                        statusEl.textContent = `已截断显示前 ${MAX_LINES_TO_DISPLAY} 行 (共 ${total} 行)`;
+                    } else if (total === 0) {
                         textarea.value = '';
                         textarea.placeholder = '文件内容为空';
                         statusEl.textContent = '列表为空';
                     } else {
                         textarea.value = fullText.trim();
-                        statusEl.textContent = `加载于 ${new Date().toLocaleTimeString()} (共 ${lines.length} 行)`;
+                        statusEl.textContent = `加载于 ${new Date().toLocaleTimeString()} (共 ${total} 行)`;
                     }
                 } else {
                     textarea.value = `加载失败: ${result.reason.message}`;
