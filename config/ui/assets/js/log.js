@@ -33,7 +33,7 @@ function closeAndUnlock(dialogElement) {
 
 document.addEventListener('DOMContentLoaded', () => {
     const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
         colorSwatches: document.querySelectorAll('.color-swatch'),
@@ -116,6 +116,7 @@ document.addEventListener('DOMContentLoaded', () => {
         requeryFullPriorityLimitInput: document.getElementById('requery-full-priority-limit-input'),
         requeryRefreshResolverPoolInput: document.getElementById('requery-refresh-resolver-pool-input'),
         requeryMemoryStatsTbody: document.getElementById('requery-memory-stats-tbody'),
+        requeryRunsTbody: document.getElementById('requery-runs-tbody'),
         updateModule: document.getElementById('update-module'),
         updateCurrentVersion: document.getElementById('update-current-version'),
         updateLatestVersion: document.getElementById('update-latest-version'),
@@ -420,11 +421,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.requery.status = summary.status || null;
                 state.requery.config = summary.config || null;
                 state.requery.memoryStats = Array.isArray(summary.memory_stats) ? summary.memory_stats : [];
+                state.requery.recentRuns = Array.isArray(summary.recent_runs) ? summary.recent_runs : [];
                 updateDomainListStats(signal);
                 this.render();
             } catch (error) {
                 if (error.name !== 'AbortError') {
                     state.requery.memoryStats = [];
+                    state.requery.recentRuns = [];
                     this.render();
                 }
             }
@@ -439,6 +442,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 elements.requeryStatusText.style.color = 'var(--color-danger)';
                 [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach(btn => btn.disabled = true);
                 this.renderMemoryStats();
+                this.renderRecentRuns();
                 return;
             }
 
@@ -546,6 +550,7 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.requeryCancelBtn.hidden = !isRunning;
 
             this.renderMemoryStats();
+            this.renderRecentRuns();
         },
 
         renderMemoryStats() {
@@ -572,8 +577,42 @@ document.addEventListener('DOMContentLoaded', () => {
             `).join('');
         },
 
+        renderRecentRuns() {
+            const tbody = elements.requeryRunsTbody;
+            if (!tbody) return;
+            const runs = Array.isArray(state.requery.recentRuns) ? state.requery.recentRuns : [];
+            if (!runs.length) {
+                tbody.innerHTML = `<tr><td colspan="6" class="requery-history-empty">暂时还没有可展示的运行历史。</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = runs.map((run) => {
+                const updatedAt = this.formatUnixMillis(run.updated_at_unix_ms);
+                const progress = `${this.formatCount(run.completed)} / ${this.formatCount(run.total)}`;
+                return `
+                    <tr>
+                        <td>${this.modeLabel(run.mode)}</td>
+                        <td>${this.triggerLabel(run.trigger_source)}</td>
+                        <td>${this.runStateLabel(run.state)}</td>
+                        <td>${run.stage_label || run.stage || '—'}</td>
+                        <td class="text-right">${progress}</td>
+                        <td>${updatedAt}</td>
+                    </tr>
+                `;
+            }).join('');
+        },
+
         formatCount(value) {
             return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '--';
+        },
+
+        formatUnixMillis(value) {
+            if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—';
+            try {
+                return new Date(value).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+            } catch (_) {
+                return '—';
+            }
         },
 
         modeLabel(mode) {
@@ -586,6 +625,33 @@ document.addEventListener('DOMContentLoaded', () => {
                     return '完整重建';
                 default:
                     return '任务';
+            }
+        },
+
+        triggerLabel(source) {
+            switch ((source || '').toLowerCase()) {
+                case 'scheduler':
+                    return '定时';
+                case 'recovery':
+                    return '恢复';
+                default:
+                    return '手动';
+            }
+        },
+
+        runStateLabel(stateValue) {
+            switch ((stateValue || '').toLowerCase()) {
+                case 'running':
+                    return '运行中';
+                case 'completed':
+                case 'idle':
+                    return '已完成';
+                case 'failed':
+                    return '失败';
+                case 'cancelled':
+                    return '已取消';
+                default:
+                    return stateValue || '—';
             }
         },
 

@@ -37,6 +37,9 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	if err := RecordSystemEvent("runtime.test", "info", "hello", map[string]any{"ok": true}); err != nil {
 		t.Fatalf("RecordSystemEvent: %v", err)
 	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceAdguard, "config.json", []map[string]any{{"id": "rule-1"}}); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath adguard: %v", err)
+	}
 
 	summaryJSON, err := runtimeSummaryJSON(dbPath)
 	if err != nil {

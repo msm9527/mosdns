@@ -231,6 +231,7 @@ func runtimeSummaryJSON(dbPath string) ([]byte, error) {
 		runtimeNamespaceSwitch,
 		runtimeNamespaceWebinfo,
 		runtimeNamespaceRequery,
+		runtimeNamespaceAdguard,
 		runtimeStateNamespaceGeneratedDataset,
 	}
 	resp := runtimeSummaryResponse{

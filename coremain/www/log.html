@@ -591,6 +591,7 @@
             line-height: 1.5;
         }
         .requery-memory-panel,
+        .requery-history-panel,
         .requery-important {
             padding: 1rem 1.1rem;
         }
@@ -611,9 +612,15 @@
             max-width: 100% !important;
         }
         .requery-memory-panel h4,
+        .requery-history-panel h4,
         .requery-important strong {
             display: block;
             margin-bottom: 0.7rem;
+        }
+        .requery-history-empty {
+            color: var(--color-text-secondary);
+            font-size: 0.9rem;
+            padding: 0.75rem 0;
         }
         .requery-important {
             display: flex;
@@ -1651,6 +1658,29 @@
                                     <tbody id="requery-memory-stats-tbody">
                                         <tr>
                                             <td colspan="3">正在加载分流记忆统计...</td>
+                                        </tr>
+                                    </tbody>
+                                </table>
+                            </div>
+                        </div>
+
+                        <div class="requery-history-panel">
+                            <h4>最近运行历史</h4>
+                            <div class="scrollable-table-container" style="max-height: none; overflow-y: visible;">
+                                <table id="requery-runs-table">
+                                    <thead>
+                                        <tr>
+                                            <th>模式</th>
+                                            <th>来源</th>
+                                            <th>状态</th>
+                                            <th>阶段</th>
+                                            <th class="text-right">进度</th>
+                                            <th>更新时间</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody id="requery-runs-tbody">
+                                        <tr>
+                                            <td colspan="6" class="requery-history-empty">正在加载最近运行历史...</td>
                                         </tr>
                                     </tbody>
                                 </table>
