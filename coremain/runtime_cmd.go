@@ -217,6 +217,7 @@ func newRuntimeCmd() *cobra.Command {
 	requeryCheckpointsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of checkpoints to print")
 	requeryCmd.AddCommand(requeryJobsCmd, requeryRunsCmd, requeryCheckpointsCmd)
 	runtimeCmd.AddCommand(requeryCmd)
+	runtimeCmd.AddCommand(newRuntimeShuntCmd())
 
 	return runtimeCmd
 }
