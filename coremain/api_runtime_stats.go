@@ -1,7 +1,6 @@
 package coremain
 
 import (
-	"encoding/json"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -108,8 +107,7 @@ func handleAggregatedCacheStats(m *Mosdns) http.HandlerFunc {
 			items = append(items, item)
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }
 
@@ -136,7 +134,6 @@ func handleAggregatedDomainStats(m *Mosdns) http.HandlerFunc {
 			items = append(items, item)
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{"items": items})
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
 }

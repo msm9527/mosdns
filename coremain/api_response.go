@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 )
 
@@ -29,4 +30,8 @@ func writeAPIErrorFromErr(w http.ResponseWriter, status int, code string, err er
 		return
 	}
 	writeAPIError(w, status, code, err.Error())
+}
+
+func writeAPINotFound(w http.ResponseWriter, r *http.Request) {
+	writeAPIError(w, http.StatusNotFound, "NOT_FOUND", fmt.Sprintf("api endpoint not found: %s %s", r.Method, r.URL.Path))
 }

@@ -106,10 +106,7 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		mlog.L().Error("failed to encode overrides response", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleSetOverrides(w http.ResponseWriter, r *http.Request) {

@@ -1,13 +1,10 @@
 package coremain
 
 import (
-	"encoding/json"
 	"net/http"
 	"strconv"
 
-	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 // --- V2 API Data Structures ---
@@ -56,10 +53,7 @@ func RegisterAuditAPIV2(router *chi.Mux) {
 // 1. Handler for: Get total queries and average duration
 func handleV2GetStats(w http.ResponseWriter, r *http.Request) {
 	stats := GlobalAuditCollector.CalculateV2Stats()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(stats); err != nil {
-		mlog.L().Error("failed to encode v2 stats", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // 2. Handler for: Get domain query ranking
@@ -67,10 +61,7 @@ func handleV2GetDomainRank(w http.ResponseWriter, r *http.Request) {
 	limit := parseQueryInt(r, "limit", 20) // Default to top 20
 	// MODIFIED: Use the new RankByDomain enum
 	rank := GlobalAuditCollector.CalculateRank(RankByDomain, limit) // Changed function argument
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(rank); err != nil {
-		mlog.L().Error("failed to encode v2 domain rank", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, rank)
 }
 
 // 3. Handler for: Get client IP query ranking
@@ -78,10 +69,7 @@ func handleV2GetClientRank(w http.ResponseWriter, r *http.Request) {
 	limit := parseQueryInt(r, "limit", 20) // Default to top 20
 	// MODIFIED: Use the new RankByClient enum
 	rank := GlobalAuditCollector.CalculateRank(RankByClient, limit) // Changed function argument
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(rank); err != nil {
-		mlog.L().Error("failed to encode v2 client rank", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, rank)
 }
 
 // --- ADDED START ---
@@ -89,10 +77,7 @@ func handleV2GetClientRank(w http.ResponseWriter, r *http.Request) {
 func handleV2GetDomainSetRank(w http.ResponseWriter, r *http.Request) {
 	limit := parseQueryInt(r, "limit", 20) // Default to top 20
 	rank := GlobalAuditCollector.CalculateRank(RankByDomainSet, limit)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(rank); err != nil {
-		mlog.L().Error("failed to encode v2 domain_set rank", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, rank)
 }
 
 // --- ADDED END ---
@@ -101,10 +86,7 @@ func handleV2GetDomainSetRank(w http.ResponseWriter, r *http.Request) {
 func handleV2GetSlowestQueries(w http.ResponseWriter, r *http.Request) {
 	limit := parseQueryInt(r, "limit", 100) // Default to 100 slowest
 	logs := GlobalAuditCollector.GetSlowestQueries(limit)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(logs); err != nil {
-		mlog.L().Error("failed to encode v2 slowest queries", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, logs)
 }
 
 // 6. Handler for: Get logs with advanced filtering and pagination
@@ -125,10 +107,7 @@ func handleV2GetLogs(w http.ResponseWriter, r *http.Request) {
 	}
 
 	response := GlobalAuditCollector.GetV2Logs(params)
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(response); err != nil {
-		mlog.L().Error("failed to encode v2 paginated logs", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // Helper function to parse integer from query string with a default value.

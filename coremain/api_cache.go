@@ -59,8 +59,7 @@ func handleCacheStatsByTag(m *Mosdns) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(controller.SnapshotCacheStats())
+		writeJSON(w, http.StatusOK, controller.SnapshotCacheStats())
 	}
 }
 
@@ -125,8 +124,7 @@ func handleCachePurgeDomainByTag(m *Mosdns) http.HandlerFunc {
 			return
 		}
 
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(purgeDomainResponse{
+		writeJSON(w, http.StatusOK, purgeDomainResponse{
 			QName:  body.QName,
 			QType:  body.QType,
 			Purged: purged,

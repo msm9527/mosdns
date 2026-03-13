@@ -2,14 +2,10 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 
-	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 // RegisterAuditAPI registers the audit log APIs to the given router.
@@ -28,14 +24,12 @@ func RegisterAuditAPI(router *chi.Mux) {
 
 func handleAuditStart(w http.ResponseWriter, r *http.Request) {
 	GlobalAuditCollector.Start()
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "Audit log collection started.")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Audit log collection started."})
 }
 
 func handleAuditStop(w http.ResponseWriter, r *http.Request) {
 	GlobalAuditCollector.Stop()
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "Audit log collection stopped.")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "Audit log collection stopped."})
 }
 
 func handleAuditStatus(w http.ResponseWriter, r *http.Request) {
@@ -44,22 +38,17 @@ func handleAuditStatus(w http.ResponseWriter, r *http.Request) {
 	}{
 		Capturing: GlobalAuditCollector.IsCapturing(),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(status)
+	writeJSON(w, http.StatusOK, status)
 }
 
 func handleGetAuditLogs(w http.ResponseWriter, r *http.Request) {
 	logs := GlobalAuditCollector.GetLogs()
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(logs); err != nil {
-		mlog.L().Error("failed to encode audit logs to client", zap.Error(err))
-	}
+	writeJSON(w, http.StatusOK, logs)
 }
 
 func handleClearAuditLogs(w http.ResponseWriter, r *http.Request) {
 	GlobalAuditCollector.ClearLogs(true)
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "审计日志已清空。")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "审计日志已清空。"})
 }
 
 type auditStorageResponse struct {
@@ -81,8 +70,7 @@ func handleGetAuditCapacity(w http.ResponseWriter, r *http.Request) {
 		Capacity:             settings.MemoryEntries,
 		CurrentDiskSize:      GlobalAuditCollector.GetDiskUsageBytes(),
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp)
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleSetAuditCapacity(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +96,5 @@ func handleSetAuditCapacity(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprint(w, "审计存储设置已保存并生效。")
+	writeJSON(w, http.StatusOK, map[string]string{"message": "审计存储设置已保存并生效。"})
 }

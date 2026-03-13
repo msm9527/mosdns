@@ -20,7 +20,6 @@
 package coremain
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -353,22 +352,8 @@ func (m *Mosdns) initHttpMux() {
 		r.Get("/trace", pprof.Trace)
 	})
 
-	// A helper page for invalid request.
-	invalidApiReqHelper := func(w http.ResponseWriter, req *http.Request) {
-		b := new(bytes.Buffer)
-		_, _ = fmt.Fprintf(b, "Invalid request %s %s\n\n", req.Method, req.RequestURI)
-		b.WriteString("Available api urls:\n")
-		_ = chi.Walk(m.httpMux, func(method string, route string, handler http.Handler, middlewares ...func(http.Handler) http.Handler) error {
-			b.WriteString(method)
-			b.WriteByte(' ')
-			b.WriteString(route)
-			b.WriteByte('\n')
-			return nil
-		})
-		_, _ = w.Write(b.Bytes())
-	}
-	m.httpMux.NotFound(invalidApiReqHelper)
-	m.httpMux.MethodNotAllowed(invalidApiReqHelper)
+	m.httpMux.NotFound(writeAPINotFound)
+	m.httpMux.MethodNotAllowed(writeAPINotFound)
 }
 
 func (m *Mosdns) loadPresetPlugins() error {

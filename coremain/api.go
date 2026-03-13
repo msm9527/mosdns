@@ -2,7 +2,6 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -10,7 +9,6 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 // RegisterCaptureAPI registers the log capture APIs to the given router.
@@ -49,20 +47,16 @@ func handleStartCapture() http.HandlerFunc {
 		// Use the exported mlog.Lvl
 		GlobalLogCollector.StartCapture(duration, mlog.Lvl)
 
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "Log capture started for %d seconds. Log level set to DEBUG.", req.DurationSeconds)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message":          fmt.Sprintf("Log capture started for %d seconds. Log level set to DEBUG.", req.DurationSeconds),
+			"duration_seconds": req.DurationSeconds,
+		})
 	}
 }
 
 func handleGetLogs() http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		logs := GlobalLogCollector.GetLogs()
-
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusOK)
-
-		if err := json.NewEncoder(w).Encode(logs); err != nil {
-			mlog.L().Error("failed to encode logs to client", zap.Error(err))
-		}
+		writeJSON(w, http.StatusOK, logs)
 	}
 }

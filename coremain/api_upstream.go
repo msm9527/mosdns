@@ -310,14 +310,13 @@ func parseQueryBool(r *http.Request, key string) bool {
 
 // handleGetAliAPITags 获取扫描到的插件 Tag
 func handleGetAliAPITags(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	tags := discoveredAliAPITags
 	if tags == nil {
 		tags = []string{}
 	}
 	// DEBUG
 	mlog.L().Info("[Debug UpstreamAPI] API Request: Get Tags", zap.Strings("returning", tags))
-	json.NewEncoder(w).Encode(tags)
+	writeJSON(w, http.StatusOK, tags)
 }
 
 // handleGetUpstreamConfig 获取当前所有配置
@@ -339,8 +338,7 @@ func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 	if safeData == nil {
 		safeData = make(GlobalUpstreamOverrides)
 	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(safeData)
+	writeJSON(w, http.StatusOK, safeData)
 }
 
 func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
