@@ -16,6 +16,13 @@ type runtimeStateStore struct {
 	db *runtimesqlite.RuntimeDB
 }
 
+type RuntimeStateEntry struct {
+	Namespace       string          `json:"namespace"`
+	Key             string          `json:"key"`
+	Value           json.RawMessage `json:"value"`
+	UpdatedAtUnixMS int64           `json:"updated_at_unix_ms"`
+}
+
 var globalRuntimeStateStore struct {
 	mu    sync.Mutex
 	paths map[string]*runtimesqlite.RuntimeDB
@@ -99,6 +106,34 @@ func (s *runtimeStateStore) remove(namespace, key string) error {
 	return nil
 }
 
+func (s *runtimeStateStore) list(namespace string) ([]RuntimeStateEntry, error) {
+	rows, err := s.db.DB().Query(`
+		SELECT namespace, key, value_json, updated_at_unix_ms
+		FROM runtime_kv
+		WHERE namespace = ?
+		ORDER BY key ASC
+	`, namespace)
+	if err != nil {
+		return nil, fmt.Errorf("list runtime state namespace %s: %w", namespace, err)
+	}
+	defer rows.Close()
+
+	var entries []RuntimeStateEntry
+	for rows.Next() {
+		var entry RuntimeStateEntry
+		var raw string
+		if err := rows.Scan(&entry.Namespace, &entry.Key, &raw, &entry.UpdatedAtUnixMS); err != nil {
+			return nil, fmt.Errorf("scan runtime state namespace %s: %w", namespace, err)
+		}
+		entry.Value = json.RawMessage(raw)
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate runtime state namespace %s: %w", namespace, err)
+	}
+	return entries, nil
+}
+
 func LoadRuntimeStateJSON(namespace, key string, dst any) (bool, error) {
 	return LoadRuntimeStateJSONFromPath("", namespace, key, dst)
 }
@@ -133,4 +168,12 @@ func DeleteRuntimeStateJSONFromPath(path, namespace, key string) error {
 		return err
 	}
 	return store.remove(namespace, key)
+}
+
+func ListRuntimeStateByNamespace(path, namespace string) ([]RuntimeStateEntry, error) {
+	store, err := getRuntimeStateStoreByPath(path)
+	if err != nil {
+		return nil, err
+	}
+	return store.list(namespace)
 }
