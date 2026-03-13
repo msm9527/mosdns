@@ -1,6 +1,9 @@
 # 文档索引
 
 - [项目完整深度文档](./PROJECT_DEEP_DIVE.md)
+- [mosdns V2 完全重构蓝图](./REARCHITECTURE_V2.md)
+- [mosdns V2 重构实施清单](./REARCHITECTURE_V2_IMPLEMENTATION_CHECKLIST.md)
+- [运行态状态基线盘点](./RUNTIME_STATE_BASELINE.md)
 - [API 接口文档](./API_REFERENCE.md)
 - [插件类型矩阵](./PLUGIN_TYPE_MATRIX.md)
 - [YAML 配置总览与维护手册](./CONFIG_YAML_GUIDE.md)
