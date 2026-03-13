@@ -32,7 +32,7 @@
 - “默认配置”指 `config/config.yaml` 及其 `include` 的 `config/sub_config/*.yaml`
 - `config/examples/*.yaml` 只算示例，不会被默认启动流程加载
 - 某些插件虽然不实现 `RuntimeConfigReloader`，但有自己的运行时 API，例如：
-  - `switch`：通过 `/plugins/switches/*` 即时修改状态
+  - `switch`：通过 `/api/v1/switches/*` 即时修改状态
   - `requery`：通过 `/plugins/requery/*` 即时触发、取消、改调度
 
 这类插件属于“有运行时操作”，但不属于“通过配置热重载重建插件实例”。
@@ -70,7 +70,7 @@
 | `domain_output` | `plugin/executable/domain_output/domain_output.go` | `config/sub_config/domain_output.yaml` | 配置改动不支持运行时重建 |
 | `fallback` | `plugin/executable/sequence/fallback/fallback.go` | `config/sub_config/for_singbox.yaml` | 当前未实现热重载接口 |
 | `requery` | `plugin/executable/requery/requery.go` | `config/sub_config/requery.yaml` | 调度和触发有运行时 API，但 YAML 配置本身不走 `RuntimeConfigReloader` |
-| `switch` | `plugin/switch/switch/switch.go` | `config/sub_config/switch.yaml` | 开关值通过 `/plugins/switches/*` 即时生效，但插件定义本身不支持热重载 |
+| `switch` | `plugin/switch/switch/switch.go` | `config/sub_config/switch.yaml` | 开关值通过 `/api/v1/switches/*` 即时生效，但插件定义本身不支持热重载 |
 | `tcp_server` | `plugin/server/tcp_server/tcp_server.go` | `config/config.yaml` `config/sub_config/forward_nocn.yaml` `config/sub_config/forward_nocn_ecs.yaml` `config/sub_config/forward_1.yaml` `config/sub_config/requery_refresh.yaml` `config/sub_config/for_singbox.yaml` | 监听地址、入口链路等配置改动通常要重启 |
 | `udp_server` | `plugin/server/udp_server/udp_server.go` | `config/config.yaml` `config/sub_config/forward_nocn.yaml` `config/sub_config/forward_nocn_ecs.yaml` `config/sub_config/forward_1.yaml` `config/sub_config/requery_refresh.yaml` `config/sub_config/for_singbox.yaml` | 同上 |
 | `webinfo` | `plugin/executable/webinfo/webinfo.go` | `config/sub_config/webinfo.yaml` | 主要用于前端信息与配置存储，当前无热重载接口 |

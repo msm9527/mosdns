@@ -1126,8 +1126,8 @@
         function hideErrorModal() { getById('error-modal').classList.remove('visible'); }
         async function updateCoreModeStatus() {
             try {
-                const response = await fetch('/plugins/core_mode/show');
-                if (response.ok) coreMode = (await response.text()).trim();
+                const response = await fetch('/api/v1/switches/core_mode');
+                if (response.ok) { const payload = await response.json(); coreMode = payload?.value || 'secure'; }
             } catch (e) { console.error("无法获取核心模式状态:", e); }
         }
         
@@ -1179,7 +1179,7 @@
             isMgmtTabInitialized.config = false;
             try {
                 await updateCoreModeStatus();
-                const response = await fetch('/plugins/switches/show');
+                const response = await fetch('/api/v1/switches');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const list = await response.json();
                 const valueMap = new Map(list.map(item => [item.name, item.value]));
@@ -1260,7 +1260,10 @@
             const tag = button.dataset.switchTag, valueToPost = button.dataset.value, control = button.parentElement;
             control.classList.add('loading');
             try {
-                const result = await postApi(`/plugins/switches/${tag}`, { value: valueToPost });
+                const result = await fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
+                    if (!res.ok) throw new Error(await res.text());
+                    return res.json();
+                });
                 if (tag === 'core_mode') {
                     coreMode = result.value;
                     try {
@@ -1294,7 +1297,10 @@
             if (wrapper) wrapper.classList.add('loading');
             select.disabled = true;
             try {
-                await postApi(`/plugins/switches/${tag}`, { value: valueToPost });
+                await fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
+                    if (!res.ok) throw new Error(await res.text());
+                    return res.json();
+                });
                 showToast(`“${switchProfiles.find(p => p.tag === tag)?.name || tag}” 已切换。`);
             } catch (error) {
                 showToast(`切换 "${switchProfiles.find(p => p.tag === tag)?.name || tag}" 失败`, 'error');
@@ -1310,7 +1316,10 @@
             const profile = switchProfiles.find(p => p.tag === tag);
             const valueToPost = checkbox.checked ? profile.valueForOn : profile.valueForOff;
             try {
-                await postApi(`/plugins/switches/${tag}`, { value: valueToPost });
+                await fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
+                    if (!res.ok) throw new Error(await res.text());
+                    return res.json();
+                });
                 showToast(`“${profile.name}” 已${checkbox.checked ? '启用' : '禁用'}`);
             } catch (error) {
                 showToast(`切换 "${profile.name}" 失败`, 'error');

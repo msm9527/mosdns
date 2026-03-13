@@ -88,9 +88,8 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	}
 	globalRegistry.instances[def.Name] = sw
 
-	bp.RegAPI(sw.Api())
 	globalRegistry.apiOnce.Do(func() {
-		bp.M().RegPluginAPI("switches", switchesAPI())
+		bp.M().GetAPIRouter().Mount("/api/v1/switches", coreSwitchesAPI())
 	})
 
 	return sw, nil
@@ -156,40 +155,6 @@ func (s *Switch) GetValue() string {
 		return val
 	}
 	return s.def.DefaultValue
-}
-
-func (s *Switch) Api() *chi.Mux {
-	r := chi.NewRouter()
-	r.Get("/", s.handleGetValue)
-	r.Get("/show", s.handleGetValue)
-	r.Put("/", s.handleUpdateValue)
-	r.Post("/", s.handleUpdateValue)
-	r.Put("/post", s.handleUpdateValue)
-	r.Post("/post", s.handleUpdateValue)
-	return r
-}
-
-func (s *Switch) handleGetValue(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	_, _ = io.WriteString(w, s.GetValue())
-}
-
-func (s *Switch) handleUpdateValue(w http.ResponseWriter, r *http.Request) {
-	newValue, err := parseIncomingValue(r, s.def)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	if err := s.store.Set(s.def, newValue); err != nil {
-		http.Error(w, "failed to update switch store: "+err.Error(), http.StatusInternalServerError)
-		return
-	}
-	s.value.Store(newValue)
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "updated to: %s\n", newValue)
 }
 
 func (s *Switch) setValue(value string) error {
@@ -327,13 +292,11 @@ type switchState struct {
 	Value string `json:"value"`
 }
 
-func switchesAPI() *chi.Mux {
+func coreSwitchesAPI() *chi.Mux {
 	r := chi.NewRouter()
 	r.Get("/", handleGetAllSwitches)
-	r.Get("/show", handleGetAllSwitches)
 	r.Get("/{name}", handleGetSwitch)
 	r.Put("/{name}", handleUpdateSwitch)
-	r.Post("/{name}", handleUpdateSwitch)
 	return r
 }
 
@@ -353,7 +316,7 @@ func handleGetAllSwitches(w http.ResponseWriter, _ *http.Request) {
 func handleGetSwitch(w http.ResponseWriter, r *http.Request) {
 	def, sw, ok := resolveSwitch(chi.URLParam(r, "name"))
 	if !ok {
-		http.Error(w, "switch not found", http.StatusNotFound)
+		writeSwitchErrorJSON(w, http.StatusNotFound, "SWITCH_NOT_FOUND", "switch not found")
 		return
 	}
 	writeSwitchJSON(w, switchState{
@@ -365,17 +328,17 @@ func handleGetSwitch(w http.ResponseWriter, r *http.Request) {
 func handleUpdateSwitch(w http.ResponseWriter, r *http.Request) {
 	def, sw, ok := resolveSwitch(chi.URLParam(r, "name"))
 	if !ok {
-		http.Error(w, "switch not found", http.StatusNotFound)
+		writeSwitchErrorJSON(w, http.StatusNotFound, "SWITCH_NOT_FOUND", "switch not found")
 		return
 	}
 
 	value, err := parseIncomingValue(r, def)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		writeSwitchErrorJSON(w, http.StatusBadRequest, "INVALID_SWITCH_VALUE", err.Error())
 		return
 	}
 	if err := sw.setValue(value); err != nil {
-		http.Error(w, "failed to update switch store: "+err.Error(), http.StatusInternalServerError)
+		writeSwitchErrorJSON(w, http.StatusInternalServerError, "SWITCH_UPDATE_FAILED", "failed to update switch store: "+err.Error())
 		return
 	}
 
@@ -407,4 +370,13 @@ func writeSwitchJSON(w http.ResponseWriter, payload any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(payload)
+}
+
+func writeSwitchErrorJSON(w http.ResponseWriter, status int, code, message string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"code":  code,
+		"error": message,
+	})
 }

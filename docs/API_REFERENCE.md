@@ -3,6 +3,11 @@
 > 本文档以当前仓库源码为准，整理前端与运维实际会用到的 API。
 > 重点保留“获取状态 / 更新配置 / 触发更新 / 重启系统”这类请求。
 > 插件接口统一挂在 `/plugins/{tag}` 下，`tag` 来自配置里的插件实例名，不是插件类型名。
+> 文档中的稳定级别说明：
+>
+> - `stable`：推荐前端和外部调用优先使用
+> - `compat`：兼容接口，仍可用，但不建议新代码继续依赖
+> - `internal`：内部/插件层接口，不保证长期稳定
 
 ## 1. 基础约定
 
@@ -17,16 +22,26 @@
   - `limit`：返回条数
   - `offset`：偏移量
 
+### 1.1 阅读顺序建议
+
+- `2.x 核心 API`：优先按 `stable` 使用
+- `3.x / 4.x 插件接口`：大多属于 `compat` 或 `internal`
+- 若同一能力同时存在 `/api/*` 和 `/plugins/*`
+  - 优先使用 `/api/*`
+  - `/plugins/*` 主要用于兼容和底层能力
+
 ## 2. 核心 API
 
 ### 2.1 观测与调试
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/metrics` | Prometheus 指标 |
-| `GET` | `/debug/pprof/*` | Go pprof 调试入口 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/metrics` | `stable` | Prometheus 指标 |
+| `GET` | `/debug/pprof/*` | `internal` | Go pprof 调试入口 |
 
 ### 2.2 日志抓取
+
+稳定级别：`stable`
 
 #### `POST /api/v1/capture/start`
 
@@ -51,15 +66,15 @@
 
 根路径：`/api/v1/audit`
 
-| 方法 | 子路径 | 说明 |
-| --- | --- | --- |
-| `POST` | `/start` | 开始审计采集 |
-| `POST` | `/stop` | 停止审计采集 |
-| `GET` | `/status` | 获取采集状态 |
-| `GET` | `/logs` | 获取审计日志 |
-| `POST` | `/clear` | 清空审计日志 |
-| `GET` | `/capacity` | 获取审计存储设置 |
-| `POST` | `/capacity` | 设置审计存储设置 |
+| 方法 | 子路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `POST` | `/start` | `stable` | 开始审计采集 |
+| `POST` | `/stop` | `stable` | 停止审计采集 |
+| `GET` | `/status` | `stable` | 获取采集状态 |
+| `GET` | `/logs` | `compat` | 获取审计日志，建议逐步转向 v2 查询接口 |
+| `POST` | `/clear` | `stable` | 清空审计日志 |
+| `GET` | `/capacity` | `stable` | 获取审计存储设置 |
+| `POST` | `/capacity` | `stable` | 设置审计存储设置 |
 
 示例：
 
@@ -104,14 +119,14 @@
 
 根路径：`/api/v2/audit`
 
-| 方法 | 子路径 | 说明 | 常用参数 |
-| --- | --- | --- | --- |
-| `GET` | `/stats` | 获取总请求数与平均耗时 | 无 |
-| `GET` | `/rank/domain` | 域名排行 | `limit` |
-| `GET` | `/rank/client` | 客户端排行 | `limit` |
-| `GET` | `/rank/domain_set` | 规则集排行 | `limit` |
-| `GET` | `/rank/slowest` | 慢查询排行 | `limit` |
-| `GET` | `/logs` | 分页日志查询 | `page,limit,domain,answer_ip,cname,client_ip,q,exact` |
+| 方法 | 子路径 | 等级 | 说明 | 常用参数 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/stats` | `stable` | 获取总请求数与平均耗时 | 无 |
+| `GET` | `/rank/domain` | `stable` | 域名排行 | `limit` |
+| `GET` | `/rank/client` | `stable` | 客户端排行 | `limit` |
+| `GET` | `/rank/domain_set` | `stable` | 规则集排行 | `limit` |
+| `GET` | `/rank/slowest` | `stable` | 慢查询排行 | `limit` |
+| `GET` | `/logs` | `stable` | 分页日志查询 | `page,limit,domain,answer_ip,cname,client_ip,q,exact` |
 
 `/logs` 返回结构：
 
@@ -131,10 +146,10 @@
 
 根路径：`/api/v1/overrides`
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/` | 获取覆盖配置与替换规则命中结果 |
-| `POST` | `/` | 保存覆盖配置 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/` | `stable` | 获取覆盖配置与替换规则命中结果 |
+| `POST` | `/` | `stable` | 保存覆盖配置 |
 
 请求体示例：
 
@@ -154,11 +169,11 @@
 
 ### 2.6 配置管理
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/v1/config/info` | 获取当前运行中的配置目录、默认远程源和覆盖提醒 |
-| `POST` | `/api/v1/config/export` | 导出当前运行中的配置目录为 zip |
-| `POST` | `/api/v1/config/update_from_url` | 从远程配置源拉取配置覆盖当前目录并触发重启 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/config/info` | `stable` | 获取当前运行中的配置目录、默认远程源和覆盖提醒 |
+| `POST` | `/api/v1/config/export` | `stable` | 导出当前运行中的配置目录为 zip |
+| `POST` | `/api/v1/config/update_from_url` | `stable` | 从远程配置源拉取配置覆盖当前目录并触发重启 |
 
 `GET /api/v1/config/info` 返回示例：
 
@@ -226,11 +241,11 @@
 
 根路径：`/api/v1/update`
 
-| 方法 | 子路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/status` | 获取更新状态 |
-| `POST` | `/check` | 强制重新检查更新 |
-| `POST` | `/apply` | 应用更新 |
+| 方法 | 子路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/status` | `stable` | 获取更新状态 |
+| `POST` | `/check` | `stable` | 强制重新检查更新 |
+| `POST` | `/apply` | `stable` | 应用更新 |
 
 `POST /api/v1/update/apply` 请求体：
 
@@ -260,10 +275,10 @@
 - 域名统计卡片不再分别请求多个 `/plugins/.../show?limit=1`
 - 前端改为各调用 1 次聚合接口
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/api/v1/cache/stats` | 一次性获取所有缓存实例统计 |
-| `GET` | `/api/v1/data/domain_stats` | 一次性获取所有域名统计实例计数 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/cache/stats` | `stable` | 一次性获取所有缓存实例统计 |
+| `GET` | `/api/v1/data/domain_stats` | `stable` | 一次性获取所有域名统计实例计数 |
 
 `GET /api/v1/cache/stats` 返回示例：
 
@@ -372,6 +387,8 @@
 
 #### `POST /api/v1/system/restart`
 
+稳定级别：`stable`
+
 计划自重启。
 
 请求体：
@@ -395,17 +412,17 @@
 
 根路径：`/api/v1/upstream`
 
-| 方法 | 子路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/tags` | 获取扫描到的上游插件 tag |
-| `GET` | `/config` | 获取上游覆盖配置 |
-| `PUT` | `/config` | 全量保存上游配置（支持 `apply`） |
-| `POST` | `/apply` | 基于已保存配置触发运行时生效 |
-| `GET` | `/items` | 按 `plugin_tag` 查询上游列表 |
-| `POST` | `/items` | 新增单个上游 |
-| `PUT` | `/items/{upstreamTag}` | 更新单个上游 |
-| `DELETE` | `/items/{upstreamTag}` | 删除单个上游 |
-| `POST` | `/config` | 兼容接口：按插件 tag 覆盖保存并可立即生效 |
+| 方法 | 子路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/tags` | `stable` | 获取扫描到的上游插件 tag |
+| `GET` | `/config` | `stable` | 获取上游覆盖配置 |
+| `PUT` | `/config` | `stable` | 全量保存上游配置（支持 `apply`） |
+| `POST` | `/apply` | `stable` | 基于已保存配置触发运行时生效 |
+| `GET` | `/items` | `stable` | 按 `plugin_tag` 查询上游列表 |
+| `POST` | `/items` | `stable` | 新增单个上游 |
+| `PUT` | `/items/{upstreamTag}` | `stable` | 更新单个上游 |
+| `DELETE` | `/items/{upstreamTag}` | `stable` | 删除单个上游 |
+| `POST` | `/config` | `compat` | 兼容接口：按插件 tag 覆盖保存并可立即生效 |
 
 #### `PUT /api/v1/upstream/config`（推荐）
 
@@ -497,21 +514,36 @@
 }
 ```
 
-## 3. 统一开关 API
+## 3. 开关 API
 
 当前项目已经改为具名开关，不再建议使用旧的 `switch1/switch2/...` 语义。
 
-### 3.1 推荐：集中开关接口
+### 3.1 核心开关接口（`stable`）
 
-根路径：`/plugins/switches`
+根路径：`/api/v1/switches`
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/` | 获取全部开关状态 |
-| `GET` | `/show` | 同上 |
-| `GET` | `/{name}` | 获取单个开关状态 |
-| `POST` | `/{name}` | 更新单个开关 |
-| `PUT` | `/{name}` | 更新单个开关 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/switches` | `stable` | 获取全部开关状态 |
+| `GET` | `/api/v1/switches/{name}` | `stable` | 获取单个开关状态 |
+| `PUT` | `/api/v1/switches/{name}` | `stable` | 更新单个开关 |
+
+返回示例：
+
+```json
+[
+  { "name": "core_mode", "value": "secure" },
+  { "name": "client_proxy_mode", "value": "all" }
+]
+```
+
+更新请求体：
+
+```json
+{
+  "value": "secure"
+}
+```
 
 当前具名开关包括：
 
@@ -545,26 +577,23 @@
 }
 ```
 
-### 3.2 兼容：单开关实例接口
+说明：
 
-单个开关实例仍然暴露在 `/plugins/{switch_name}` 下：
-
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/plugins/{switch_name}` | 获取当前值 |
-| `GET` | `/plugins/{switch_name}/show` | 同上 |
-| `POST` | `/plugins/{switch_name}` | 更新当前值 |
-| `PUT` | `/plugins/{switch_name}` | 更新当前值 |
-| `POST` | `/plugins/{switch_name}/post` | 兼容更新入口 |
-| `PUT` | `/plugins/{switch_name}/post` | 兼容更新入口 |
-
-这套接口返回的是纯文本，不如 `/plugins/switches/*` 稳定，后续应优先使用集中接口。
+- 旧的 `/plugins/switches/*` 聚合接口已移除
+- 旧的 `/plugins/{switch_name}` 单实例接口已移除
+- 开关能力现在只保留 `/api/v1/switches/*`
 
 ## 4. 常用插件 API
 
 下面这些是当前前端和运维会实际调用的插件接口。
 
-### 4.1 Requery / 批量重建分流任务
+统一说明：
+
+- 这一章默认不属于长期 `stable` 主接口层
+- 除非特别说明，大多数条目应视为 `compat` 或 `internal`
+- 如果后续已有或新增同能力的 `/api/*` 收口接口，应优先迁移到核心 API
+
+### 4.1 Requery / 批量重建分流任务（`compat`，建议后续收口到 `/api/v1/requery/*`）
 
 根路径：`/plugins/requery`
 
@@ -611,18 +640,18 @@
 4. 执行 DNS 重新查询
 5. 再把新结果发布到分流记忆库
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/summary` | 获取刷新分流聚合摘要 |
-| `GET` | `/` | 获取完整 requery 配置 |
-| `GET` | `/status` | 获取运行状态 |
-| `POST` | `/trigger` | 手动触发一次刷新任务 |
-| `POST` | `/enqueue` | 入队单域名刷新任务 |
-| `POST` | `/cancel` | 取消当前任务 |
-| `POST` | `/scheduler/config` | 更新调度配置 |
-| `POST` | `/rules/save` | 批量保存 `url_actions.save_rules` 中的目标 |
-| `POST` | `/rules/flush` | 批量清空 `url_actions.flush_rules` 中的目标 |
-| `GET` | `/stats/source_file_counts` | 获取各源文件条目统计 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/summary` | `compat` | 获取刷新分流聚合摘要 |
+| `GET` | `/` | `compat` | 获取完整 requery 配置 |
+| `GET` | `/status` | `compat` | 获取运行状态 |
+| `POST` | `/trigger` | `compat` | 手动触发一次刷新任务 |
+| `POST` | `/enqueue` | `compat` | 入队单域名刷新任务 |
+| `POST` | `/cancel` | `compat` | 取消当前任务 |
+| `POST` | `/scheduler/config` | `compat` | 更新调度配置 |
+| `POST` | `/rules/save` | `compat` | 批量保存 `url_actions.save_rules` 中的目标 |
+| `POST` | `/rules/flush` | `compat` | 批量清空 `url_actions.flush_rules` 中的目标 |
+| `GET` | `/stats/source_file_counts` | `compat` | 获取各源文件条目统计 |
 
 `GET /plugins/requery/summary` 返回核心字段：
 
@@ -855,19 +884,19 @@
 }
 ```
 
-### 4.2 缓存插件
+### 4.2 缓存插件（`internal`，UI 统计优先使用 `/api/v1/cache/stats`）
 
 根路径：`/plugins/{cache_tag}`
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/flush` | 清空缓存并触发后台 dump |
-| `POST` | `/purge_domain` | 按域名精确删除缓存项并立即 checkpoint |
-| `GET` | `/dump` | 下载缓存 dump |
-| `GET` | `/save` | 保存缓存到 dump 文件 |
-| `POST` | `/load_dump` | 从请求体加载 dump |
-| `GET` | `/stats` | 获取缓存统计 |
-| `GET` | `/show` | 按文本查看缓存内容 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/flush` | `internal` | 清空缓存并触发后台 dump |
+| `POST` | `/purge_domain` | `internal` | 按域名精确删除缓存项并立即 checkpoint |
+| `GET` | `/dump` | `internal` | 下载缓存 dump |
+| `GET` | `/save` | `internal` | 保存缓存到 dump 文件 |
+| `POST` | `/load_dump` | `internal` | 从请求体加载 dump |
+| `GET` | `/stats` | `internal` | 获取缓存统计 |
+| `GET` | `/show` | `internal` | 按文本查看缓存内容 |
 
 `/show` 支持：`q, limit, offset`
 
@@ -891,7 +920,7 @@
 
 - 命中 `DDNS域名` 标签的缓存项，过期后不会再走 lazy stale 返回旧值，而是直接回源重查。
 
-### 4.3 domain_output / 分流记忆库与域名输出
+### 4.3 domain_output / 分流记忆库与域名输出（`internal`）
 
 根路径：`/plugins/{memory_tag}`
 
@@ -908,14 +937,14 @@
 - `my_nodenov6list`
 - `my_notinlist`
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/flush` | 清空并写盘 |
-| `GET` | `/save` | 保存当前内存到文件 |
-| `GET` | `/show` | 查看记忆数据 |
-| `GET` | `/stats` | 获取统计信息 |
-| `POST` | `/verify` | 标记域名已验证、清理 dirty 状态 |
-| `GET` | `/restartall` | 触发程序重启 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/flush` | `internal` | 清空并写盘 |
+| `GET` | `/save` | `internal` | 保存当前内存到文件 |
+| `GET` | `/show` | `internal` | 查看记忆数据 |
+| `GET` | `/stats` | `internal` | 获取统计信息 |
+| `POST` | `/verify` | `internal` | 标记域名已验证、清理 dirty 状态 |
+| `GET` | `/restartall` | `internal` | 触发程序重启 |
 
 `POST /verify` 示例：
 
@@ -945,7 +974,7 @@
 - 记录 `verified_at`
 - 会立即保存当前记忆库内容
 
-### 4.4 规则列表类：IPSet / DomainSet / Light 版本
+### 4.4 规则列表类：IPSet / DomainSet / Light 版本（`internal`）
 
 这类接口常见于：
 
@@ -959,12 +988,12 @@
 
 常见路径：
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/plugins/{tag}/show` | 查看当前内容 |
-| `GET` | `/plugins/{tag}/save` | 保存到文件 |
-| `GET` | `/plugins/{tag}/flush` | 清空内容 |
-| `POST` | `/plugins/{tag}/post` | 用 `values[]` 替换内容 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/plugins/{tag}/show` | `internal` | 查看当前内容 |
+| `GET` | `/plugins/{tag}/save` | `internal` | 保存到文件 |
+| `GET` | `/plugins/{tag}/flush` | `internal` | 清空内容 |
+| `POST` | `/plugins/{tag}/post` | `internal` | 用 `values[]` 替换内容 |
 
 `POST /plugins/{tag}/post` 请求体：
 
@@ -983,7 +1012,7 @@
 - `DomainSet` 返回和接收的是域名规则文本
 - `DomainSetLight` 的 `/show` 额外支持 `q, limit, offset`
 
-### 4.5 在线规则源管理：`sd_set` / `si_set`
+### 4.5 在线规则源管理：`sd_set` / `si_set`（`compat`）
 
 适用于：
 
@@ -995,24 +1024,24 @@
 
 常见路径：
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/plugins/{tag}/config` | 获取规则源配置列表 |
-| `PUT` | `/plugins/{tag}/config/{name}` | 新增或更新规则源 |
-| `DELETE` | `/plugins/{tag}/config/{name}` | 删除规则源 |
-| `POST` | `/plugins/{tag}/update/{name}` | 触发指定规则源后台更新 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/plugins/{tag}/config` | `compat` | 获取规则源配置列表 |
+| `PUT` | `/plugins/{tag}/config/{name}` | `compat` | 新增或更新规则源 |
+| `DELETE` | `/plugins/{tag}/config/{name}` | `compat` | 删除规则源 |
+| `POST` | `/plugins/{tag}/update/{name}` | `compat` | 触发指定规则源后台更新 |
 
-### 4.6 AdGuard 在线广告规则
+### 4.6 AdGuard 在线广告规则（`compat`）
 
 根路径：`/plugins/adguard`
 
-| 方法 | 路径 | 说明 |
-| --- | --- | --- |
-| `GET` | `/rules` | 获取规则列表 |
-| `POST` | `/rules` | 新增规则 |
-| `PUT` | `/rules/{id}` | 更新规则 |
-| `DELETE` | `/rules/{id}` | 删除规则 |
-| `POST` | `/update` | 更新所有启用规则 |
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/rules` | `compat` | 获取规则列表 |
+| `POST` | `/rules` | `compat` | 新增规则 |
+| `PUT` | `/rules/{id}` | `compat` | 更新规则 |
+| `DELETE` | `/rules/{id}` | `compat` | 删除规则 |
+| `POST` | `/update` | `compat` | 更新所有启用规则 |
 
 新增 / 更新请求体核心字段：
 
@@ -1027,6 +1056,14 @@
 ```
 
 ## 5. 当前前端重点依赖的接口
+
+这一节描述的是“当前实现现状”，不是稳定性推荐顺序。
+
+也就是说：
+
+- 这里列出的 `/plugins/*` 路径不一定是长期推荐接口
+- 它们只是当前前端实际仍在调用
+- 后续若存在同能力的核心 API，应优先迁移
 
 如果你是在维护 `log.html` / `log.js` 这套前端，优先关注这些接口：
 
@@ -1046,8 +1083,8 @@
 
 ### 5.2 系统控制
 
-- `GET /plugins/switches/show`
-- `POST /plugins/switches/{name}`
+- `GET /api/v1/switches`
+- `PUT /api/v1/switches/{name}`
 - `GET /api/v1/update/status`
 - `POST /api/v1/update/check`
 - `POST /api/v1/update/apply`
@@ -1123,10 +1160,11 @@
 
 ### 6.1 旧编号开关接口
 
-文档和前端都应当优先使用具名开关：
+文档和前端都应当只使用具名开关核心接口：
 
-- 推荐：`/plugins/switches/*`
-- 不推荐但仍兼容：`/plugins/{switch_name}`、`/plugins/{switch_name}/show`、`/plugins/{switch_name}/post`
+- `GET /api/v1/switches`
+- `GET /api/v1/switches/{name}`
+- `PUT /api/v1/switches/{name}`
 
 ### 6.2 插件 tag 与插件类型不是一回事
 
@@ -1141,3 +1179,14 @@
 - `/plugins/cache_all/stats`
 
 不是 `/plugins/cache/show`。
+
+### 6.3 稳定性使用建议
+
+建议按以下顺序选择接口：
+
+1. 优先使用 `2.x` 中标为 `stable` 的核心 API
+2. `3.x / 4.x` 中标为 `compat` 的接口，只在当前没有核心替代时使用
+3. `internal` 接口默认只用于：
+   - 调试
+   - 插件运维
+   - 兼容迁移
