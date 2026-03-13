@@ -15,7 +15,8 @@ import (
 )
 
 const (
-	PluginType = "webinfo"
+	PluginType                   = "webinfo"
+	runtimeStateNamespaceWebinfo = "webinfo"
 )
 
 // 注册插件
@@ -65,6 +66,22 @@ func (p *WebInfo) loadData() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if key := p.runtimeStateKey(); key != "" {
+		var d interface{}
+		ok, err := coremain.LoadRuntimeStateJSON(runtimeStateNamespaceWebinfo, key, &d)
+		if err == nil && ok {
+			if d == nil {
+				p.data = make(map[string]interface{})
+			} else {
+				p.data = d
+			}
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+
 	dataBytes, err := os.ReadFile(p.filePath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -91,6 +108,12 @@ func (p *WebInfo) loadData() error {
 
 // saveData 将内存中的数据保存到文件（原子写入）
 func (p *WebInfo) saveData() error {
+	if key := p.runtimeStateKey(); key != "" {
+		if err := coremain.SaveRuntimeStateJSON(runtimeStateNamespaceWebinfo, key, p.data); err != nil {
+			return err
+		}
+	}
+
 	dataBytes, err := json.MarshalIndent(p.data, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal data to json: %w", err)
@@ -106,6 +129,13 @@ func (p *WebInfo) saveData() error {
 	}
 
 	return nil
+}
+
+func (p *WebInfo) runtimeStateKey() string {
+	if p.filePath == "" {
+		return ""
+	}
+	return filepath.Clean(p.filePath)
 }
 
 func (p *WebInfo) SnapshotJSONValue() any {

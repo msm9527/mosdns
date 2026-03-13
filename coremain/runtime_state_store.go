@@ -94,3 +94,27 @@ func (s *runtimeStateStore) remove(namespace, key string) error {
 	}
 	return nil
 }
+
+func LoadRuntimeStateJSON(namespace, key string, dst any) (bool, error) {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return false, err
+	}
+	return store.get(namespace, key, dst)
+}
+
+func SaveRuntimeStateJSON(namespace, key string, value any) error {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return err
+	}
+	return store.put(namespace, key, value)
+}
+
+func DeleteRuntimeStateJSON(namespace, key string) error {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return err
+	}
+	return store.remove(namespace, key)
+}

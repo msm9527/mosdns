@@ -20,6 +20,7 @@ import (
 )
 
 const PluginType = "switch"
+const runtimeStateNamespaceSwitch = "switch"
 
 // globalRegistry a thread-safe registry for all switch instances.
 var globalRegistry = struct {
@@ -228,6 +229,18 @@ func (s *stateStore) Set(def switchmeta.Definition, value string) error {
 }
 
 func (s *stateStore) read() (map[string]string, error) {
+	runtimeKey := s.runtimeStateKey()
+	if runtimeKey != "" {
+		values := make(map[string]string)
+		ok, err := coremain.LoadRuntimeStateJSON(runtimeStateNamespaceSwitch, runtimeKey, &values)
+		if err == nil && ok {
+			return values, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
 		return nil, err
 	}
@@ -251,11 +264,24 @@ func (s *stateStore) read() (map[string]string, error) {
 }
 
 func (s *stateStore) write(values map[string]string) error {
+	runtimeKey := s.runtimeStateKey()
+	if runtimeKey != "" {
+		if err := coremain.SaveRuntimeStateJSON(runtimeStateNamespaceSwitch, runtimeKey, values); err != nil {
+			return err
+		}
+	}
 	data, err := json.MarshalIndent(values, "", "  ")
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(s.path, append(data, '\n'), 0o644)
+}
+
+func (s *stateStore) runtimeStateKey() string {
+	if strings.TrimSpace(s.path) == "" {
+		return ""
+	}
+	return filepath.Clean(s.path)
 }
 
 func parseIncomingValue(r *http.Request, def switchmeta.Definition) (string, error) {
