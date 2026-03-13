@@ -105,6 +105,7 @@ type Requery struct {
 	filePath   string
 	config     *Config
 	status     Status
+	fullTask   *FullRebuildTask
 	lastError  string
 	scheduler  *cron.Cron
 	taskCtx    context.Context
@@ -308,6 +309,11 @@ type taskCandidatePlan struct {
 	Secondary []domainCandidate
 }
 
+type taskExecutionState struct {
+	plan     taskCandidatePlan
+	recovery *FullRebuildTask
+}
+
 type domainCandidate struct {
 	Name      string
 	QTypeMask uint8
@@ -391,193 +397,22 @@ func (p *Requery) startTaskWithRecovery(profile taskProfile, recovery *FullRebui
 
 // runTask executes the entire requery workflow. It's designed to be run in a goroutine.
 func (p *Requery) runTask(ctx context.Context, profile taskProfile, recovery *FullRebuildTask) {
-	p.mu.Lock()
-	if p.status.TaskState == "running" {
-		log.Println("[requery] Task trigger ignored: a task is already running.")
-		p.mu.Unlock()
+	if !p.beginTaskExecution(profile) {
+		return
+	}
+	defer p.finishTaskExecution()
+
+	state, ok := p.prepareTaskExecutionState(ctx, profile, recovery)
+	if !ok {
+		return
+	}
+	if !p.executeTaskStages(ctx, profile, &state) {
+		return
+	}
+	if !p.finalizeTaskExecution(ctx, profile) {
 		return
 	}
 
-	p.status.TaskState = "running"
-	p.status.TaskMode = profile.Mode
-	p.status.TaskStage = ""
-	p.status.TaskStageLabel = ""
-	p.status.TaskStageProcessed = 0
-	p.status.TaskStageTotal = 0
-	p.status.LastRunStartTime = time.Now().UTC()
-	p.status.LastRunEndTime = time.Time{}
-	p.status.Progress.Processed = 0
-	p.status.Progress.Total = 0
-	p.lastError = ""
-	p.mu.Unlock()
-
-	// Defer block to ensure state is cleaned up on any exit path (success, failure, cancellation).
-	defer func() {
-		p.mu.Lock()
-
-		if p.status.TaskState == "running" {
-			p.status.TaskState = "idle"
-		}
-
-		if r := recover(); r != nil {
-			log.Printf("[requery] FATAL: Task panicked: %v", r)
-			p.status.TaskState = "failed"
-			p.lastError = fmt.Sprintf("task panicked: %v", r)
-		}
-
-		p.status.LastRunEndTime = time.Now().UTC()
-		if p.status.TaskMode != "" {
-			p.status.LastRunMode = p.status.TaskMode
-		}
-		p.status.TaskStage = ""
-		p.status.TaskStageLabel = ""
-		p.status.TaskStageProcessed = 0
-		p.status.TaskStageTotal = 0
-
-		p.taskCancel = nil
-		p.mu.Unlock()
-		// [修改点] 调用核心包的通用内存清理函数
-		// 因为 ManualGC 内部是异步(go func)的，所以这里调用不会阻塞锁，非常安全
-		log.Println("[requery] Task finished, triggering background memory release...")
-		coremain.ManualGC()
-	}()
-
-	if recovery != nil {
-		log.Printf("[requery] Resuming task: %s.", profile.Mode)
-	} else {
-		log.Printf("[requery] Starting a new task: %s.", profile.Mode)
-	}
-
-	if recovery == nil && profile.SaveBefore {
-		log.Println("[requery] Step 1: Saving current rule state...")
-		if result := p.callURLs(ctx, "save_rules", p.config.URLActions.SaveRules); result.Failed > 0 {
-			p.setFailedState("failed during save_rules step: %d/%d targets failed", result.Failed, result.Total)
-			return
-		}
-	}
-
-	var (
-		plan taskCandidatePlan
-		err  error
-	)
-	if recovery != nil {
-		plan = planFromRecovery(recovery)
-	} else {
-		// Step 2 & 3: Consolidate domains (Merge only, no backup read/write)
-		log.Println("[requery] Step 2 & 3: Collecting candidate domains...")
-		plan, err = p.buildTaskCandidatePlan(ctx, profile)
-		if err != nil {
-			p.setFailedState("failed during domain merge: %v", err)
-			return
-		}
-	}
-	totalDomains := len(plan.Primary) + len(plan.Secondary)
-	if totalDomains == 0 && !(recovery != nil && recovery.Stage == "publish") {
-		log.Println("[requery] No domains found to process. Task finished.")
-		p.clearFullRebuildTask()
-		return
-	}
-
-	if recovery == nil && profile.FlushBefore {
-		log.Println("[requery] Step 4: Flushing old rules (legacy mode)...")
-		if result := p.callURLs(ctx, "flush_rules", p.config.URLActions.FlushRules); result.Failed > 0 {
-			p.setFailedState("failed during flush_rules step: %d/%d targets failed", result.Failed, result.Total)
-			return
-		}
-	}
-
-	// Update status with total domain count
-	if recovery != nil {
-		p.mu.Lock()
-		p.status.LastRunDomainCount = recovery.Total
-		p.status.Progress.Total = int64(recovery.Total)
-		p.status.Progress.Processed = int64(recovery.Completed)
-		p.status.TaskStage = recovery.Stage
-		p.status.TaskStageLabel = recovery.StageLabel
-		p.status.TaskStageProcessed = stageProcessed(recovery)
-		p.status.TaskStageTotal = stageTotal(recovery)
-		p.lastError = ""
-		p.mu.Unlock()
-	} else {
-		p.mu.Lock()
-		p.status.LastRunDomainCount = totalDomains
-		p.status.Progress.Total = int64(totalDomains)
-		p.mu.Unlock()
-	}
-
-	if profile.Mode == "full_rebuild" {
-		if recovery == nil {
-			recovery = newFullRebuildTask(plan)
-		} else {
-			recovery = cloneFullRebuildTask(recovery)
-			recovery.ResumeCount++
-			recovery.UpdatedAt = time.Now().UTC()
-		}
-		if err := p.persistFullRebuildTask(recovery); err != nil {
-			p.setFailedState("failed to persist full rebuild snapshot: %v", err)
-			return
-		}
-	}
-
-	// Step 6: Re-query domains
-	if len(plan.Primary) > 0 {
-		p.setTaskStage("priority", "高优先级阶段", int64(len(plan.Primary)))
-		log.Printf("[requery] Step 6.1: %s 高优先级阶段，处理 %d 个域名...", profile.ProgressMode, len(plan.Primary))
-		if recovery != nil {
-			recovery.Stage = "priority"
-			recovery.StageLabel = stageLabel(recovery.Stage)
-			recovery.UpdatedAt = time.Now().UTC()
-			if err := p.persistFullRebuildTask(recovery); err != nil {
-				p.setFailedState("failed to persist priority stage snapshot: %v", err)
-				return
-			}
-		}
-		err = p.runStageWithCheckpoint(ctx, profile, recovery, "priority", plan.Primary, &plan.Primary, &plan.Secondary)
-		if err != nil {
-			log.Printf("[requery] Task stopped during high-priority query phase: %v", err)
-			return
-		}
-	}
-	if len(plan.Secondary) > 0 {
-		p.setTaskStage("tail", "长尾补全阶段", int64(len(plan.Secondary)))
-		log.Printf("[requery] Step 6.2: %s 长尾补全阶段，处理 %d 个域名...", profile.ProgressMode, len(plan.Secondary))
-		if recovery != nil {
-			recovery.Stage = "tail"
-			recovery.StageLabel = stageLabel(recovery.Stage)
-			recovery.UpdatedAt = time.Now().UTC()
-			if err := p.persistFullRebuildTask(recovery); err != nil {
-				p.setFailedState("failed to persist tail stage snapshot: %v", err)
-				return
-			}
-		}
-		err = p.runStageWithCheckpoint(ctx, profile, recovery, "tail", plan.Secondary, &plan.Primary, &plan.Secondary)
-		if err != nil {
-			log.Printf("[requery] Task stopped during long-tail query phase: %v", err)
-			return
-		}
-	}
-
-	if recovery != nil {
-		recovery.Stage = "publish"
-		recovery.StageLabel = stageLabel(recovery.Stage)
-		recovery.Primary = nil
-		recovery.Secondary = nil
-		recovery.UpdatedAt = time.Now().UTC()
-		if err := p.persistFullRebuildTask(recovery); err != nil {
-			p.setFailedState("failed to persist publish stage snapshot: %v", err)
-			return
-		}
-	}
-
-	if profile.SaveAfter {
-		log.Println("[requery] Step 7: Publishing refreshed rule state...")
-		if result := p.callURLs(ctx, "save_rules", p.config.URLActions.SaveRules); result.Failed > 0 {
-			p.setFailedState("failed during final save_rules step: %d/%d targets failed", result.Failed, result.Total)
-			return
-		}
-	}
-
-	p.clearFullRebuildTask()
 	log.Println("[requery] Task completed successfully.")
 }
 
@@ -588,192 +423,6 @@ func (p *Requery) setTaskStage(stage, label string, total int64) {
 	p.status.TaskStageProcessed = 0
 	p.status.TaskStageTotal = total
 	p.mu.Unlock()
-}
-
-func newFullRebuildTask(plan taskCandidatePlan) *FullRebuildTask {
-	total := len(plan.Primary) + len(plan.Secondary)
-	return &FullRebuildTask{
-		TaskID:     strconv.FormatInt(time.Now().UTC().UnixNano(), 10),
-		Mode:       "full_rebuild",
-		Stage:      "priority",
-		StageLabel: stageLabel("priority"),
-		StartedAt:  time.Now().UTC(),
-		UpdatedAt:  time.Now().UTC(),
-		Total:      total,
-		Primary:    cloneDomainCandidates(plan.Primary),
-		Secondary:  cloneDomainCandidates(plan.Secondary),
-	}
-}
-
-func planFromRecovery(task *FullRebuildTask) taskCandidatePlan {
-	if task == nil {
-		return taskCandidatePlan{}
-	}
-	return taskCandidatePlan{
-		Primary:   cloneDomainCandidates(task.Primary),
-		Secondary: cloneDomainCandidates(task.Secondary),
-	}
-}
-
-func cloneDomainCandidates(in []domainCandidate) []domainCandidate {
-	if len(in) == 0 {
-		return nil
-	}
-	out := make([]domainCandidate, len(in))
-	copy(out, in)
-	return out
-}
-
-func cloneFullRebuildTask(task *FullRebuildTask) *FullRebuildTask {
-	if task == nil {
-		return nil
-	}
-	cp := *task
-	cp.Primary = cloneDomainCandidates(task.Primary)
-	cp.Secondary = cloneDomainCandidates(task.Secondary)
-	return &cp
-}
-
-func stageLabel(stage string) string {
-	switch stage {
-	case "priority":
-		return "高优先级阶段"
-	case "tail":
-		return "长尾补全阶段"
-	case "publish":
-		return "发布阶段"
-	default:
-		return "恢复阶段"
-	}
-}
-
-func stageTotal(task *FullRebuildTask) int64 {
-	if task == nil {
-		return 0
-	}
-	switch task.Stage {
-	case "priority":
-		return int64(task.Completed + len(task.Primary))
-	case "tail", "publish":
-		return int64(task.Completed + len(task.Secondary))
-	default:
-		return int64(task.Total)
-	}
-}
-
-func stageProcessed(task *FullRebuildTask) int64 {
-	if task == nil {
-		return 0
-	}
-	switch task.Stage {
-	case "priority":
-		return 0
-	case "tail", "publish":
-		return int64(task.Total - len(task.Secondary))
-	default:
-		return int64(task.Completed)
-	}
-}
-
-func (p *Requery) checkpointBatchSize() int {
-	if p.config.Recovery.CheckpointBatchSize > 0 {
-		return p.config.Recovery.CheckpointBatchSize
-	}
-	return 256
-}
-
-func (p *Requery) autoResumeEnabled() bool {
-	if p.config.Recovery.AutoResume != nil {
-		return *p.config.Recovery.AutoResume
-	}
-	return true
-}
-
-func (p *Requery) resumeDelay() time.Duration {
-	if p.config.Recovery.ResumeDelayMS > 0 {
-		return time.Duration(p.config.Recovery.ResumeDelayMS) * time.Millisecond
-	}
-	return 1500 * time.Millisecond
-}
-
-func (p *Requery) persistFullRebuildTask(task *FullRebuildTask) error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.config.FullRebuildTask = cloneFullRebuildTask(task)
-	p.config.Status = p.status
-	return p.saveConfigUnlocked()
-}
-
-func (p *Requery) clearFullRebuildTask() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	if p.config == nil || p.config.FullRebuildTask == nil {
-		return
-	}
-	p.config.FullRebuildTask = nil
-	p.config.Status = p.status
-	if err := p.saveConfigUnlocked(); err != nil {
-		log.Printf("[requery] WARN: failed to clear full rebuild snapshot: %v", err)
-	}
-}
-
-func (p *Requery) prepareRecoveryOnStartup() {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if p.config == nil {
-		return
-	}
-
-	if task := p.config.FullRebuildTask; task != nil {
-		if task.Mode == "" {
-			task.Mode = "full_rebuild"
-		}
-		if task.StageLabel == "" {
-			task.StageLabel = stageLabel(task.Stage)
-		}
-		p.status.TaskState = "failed"
-		p.status.TaskMode = task.Mode
-		p.status.TaskStage = task.Stage
-		p.status.TaskStageLabel = task.StageLabel
-		p.status.TaskStageProcessed = stageProcessed(task)
-		p.status.TaskStageTotal = stageTotal(task)
-		p.status.Progress.Total = int64(task.Total)
-		p.status.Progress.Processed = int64(task.Completed)
-		p.status.LastRunDomainCount = task.Total
-		p.status.LastRunEndTime = time.Now().UTC()
-		p.lastError = "检测到中断的完整重建任务，等待恢复。"
-		_ = p.saveConfigUnlocked()
-		return
-	}
-
-	if p.status.TaskState == "running" {
-		log.Println("[requery] WARN: Found task in 'running' state on startup. Marking as 'failed'.")
-		p.status.TaskState = "failed"
-		p.status.LastRunEndTime = time.Now().UTC()
-		_ = p.saveConfigUnlocked()
-	}
-}
-
-func (p *Requery) scheduleRecoveryIfNeeded() {
-	p.mu.RLock()
-	task := cloneFullRebuildTask(p.config.FullRebuildTask)
-	autoResume := p.autoResumeEnabled()
-	delay := p.resumeDelay()
-	p.mu.RUnlock()
-
-	if task == nil || !autoResume {
-		return
-	}
-
-	p.resumeOnce.Do(func() {
-		time.AfterFunc(delay, func() {
-			profile := p.profileForMode("full_rebuild", 0)
-			if ok := p.startTaskWithRecovery(profile, task); !ok {
-				log.Println("[requery] Resume skipped: another task is already running.")
-			}
-		})
-	})
 }
 
 // mergeAndFilterDomains builds the effective candidate set for the task.
@@ -1632,6 +1281,7 @@ func (p *Requery) cloneConfigLocked() *Config {
 	}
 	cfg := *p.config
 	cfg.Status = p.status
+	cfg.FullRebuildTask = cloneFullRebuildTask(p.fullTask)
 	return &cfg
 }
 
@@ -2096,182 +1746,6 @@ func (p *Requery) handleGetSourceFileCounts(w http.ResponseWriter, r *http.Reque
 // 5. Helper and Utility Functions
 // ----------------------------------------------------------------------------
 
-func (p *Requery) loadConfig() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	dataBytes, err := os.ReadFile(p.filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[requery] config file %s not found, initializing with default empty config.", p.filePath)
-			p.config = &Config{
-				Status: Status{TaskState: "idle"},
-				Workflow: WorkflowSettings{
-					FlushMode:         "none",
-					Mode:              "hybrid",
-					SaveBeforeRefresh: boolPtr(true),
-					SaveAfterRefresh:  boolPtr(true),
-				},
-			}
-			p.config.ExecutionSettings.DateRangeDays = 30
-			p.config.ExecutionSettings.QueryMode = "observed"
-			p.config.ExecutionSettings.QueriesPerSecond = 100
-			p.config.ExecutionSettings.QuickQueriesPerSecond = 300
-			p.config.ExecutionSettings.PrewarmQueriesPerSecond = 500
-			p.config.ExecutionSettings.MaxQueueSize = 2048
-			p.config.ExecutionSettings.OnDemandBatchSize = 32
-			p.config.ExecutionSettings.URLCallConcurrency = 4
-			p.config.ExecutionSettings.QuickRebuildLimit = 2000
-			p.config.ExecutionSettings.PrewarmLimit = 1000
-			p.config.ExecutionSettings.FullRebuildPriorityLimit = 4000
-			p.config.Recovery = RecoverySettings{
-				AutoResume:          boolPtr(true),
-				CheckpointBatchSize: 256,
-				ResumeDelayMS:       1500,
-			}
-			p.status = p.config.Status
-			return p.saveConfigUnlocked()
-		}
-		return err
-	}
-
-	var cfg Config
-	if err := json.Unmarshal(dataBytes, &cfg); err != nil {
-		return fmt.Errorf("failed to parse json from config file %s: %w", p.filePath, err)
-	}
-	p.config = &cfg
-	p.status = p.config.Status
-
-	// 检查并设置默认值，如果有变更则需要回写配置
-	configChanged := false
-
-	if p.config.Status.TaskState == "" {
-		p.config.Status.TaskState = "idle"
-		configChanged = true // 严格来说这只是内存状态修正，但也可以保存
-	}
-	if p.config.ExecutionSettings.URLCallDelayMS == 0 {
-		p.config.ExecutionSettings.URLCallDelayMS = 50 // Default value
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.URLCallConcurrency <= 0 {
-		p.config.ExecutionSettings.URLCallConcurrency = 4
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.QueriesPerSecond == 0 {
-		p.config.ExecutionSettings.QueriesPerSecond = 100 // Default value
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.QuickQueriesPerSecond <= 0 {
-		p.config.ExecutionSettings.QuickQueriesPerSecond = 300
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.PrewarmQueriesPerSecond <= 0 {
-		p.config.ExecutionSettings.PrewarmQueriesPerSecond = 500
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.DateRangeDays <= 0 {
-		p.config.ExecutionSettings.DateRangeDays = 30 // Default value (Requirement 4)
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.QueryMode == "" {
-		p.config.ExecutionSettings.QueryMode = "observed"
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.MaxQueueSize <= 0 {
-		p.config.ExecutionSettings.MaxQueueSize = 2048
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.OnDemandBatchSize <= 0 {
-		p.config.ExecutionSettings.OnDemandBatchSize = 32
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.QuickRebuildLimit <= 0 {
-		p.config.ExecutionSettings.QuickRebuildLimit = 2000
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.PrewarmLimit <= 0 {
-		p.config.ExecutionSettings.PrewarmLimit = 1000
-		configChanged = true
-	}
-	if p.config.ExecutionSettings.FullRebuildPriorityLimit <= 0 {
-		p.config.ExecutionSettings.FullRebuildPriorityLimit = 4000
-		configChanged = true
-	}
-	if p.config.Recovery.AutoResume == nil {
-		p.config.Recovery.AutoResume = boolPtr(true)
-		configChanged = true
-	}
-	if p.config.Recovery.CheckpointBatchSize <= 0 {
-		p.config.Recovery.CheckpointBatchSize = 256
-		configChanged = true
-	}
-	if p.config.Recovery.ResumeDelayMS <= 0 {
-		p.config.Recovery.ResumeDelayMS = 1500
-		configChanged = true
-	}
-	normalizedPool := uniqueResolverAddresses(splitResolverAddressesSlice(p.config.ExecutionSettings.RefreshResolverPool))
-	if len(normalizedPool) != len(p.config.ExecutionSettings.RefreshResolverPool) {
-		p.config.ExecutionSettings.RefreshResolverPool = normalizedPool
-		configChanged = true
-	}
-	if p.config.Workflow.FlushMode == "" {
-		if len(p.config.URLActions.FlushRules) > 0 && p.config.ExecutionSettings.RefreshResolverAddress == "" {
-			p.config.Workflow.FlushMode = "legacy"
-		} else {
-			p.config.Workflow.FlushMode = "none"
-		}
-		configChanged = true
-	}
-	if p.config.Workflow.Mode == "" {
-		if p.config.Scheduler.Enabled {
-			p.config.Workflow.Mode = "hybrid"
-		} else {
-			p.config.Workflow.Mode = "manual"
-		}
-		configChanged = true
-	}
-	if p.config.Workflow.SaveBeforeRefresh == nil {
-		p.config.Workflow.SaveBeforeRefresh = boolPtr(true)
-		configChanged = true
-	}
-	if p.config.Workflow.SaveAfterRefresh == nil {
-		p.config.Workflow.SaveAfterRefresh = boolPtr(true)
-		configChanged = true
-	}
-	p.status = p.config.Status
-
-	if configChanged {
-		log.Println("[requery] Configuration defaults applied, saving updated config.")
-		if err := p.saveConfigUnlocked(); err != nil {
-			return fmt.Errorf("failed to save config after applying defaults: %w", err)
-		}
-	}
-
-	return nil
-}
-
-func (p *Requery) saveConfigUnlocked() error {
-	cfg := p.cloneConfigLocked()
-	if cfg == nil {
-		return errors.New("requery config is nil")
-	}
-	dataBytes, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config to json: %w", err)
-	}
-
-	tmpFile := p.filePath + ".tmp"
-	if err := os.WriteFile(tmpFile, dataBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write to temporary config file: %w", err)
-	}
-	if err := os.Rename(tmpFile, p.filePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to rename temporary config file: %w", err)
-	}
-
-	return nil
-}
-
 // [FIX] Corrected rescheduleTasks logic
 func (p *Requery) rescheduleTasks() {
 	if err := p.setupScheduler(); err != nil {
@@ -2479,10 +1953,10 @@ func (p *Requery) setFailedState(format string, args ...any) {
 	defer p.mu.Unlock()
 	p.status.TaskState = "failed"
 	p.lastError = fmt.Sprintf(format, args...)
-	if p.config != nil && p.config.FullRebuildTask != nil {
-		p.config.FullRebuildTask.LastError = p.lastError
-		p.config.FullRebuildTask = nil
-		_ = p.saveConfigUnlocked()
+	if p.fullTask != nil {
+		p.fullTask.LastError = p.lastError
+		p.fullTask = nil
+		_ = p.saveStateUnlocked()
 	}
 	log.Printf("[requery] ERROR: Task failed: "+format, args...)
 }
@@ -2492,9 +1966,9 @@ func (p *Requery) setCancelledState(reason string) {
 	defer p.mu.Unlock()
 	p.status.TaskState = "cancelled"
 	p.lastError = reason
-	if p.config != nil && p.config.FullRebuildTask != nil {
-		p.config.FullRebuildTask = nil
-		_ = p.saveConfigUnlocked()
+	if p.fullTask != nil {
+		p.fullTask = nil
+		_ = p.saveStateUnlocked()
 	}
 	log.Println("[requery] INFO: Task cancelled:", reason)
 }

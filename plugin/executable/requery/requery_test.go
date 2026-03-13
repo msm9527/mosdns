@@ -418,6 +418,9 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 			{Name: "resume.example", QTypeMask: qtypeMaskA},
 		},
 	}
+	if err := persist.saveConfigUnlocked(); err != nil {
+		t.Fatalf("saveConfigUnlocked: %v", err)
+	}
 	if err := persist.persistFullRebuildTask(task); err != nil {
 		t.Fatalf("persistFullRebuildTask: %v", err)
 	}
@@ -428,7 +431,7 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 	}
 	reloaded.prepareRecoveryOnStartup()
 
-	if reloaded.config.FullRebuildTask == nil {
+	if reloaded.fullTask == nil {
 		t.Fatal("expected persisted full rebuild task")
 	}
 	if reloaded.status.TaskState != "failed" {
@@ -439,6 +442,108 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 	}
 	if reloaded.status.Progress.Total != 3 || reloaded.status.Progress.Processed != 1 {
 		t.Fatalf("unexpected recovered progress: %+v", reloaded.status.Progress)
+	}
+}
+
+func TestApplyConfigDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		URLActions: URLActions{
+			FlushRules: []string{"/api/v1/cache/cache_cn/flush"},
+		},
+		Scheduler: SchedulerConfig{Enabled: true},
+		ExecutionSettings: ExecutionSettings{
+			RefreshResolverPool: []string{"127.0.0.1:5302", " 127.0.0.1:5303 ", "127.0.0.1:5302"},
+		},
+	}
+
+	if !applyConfigDefaults(cfg) {
+		t.Fatal("expected defaults to be applied")
+	}
+	if cfg.Status.TaskState != "idle" {
+		t.Fatalf("unexpected task state: %q", cfg.Status.TaskState)
+	}
+	if cfg.Workflow.Mode != "hybrid" {
+		t.Fatalf("unexpected workflow mode: %q", cfg.Workflow.Mode)
+	}
+	if cfg.Workflow.FlushMode != "legacy" {
+		t.Fatalf("unexpected flush mode: %q", cfg.Workflow.FlushMode)
+	}
+	if cfg.ExecutionSettings.URLCallDelayMS != defaultURLCallDelayMS {
+		t.Fatalf("unexpected url call delay: %d", cfg.ExecutionSettings.URLCallDelayMS)
+	}
+	if len(cfg.ExecutionSettings.RefreshResolverPool) != 2 || cfg.ExecutionSettings.RefreshResolverPool[0] != "127.0.0.1:5302" || cfg.ExecutionSettings.RefreshResolverPool[1] != "127.0.0.1:5303" {
+		t.Fatalf("unexpected resolver pool: %#v", cfg.ExecutionSettings.RefreshResolverPool)
+	}
+	if cfg.Recovery.AutoResume == nil || !*cfg.Recovery.AutoResume {
+		t.Fatalf("unexpected auto resume: %#v", cfg.Recovery.AutoResume)
+	}
+}
+
+func TestLoadConfigMigratesLegacyStateToSidecar(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "requery.json")
+	legacy := map[string]any{
+		"workflow": map[string]any{
+			"mode":                "hybrid",
+			"flush_mode":          "none",
+			"save_before_refresh": true,
+			"save_after_refresh":  true,
+		},
+		"execution_settings": map[string]any{
+			"queries_per_second": 100,
+			"date_range_days":    30,
+			"query_mode":         "observed",
+		},
+		"status": map[string]any{
+			"task_state": "failed",
+			"task_mode":  "full_rebuild",
+		},
+		"full_rebuild_task": map[string]any{
+			"task_id":    "legacy-task",
+			"mode":       "full_rebuild",
+			"stage":      "tail",
+			"total":      2,
+			"completed":  1,
+			"updated_at": time.Now().UTC().Format(time.RFC3339),
+		},
+	}
+	data, err := json.MarshalIndent(legacy, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal legacy config: %v", err)
+	}
+	if err := os.WriteFile(cfgFile, data, 0644); err != nil {
+		t.Fatalf("write legacy config: %v", err)
+	}
+
+	p := &Requery{filePath: cfgFile}
+	if err := p.loadConfig(); err != nil {
+		t.Fatalf("loadConfig: %v", err)
+	}
+	if p.fullTask == nil || p.fullTask.TaskID != "legacy-task" {
+		t.Fatalf("unexpected migrated task: %#v", p.fullTask)
+	}
+	if p.status.TaskState != "failed" {
+		t.Fatalf("unexpected migrated status: %+v", p.status)
+	}
+
+	cfgBytes, err := os.ReadFile(cfgFile)
+	if err != nil {
+		t.Fatalf("read migrated config: %v", err)
+	}
+	if strings.Contains(string(cfgBytes), "\"full_rebuild_task\"") || strings.Contains(string(cfgBytes), "\"status\"") {
+		t.Fatalf("expected migrated config to exclude runtime state, got %s", string(cfgBytes))
+	}
+
+	stateBytes, err := os.ReadFile(stateFilePath(cfgFile))
+	if err != nil {
+		t.Fatalf("read state file: %v", err)
+	}
+	if !strings.Contains(string(stateBytes), "\"full_rebuild_task\"") || !strings.Contains(string(stateBytes), "\"task_state\": \"failed\"") {
+		t.Fatalf("unexpected state file content: %s", string(stateBytes))
 	}
 }
 
