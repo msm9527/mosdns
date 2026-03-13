@@ -70,14 +70,25 @@
 | `GET` | `/api/v2/audit/rank/slowest` | 审计 | `stable` | 慢查询排行 |
 | `GET` | `/api/v2/audit/logs` | 审计 | `stable` | 分页日志查询 |
 
-## 3.4 覆盖配置
+## 3.4 运行态聚合
+
+| 方法 | 路径 | 模块 | 等级 | 说明 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/api/v1/runtime/summary` | 运行态聚合 | `stable` | 获取 SQLite 运行态摘要与命名空间概览 |
+| `GET` | `/api/v1/runtime/resources` | 运行态聚合 | `stable` | 聚合获取 switches/webinfo/requery/adguard/diversion/datasets/events |
+| `GET` | `/api/v1/runtime/requery/jobs` | requery 任务 | `stable` | 获取任务定义 |
+| `GET` | `/api/v1/runtime/requery/runs` | requery 任务 | `stable` | 获取最近运行历史 |
+| `GET` | `/api/v1/runtime/requery/checkpoints` | requery 任务 | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
+| `POST` | `/api/v1/runtime/requery/enqueue` | requery 任务 | `stable` | 触发运行态 requery 入队 |
+
+## 3.5 覆盖配置
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/overrides/` | 覆盖配置 | `stable` | 读取全局覆盖配置 |
 | `POST` | `/api/v1/overrides/` | 覆盖配置 | `stable` | 保存并应用全局覆盖配置 |
 
-## 3.5 配置管理
+## 3.6 配置管理
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -85,7 +96,7 @@
 | `POST` | `/api/v1/config/export` | 配置管理 | `stable` | 导出当前配置 |
 | `POST` | `/api/v1/config/update_from_url` | 配置管理 | `stable` | 拉取远程配置并覆盖更新 |
 
-## 3.6 更新
+## 3.7 更新
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -93,13 +104,13 @@
 | `POST` | `/api/v1/update/check` | 更新 | `stable` | 强制检查 |
 | `POST` | `/api/v1/update/apply` | 更新 | `stable` | 执行更新 |
 
-## 3.7 系统
+## 3.8 系统
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/system/restart` | 系统 | `stable` | 计划自重启 |
 
-## 3.8 上游配置
+## 3.9 上游配置
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -113,7 +124,7 @@
 | `DELETE` | `/api/v1/upstream/items/{upstreamTag}` | 上游配置 | `stable` | 删除上游项 |
 | `POST` | `/api/v1/upstream/config` | 上游配置 | `compat` | 旧兼容入口，建议弱化 |
 
-## 3.9 运行时聚合统计
+## 3.10 运行时聚合统计
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
