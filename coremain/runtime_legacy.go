@@ -15,6 +15,7 @@ type LegacyRuntimeImportSummary struct {
 	Switches  int `json:"switches"`
 	Webinfo   int `json:"webinfo"`
 	Requery   int `json:"requery"`
+	Adguard   int `json:"adguard"`
 }
 
 func ImportLegacyRuntimeState(baseDir string) (LegacyRuntimeImportSummary, error) {
@@ -37,6 +38,63 @@ func ImportLegacyRuntimeState(baseDir string) (LegacyRuntimeImportSummary, error
 	}
 	if err := importLegacyRecursiveFiles(baseDir, &summary); err != nil {
 		return summary, err
+	}
+	return summary, nil
+}
+
+func ExportLegacyRuntimeState(baseDir string) (LegacyRuntimeImportSummary, error) {
+	baseDir = strings.TrimSpace(baseDir)
+	if baseDir == "" {
+		return LegacyRuntimeImportSummary{}, fmt.Errorf("base dir is required")
+	}
+	absBaseDir, err := filepath.Abs(baseDir)
+	if err == nil {
+		baseDir = absBaseDir
+	}
+	dbPath := filepath.Join(baseDir, runtimeStateDBFilename)
+
+	summary := LegacyRuntimeImportSummary{}
+
+	var overrides GlobalOverrides
+	if ok, err := LoadRuntimeStateJSONFromPath(dbPath, runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, &overrides); err != nil {
+		return summary, err
+	} else if ok {
+		if err := writeJSONFile(filepath.Join(baseDir, overridesFilename), overrides); err != nil {
+			return summary, err
+		}
+		summary.Overrides++
+	}
+
+	var upstreams GlobalUpstreamOverrides
+	if ok, err := LoadRuntimeStateJSONFromPath(dbPath, runtimeStateNamespaceUpstreams, runtimeStateKeyUpstreamConfig, &upstreams); err != nil {
+		return summary, err
+	} else if ok {
+		if err := writeJSONFile(filepath.Join(baseDir, upstreamOverridesFilename), upstreams); err != nil {
+			return summary, err
+		}
+		summary.Upstreams++
+	}
+
+	writers := []struct {
+		namespace string
+		counter   *int
+	}{
+		{namespace: runtimeNamespaceSwitch, counter: &summary.Switches},
+		{namespace: runtimeNamespaceWebinfo, counter: &summary.Webinfo},
+		{namespace: runtimeNamespaceRequery, counter: &summary.Requery},
+		{namespace: runtimeNamespaceAdguard, counter: &summary.Adguard},
+	}
+	for _, item := range writers {
+		entries, err := ListRuntimeStateByNamespace(dbPath, item.namespace)
+		if err != nil {
+			return summary, err
+		}
+		for _, entry := range entries {
+			if err := writeRawJSONFile(entry.Key, entry.Value); err != nil {
+				return summary, err
+			}
+			*item.counter = *item.counter + 1
+		}
 	}
 	return summary, nil
 }
@@ -231,4 +289,27 @@ func readJSONFileToRawMap(path string) (map[string]json.RawMessage, bool, error)
 		return nil, false, err
 	}
 	return payload, true, nil
+}
+
+func writeJSONFile(path string, value any) error {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return err
+	}
+	return writeRawJSONFile(path, data)
+}
+
+func writeRawJSONFile(path string, raw []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmpFile := path + ".tmp"
+	if err := os.WriteFile(tmpFile, raw, 0o644); err != nil {
+		return err
+	}
+	if err := os.Rename(tmpFile, path); err != nil {
+		_ = os.Remove(tmpFile)
+		return err
+	}
+	return nil
 }

@@ -318,3 +318,73 @@ func TestRuntimeCmdLegacyImportOutput(t *testing.T) {
 		t.Fatalf("unexpected import summary: %+v", summary)
 	}
 }
+
+func TestExportLegacyRuntimeState(t *testing.T) {
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, runtimeStateDBFilename)
+
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
+		t.Fatalf("save runtime overrides: %v", err)
+	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceUpstreams, runtimeStateKeyUpstreamConfig, GlobalUpstreamOverrides{
+		"test": {{Tag: "u1", Protocol: "udp", Addr: "8.8.8.8"}},
+	}); err != nil {
+		t.Fatalf("save runtime upstreams: %v", err)
+	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceSwitch, filepath.Join(baseDir, "switches.json"), map[string]string{"core_mode": "secure"}); err != nil {
+		t.Fatalf("save runtime switch: %v", err)
+	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceWebinfo, filepath.Join(baseDir, "webinfo", "clientname.json"), map[string]string{"1.1.1.1": "cloudflare"}); err != nil {
+		t.Fatalf("save runtime webinfo: %v", err)
+	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceRequery, filepath.Join(baseDir, "webinfo", "requeryconfig.state.json")+":state", map[string]any{"status": map[string]any{"task_state": "idle"}}); err != nil {
+		t.Fatalf("save runtime requery: %v", err)
+	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceAdguard, filepath.Join(baseDir, "adguard", "config.json"), []map[string]any{{"id": "rule-1"}}); err != nil {
+		t.Fatalf("save runtime adguard: %v", err)
+	}
+
+	summary, err := ExportLegacyRuntimeState(baseDir)
+	if err != nil {
+		t.Fatalf("ExportLegacyRuntimeState: %v", err)
+	}
+	if summary.Overrides != 1 || summary.Upstreams != 1 || summary.Switches != 1 || summary.Webinfo != 1 || summary.Requery != 1 || summary.Adguard != 1 {
+		t.Fatalf("unexpected export summary: %+v", summary)
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, overridesFilename)); err != nil {
+		t.Fatalf("expected overrides export: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, "adguard", "config.json")); err != nil {
+		t.Fatalf("expected adguard export: %v", err)
+	}
+}
+
+func TestRuntimeCmdLegacyExportOutput(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
+		t.Fatalf("save runtime overrides: %v", err)
+	}
+
+	cmd := newRuntimeCmd()
+	buf := new(strings.Builder)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"-d", MainConfigBaseDir, "legacy", "export"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+
+	var summary LegacyRuntimeImportSummary
+	if err := json.Unmarshal([]byte(buf.String()), &summary); err != nil {
+		t.Fatalf("decode output: %v output=%q", err, buf.String())
+	}
+	if summary.Overrides != 1 {
+		t.Fatalf("unexpected export summary: %+v", summary)
+	}
+}

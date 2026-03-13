@@ -133,7 +133,28 @@ func newRuntimeCmd() *cobra.Command {
 		},
 		SilenceUsage: true,
 	}
-	legacyCmd.AddCommand(legacyImportCmd)
+	legacyExportCmd := &cobra.Command{
+		Use:   "export",
+		Short: "Export runtime state from SQLite back to legacy JSON files.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			summary, err := ExportLegacyRuntimeState(baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := json.Marshal(summary)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	legacyCmd.AddCommand(legacyImportCmd, legacyExportCmd)
 	runtimeCmd.AddCommand(legacyCmd)
 
 	requeryCmd := &cobra.Command{
