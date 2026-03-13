@@ -240,12 +240,17 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET/PUT` | `/plugins/clientname` | `internal` | 客户端别名配置 |
+| `GET` | `/api/v1/clientname` | `stable` | 获取客户端别名配置 |
+| `PUT` | `/api/v1/clientname` | `stable` | 更新客户端别名配置 |
 | `GET` | `/api/v1/switches/core_mode` | `stable` | 当前核心模式 |
-| `GET` | `/plugins/reverse_lookup` | `internal` | 反查 IP |
+| `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
 | `GET/PUT` | `/plugins/webinfo` | `internal` | Web 信息配置 |
 
-这类接口目前更适合作为内部实现能力，暂不建议外部依赖。
+说明：
+
+- 旧的 `/plugins/clientname` 已移除
+- 旧的 `/plugins/reverse_lookup` 已移除
+- `/plugins/webinfo` 仍属于内部实现接口
 
 ## 5. 主要问题标注矩阵
 

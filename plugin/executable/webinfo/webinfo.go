@@ -1,19 +1,17 @@
 package webinfo
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
-	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
 
 	// FIX: Corrected the typo in the import path.
 	"github.com/IrineSistiana/mosdns/v5/coremain"
-	"github.com/go-chi/chi/v5"
 )
 
 const (
@@ -39,7 +37,7 @@ type WebInfo struct {
 }
 
 // newWebinfo 是插件的初始化函数
-func newWebinfo(bp *coremain.BP, args any) (any, error) {
+func newWebinfo(_ *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
 	if cfg.File == "" {
 		return nil, errors.New("webinfo: 'file' must be specified")
@@ -58,8 +56,6 @@ func newWebinfo(bp *coremain.BP, args any) (any, error) {
 		return nil, fmt.Errorf("webinfo: failed to load initial data from %s: %w", p.filePath, err)
 	}
 	log.Printf("[webinfo] plugin instance created for file: %s", p.filePath)
-
-	bp.RegAPI(p.api())
 
 	return p, nil
 }
@@ -112,57 +108,21 @@ func (p *WebInfo) saveData() error {
 	return nil
 }
 
-// jsonError 是一个辅助函数
-func jsonError(w http.ResponseWriter, message string, code int) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(code)
-	_ = json.NewEncoder(w).Encode(map[string]string{"error": message})
+func (p *WebInfo) SnapshotJSONValue() any {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.data
 }
 
-// api 定义并返回插件的 HTTP 接口
-func (p *WebInfo) api() *chi.Mux {
-	r := chi.NewRouter()
+func (p *WebInfo) ReplaceJSONValue(_ context.Context, newData any) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
 
-	r.Get("/", func(w http.ResponseWriter, r *http.Request) {
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		if err := json.NewEncoder(w).Encode(p.data); err != nil {
-			log.Printf("[webinfo] ERROR: failed to encode data to response: %v", err)
-			jsonError(w, "Failed to encode response data", http.StatusInternalServerError)
-		}
-	})
-
-	r.Put("/", func(w http.ResponseWriter, r *http.Request) {
-		body, err := io.ReadAll(r.Body)
-		if err != nil {
-			jsonError(w, "Failed to read request body", http.StatusInternalServerError)
-			return
-		}
-
-		var newData interface{}
-		if err := json.Unmarshal(body, &newData); err != nil {
-			jsonError(w, "Invalid JSON format in request body", http.StatusBadRequest)
-			return
-		}
-
-		p.mu.Lock()
-		defer p.mu.Unlock()
-
-		p.data = newData
-		if err := p.saveData(); err != nil {
-			log.Printf("[webinfo] ERROR: failed to save data to file %s: %v", p.filePath, err)
-			jsonError(w, "Failed to save data to file", http.StatusInternalServerError)
-			return
-		}
-		
-		log.Printf("[webinfo] data updated successfully for file: %s", p.filePath)
-
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusOK)
-		_ = json.NewEncoder(w).Encode(p.data)
-	})
-
-	return r
+	p.data = newData
+	if err := p.saveData(); err != nil {
+		log.Printf("[webinfo] ERROR: failed to save data to file %s: %v", p.filePath, err)
+		return err
+	}
+	log.Printf("[webinfo] data updated successfully for file: %s", p.filePath)
+	return nil
 }

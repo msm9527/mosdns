@@ -1072,6 +1072,37 @@
 }
 ```
 
+### 4.7 客户端别名与反查工具（`stable`）
+
+| 方法 | 路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/api/v1/clientname` | `stable` | 获取客户端别名映射 |
+| `PUT` | `/api/v1/clientname` | `stable` | 更新客户端别名映射 |
+| `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
+
+`PUT /api/v1/clientname` 请求体示例：
+
+```json
+{
+  "192.168.1.2": "MacBook",
+  "192.168.1.3": "Apple TV"
+}
+```
+
+`GET /api/v1/reverse_lookup?ip=1.1.1.1` 返回示例：
+
+```json
+{
+  "ip": "1.1.1.1",
+  "domain": "one.one.one.one."
+}
+```
+
+说明：
+
+- 旧的 `/plugins/clientname` 已移除
+- 旧的 `/plugins/reverse_lookup` 已移除
+
 ## 5. 当前前端重点依赖的接口
 
 这一节描述的是“当前实现现状”，不是稳定性推荐顺序。
@@ -1170,6 +1201,8 @@
 - `POST /api/v1/rules/diversion/{type}/{name}/update`
 - `GET /api/v1/lists/{tag}`
 - `PUT /api/v1/lists/{tag}`
+- `GET /api/v1/clientname`
+- `PUT /api/v1/clientname`
 - `domain_output` 等内部记忆库仍使用 `/plugins/{tag}/show|save|flush|verify`
 
 ## 6. 迁移说明

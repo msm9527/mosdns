@@ -200,8 +200,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const clientnameApi = {
-        get: () => api.fetch(`/plugins/clientname`),
-        update: (data) => api.fetch(`/plugins/clientname`, {
+        get: () => api.fetch(`/api/v1/clientname`),
+        update: (data) => api.fetch(`/api/v1/clientname`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),

@@ -421,6 +421,22 @@
 建议只做两点：
 
 - 继续保留 `PUT /api/v1/upstream/config` 作为主入口
+
+## 6.7 低频工具接口
+
+当前现状：
+
+- `clientname` 已迁移到：
+  - `GET /api/v1/clientname`
+  - `PUT /api/v1/clientname`
+- `reverse_lookup` 已迁移到：
+  - `GET /api/v1/reverse_lookup?ip=...`
+- 旧的 `/plugins/clientname` 和 `/plugins/reverse_lookup` 已移除
+
+建议：
+
+- 低频但有明确业务语义的能力，优先进入 `/api/v1/*`
+- 通用插件型接口只在没有稳定业务抽象时保留在 `/plugins/*`
 - 将 `POST /api/v1/upstream/config` 明确标注 deprecated
 
 ## 6.7 审计与日志

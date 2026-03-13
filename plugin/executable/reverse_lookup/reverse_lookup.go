@@ -21,17 +21,14 @@ package reverselookup
 
 import (
 	"context"
-	"fmt"
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/cache"
 	"github.com/IrineSistiana/mosdns/v5/pkg/dnsutils"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
-	"github.com/go-chi/chi/v5"
 	"github.com/miekg/dns"
 	"net"
-	"net/http"
 	"net/netip"
 	"time"
 )
@@ -66,16 +63,13 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	return NewReverseLookup(bp, args.(*Args))
 }
 
-func NewReverseLookup(bp *coremain.BP, args *Args) (any, error) {
+func NewReverseLookup(_ *coremain.BP, args *Args) (any, error) {
 	args.init()
 	c := cache.New[key, string](cache.Opts{Size: args.Size})
 	p := &ReverseLookup{
 		args: args,
 		c:    c,
 	}
-	r := chi.NewRouter()
-	r.Get("/", p.ServeHTTP)
-	bp.RegAPI(r)
 	return p, nil
 }
 
@@ -97,22 +91,12 @@ func (p *ReverseLookup) Close() error {
 	return p.c.Close()
 }
 
-func (p *ReverseLookup) ServeHTTP(w http.ResponseWriter, req *http.Request) {
-	ipStr := req.URL.Query().Get("ip")
-	if len(ipStr) == 0 {
-		http.Error(w, "no 'ip' query parameter found", http.StatusBadRequest)
-		return
-	}
+func (p *ReverseLookup) LookupIPString(ipStr string) (string, error) {
 	addr, err := netip.ParseAddr(ipStr)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+		return "", err
 	}
-
-	d := p.lookup(netip.AddrFrom16(addr.As16()))
-	if len(d) > 0 {
-		_, _ = fmt.Fprint(w, d)
-	}
+	return p.lookup(netip.AddrFrom16(addr.As16())), nil
 }
 
 func (p *ReverseLookup) lookup(n netip.Addr) string {
