@@ -255,5 +255,35 @@ func baseMigrations() []Migration {
 				ON generated_dataset(output_path, updated_at_unix_ms DESC);
 			`,
 		},
+		{
+			ID: "0008_global_override_state",
+			Up: `
+				CREATE TABLE IF NOT EXISTS global_override_state (
+					scope_key TEXT PRIMARY KEY,
+					socks5 TEXT NOT NULL DEFAULT '',
+					ecs TEXT NOT NULL DEFAULT '',
+					replacements_json TEXT NOT NULL DEFAULT '[]',
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
+				);
+			`,
+		},
+		{
+			ID: "0009_upstream_override_item",
+			Up: `
+				CREATE TABLE IF NOT EXISTS upstream_override_item (
+					plugin_tag TEXT NOT NULL,
+					upstream_tag TEXT NOT NULL,
+					enabled INTEGER NOT NULL DEFAULT 0,
+					protocol TEXT NOT NULL DEFAULT '',
+					payload_json TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (plugin_tag, upstream_tag)
+				);
+				CREATE INDEX IF NOT EXISTS idx_upstream_override_item_plugin
+				ON upstream_override_item(plugin_tag, updated_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_upstream_override_item_protocol
+				ON upstream_override_item(protocol, updated_at_unix_ms DESC);
+			`,
+		},
 	}
 }
