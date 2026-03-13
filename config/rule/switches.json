@@ -1,6 +1,6 @@
 {
   "ad_block": "off",
-  "block_ipv6": "on",
+  "block_ipv6": "off",
   "block_query_type": "on",
   "block_response": "on",
   "branch_cache": "on",

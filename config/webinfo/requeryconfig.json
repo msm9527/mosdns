@@ -1,37 +1,21 @@
 {
   "domain_processing": {
-    "source_files": [
-      {
-        "alias": "域名全集",
-        "path": "gen/top_domains.txt"
-      }
-    ]
+    "source_files": null
   },
   "url_actions": {
-    "save_rules": [
-      "http://127.0.0.1:9099/api/v1/cache/cache_all/save",
-      "http://127.0.0.1:9099/api/v1/cache/cache_all_noleak/save",
-      "http://127.0.0.1:9099/api/v1/cache/cache_cn/save",
-      "http://127.0.0.1:9099/api/v1/cache/cache_google/save",
-      "http://127.0.0.1:9099/api/v1/cache/cache_google_node/save",
-      "http://127.0.0.1:9099/api/v1/memory/top_domains/save",
-      "http://127.0.0.1:9099/api/v1/memory/my_fakeiplist/save",
-      "http://127.0.0.1:9099/api/v1/memory/my_realiplist/save",
-      "http://127.0.0.1:9099/api/v1/memory/my_nov4list/save",
-      "http://127.0.0.1:9099/api/v1/memory/my_nov6list/save"
-    ],
-    "flush_rules": []
+    "save_rules": null,
+    "flush_rules": null
   },
   "workflow": {
     "flush_mode": "none",
-    "mode": "hybrid",
+    "mode": "manual",
     "save_before_refresh": true,
     "save_after_refresh": true
   },
   "scheduler": {
-    "enabled": true,
+    "enabled": false,
     "start_datetime": "",
-    "interval_minutes": 1440
+    "interval_minutes": 0
   },
   "recovery": {
     "auto_resume": true,
@@ -42,8 +26,7 @@
     "queries_per_second": 100,
     "quick_queries_per_second": 300,
     "prewarm_queries_per_second": 500,
-    "resolver_address": "127.0.0.1:7766",
-    "refresh_resolver_address": "127.0.0.1:7767",
+    "resolver_address": "",
     "query_mode": "observed",
     "url_call_delay_ms": 50,
     "url_call_concurrency": 4,
@@ -55,24 +38,18 @@
     "full_rebuild_priority_limit": 4000
   },
   "status": {
-    "task_state": "failed",
-    "task_mode": "full_rebuild",
-    "task_stage": "tail",
-    "task_stage_label": "长尾补全阶段",
-    "task_stage_processed": 3104,
-    "task_stage_total": 3104,
-    "last_run_start_time": "2026-03-12T09:06:10.308488Z",
-    "last_run_end_time": "2026-03-12T09:25:52.586631Z",
-    "last_run_domain_count": 87488,
+    "task_state": "idle",
+    "last_run_start_time": "0001-01-01T00:00:00Z",
+    "last_run_end_time": "0001-01-01T00:00:00Z",
+    "last_run_domain_count": 0,
     "progress": {
-      "processed": 87488,
-      "total": 87488
+      "processed": 0,
+      "total": 0
     },
-    "pending_queue": 72,
-    "on_demand_triggered": 23568,
-    "on_demand_processed": 5461,
-    "on_demand_skipped": 39474,
-    "last_on_demand_at": "2026-03-12T09:06:10.631596Z",
-    "last_on_demand_domain": "chatgpt.com"
+    "pending_queue": 0,
+    "on_demand_triggered": 0,
+    "on_demand_processed": 0,
+    "on_demand_skipped": 0,
+    "last_on_demand_at": "0001-01-01T00:00:00Z"
   }
 }
