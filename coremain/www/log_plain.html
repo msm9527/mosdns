@@ -930,8 +930,8 @@
 
         // --- [MOVED & DEFINED HERE] Client Name API and Adguard API ---
         const clientnameApi = {
-            get: () => ruleApiFetch('/api/v1/clientname'),
-            update: (data) => ruleApiFetch('/api/v1/clientname', {
+            get: () => ruleApiFetch('/api/v1/runtime/clientname'),
+            update: (data) => ruleApiFetch('/api/v1/runtime/clientname', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),

@@ -173,17 +173,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 轻量级请求器 + /metrics 简易缓存，减少同一时段的重复请求
     let __metricsInflight = null; let __metricsStamp = 0;
-    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (memoryEntries, retentionDays, maxDiskSizeMB) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memory_entries: parseInt(memoryEntries, 10), retention_days: parseInt(retentionDays, 10), max_disk_size_mb: parseInt(maxDiskSizeMB, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/api/v1/switches/core_mode', { signal }).then(response => response?.value || 'secure'), getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }), getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
+    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (memoryEntries, retentionDays, maxDiskSizeMB) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memory_entries: parseInt(memoryEntries, 10), retention_days: parseInt(retentionDays, 10), max_disk_size_mb: parseInt(maxDiskSizeMB, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/api/v1/runtime/switches/core_mode', { signal }).then(response => response?.value || 'secure'), getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }), getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
 
     const requeryApi = {
-        getSummary: (signal) => api.fetch(`/api/v1/requery/summary`, { signal }),
-        getConfig: (signal) => api.fetch(`/api/v1/requery`, { signal }),
-        getStatus: (signal) => api.fetch(`/api/v1/requery/status`, { signal }),
-        trigger: (mode = 'full_rebuild', limit = 0) => api.fetch(`/api/v1/requery/trigger`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, limit }) }),
-        cancel: () => api.fetch(`/api/v1/requery/cancel`, { method: 'POST' }),
-        updateSchedulerConfig: (config) => api.fetch(`/api/v1/requery/scheduler/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }),
-        saveRules: () => api.fetch(`/api/v1/requery/rules/save`, { method: 'POST' }),
-        flushRules: () => api.fetch(`/api/v1/requery/rules/flush`, { method: 'POST' }),
+        getSummary: (signal) => api.fetch(`/api/v1/runtime/requery/summary`, { signal }),
+        getConfig: (signal) => api.fetch(`/api/v1/runtime/requery`, { signal }),
+        getStatus: (signal) => api.fetch(`/api/v1/runtime/requery/status`, { signal }),
+        trigger: (mode = 'full_rebuild', limit = 0) => api.fetch(`/api/v1/runtime/requery/trigger`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, limit }) }),
+        cancel: () => api.fetch(`/api/v1/runtime/requery/cancel`, { method: 'POST' }),
+        updateSchedulerConfig: (config) => api.fetch(`/api/v1/runtime/requery/scheduler/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }),
+        saveRules: () => api.fetch(`/api/v1/runtime/requery/rules/save`, { method: 'POST' }),
+        flushRules: () => api.fetch(`/api/v1/runtime/requery/rules/flush`, { method: 'POST' }),
     };
 
     const updateApi = {
@@ -200,8 +200,8 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const clientnameApi = {
-        get: () => api.fetch(`/api/v1/clientname`),
-        update: (data) => api.fetch(`/api/v1/clientname`, {
+        get: () => api.fetch(`/api/v1/runtime/clientname`),
+        update: (data) => api.fetch(`/api/v1/runtime/clientname`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
@@ -211,7 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const coreApi = {
         getMode: async () => {
             try {
-                const response = await api.fetch('/api/v1/switches/core_mode');
+                const response = await api.fetch('/api/v1/runtime/switches/core_mode');
                 return response?.value || 'secure';
             } catch (e) {
                 console.error("无法获取核心模式状态:", e);
@@ -739,7 +739,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async loadStatus(signal) {
             try {
-                const results = await api.fetch('/api/v1/switches', { signal });
+                const results = await api.fetch('/api/v1/runtime/switches', { signal });
                 const values = new Map(results.map(item => [item.name, item.value]));
                 this.profiles.forEach(profile => {
                     state.featureSwitches[profile.tag] = values.get(profile.tag) || 'error';
@@ -844,7 +844,7 @@ document.addEventListener('DOMContentLoaded', () => {
             button.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
 
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 this.render();
                 ui.showToast('核心模式已切换，即将开始快速预热缓存...', 'success');
@@ -869,7 +869,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const valueToPost = checkbox.checked ? profile.valueForOn : profile.valueForOff;
 
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已${checkbox.checked ? '启用' : '禁用'}`);
                 if (tag === 'cn_answer_mode') {
@@ -905,7 +905,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             button.parentElement.querySelectorAll('button').forEach(btn => btn.disabled = true);
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已切换为 ${profile.modes[result.value]?.name || result.value}`);
                 this.render();
@@ -925,7 +925,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             select.disabled = true;
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已切换为 ${profile.modes[result.value]?.name || result.value}`);
             } catch (error) {
@@ -3182,7 +3182,7 @@ const cacheManager = {
             }
 
             try {
-                const data = await api.fetch('/api/v1/overrides');
+                const data = await api.fetch('/api/v1/runtime/overrides');
 
                 if (els.socks5) els.socks5.value = (data && data.socks5) || '';
                 if (els.ecs) els.ecs.value = (data && data.ecs) || '';
@@ -3403,7 +3403,7 @@ renderReplacementsTable() {
             };
 
             try {
-                const result = await api.fetch('/api/v1/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                const result = await api.fetch('/api/v1/runtime/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
                 if (restart) {
                     await this.requestRestart();
                 } else {
@@ -3542,11 +3542,11 @@ renderReplacementsTable() {
             try {
                 const shouldLoadConfig = forceConfig || !this.state.dirty;
                 const reqs = [
-                    api.fetch('/api/v1/upstream/tags'),
+                    api.fetch('/api/v1/runtime/upstreams/tags'),
                     api.getMetrics()
                 ];
                 if (shouldLoadConfig) {
-                    reqs.push(api.fetch('/api/v1/upstream/config'));
+                    reqs.push(api.fetch('/api/v1/runtime/upstreams'));
                 }
                 const result = await Promise.all(reqs);
                 const tagsRes = result[0];
@@ -3951,7 +3951,7 @@ renderReplacementsTable() {
                     config: this.cloneConfig(this.state.draftConfig),
                     apply: true
                 };
-                const resp = await api.fetch('/api/v1/upstream/config', {
+                const resp = await api.fetch('/api/v1/runtime/upstreams', {
                     method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(payload)
