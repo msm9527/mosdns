@@ -16,6 +16,10 @@ import (
 )
 
 const upstreamOverridesFilename = "upstream_overrides.json"
+const (
+	runtimeStateNamespaceUpstreams = "upstreams"
+	runtimeStateKeyUpstreamConfig  = "config"
+)
 
 // UpstreamOverrideConfig 定义 UI/API 交互的完整数据结构
 type UpstreamOverrideConfig struct {
@@ -143,6 +147,18 @@ func loadUpstreamOverridesLocked() error {
 		zap.String("AbsoluteDir", absDir),
 		zap.String("File", path))
 
+	if cfg, ok, err := loadUpstreamOverridesFromRuntimeStore(); err == nil && ok {
+		count := 0
+		for _, v := range cfg {
+			count += len(v)
+		}
+		mlog.L().Info("[Debug UpstreamAPI] Loaded success from runtime store", zap.Int("groups", len(cfg)), zap.Int("total_items", count))
+		upstreamOverrides = cfg
+		return nil
+	} else if err != nil {
+		mlog.L().Warn("[Debug UpstreamAPI] Runtime store load failed, falling back to file", zap.Error(err))
+	}
+
 	data, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -197,6 +213,11 @@ func saveUpstreamOverridesLocked() error {
 		return err
 	}
 
+	if err := saveUpstreamOverridesToRuntimeStore(upstreamOverrides); err != nil {
+		mlog.L().Error("[Debug UpstreamAPI] Runtime store save failed", zap.Error(err))
+		return err
+	}
+
 	mlog.L().Info("[Debug UpstreamAPI] Writing to file",
 		zap.String("path", path),
 		zap.String("abs_path", absPath),
@@ -209,6 +230,33 @@ func saveUpstreamOverridesLocked() error {
 		mlog.L().Info("[Debug UpstreamAPI] WriteFile SUCCESS")
 	}
 	return err
+}
+
+func loadUpstreamOverridesFromRuntimeStore() (GlobalUpstreamOverrides, bool, error) {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return nil, false, err
+	}
+	var cfg GlobalUpstreamOverrides
+	ok, err := store.get(runtimeStateNamespaceUpstreams, runtimeStateKeyUpstreamConfig, &cfg)
+	if err != nil {
+		return nil, false, err
+	}
+	if !ok {
+		return nil, false, nil
+	}
+	if cfg == nil {
+		cfg = make(GlobalUpstreamOverrides)
+	}
+	return cfg, true, nil
+}
+
+func saveUpstreamOverridesToRuntimeStore(cfg GlobalUpstreamOverrides) error {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return err
+	}
+	return store.put(runtimeStateNamespaceUpstreams, runtimeStateKeyUpstreamConfig, cfg)
 }
 
 func ensureUpstreamOverridesLoaded() error {

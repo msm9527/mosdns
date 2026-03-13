@@ -13,6 +13,11 @@ import (
 	"go.uber.org/zap"
 )
 
+const (
+	runtimeStateNamespaceOverrides = "overrides"
+	runtimeStateKeyGlobalOverrides = "global"
+)
+
 // RegisterOverridesAPI registers the global overrides APIs.
 func RegisterOverridesAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/overrides", func(r chi.Router) {
@@ -83,6 +88,16 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 	if !loadedFromRuntime {
+		if runtimeObj, ok, err := loadGlobalOverridesFromRuntimeStore(); err == nil && ok {
+			resp.Socks5 = runtimeObj.Socks5
+			resp.ECS = runtimeObj.ECS
+			populateReplacements(runtimeObj, false)
+			loadedFromRuntime = true
+		} else if err != nil {
+			mlog.L().Warn("failed to load overrides from runtime store", zap.Error(err))
+		}
+	}
+	if !loadedFromRuntime {
 		// Not in memory, try file.
 		overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
 		data, err := os.ReadFile(overridesPath)
@@ -133,6 +148,10 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		return
 	}
 
+	if err := saveGlobalOverridesToRuntimeStore(&payload); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WRITE_RUNTIME_STORE_FAILED", "Failed to save runtime state: "+err.Error())
+		return
+	}
 	if err := os.WriteFile(overridesPath, updatedData, 0644); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "WRITE_SETTINGS_FILE_FAILED", "Failed to write settings file: "+err.Error())
 		return
@@ -159,4 +178,29 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": message,
 	})
+}
+
+func loadGlobalOverridesFromRuntimeStore() (*GlobalOverrides, bool, error) {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return nil, false, err
+	}
+	var payload GlobalOverrides
+	ok, err := store.get(runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, &payload)
+	if err != nil {
+		return nil, false, err
+	}
+	if ok {
+		payload.Prepare()
+		return &payload, true, nil
+	}
+	return nil, false, nil
+}
+
+func saveGlobalOverridesToRuntimeStore(payload *GlobalOverrides) error {
+	store, err := getRuntimeStateStore()
+	if err != nil {
+		return err
+	}
+	return store.put(runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, payload)
 }
