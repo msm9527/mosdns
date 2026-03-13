@@ -22,10 +22,8 @@ package coremain
 import (
 	"fmt"
 	"github.com/IrineSistiana/mosdns/v5/mlog"
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"os"
 	"os/signal"
@@ -101,6 +99,7 @@ func init() {
 		newSvcStatusCmd(),
 	)
 	rootCmd.AddCommand(serviceCmd)
+	rootCmd.AddCommand(newConfigCmd())
 }
 
 func AddSubCmd(c *cobra.Command) {
@@ -162,30 +161,29 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 // loadConfig load a config from a file. If filePath is empty, it will
 // automatically search and load a file which name start with "config".
 func loadConfig(filePath string) (*Config, string, error) {
-	v := viper.New()
+	v, raw, fileUsed, err := resolveConfigInput(filePath)
+	if err != nil {
+		return nil, "", err
+	}
 
-	if len(filePath) > 0 {
-		v.SetConfigFile(filePath)
+	isV2, err := isConfigV2Document(raw)
+	if err != nil {
+		return nil, "", err
+	}
+
+	var cfg *Config
+	if isV2 {
+		cfg, err = compileConfigV2(raw)
+		if err != nil {
+			return nil, "", fmt.Errorf("failed to compile config v2: %w", err)
+		}
 	} else {
-		v.SetConfigName("config")
-		v.AddConfigPath(".")
+		cfg, err = decodeV1Config(v)
+		if err != nil {
+			return nil, "", err
+		}
 	}
 
-	if err := v.ReadInConfig(); err != nil {
-		return nil, "", fmt.Errorf("failed to read config: %w", err)
-	}
-
-	decoderOpt := func(cfg *mapstructure.DecoderConfig) {
-		cfg.ErrorUnused = true
-		cfg.TagName = "yaml"
-		cfg.WeaklyTypedInput = true
-	}
-
-	cfg := new(Config)
-	if err := v.Unmarshal(cfg, decoderOpt); err != nil {
-		return nil, "", fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-	fileUsed := v.ConfigFileUsed()
 	cfg.baseDir = resolveBaseDir(fileUsed)
 	return cfg, fileUsed, nil
 }
