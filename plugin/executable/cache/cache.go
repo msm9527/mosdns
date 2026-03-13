@@ -941,17 +941,6 @@ func (c *Cache) PurgeDomainRuntime(_ context.Context, qname string, qtype uint16
 func (c *Cache) Api() *chi.Mux {
 	r := chi.NewRouter()
 
-	// 清空缓存 API：执行后打扫卫生
-	r.Get("/flush", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
-		if err := c.FlushRuntime(req.Context()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("Cache flushed and a background dump has been triggered.\n"))
-	}))
-
 	r.Post("/purge_domain", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
 		type purgeDomainRequest struct {
 			QName string `json:"qname"`
@@ -991,17 +980,6 @@ func (c *Cache) Api() *chi.Mux {
 			return
 		}
 	}))
-
-	r.Get("/save", func(w http.ResponseWriter, req *http.Request) {
-		if err := c.SaveToDisk(req.Context()); err != nil {
-			c.logger.Error("failed to save cache via api", zap.Error(err))
-			http.Error(w, fmt.Sprintf("failed to save cache: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(fmt.Sprintf("Cache successfully saved to %s\n", c.args.DumpFile)))
-	})
 
 	r.Post("/load_dump", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
 		if _, err := c.readDump(req.Body); err != nil {

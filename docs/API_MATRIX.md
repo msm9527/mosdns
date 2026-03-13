@@ -163,6 +163,7 @@
 | `GET` | `/api/v1/cache/stats` | `stable` | 聚合缓存统计 |
 | `GET` | `/api/v1/cache/{tag}/stats` | `stable` | 单缓存实例统计 |
 | `GET` | `/api/v1/cache/{tag}/entries` | `stable` | 查看缓存内容，统一 JSON 返回结构 |
+| `POST` | `/api/v1/cache/{tag}/save` | `stable` | 持久化单缓存实例 |
 | `POST` | `/api/v1/cache/{tag}/flush` | `stable` | 清空缓存 |
 | `POST` | `/api/v1/cache/{tag}/purge_domain` | `stable` | 按域名清缓存 |
 

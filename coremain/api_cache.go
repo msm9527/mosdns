@@ -12,6 +12,7 @@ import (
 type CacheRuntimeController interface {
 	CacheStatsProvider
 	CacheEntries(query string, offset, limit int) ([]CacheEntry, int, error)
+	SaveToDisk(ctx context.Context) error
 	FlushRuntime(ctx context.Context) error
 	PurgeDomainRuntime(ctx context.Context, qname string, qtype uint16) (int, error)
 }
@@ -47,6 +48,7 @@ type purgeDomainResponse struct {
 func RegisterCacheAPI(router *chi.Mux, m *Mosdns) {
 	router.Get("/api/v1/cache/{tag}/stats", handleCacheStatsByTag(m))
 	router.Get("/api/v1/cache/{tag}/entries", handleCacheEntriesByTag(m))
+	router.Post("/api/v1/cache/{tag}/save", handleCacheSaveByTag(m))
 	router.Post("/api/v1/cache/{tag}/flush", handleCacheFlushByTag(m))
 	router.Post("/api/v1/cache/{tag}/purge_domain", handleCachePurgeDomainByTag(m))
 }
@@ -101,6 +103,22 @@ func handleCacheFlushByTag(m *Mosdns) http.HandlerFunc {
 			return
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"message": "缓存已清空并触发后台持久化。"})
+	}
+}
+
+func handleCacheSaveByTag(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tag := chi.URLParam(r, "tag")
+		controller, ok := cacheControllerByTag(m, tag)
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "cache_not_found", "cache plugin not found")
+			return
+		}
+		if err := controller.SaveToDisk(r.Context()); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "cache_save_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"message": "缓存已保存。", "tag": tag})
 	}
 }
 

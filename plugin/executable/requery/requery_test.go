@@ -112,7 +112,7 @@ func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T)
 	p := &Requery{
 		m: m,
 		config: &Config{
-			URLActions: URLActions{SaveRules: []string{"/plugins/my_realiplist/save"}},
+			URLActions: URLActions{SaveRules: []string{"/api/v1/memory/my_realiplist/save"}},
 		},
 	}
 
@@ -148,7 +148,7 @@ func TestMergeAndFilterDomainsMergesRuntimeCandidatesForFullMode(t *testing.T) {
 		config: &Config{
 			DomainProcessing:  DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
 			ExecutionSettings: ExecutionSettings{DateRangeDays: 30},
-			URLActions:        URLActions{SaveRules: []string{"/plugins/my_realiplist/save"}},
+			URLActions:        URLActions{SaveRules: []string{"/api/v1/memory/my_realiplist/save"}},
 		},
 	}
 
@@ -193,7 +193,7 @@ func TestBuildTaskCandidatePlanSplitsFullRebuildStages(t *testing.T) {
 				DateRangeDays:            30,
 				FullRebuildPriorityLimit: 1,
 			},
-			URLActions: URLActions{SaveRules: []string{"/plugins/my_realiplist/save"}},
+			URLActions: URLActions{SaveRules: []string{"/api/v1/memory/my_realiplist/save"}},
 		},
 	}
 

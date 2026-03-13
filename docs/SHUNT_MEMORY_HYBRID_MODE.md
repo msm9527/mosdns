@@ -227,7 +227,7 @@ policy:
   stale_after_minutes: 360
   refresh_cooldown_minutes: 120
   on_dirty_url: "http://127.0.0.1:9099/api/v1/requery/enqueue"
-  verify_url: "http://127.0.0.1:9099/plugins/my_realiplist/verify"
+  verify_url: "http://127.0.0.1:9099/api/v1/memory/my_realiplist/verify"
 ```
 
 ## 8. 推荐默认值

@@ -290,6 +290,7 @@
 | `GET` | `/api/v1/cache/stats` | `stable` | 一次性获取所有缓存实例统计 |
 | `GET` | `/api/v1/cache/{tag}/stats` | `stable` | 获取单缓存实例统计 |
 | `GET` | `/api/v1/cache/{tag}/entries` | `stable` | 查看单缓存实例内容，返回结构化 JSON |
+| `POST` | `/api/v1/cache/{tag}/save` | `stable` | 持久化单缓存实例到磁盘 |
 | `POST` | `/api/v1/cache/{tag}/flush` | `stable` | 清空单缓存实例 |
 | `POST` | `/api/v1/cache/{tag}/purge_domain` | `stable` | 按域名精确清理缓存 |
 | `GET` | `/api/v1/data/domain_stats` | `stable` | 一次性获取所有域名统计实例计数 |

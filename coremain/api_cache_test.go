@@ -16,6 +16,7 @@ type mockCacheController struct {
 	stats        CacheStatsSnapshot
 	entries      []CacheEntry
 	total        int
+	saveErr      error
 	flushErr     error
 	purgeCount   int
 	purgeErr     error
@@ -24,6 +25,7 @@ type mockCacheController struct {
 	lastLimit    int
 	lastQName    string
 	lastQType    uint16
+	saveInvoked  bool
 	flushInvoked bool
 }
 
@@ -36,6 +38,11 @@ func (m *mockCacheController) CacheEntries(query string, offset, limit int) ([]C
 	m.lastOffset = offset
 	m.lastLimit = limit
 	return m.entries, m.total, nil
+}
+
+func (m *mockCacheController) SaveToDisk(ctx context.Context) error {
+	m.saveInvoked = true
+	return m.saveErr
 }
 
 func (m *mockCacheController) FlushRuntime(ctx context.Context) error {
@@ -111,6 +118,32 @@ func TestCacheAPI_Flush(t *testing.T) {
 	}
 }
 
+func TestCacheAPI_Save(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_all": &mockCacheController{},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/cache_all/save", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("tag", "cache_all")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	handleCacheSaveByTag(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d", rr.Code)
+	}
+	if !m.plugins["cache_all"].(*mockCacheController).saveInvoked {
+		t.Fatal("expected save to be invoked")
+	}
+	if !strings.Contains(rr.Body.String(), "缓存已保存") {
+		t.Fatalf("unexpected body %q", rr.Body.String())
+	}
+}
+
 func TestCacheAPI_PurgeDomain(t *testing.T) {
 	m := &Mosdns{
 		plugins: map[string]any{
@@ -152,6 +185,26 @@ func TestCacheAPI_FlushError(t *testing.T) {
 	rr := httptest.NewRecorder()
 
 	handleCacheFlushByTag(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status code %d", rr.Code)
+	}
+}
+
+func TestCacheAPI_SaveError(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_all": &mockCacheController{saveErr: errors.New("boom")},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/cache_all/save", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("tag", "cache_all")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	handleCacheSaveByTag(m).ServeHTTP(rr, req)
 
 	if rr.Code != http.StatusInternalServerError {
 		t.Fatalf("unexpected status code %d", rr.Code)
