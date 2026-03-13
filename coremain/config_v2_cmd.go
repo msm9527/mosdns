@@ -11,9 +11,10 @@ import (
 
 func newConfigCmd() *cobra.Command {
 	var (
-		inputPath  string
-		outputPath string
-		stdout     bool
+		inputPath       string
+		outputPath      string
+		stdout          bool
+		pureDeclarative bool
 	)
 
 	configCmd := &cobra.Command{
@@ -23,9 +24,9 @@ func newConfigCmd() *cobra.Command {
 
 	migrateCmd := &cobra.Command{
 		Use:   "migrate",
-		Short: "Migrate a v1 config file into config v2 with a legacy compatibility block.",
+		Short: "Migrate a v1 config file into config v2.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			data, resolvedOutput, err := migrateConfigToV2(inputPath, outputPath)
+			data, resolvedOutput, err := migrateConfigToV2(inputPath, outputPath, pureDeclarative)
 			if err != nil {
 				return err
 			}
@@ -44,6 +45,7 @@ func newConfigCmd() *cobra.Command {
 	migrateCmd.Flags().StringVarP(&inputPath, "config", "c", "", "source config file, defaults to auto-discovered config")
 	migrateCmd.Flags().StringVarP(&outputPath, "output", "o", "", "output path, defaults to <config>.v2.yaml")
 	migrateCmd.Flags().BoolVar(&stdout, "stdout", false, "print migrated config to stdout instead of writing a file")
+	migrateCmd.Flags().BoolVar(&pureDeclarative, "pure-declarative", false, "omit the legacy compatibility block and emit only the minimal declarative v2 subset")
 	configCmd.AddCommand(migrateCmd)
 
 	validateCmd := &cobra.Command{
@@ -65,7 +67,7 @@ func newConfigCmd() *cobra.Command {
 	return configCmd
 }
 
-func migrateConfigToV2(inputPath, outputPath string) ([]byte, string, error) {
+func migrateConfigToV2(inputPath, outputPath string, pureDeclarative bool) ([]byte, string, error) {
 	v, raw, fileUsed, err := resolveConfigInput(inputPath)
 	if err != nil {
 		return nil, "", err
@@ -89,6 +91,9 @@ func migrateConfigToV2(inputPath, outputPath string) ([]byte, string, error) {
 	cfgV2, err := configv2.MigrateV1ToV2(v1)
 	if err != nil {
 		return nil, "", err
+	}
+	if pureDeclarative {
+		cfgV2.Legacy = configv2.LegacyConfig{}
 	}
 	data, err := configv2.Marshal(cfgV2)
 	if err != nil {

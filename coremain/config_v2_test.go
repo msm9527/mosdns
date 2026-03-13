@@ -68,7 +68,7 @@ plugins:
 		t.Fatalf("write config: %v", err)
 	}
 
-	data, outputPath, err := migrateConfigToV2(path, "")
+	data, outputPath, err := migrateConfigToV2(path, "", false)
 	if err != nil {
 		t.Fatalf("migrateConfigToV2() error = %v", err)
 	}
@@ -80,6 +80,48 @@ plugins:
 	}
 	if outputPath != filepath.Join(dir, "config.v2.yaml") {
 		t.Fatalf("unexpected output path %q", outputPath)
+	}
+}
+
+func TestMigrateConfigToPureDeclarativeV2(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+	raw := `
+api:
+  http: "127.0.0.1:9099"
+include:
+  - sub_config/cache.yaml
+plugins:
+  - tag: domestic
+    type: forward
+    args:
+      upstreams:
+        - tls://1.1.1.1
+  - tag: sequence_main
+    type: sequence
+    args:
+      - exec: $domestic
+  - tag: udp_all
+    type: udp_server
+    args:
+      listen: ":53"
+      entry: sequence_main
+      enable_audit: true
+`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	data, _, err := migrateConfigToV2(path, "", true)
+	if err != nil {
+		t.Fatalf("migrateConfigToV2() error = %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, "legacy:") {
+		t.Fatalf("expected pure declarative output, got:\n%s", text)
+	}
+	if !strings.Contains(text, "rule_providers:") || !strings.Contains(text, "upstreams:") || !strings.Contains(text, "listeners:") {
+		t.Fatalf("expected declarative sections in output, got:\n%s", text)
 	}
 }
 
