@@ -432,7 +432,7 @@
 建议：
 
 - 低频但有明确业务语义的能力，优先进入 `/api/v1/*`
-- 通用插件型接口只在没有稳定业务抽象时保留在 `/plugins/*`
+- `webinfo` 仅保留文件持久化职责，不再暴露独立插件 HTTP 接口
 - 将 `POST /api/v1/upstream/config` 明确标注 deprecated
 
 ## 6.7 审计与日志

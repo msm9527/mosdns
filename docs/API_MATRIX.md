@@ -244,13 +244,12 @@
 | `PUT` | `/api/v1/clientname` | `stable` | 更新客户端别名配置 |
 | `GET` | `/api/v1/switches/core_mode` | `stable` | 当前核心模式 |
 | `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
-| `GET/PUT` | `/plugins/webinfo` | `internal` | Web 信息配置 |
 
 说明：
 
 - 旧的 `/plugins/clientname` 已移除
 - 旧的 `/plugins/reverse_lookup` 已移除
-- `/plugins/webinfo` 仍属于内部实现接口
+- `webinfo` 作为内部文件持久化插件，不再暴露独立 HTTP API
 
 ## 5. 主要问题标注矩阵
 
@@ -259,7 +258,7 @@
 | `GET` 带副作用 | 历史 `/plugins/{tag}/flush` `/plugins/{tag}/save` | 已逐步移除 |
 | 返回纯文本 | 部分插件操作接口 | 不利于统一错误处理 |
 | 强耦合插件 tag | `/plugins/geosite_cn/*` | 前端绑定实现细节 |
-| 业务与插件边界重叠 | 少量 `domain_set`/`webinfo` 内部接口 | 核心 API 尚未完全收口 |
+| 业务与插件边界重叠 | 少量历史说明仍提到插件层 | 核心 API 基本已收口 |
 | 版本边界缺失 | 大多数 `/plugins/*` | 难以保证长期稳定性 |
 
 ## 6. 推荐迁移优先级

@@ -929,10 +929,9 @@
         };
 
         // --- [MOVED & DEFINED HERE] Client Name API and Adguard API ---
-        const clientnamePluginTag = 'clientname';
         const clientnameApi = {
-            get: () => ruleApiFetch(`/plugins/${clientnamePluginTag}`),
-            update: (data) => ruleApiFetch(`/plugins/${clientnamePluginTag}`, {
+            get: () => ruleApiFetch('/api/v1/clientname'),
+            update: (data) => ruleApiFetch('/api/v1/clientname', {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(data),
