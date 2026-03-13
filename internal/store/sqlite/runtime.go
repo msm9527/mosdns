@@ -224,5 +224,36 @@ func baseMigrations() []Migration {
 				ON requery_checkpoint(config_key, created_at_unix_ms DESC);
 			`,
 		},
+		{
+			ID: "0006_switch_state",
+			Up: `
+				CREATE TABLE IF NOT EXISTS switch_state (
+					file_path TEXT NOT NULL,
+					switch_name TEXT NOT NULL,
+					value TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (file_path, switch_name)
+				);
+				CREATE INDEX IF NOT EXISTS idx_switch_state_file_path
+				ON switch_state(file_path, updated_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0007_generated_dataset",
+			Up: `
+				CREATE TABLE IF NOT EXISTS generated_dataset (
+					dataset_key TEXT PRIMARY KEY,
+					output_path TEXT NOT NULL,
+					format TEXT NOT NULL,
+					content TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					last_exported_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_export_status TEXT NOT NULL DEFAULT '',
+					last_export_error TEXT NOT NULL DEFAULT ''
+				);
+				CREATE INDEX IF NOT EXISTS idx_generated_dataset_output_path
+				ON generated_dataset(output_path, updated_at_unix_ms DESC);
+			`,
+		},
 	}
 }
