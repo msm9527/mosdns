@@ -175,6 +175,11 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	if m != nil {
 		message = "全局覆盖配置已保存并生效。"
 	}
+	_ = RecordSystemEvent("runtime.overrides", "info", "saved global overrides", map[string]any{
+		"socks5":       payload.Socks5,
+		"ecs":          payload.ECS,
+		"replacements": len(payload.Replacements),
+	})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": message,
 	})

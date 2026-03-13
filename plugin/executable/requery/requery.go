@@ -1580,6 +1580,10 @@ func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
 		"message":   fmt.Sprintf("%s任务已开始。", profile.DisplayName),
 		"task_mode": profile.Mode,
 	}, http.StatusOK)
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.requery", "info", "triggered requery task", map[string]any{
+		"mode":  profile.Mode,
+		"limit": payload.Limit,
+	})
 }
 
 func (p *Requery) handleEnqueueRefresh(w http.ResponseWriter, r *http.Request) {
@@ -1613,6 +1617,10 @@ func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 
 	p.taskCancel()
 	log.Println("[requery] Task cancellation requested via API.")
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.requery", "warn", "cancelled running requery task", map[string]any{
+		"task_state": p.status.TaskState,
+		"task_mode":  p.status.TaskMode,
+	})
 
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "Task cancellation initiated."}, http.StatusOK)
 }
@@ -1679,6 +1687,11 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	p.rescheduleTasks()
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.requery", "info", "updated requery scheduler config", map[string]any{
+		"enabled":          p.config.Scheduler.Enabled,
+		"mode":             p.config.Workflow.Mode,
+		"interval_minutes": p.config.Scheduler.IntervalMinutes,
+	})
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "Scheduler configuration updated successfully."}, http.StatusOK)
 }
 

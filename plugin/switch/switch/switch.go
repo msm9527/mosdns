@@ -370,6 +370,10 @@ func handleUpdateSwitch(w http.ResponseWriter, r *http.Request) {
 		writeSwitchErrorJSON(w, http.StatusInternalServerError, "SWITCH_UPDATE_FAILED", "failed to update switch store: "+err.Error())
 		return
 	}
+	_ = coremain.RecordSystemEventToPath(filepath.Join(filepath.Dir(filepath.Clean(sw.store.path)), "runtime.db"), "runtime.switches", "info", "updated switch value", map[string]any{
+		"name":  def.Name,
+		"value": value,
+	})
 
 	writeSwitchJSON(w, switchState{
 		Name:  def.Name,

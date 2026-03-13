@@ -256,7 +256,18 @@ func saveUpstreamOverridesToRuntimeStore(cfg GlobalUpstreamOverrides) error {
 	if err != nil {
 		return err
 	}
-	return store.put(runtimeStateNamespaceUpstreams, runtimeStateKeyUpstreamConfig, cfg)
+	if err := store.put(runtimeStateNamespaceUpstreams, runtimeStateKeyUpstreamConfig, cfg); err != nil {
+		return err
+	}
+	totalItems := 0
+	for _, items := range cfg {
+		totalItems += len(items)
+	}
+	_ = RecordSystemEvent("runtime.upstreams", "info", "saved upstream overrides", map[string]any{
+		"groups":      len(cfg),
+		"total_items": totalItems,
+	})
+	return nil
 }
 
 func ensureUpstreamOverridesLoaded() error {

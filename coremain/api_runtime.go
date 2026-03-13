@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"path/filepath"
 	"sort"
+	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -43,6 +45,7 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 		r.Get("/resources", handleRuntimeResources)
 		r.Get("/datasets", handleRuntimeDatasets)
 		r.Post("/datasets/export", handleRuntimeDatasetsExport)
+		r.Get("/events", handleRuntimeEvents)
 		r.Get("/overrides", func(w http.ResponseWriter, r *http.Request) {
 			handleGetOverrides(w, r, m)
 		})
@@ -109,10 +112,24 @@ func handleRuntimeDatasetsExport(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_DATASETS_EXPORT_FAILED", err.Error())
 		return
 	}
+	_ = RecordSystemEvent("runtime.datasets", "info", "exported generated datasets to files", map[string]any{
+		"exported_files": exported,
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":         "success",
 		"exported_files": exported,
 	})
+}
+
+func handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {
+	component := strings.TrimSpace(r.URL.Query().Get("component"))
+	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+	events, err := ListSystemEvents(defaultRuntimeStateDBPath(), component, limit)
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_EVENTS_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, events)
 }
 
 func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {

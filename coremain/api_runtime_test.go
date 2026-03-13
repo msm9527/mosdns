@@ -162,6 +162,35 @@ func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 	}
 }
 
+func TestHandleRuntimeEvents(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	if err := RecordSystemEvent("runtime.test", "info", "hello", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("RecordSystemEvent: %v", err)
+	}
+
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/events?component=runtime.test&limit=10", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected events status: %d body=%s", w.Code, w.Body.String())
+	}
+	var events []SystemEventEntry
+	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
+		t.Fatalf("decode events: %v", err)
+	}
+	if len(events) != 1 || events[0].Component != "runtime.test" || events[0].Message != "hello" {
+		t.Fatalf("unexpected events payload: %+v", events)
+	}
+}
+
 func TestRuntimeAliasesForOverridesAndUpstreams(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()
