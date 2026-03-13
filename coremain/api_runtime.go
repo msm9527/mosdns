@@ -17,6 +17,7 @@ const (
 	runtimeNamespaceWebinfo = "webinfo"
 	runtimeNamespaceRequery = "requery"
 	runtimeNamespaceAdguard = "adguard_rule"
+	runtimeNamespaceDiversion = "diversion_rule"
 )
 
 type runtimeNamespaceSummary struct {
@@ -39,6 +40,7 @@ type runtimeResourcesResponse struct {
 	Webinfo       map[string]json.RawMessage     `json:"webinfo,omitempty"`
 	Requery       map[string]json.RawMessage     `json:"requery,omitempty"`
 	Adguard       map[string]json.RawMessage     `json:"adguard,omitempty"`
+	Diversion     map[string]json.RawMessage     `json:"diversion,omitempty"`
 	Datasets      []GeneratedDatasetEntry        `json:"datasets,omitempty"`
 	Events        []SystemEventEntry             `json:"events,omitempty"`
 	RequeryJobs   []requeryruntime.Job           `json:"requery_jobs,omitempty"`
@@ -81,6 +83,7 @@ func handleRuntimeSummary(w http.ResponseWriter, _ *http.Request) {
 		runtimeNamespaceWebinfo,
 		runtimeNamespaceRequery,
 		runtimeNamespaceAdguard,
+		runtimeNamespaceDiversion,
 		runtimeStateNamespaceGeneratedDataset,
 	}
 
@@ -150,6 +153,7 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 		Webinfo:       make(map[string]json.RawMessage),
 		Requery:       make(map[string]json.RawMessage),
 		Adguard:       make(map[string]json.RawMessage),
+		Diversion:     make(map[string]json.RawMessage),
 		Datasets:      make([]GeneratedDatasetEntry, 0),
 		Events:        make([]SystemEventEntry, 0),
 		RequeryJobs:   make([]requeryruntime.Job, 0),
@@ -195,7 +199,7 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 
-	for _, namespace := range []string{runtimeNamespaceSwitch, runtimeNamespaceWebinfo, runtimeNamespaceRequery, runtimeNamespaceAdguard} {
+	for _, namespace := range []string{runtimeNamespaceSwitch, runtimeNamespaceWebinfo, runtimeNamespaceRequery, runtimeNamespaceAdguard, runtimeNamespaceDiversion} {
 		entries, err := ListRuntimeStateByNamespace(dbPath, namespace)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LIST_NAMESPACE_FAILED", err.Error())
@@ -222,6 +226,9 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 	}
 	for _, entry := range resp.Namespaces[runtimeNamespaceAdguard] {
 		resp.Adguard[filepath.Base(entry.Key)] = append(json.RawMessage(nil), entry.Value...)
+	}
+	for _, entry := range resp.Namespaces[runtimeNamespaceDiversion] {
+		resp.Diversion[filepath.Base(entry.Key)] = append(json.RawMessage(nil), entry.Value...)
 	}
 
 	keys := make([]string, 0, len(resp.Switches))

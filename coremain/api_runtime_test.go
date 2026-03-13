@@ -52,6 +52,12 @@ func TestHandleRuntimeResources(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("SaveRuntimeStateJSONToPath adguard: %v", err)
 	}
+	if err := SaveRuntimeStateJSONToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), runtimeNamespaceDiversion, "rules.json", []map[string]any{{
+		"name": "cuscn",
+		"type": "cuscn",
+	}}); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath diversion: %v", err)
+	}
 	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), filepath.Join(MainConfigBaseDir, "gen", "realip.rule"), "domain_output_rule", "full:example.com\n"); err != nil {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
@@ -114,6 +120,9 @@ func TestHandleRuntimeResources(t *testing.T) {
 	}
 	if _, ok := resp.Adguard["config.json"]; !ok {
 		t.Fatalf("missing adguard payload: %+v", resp.Adguard)
+	}
+	if _, ok := resp.Diversion["rules.json"]; !ok {
+		t.Fatalf("missing diversion payload: %+v", resp.Diversion)
 	}
 	if len(resp.Datasets) != 1 || resp.Datasets[0].Format != "domain_output_rule" {
 		t.Fatalf("unexpected datasets payload: %+v", resp.Datasets)

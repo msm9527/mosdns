@@ -51,6 +51,7 @@ import (
 const (
 	PluginType      = "si_set"
 	downloadTimeout = 60 * time.Second
+	runtimeNamespace = "diversion_rule"
 )
 
 func init() {
@@ -382,6 +383,25 @@ func (p *SiSet) loadConfig() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
+	if key := p.runtimeConfigKey(); key != "" {
+		var sources []*RuleSource
+		ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeNamespace, key, &sources)
+		if err == nil && ok {
+			p.sources = make(map[string]*RuleSource, len(sources))
+			for _, src := range sources {
+				if src == nil || src.Name == "" {
+					continue
+				}
+				p.sources[src.Name] = src
+			}
+			log.Printf("[%s] loaded %d rule sources from runtime store", PluginType, len(p.sources))
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+
 	data, err := os.ReadFile(p.localConfigFile)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -434,6 +454,11 @@ func (p *SiSet) saveConfig() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to json: %w", err)
 	}
+	if key := p.runtimeConfigKey(); key != "" {
+		if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeNamespace, key, sourcesSnapshot); err != nil {
+			return fmt.Errorf("failed to save config to runtime store: %w", err)
+		}
+	}
 
 	// Atomic write: write to a temporary file then rename.
 	tmpFile := p.localConfigFile + ".tmp"
@@ -444,6 +469,17 @@ func (p *SiSet) saveConfig() error {
 		return fmt.Errorf("failed to rename temporary config to final: %w", err)
 	}
 	return nil
+}
+
+func (p *SiSet) runtimeDBPath() string {
+	return filepath.Join(filepath.Dir(filepath.Clean(p.localConfigFile)), "runtime.db")
+}
+
+func (p *SiSet) runtimeConfigKey() string {
+	if p.localConfigFile == "" {
+		return ""
+	}
+	return filepath.Clean(p.localConfigFile)
 }
 
 // reloadAllRules re-parses all enabled local SRS files into a new matcher.
