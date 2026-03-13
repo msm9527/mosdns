@@ -715,7 +715,7 @@ func (d *domainOutput) isStale(lastDate string) bool {
 }
 
 func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bool, bool) {
-	writeFile := func(filePath string, writeContent func(io.Writer) error) bool {
+	writeFile := func(filePath, content string) bool {
 		if filePath == "" {
 			return true
 		}
@@ -728,7 +728,7 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bo
 			return false
 		}
 		writer := bufio.NewWriter(f)
-		writeErr := writeContent(writer)
+		_, writeErr := writer.WriteString(content)
 		flushErr := writer.Flush()
 		closeErr := f.Close()
 		if writeErr != nil || flushErr != nil || closeErr != nil {
@@ -756,62 +756,20 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bo
 		return snapshot.items[i].Count > snapshot.items[j].Count
 	})
 
-	ok := writeFile(d.fileStat, func(w io.Writer) error {
-		for _, item := range snapshot.items {
-			_, err := fmt.Fprintf(
-				w,
-				"%010d %s %s qmask=%d score=%d promoted=%d last_seen=%s last_dirty=%s last_verified=%s dirty_reason=%s refresh_state=%s cooldown_until=%s conflicts=%d\n",
-				item.Count,
-				item.Date,
-				item.Domain,
-				item.QMask,
-				item.Score,
-				boolToInt(item.Prom),
-				sanitizeStatToken(item.LastSeenAt),
-				sanitizeStatToken(item.LastDirtyAt),
-				sanitizeStatToken(item.LastVerifiedAt),
-				sanitizeStatToken(item.DirtyReason),
-				sanitizeStatToken(item.RefreshState),
-				sanitizeStatToken(item.CooldownUntil),
-				item.ConflictCount,
-			)
-			if err != nil {
-				return err
-			}
-		}
-		return nil
-	})
+	statContent := d.renderStatContent(snapshot)
+	ruleContent := d.renderRuleContent(snapshot)
+	genRuleContent := d.renderGeneratedRuleContent(snapshot)
+
+	ok := d.saveGeneratedDatasets(statContent, ruleContent, genRuleContent)
+	ok = writeFile(d.fileStat, statContent) && ok
 
 	needRuleWrite := mode != WriteModePeriodic || rulesChanged
 	if needRuleWrite {
-		if !writeFile(d.fileRule, func(w io.Writer) error {
-			for _, domain := range snapshot.rules {
-				if _, err := fmt.Fprintf(w, "full:%s\n", domain); err != nil {
-					return err
-				}
-			}
-			return nil
-		}) {
+		if !writeFile(d.fileRule, ruleContent) {
 			ok = false
 		}
 
-		if !writeFile(d.genRule, func(w io.Writer) error {
-			if d.pattern == "" {
-				return nil
-			}
-			if d.appendedString != "" {
-				if _, err := fmt.Fprintln(w, d.appendedString); err != nil {
-					return err
-				}
-			}
-			for _, domain := range snapshot.rules {
-				line := strings.ReplaceAll(d.pattern, "DOMAIN", domain)
-				if _, err := fmt.Fprintln(w, line); err != nil {
-					return err
-				}
-			}
-			return nil
-		}) {
+		if !writeFile(d.genRule, genRuleContent) {
 			ok = false
 		}
 	}
@@ -836,13 +794,11 @@ func (d *domainOutput) loadFromFile() {
 	if d.fileStat == "" {
 		return
 	}
-	f, err := os.Open(d.fileStat)
-	if err != nil {
+	scanner, cleanup := d.openStatScanner()
+	if scanner == nil {
 		return
 	}
-	defer f.Close()
-
-	scanner := bufio.NewScanner(f)
+	defer cleanup()
 	today := time.Now().Format("2006-01-02")
 
 	d.mu.Lock()
@@ -908,6 +864,103 @@ func (d *domainOutput) loadFromFile() {
 		}
 		d.stats[domain] = entry
 		atomic.AddInt64(&d.totalCount, int64(count))
+	}
+}
+
+func (d *domainOutput) renderStatContent(snapshot writeSnapshot) string {
+	var b strings.Builder
+	for _, item := range snapshot.items {
+		_, _ = fmt.Fprintf(
+			&b,
+			"%010d %s %s qmask=%d score=%d promoted=%d last_seen=%s last_dirty=%s last_verified=%s dirty_reason=%s refresh_state=%s cooldown_until=%s conflicts=%d\n",
+			item.Count,
+			item.Date,
+			item.Domain,
+			item.QMask,
+			item.Score,
+			boolToInt(item.Prom),
+			sanitizeStatToken(item.LastSeenAt),
+			sanitizeStatToken(item.LastDirtyAt),
+			sanitizeStatToken(item.LastVerifiedAt),
+			sanitizeStatToken(item.DirtyReason),
+			sanitizeStatToken(item.RefreshState),
+			sanitizeStatToken(item.CooldownUntil),
+			item.ConflictCount,
+		)
+	}
+	return b.String()
+}
+
+func (d *domainOutput) renderRuleContent(snapshot writeSnapshot) string {
+	var b strings.Builder
+	for _, domain := range snapshot.rules {
+		_, _ = fmt.Fprintf(&b, "full:%s\n", domain)
+	}
+	return b.String()
+}
+
+func (d *domainOutput) renderGeneratedRuleContent(snapshot writeSnapshot) string {
+	if d.pattern == "" {
+		return ""
+	}
+	var b strings.Builder
+	if d.appendedString != "" {
+		_, _ = fmt.Fprintln(&b, d.appendedString)
+	}
+	for _, domain := range snapshot.rules {
+		_, _ = fmt.Fprintln(&b, strings.ReplaceAll(d.pattern, "DOMAIN", domain))
+	}
+	return b.String()
+}
+
+func (d *domainOutput) runtimeDBPath() string {
+	for _, path := range []string{d.fileStat, d.fileRule, d.genRule} {
+		if strings.TrimSpace(path) != "" {
+			return filepath.Join(filepath.Dir(filepath.Clean(path)), "runtime.db")
+		}
+	}
+	return ""
+}
+
+func (d *domainOutput) saveGeneratedDatasets(statContent, ruleContent, genRuleContent string) bool {
+	dbPath := d.runtimeDBPath()
+	if dbPath == "" {
+		return true
+	}
+	for _, dataset := range []struct {
+		path   string
+		format string
+		body   string
+	}{
+		{path: d.fileStat, format: "domain_output_stat", body: statContent},
+		{path: d.fileRule, format: "domain_output_rule", body: ruleContent},
+		{path: d.genRule, format: "domain_output_generated_rule", body: genRuleContent},
+	} {
+		if strings.TrimSpace(dataset.path) == "" {
+			continue
+		}
+		if err := coremain.SaveGeneratedDatasetToPath(dbPath, filepath.Clean(dataset.path), dataset.format, dataset.body); err != nil {
+			return false
+		}
+	}
+	return true
+}
+
+func (d *domainOutput) openStatScanner() (*bufio.Scanner, func()) {
+	dbPath := d.runtimeDBPath()
+	if dbPath != "" {
+		if dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(dbPath, filepath.Clean(d.fileStat)); err == nil && ok {
+			reader := strings.NewReader(dataset.Content)
+			return bufio.NewScanner(reader), func() {}
+		}
+	}
+
+	f, err := os.Open(d.fileStat)
+	if err != nil {
+		return nil, func() {}
+	}
+	return bufio.NewScanner(f), func() {
+		_ = f.Close()
 	}
 }
 

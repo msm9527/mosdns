@@ -108,6 +108,48 @@ func TestDomainOutputLoadLegacyStatFile(t *testing.T) {
 	}
 }
 
+func TestDomainOutputLoadFromRuntimeDatasetWhenFileMissing(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	statPath := filepath.Join(dir, "realip.txt")
+	rulePath := filepath.Join(dir, "realip.rule")
+	genPath := filepath.Join(dir, "realip.gen")
+
+	d := newDomainOutput(&Args{
+		FileStat: statPath,
+		FileRule: rulePath,
+		GenRule:  genPath,
+		Pattern:  "full:DOMAIN",
+		Policy: &PolicyArgs{
+			Kind:         "realip",
+			PromoteAfter: 1,
+			PublishMode:  "all",
+			DecayDays:    30,
+		},
+	})
+	d.processRecord(&logItem{name: "runtime.example.", qtype: 1, source: "live"})
+	d.performWrite(WriteModeSave)
+
+	if err := os.Remove(statPath); err != nil {
+		t.Fatalf("remove stat file: %v", err)
+	}
+
+	reloaded := newDomainOutput(&Args{
+		FileStat: statPath,
+		FileRule: rulePath,
+		GenRule:  genPath,
+	})
+	reloaded.loadFromFile()
+
+	reloaded.mu.Lock()
+	entry := reloaded.stats["runtime.example"]
+	reloaded.mu.Unlock()
+	if entry == nil || entry.Count != 1 {
+		t.Fatalf("expected runtime dataset entry count 1, got %#v", entry)
+	}
+}
+
 func TestDomainOutputMaxEntriesHardCap(t *testing.T) {
 	t.Parallel()
 

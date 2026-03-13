@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -43,6 +44,9 @@ func TestHandleRuntimeResources(t *testing.T) {
 		"workflow": map[string]any{"mode": "hybrid"},
 	}); err != nil {
 		t.Fatalf("SaveRuntimeStateJSONToPath requery: %v", err)
+	}
+	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), filepath.Join(MainConfigBaseDir, "gen", "realip.rule"), "domain_output_rule", "full:example.com\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
 	router := chi.NewRouter()
@@ -87,6 +91,9 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	if err := SaveRuntimeStateJSON("switch", "switches.json", map[string]string{"core_mode": "compat"}); err != nil {
 		t.Fatalf("SaveRuntimeStateJSON: %v", err)
 	}
+	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), filepath.Join(MainConfigBaseDir, "gen", "realip.rule"), "domain_output_rule", "full:example.com\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	}
 
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
@@ -108,6 +115,50 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	}
 	if len(resp.Namespaces) == 0 {
 		t.Fatalf("expected namespace summary, got %+v", resp)
+	}
+}
+
+func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
+	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	}
+
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/datasets", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected dataset status: %d body=%s", w.Code, w.Body.String())
+	}
+	var datasets []GeneratedDatasetEntry
+	if err := json.Unmarshal(w.Body.Bytes(), &datasets); err != nil {
+		t.Fatalf("decode datasets: %v", err)
+	}
+	if len(datasets) != 1 || datasets[0].Key != target {
+		t.Fatalf("unexpected datasets: %+v", datasets)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/runtime/datasets/export", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected export status: %d body=%s", w.Code, w.Body.String())
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read exported file: %v", err)
+	}
+	if string(raw) != "full:example.com\n" {
+		t.Fatalf("unexpected exported content: %q", string(raw))
 	}
 }
 

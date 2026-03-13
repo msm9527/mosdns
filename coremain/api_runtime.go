@@ -41,6 +41,8 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/runtime", func(r chi.Router) {
 		r.Get("/summary", handleRuntimeSummary)
 		r.Get("/resources", handleRuntimeResources)
+		r.Get("/datasets", handleRuntimeDatasets)
+		r.Post("/datasets/export", handleRuntimeDatasetsExport)
 		r.Get("/overrides", func(w http.ResponseWriter, r *http.Request) {
 			handleGetOverrides(w, r, m)
 		})
@@ -68,6 +70,7 @@ func handleRuntimeSummary(w http.ResponseWriter, _ *http.Request) {
 		runtimeNamespaceSwitch,
 		runtimeNamespaceWebinfo,
 		runtimeNamespaceRequery,
+		runtimeStateNamespaceGeneratedDataset,
 	}
 
 	summary := runtimeSummaryResponse{
@@ -89,6 +92,27 @@ func handleRuntimeSummary(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func handleRuntimeDatasets(w http.ResponseWriter, _ *http.Request) {
+	datasets, err := ListGeneratedDatasetsFromPath(defaultRuntimeStateDBPath())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_DATASETS_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, datasets)
+}
+
+func handleRuntimeDatasetsExport(w http.ResponseWriter, _ *http.Request) {
+	exported, err := ExportGeneratedDatasetsToFiles(defaultRuntimeStateDBPath())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_DATASETS_EXPORT_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":         "success",
+		"exported_files": exported,
+	})
 }
 
 func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
