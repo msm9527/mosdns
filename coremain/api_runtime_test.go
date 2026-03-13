@@ -48,6 +48,9 @@ func TestHandleRuntimeResources(t *testing.T) {
 	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), filepath.Join(MainConfigBaseDir, "gen", "realip.rule"), "domain_output_rule", "full:example.com\n"); err != nil {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
+	if err := RecordSystemEvent("runtime.test", "info", "hello", map[string]any{"ok": true}); err != nil {
+		t.Fatalf("RecordSystemEvent: %v", err)
+	}
 
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
@@ -78,6 +81,19 @@ func TestHandleRuntimeResources(t *testing.T) {
 	}
 	if _, ok := resp.Requery["requery.json:config"]; !ok {
 		t.Fatalf("missing requery payload: %+v", resp.Requery)
+	}
+	if len(resp.Datasets) != 1 || resp.Datasets[0].Format != "domain_output_rule" {
+		t.Fatalf("unexpected datasets payload: %+v", resp.Datasets)
+	}
+	foundRuntimeTest := false
+	for _, event := range resp.Events {
+		if event.Component == "runtime.test" {
+			foundRuntimeTest = true
+			break
+		}
+	}
+	if !foundRuntimeTest {
+		t.Fatalf("expected runtime.test event in payload: %+v", resp.Events)
 	}
 }
 

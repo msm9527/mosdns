@@ -36,6 +36,8 @@ type runtimeResourcesResponse struct {
 	Switches      map[string]string              `json:"switches,omitempty"`
 	Webinfo       map[string]json.RawMessage     `json:"webinfo,omitempty"`
 	Requery       map[string]json.RawMessage     `json:"requery,omitempty"`
+	Datasets      []GeneratedDatasetEntry        `json:"datasets,omitempty"`
+	Events        []SystemEventEntry             `json:"events,omitempty"`
 	Namespaces    map[string][]RuntimeStateEntry `json:"namespaces,omitempty"`
 }
 
@@ -141,6 +143,8 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 		Switches:      make(map[string]string),
 		Webinfo:       make(map[string]json.RawMessage),
 		Requery:       make(map[string]json.RawMessage),
+		Datasets:      make([]GeneratedDatasetEntry, 0),
+		Events:        make([]SystemEventEntry, 0),
 		Namespaces:    make(map[string][]RuntimeStateEntry),
 	}
 
@@ -155,6 +159,18 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 		resp.Upstreams = upstreams
 	} else if err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LOAD_UPSTREAMS_FAILED", err.Error())
+		return
+	}
+	if datasets, err := ListGeneratedDatasetsFromPath(dbPath); err == nil {
+		resp.Datasets = datasets
+	} else {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LOAD_DATASETS_FAILED", err.Error())
+		return
+	}
+	if events, err := ListSystemEvents(dbPath, "", 20); err == nil {
+		resp.Events = events
+	} else {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LOAD_EVENTS_FAILED", err.Error())
 		return
 	}
 
