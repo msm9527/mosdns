@@ -24,6 +24,27 @@ type auditLogFileInfo struct {
 	size int64
 }
 
+type NdjsonAuditStorage struct {
+	logDir string
+}
+
+func newNdjsonAuditStorage(logDir string) *NdjsonAuditStorage {
+	return &NdjsonAuditStorage{logDir: logDir}
+}
+
+func (s *NdjsonAuditStorage) Name() string { return "ndjson" }
+
+func (s *NdjsonAuditStorage) Path() string { return s.logDir }
+
+func (s *NdjsonAuditStorage) Open() error {
+	if s.logDir == "" {
+		return nil
+	}
+	return os.MkdirAll(s.logDir, 0o755)
+}
+
+func (s *NdjsonAuditStorage) Close() error { return nil }
+
 func normalizeAuditSettings(settings AuditSettings) AuditSettings {
 	if settings.MemoryEntries <= 0 {
 		if settings.Capacity > 0 {
@@ -47,6 +68,15 @@ func normalizeAuditSettings(settings AuditSettings) AuditSettings {
 	if settings.MaxDiskSizeMB > maxAuditMaxDiskSizeMB {
 		settings.MaxDiskSizeMB = maxAuditMaxDiskSizeMB
 	}
+	if settings.MaxDBSizeMB <= 0 {
+		settings.MaxDBSizeMB = defaultAuditMaxDBSizeMB
+	}
+	if settings.MaxDBSizeMB > maxAuditMaxDBSizeMB {
+		settings.MaxDBSizeMB = maxAuditMaxDBSizeMB
+	}
+	if settings.StorageEngine == "" {
+		settings.StorageEngine = defaultAuditStorageEngine
+	}
 	settings.Capacity = settings.MemoryEntries
 	return settings
 }
@@ -56,6 +86,8 @@ func loadAuditSettings(configBaseDir string) AuditSettings {
 		MemoryEntries: defaultAuditMemoryEntries,
 		RetentionDays: defaultAuditRetentionDays,
 		MaxDiskSizeMB: defaultAuditMaxDiskSizeMB,
+		MaxDBSizeMB:   defaultAuditMaxDBSizeMB,
+		StorageEngine: defaultAuditStorageEngine,
 	}
 	settingsPath := filepath.Join(configBaseDir, auditSettingsFilename)
 	data, err := os.ReadFile(settingsPath)
@@ -70,7 +102,9 @@ func loadAuditSettings(configBaseDir string) AuditSettings {
 	mlog.L().Info("loaded audit log settings",
 		zap.Int("memory_entries", settings.MemoryEntries),
 		zap.Int("retention_days", settings.RetentionDays),
-		zap.Int("max_disk_size_mb", settings.MaxDiskSizeMB))
+		zap.Int("max_disk_size_mb", settings.MaxDiskSizeMB),
+		zap.Int("max_db_size_mb", settings.MaxDBSizeMB),
+		zap.String("storage_engine", settings.StorageEngine))
 	return settings
 }
 
@@ -84,11 +118,11 @@ func saveAuditSettings(configBaseDir string, settings AuditSettings) error {
 	return os.WriteFile(settingsPath, data, 0o644)
 }
 
-func (c *AuditCollector) appendBatchToDisk(logs []AuditLog) error {
-	if len(logs) == 0 || c.logDir == "" {
+func (s *NdjsonAuditStorage) WriteBatch(logs []AuditLog) error {
+	if len(logs) == 0 || s.logDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(c.logDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.logDir, 0o755); err != nil {
 		return err
 	}
 
@@ -113,7 +147,7 @@ func (c *AuditCollector) appendBatchToDisk(logs []AuditLog) error {
 	}
 
 	for day, buf := range grouped {
-		path := filepath.Join(c.logDir, fmt.Sprintf("audit-%s.ndjson", day))
+		path := filepath.Join(s.logDir, fmt.Sprintf("audit-%s.ndjson", day))
 		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
 		if err != nil {
 			return err
@@ -130,45 +164,56 @@ func (c *AuditCollector) appendBatchToDisk(logs []AuditLog) error {
 }
 
 func (c *AuditCollector) restoreFromDisk() error {
-	if c.logDir == "" {
+	storage := c.primaryStorage()
+	if storage == nil {
 		return nil
 	}
-	if err := os.MkdirAll(c.logDir, 0o755); err != nil {
+	if err := storage.EnforceRetention(c.GetSettings()); err != nil {
 		return err
 	}
-	if err := c.enforceDiskRetention(); err != nil {
-		return err
-	}
-
-	files, err := c.listAuditLogFiles()
+	recent, err := storage.LoadRecent(c.capacity)
 	if err != nil {
 		return err
-	}
-	if len(files) == 0 || c.capacity == 0 {
-		return nil
-	}
-
-	recent := make([]AuditLog, 0, c.capacity)
-	for i := len(files) - 1; i >= 0 && len(recent) < c.capacity; i-- {
-		logs, err := readAuditLogFile(files[i].path)
-		if err != nil {
-			mlog.L().Warn("failed to read persisted audit log file", zap.String("path", files[i].path), zap.Error(err))
-			continue
-		}
-		for j := len(logs) - 1; j >= 0 && len(recent) < c.capacity; j-- {
-			recent = append(recent, logs[j])
-		}
 	}
 
 	c.mu.Lock()
 	c.logs = make([]AuditLog, 0, c.capacity)
 	c.head = 0
-	for i := len(recent) - 1; i >= 0; i-- {
+	for i := 0; i < len(recent); i++ {
 		c.appendLogLocked(recent[i])
 	}
 	c.rebuildDerivedLocked()
 	c.mu.Unlock()
 	return nil
+}
+
+func (s *NdjsonAuditStorage) LoadRecent(limit int) ([]AuditLog, error) {
+	if s.logDir == "" {
+		return nil, nil
+	}
+	files, err := s.listAuditLogFiles()
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 || limit == 0 {
+		return nil, nil
+	}
+
+	recent := make([]AuditLog, 0, limit)
+	for i := len(files) - 1; i >= 0 && len(recent) < limit; i-- {
+		logs, err := readAuditLogFile(files[i].path)
+		if err != nil {
+			mlog.L().Warn("failed to read persisted audit log file", zap.String("path", files[i].path), zap.Error(err))
+			continue
+		}
+		for j := len(logs) - 1; j >= 0 && len(recent) < limit; j-- {
+			recent = append(recent, logs[j])
+		}
+	}
+	for i, j := 0, len(recent)-1; i < j; i, j = i+1, j-1 {
+		recent[i], recent[j] = recent[j], recent[i]
+	}
+	return recent, nil
 }
 
 func readAuditLogFile(path string) ([]AuditLog, error) {
@@ -207,8 +252,10 @@ func (c *AuditCollector) maybeEnforceDiskRetention() error {
 	}
 	c.mu.RUnlock()
 
-	if err := c.enforceDiskRetention(); err != nil {
-		return err
+	for _, storage := range c.writeStorages() {
+		if err := storage.EnforceRetention(c.GetSettings()); err != nil {
+			return err
+		}
 	}
 
 	c.mu.Lock()
@@ -217,24 +264,20 @@ func (c *AuditCollector) maybeEnforceDiskRetention() error {
 	return nil
 }
 
-func (c *AuditCollector) enforceDiskRetention() error {
-	if c.logDir == "" {
+func (s *NdjsonAuditStorage) EnforceRetention(settings AuditSettings) error {
+	if s.logDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(c.logDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.logDir, 0o755); err != nil {
 		return err
 	}
-	files, err := c.listAuditLogFiles()
+	files, err := s.listAuditLogFiles()
 	if err != nil {
 		return err
 	}
 	if len(files) == 0 {
 		return nil
 	}
-
-	c.mu.RLock()
-	settings := c.settings
-	c.mu.RUnlock()
 
 	cutoffDay := time.Now().AddDate(0, 0, -(settings.RetentionDays - 1))
 	cutoff := time.Date(cutoffDay.Year(), cutoffDay.Month(), cutoffDay.Day(), 0, 0, 0, 0, cutoffDay.Location())
@@ -265,14 +308,14 @@ func (c *AuditCollector) enforceDiskRetention() error {
 	return nil
 }
 
-func (c *AuditCollector) clearDiskLogs() error {
-	if c.logDir == "" {
+func (s *NdjsonAuditStorage) Clear() error {
+	if s.logDir == "" {
 		return nil
 	}
-	if err := os.MkdirAll(c.logDir, 0o755); err != nil {
+	if err := os.MkdirAll(s.logDir, 0o755); err != nil {
 		return err
 	}
-	files, err := c.listAuditLogFiles()
+	files, err := s.listAuditLogFiles()
 	if err != nil {
 		return err
 	}
@@ -285,22 +328,41 @@ func (c *AuditCollector) clearDiskLogs() error {
 }
 
 func (c *AuditCollector) GetDiskUsageBytes() int64 {
-	files, err := c.listAuditLogFiles()
+	storage := c.primaryStorage()
+	if storage == nil {
+		return 0
+	}
+	size, err := storage.DiskUsageBytes()
 	if err != nil {
 		return 0
+	}
+	return size
+}
+
+func (s *NdjsonAuditStorage) DiskUsageBytes() (int64, error) {
+	files, err := s.listAuditLogFiles()
+	if err != nil {
+		return 0, err
 	}
 	var total int64
 	for _, file := range files {
 		total += file.size
 	}
-	return total
+	return total, nil
 }
 
-func (c *AuditCollector) listAuditLogFiles() ([]auditLogFileInfo, error) {
-	if c.logDir == "" {
+func (s *NdjsonAuditStorage) QueryLogs(params V2GetLogsParams) (V2PaginatedLogsResponse, error) {
+	return V2PaginatedLogsResponse{
+		Pagination: V2PaginationInfo{CurrentPage: params.Page, ItemsPerPage: params.Limit},
+		Logs:       []AuditLog{},
+	}, fmt.Errorf("ndjson audit storage does not support historical querying")
+}
+
+func (s *NdjsonAuditStorage) listAuditLogFiles() ([]auditLogFileInfo, error) {
+	if s.logDir == "" {
 		return nil, nil
 	}
-	entries, err := os.ReadDir(c.logDir)
+	entries, err := os.ReadDir(s.logDir)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, nil
@@ -329,7 +391,7 @@ func (c *AuditCollector) listAuditLogFiles() ([]auditLogFileInfo, error) {
 			return nil, err
 		}
 		files = append(files, auditLogFileInfo{
-			path: filepath.Join(c.logDir, name),
+			path: filepath.Join(s.logDir, name),
 			date: day,
 			size: info.Size(),
 		})

@@ -52,12 +52,16 @@ func handleClearAuditLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 type auditStorageResponse struct {
-	MemoryEntries        int   `json:"memory_entries"`
-	CurrentMemoryEntries int   `json:"current_memory_entries,omitempty"`
-	RetentionDays        int   `json:"retention_days"`
-	MaxDiskSizeMB        int   `json:"max_disk_size_mb"`
-	Capacity             int   `json:"capacity,omitempty"`
-	CurrentDiskSize      int64 `json:"current_disk_size_bytes"`
+	MemoryEntries        int    `json:"memory_entries"`
+	CurrentMemoryEntries int    `json:"current_memory_entries,omitempty"`
+	RetentionDays        int    `json:"retention_days"`
+	MaxDiskSizeMB        int    `json:"max_disk_size_mb"`
+	MaxDBSizeMB          int    `json:"max_db_size_mb,omitempty"`
+	Capacity             int    `json:"capacity,omitempty"`
+	StorageEngine        string `json:"storage_engine,omitempty"`
+	SQLitePath           string `json:"sqlite_path,omitempty"`
+	DualWrite            bool   `json:"dual_write,omitempty"`
+	CurrentDiskSize      int64  `json:"current_disk_size_bytes"`
 }
 
 func handleGetAuditCapacity(w http.ResponseWriter, r *http.Request) {
@@ -67,7 +71,11 @@ func handleGetAuditCapacity(w http.ResponseWriter, r *http.Request) {
 		CurrentMemoryEntries: GlobalAuditCollector.GetCurrentMemoryEntries(),
 		RetentionDays:        settings.RetentionDays,
 		MaxDiskSizeMB:        settings.MaxDiskSizeMB,
+		MaxDBSizeMB:          settings.MaxDBSizeMB,
 		Capacity:             settings.MemoryEntries,
+		StorageEngine:        settings.StorageEngine,
+		SQLitePath:           settings.SQLitePath,
+		DualWrite:            settings.DualWrite,
 		CurrentDiskSize:      GlobalAuditCollector.GetDiskUsageBytes(),
 	}
 	writeJSON(w, http.StatusOK, resp)
@@ -89,6 +97,10 @@ func handleSetAuditCapacity(w http.ResponseWriter, r *http.Request) {
 		MemoryEntries: req.MemoryEntries,
 		RetentionDays: req.RetentionDays,
 		MaxDiskSizeMB: req.MaxDiskSizeMB,
+		MaxDBSizeMB:   req.MaxDBSizeMB,
+		StorageEngine: req.StorageEngine,
+		SQLitePath:    req.SQLitePath,
+		DualWrite:     req.DualWrite,
 		Capacity:      req.Capacity,
 	}
 	if err := GlobalAuditCollector.SetSettings(settings, MainConfigBaseDir); err != nil {

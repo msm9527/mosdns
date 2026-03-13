@@ -3,6 +3,7 @@ package coremain
 import (
 	"container/heap"
 	"container/list"
+	"fmt"
 	"math"
 	"net"
 	"path/filepath"
@@ -145,10 +146,14 @@ const (
 )
 
 type AuditSettings struct {
-	MemoryEntries int `json:"memory_entries"`
-	RetentionDays int `json:"retention_days"`
-	MaxDiskSizeMB int `json:"max_disk_size_mb"`
-	Capacity      int `json:"capacity,omitempty"`
+	MemoryEntries int    `json:"memory_entries"`
+	RetentionDays int    `json:"retention_days"`
+	MaxDiskSizeMB int    `json:"max_disk_size_mb"`
+	MaxDBSizeMB   int    `json:"max_db_size_mb,omitempty"`
+	StorageEngine string `json:"storage_engine,omitempty"`
+	SQLitePath    string `json:"sqlite_path,omitempty"`
+	DualWrite     bool   `json:"dual_write,omitempty"`
+	Capacity      int    `json:"capacity,omitempty"`
 }
 
 type slowestQueryHeap []AuditLog
@@ -186,11 +191,13 @@ type AuditCollector struct {
 	configBaseDir      string
 	logDir             string
 	settings           AuditSettings
+	ndjsonStorage      *NdjsonAuditStorage
+	sqliteStorage      *SQLiteAuditStorage
 
 	// Lazy Sync Control
-	lastSyncTime time.Time
+	lastSyncTime    time.Time
 	lastDiskCleanup time.Time
-	
+
 	// Global Statistics for monitoring without mutex pressure
 	totalQueryCountGlobal    atomic.Uint64
 	totalQueryDurationGlobal atomic.Uint64 // Stored in microseconds
@@ -200,6 +207,8 @@ var GlobalAuditCollector = NewAuditCollector(AuditSettings{
 	MemoryEntries: defaultAuditMemoryEntries,
 	RetentionDays: defaultAuditRetentionDays,
 	MaxDiskSizeMB: defaultAuditMaxDiskSizeMB,
+	MaxDBSizeMB:   defaultAuditMaxDBSizeMB,
+	StorageEngine: defaultAuditStorageEngine,
 }, "")
 
 func InitializeAuditCollector(configBaseDir string) {
@@ -229,6 +238,9 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 		settings:           settings,
 	}
 	heap.Init(&c.slowestQueries)
+	if err := c.configureStorages(); err != nil {
+		mlog.L().Warn("failed to configure audit storages", zap.Error(err))
+	}
 	return c
 }
 
@@ -243,13 +255,13 @@ func (c *AuditCollector) StopWorker() {
 
 func (c *AuditCollector) worker() {
 	defer close(c.workerDone)
-	
+
 	// Batch processing slice to reduce lock contention frequency
 	batch := make([]*auditContext, 0, 256)
 
 	for {
 		batch = batch[:0]
-		
+
 		wrappedCtx, ok := <-c.ctxChan
 		if !ok {
 			return
@@ -257,7 +269,7 @@ func (c *AuditCollector) worker() {
 		batch = append(batch, wrappedCtx)
 
 		// Non-blocking drain to fill the batch
-		drainLoop:
+	drainLoop:
 		for len(batch) < cap(batch) {
 			select {
 			case nextItem, ok := <-c.ctxChan:
@@ -271,7 +283,7 @@ func (c *AuditCollector) worker() {
 		}
 
 		c.processBatch(batch)
-		
+
 		for _, item := range batch {
 			auditCtxPool.Put(item)
 		}
@@ -432,7 +444,7 @@ func (c *AuditCollector) syncStatsLocked() {
 		c.domainSetCounts[l.DomainSet]++
 		c.totalQueryDuration += l.DurationMs
 	}
-	
+
 	c.lastSyncTime = now
 }
 
@@ -440,9 +452,9 @@ func (c *AuditCollector) Collect(qCtx *query_context.Context) {
 	if !c.IsCapturing() {
 		return
 	}
-	
+
 	duration := time.Since(qCtx.StartTime())
-	
+
 	// Retrieve object from pool to reduce heap pressure
 	wrappedCtx := auditCtxPool.Get().(*auditContext)
 	wrappedCtx.Ctx = qCtx
@@ -522,8 +534,10 @@ func (c *AuditCollector) ClearLogs(clearDisk bool) {
 	c.mu.Unlock()
 
 	if clearDisk {
-		if err := c.clearDiskLogs(); err != nil {
-			mlog.L().Warn("failed to clear persisted audit logs", zap.Error(err))
+		for _, storage := range c.writeStorages() {
+			if err := storage.Clear(); err != nil {
+				mlog.L().Warn("failed to clear persisted audit logs", zap.String("storage", storage.Name()), zap.Error(err))
+			}
 		}
 	}
 }
@@ -569,6 +583,9 @@ func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) e
 	c.mu.Unlock()
 
 	if err := saveAuditSettings(configBaseDir, next); err != nil {
+		return err
+	}
+	if err := c.configureStorages(); err != nil {
 		return err
 	}
 	if err := c.maybeEnforceDiskRetention(); err != nil {
@@ -619,8 +636,9 @@ func (c *AuditCollector) CalculateV2Stats() V2StatsResponse {
 }
 
 type rankHeap []V2RankItem
+
 func (h rankHeap) Len() int           { return len(h) }
-func (h rankHeap) Less(i, j int) bool { return h[i].Count < h[j].Count } 
+func (h rankHeap) Less(i, j int) bool { return h[i].Count < h[j].Count }
 func (h rankHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
 func (h *rankHeap) Push(x any)        { *h = append(*h, x.(V2RankItem)) }
 func (h *rankHeap) Pop() any {
@@ -717,6 +735,14 @@ func (c *AuditCollector) GetSlowestQueries(limit int) []AuditLog {
 }
 
 func (c *AuditCollector) GetV2Logs(params V2GetLogsParams) V2PaginatedLogsResponse {
+	if c.shouldUseSQLiteReads(params) {
+		if resp, err := c.sqliteStorage.QueryLogs(params); err == nil {
+			return resp
+		} else {
+			mlog.L().Warn("failed to query audit logs from sqlite, falling back to memory", zap.Error(err))
+		}
+	}
+
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -734,7 +760,7 @@ func (c *AuditCollector) GetV2Logs(params V2GetLogsParams) V2PaginatedLogsRespon
 	if params.Limit <= 0 {
 		params.Limit = 50
 	}
-	
+
 	searchTerm := params.Q
 	if params.Q != "" && !params.Exact {
 		searchTerm = strings.ToLower(searchTerm)
@@ -759,42 +785,62 @@ func (c *AuditCollector) GetV2Logs(params V2GetLogsParams) V2PaginatedLogsRespon
 
 			// 1. Check QueryName
 			haystack := log.QueryName
-			if !params.Exact { haystack = strings.ToLower(haystack) }
-			if matchFunc(haystack, searchTerm) { foundInQ = true }
+			if !params.Exact {
+				haystack = strings.ToLower(haystack)
+			}
+			if matchFunc(haystack, searchTerm) {
+				foundInQ = true
+			}
 
 			// 2. Check ClientIP
 			if !foundInQ {
 				haystack = log.ClientIP
-				if !params.Exact { haystack = strings.ToLower(haystack) }
-				if matchFunc(haystack, searchTerm) { foundInQ = true }
+				if !params.Exact {
+					haystack = strings.ToLower(haystack)
+				}
+				if matchFunc(haystack, searchTerm) {
+					foundInQ = true
+				}
 			}
 
 			// 3. Check TraceID
 			if !foundInQ {
 				haystack = log.TraceID
-				if !params.Exact { haystack = strings.ToLower(haystack) }
-				if matchFunc(haystack, searchTerm) { foundInQ = true }
+				if !params.Exact {
+					haystack = strings.ToLower(haystack)
+				}
+				if matchFunc(haystack, searchTerm) {
+					foundInQ = true
+				}
 			}
-			
+
 			// 4. Check DomainSet
 			if !foundInQ && log.DomainSet != "" {
 				haystack = log.DomainSet
-				if !params.Exact { haystack = strings.ToLower(haystack) }
-				if matchFunc(haystack, searchTerm) { foundInQ = true }
+				if !params.Exact {
+					haystack = strings.ToLower(haystack)
+				}
+				if matchFunc(haystack, searchTerm) {
+					foundInQ = true
+				}
 			}
 
 			// 5. Check Answers
 			if !foundInQ {
 				for _, answer := range log.Answers {
 					haystack = answer.Data
-					if !params.Exact { haystack = strings.ToLower(haystack) }
+					if !params.Exact {
+						haystack = strings.ToLower(haystack)
+					}
 					if matchFunc(haystack, searchTerm) {
 						foundInQ = true
 						break
 					}
 				}
 			}
-			if !foundInQ { isMatched = false }
+			if !foundInQ {
+				isMatched = false
+			}
 		}
 
 		if isMatched && params.ClientIP != "" && log.ClientIP != params.ClientIP {
@@ -811,7 +857,9 @@ func (c *AuditCollector) GetV2Logs(params V2GetLogsParams) V2PaginatedLogsRespon
 					break
 				}
 			}
-			if !found { isMatched = false }
+			if !found {
+				isMatched = false
+			}
 		}
 		if isMatched && params.AnswerCNAME != "" {
 			found := false
@@ -821,7 +869,9 @@ func (c *AuditCollector) GetV2Logs(params V2GetLogsParams) V2PaginatedLogsRespon
 					break
 				}
 			}
-			if !found { isMatched = false }
+			if !found {
+				isMatched = false
+			}
 		}
 
 		if isMatched {
@@ -844,4 +894,131 @@ func (c *AuditCollector) GetV2Logs(params V2GetLogsParams) V2PaginatedLogsRespon
 		},
 		Logs: filteredLogs,
 	}
+}
+
+func (c *AuditCollector) configureStorages() error {
+	c.mu.RLock()
+	settings := c.settings
+	configBaseDir := c.configBaseDir
+	logDir := c.logDir
+	oldNDJSON := c.ndjsonStorage
+	oldSQLite := c.sqliteStorage
+	c.mu.RUnlock()
+
+	newNDJSON := newNdjsonAuditStorage(logDir)
+	if err := newNDJSON.Open(); err != nil {
+		return fmt.Errorf("open ndjson audit storage: %w", err)
+	}
+
+	var newSQLite *SQLiteAuditStorage
+	if settings.StorageEngine == "sqlite" || settings.DualWrite {
+		sqlitePath := settings.SQLitePath
+		if sqlitePath == "" {
+			sqlitePath = defaultAuditSQLitePath(configBaseDir)
+		}
+		newSQLite = newSQLiteAuditStorage(sqlitePath, settings.MaxDBSizeMB)
+		if err := newSQLite.Open(); err != nil {
+			_ = newNDJSON.Close()
+			return fmt.Errorf("open sqlite audit storage: %w", err)
+		}
+	}
+
+	c.mu.Lock()
+	c.ndjsonStorage = newNDJSON
+	c.sqliteStorage = newSQLite
+	if settings.SQLitePath == "" {
+		c.settings.SQLitePath = defaultAuditSQLitePath(configBaseDir)
+	}
+	c.mu.Unlock()
+
+	if oldNDJSON != nil {
+		_ = oldNDJSON.Close()
+	}
+	if oldSQLite != nil {
+		_ = oldSQLite.Close()
+	}
+	return nil
+}
+
+func (c *AuditCollector) primaryStorage() auditStorage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.settings.StorageEngine == "sqlite" && c.sqliteStorage != nil {
+		return c.sqliteStorage
+	}
+	if c.ndjsonStorage != nil {
+		return c.ndjsonStorage
+	}
+	return c.sqliteStorage
+}
+
+func (c *AuditCollector) writeStorages() []auditStorage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	storages := make([]auditStorage, 0, 2)
+	addStorage := func(s auditStorage) {
+		if s == nil {
+			return
+		}
+		for _, existing := range storages {
+			if existing == s {
+				return
+			}
+		}
+		storages = append(storages, s)
+	}
+
+	switch c.settings.StorageEngine {
+	case "sqlite":
+		addStorage(c.sqliteStorage)
+	default:
+		addStorage(c.ndjsonStorage)
+	}
+	if c.settings.DualWrite {
+		addStorage(c.ndjsonStorage)
+		addStorage(c.sqliteStorage)
+	}
+	return storages
+}
+
+func (c *AuditCollector) shouldUseSQLiteReads(params V2GetLogsParams) bool {
+	c.mu.RLock()
+	sqliteEnabled := c.sqliteStorage != nil && (c.settings.StorageEngine == "sqlite" || c.settings.DualWrite)
+	c.mu.RUnlock()
+	if !sqliteEnabled {
+		return false
+	}
+	if params.Page > 1 {
+		return true
+	}
+	return params.Domain != "" || params.AnswerIP != "" || params.AnswerCNAME != "" || params.ClientIP != "" || params.Q != ""
+}
+
+func (c *AuditCollector) appendBatchToDisk(logs []AuditLog) error {
+	for _, storage := range c.writeStorages() {
+		if err := storage.WriteBatch(logs); err != nil {
+			return fmt.Errorf("write audit batch to %s: %w", storage.Name(), err)
+		}
+	}
+	return nil
+}
+
+func (c *AuditCollector) enforceDiskRetention() error {
+	for _, storage := range c.writeStorages() {
+		if err := storage.EnforceRetention(c.GetSettings()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *AuditCollector) listAuditLogFiles() ([]auditLogFileInfo, error) {
+	c.mu.RLock()
+	ndjsonStorage := c.ndjsonStorage
+	c.mu.RUnlock()
+	if ndjsonStorage == nil {
+		return nil, nil
+	}
+	return ndjsonStorage.listAuditLogFiles()
 }
