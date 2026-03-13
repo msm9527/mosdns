@@ -73,6 +73,10 @@ func (s *runtimeStateStore) get(namespace, key string, dst any) (bool, error) {
 		return s.getStructuredGlobalOverrides(key, dst)
 	case runtimeStateNamespaceUpstreams:
 		return s.getStructuredUpstreamOverrides(key, dst)
+	case runtimeNamespaceAdguard:
+		return s.getStructuredAdguardState(key, dst)
+	case runtimeNamespaceDiversion:
+		return s.getStructuredDiversionState(key, dst)
 	}
 	row := s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, namespace, key)
 
@@ -100,6 +104,10 @@ func (s *runtimeStateStore) put(namespace, key string, value any) error {
 		return s.putStructuredGlobalOverrides(key, value)
 	case runtimeStateNamespaceUpstreams:
 		return s.putStructuredUpstreamOverrides(key, value)
+	case runtimeNamespaceAdguard:
+		return s.putStructuredAdguardState(key, value)
+	case runtimeNamespaceDiversion:
+		return s.putStructuredDiversionState(key, value)
 	}
 	data, err := json.Marshal(value)
 	if err != nil {
@@ -125,6 +133,10 @@ func (s *runtimeStateStore) remove(namespace, key string) error {
 		return s.removeStructuredGlobalOverrides(key)
 	case runtimeStateNamespaceUpstreams:
 		return s.removeStructuredUpstreamOverrides(key)
+	case runtimeNamespaceAdguard:
+		return s.removeStructuredAdguardState(key)
+	case runtimeNamespaceDiversion:
+		return s.removeStructuredDiversionState(key)
 	}
 	if _, err := s.db.DB().Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, namespace, key); err != nil {
 		return fmt.Errorf("delete runtime state %s/%s: %w", namespace, key, err)
@@ -147,6 +159,24 @@ func (s *runtimeStateStore) list(namespace string) ([]RuntimeStateEntry, error) 
 	}
 	if namespace == runtimeStateNamespaceUpstreams {
 		entries, err := s.listStructuredUpstreamOverrides()
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > 0 {
+			return entries, nil
+		}
+	}
+	if namespace == runtimeNamespaceAdguard {
+		entries, err := s.listStructuredAdguardState()
+		if err != nil {
+			return nil, err
+		}
+		if len(entries) > 0 {
+			return entries, nil
+		}
+	}
+	if namespace == runtimeNamespaceDiversion {
+		entries, err := s.listStructuredDiversionState()
 		if err != nil {
 			return nil, err
 		}
@@ -731,6 +761,352 @@ func (s *runtimeStateStore) listStructuredUpstreamOverrides() ([]RuntimeStateEnt
 		})
 	}
 	return entries, nil
+}
+
+func (s *runtimeStateStore) getStructuredAdguardState(key string, dst any) (bool, error) {
+	rows, err := s.db.DB().Query(`
+		SELECT payload_json
+		FROM adguard_rule_item
+		WHERE config_key = ?
+		ORDER BY rule_id ASC
+	`, key)
+	if err != nil {
+		return false, fmt.Errorf("query adguard_rule_item %s: %w", key, err)
+	}
+	defer rows.Close()
+
+	items, err := collectJSONArrayFromRows(rows)
+	if err != nil {
+		return false, fmt.Errorf("collect adguard_rule_item %s: %w", key, err)
+	}
+	if len(items) > 0 {
+		if err := json.Unmarshal(items, dst); err != nil {
+			return false, fmt.Errorf("decode adguard_rule_item %s: %w", key, err)
+		}
+		return true, nil
+	}
+
+	return s.getFromLegacyKV(runtimeNamespaceAdguard, key, dst)
+}
+
+func (s *runtimeStateStore) putStructuredAdguardState(key string, value any) error {
+	items, err := normalizeJSONArrayObjects(value)
+	if err != nil {
+		return fmt.Errorf("normalize adguard_rule_item %s: %w", key, err)
+	}
+
+	tx, err := s.db.DB().Begin()
+	if err != nil {
+		return fmt.Errorf("begin adguard_rule_item tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.Exec(`DELETE FROM adguard_rule_item WHERE config_key = ?`, key); err != nil {
+		return fmt.Errorf("clear adguard_rule_item %s: %w", key, err)
+	}
+	for _, item := range items {
+		ruleID := runtimeStringField(item, "id")
+		if ruleID == "" {
+			ruleID = runtimeStringField(item, "name")
+		}
+		payloadJSON, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Errorf("marshal adguard_rule_item %s/%s: %w", key, ruleID, err)
+		}
+		if _, err = tx.Exec(`
+			INSERT INTO adguard_rule_item (
+				config_key, rule_id, name, url, enabled, auto_update, update_interval_hours, payload_json, updated_at_unix_ms
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, unixepoch('subsec') * 1000)
+		`, key, ruleID, runtimeStringField(item, "name"), runtimeStringField(item, "url"),
+			runtimeBoolToInt(runtimeBoolField(item, "enabled")),
+			runtimeBoolToInt(runtimeBoolField(item, "auto_update")),
+			runtimeIntField(item, "update_interval_hours"),
+			string(payloadJSON),
+		); err != nil {
+			return fmt.Errorf("insert adguard_rule_item %s/%s: %w", key, ruleID, err)
+		}
+	}
+	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceAdguard, key); err != nil {
+		return fmt.Errorf("cleanup legacy adguard_rule_item %s: %w", key, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit adguard_rule_item %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *runtimeStateStore) removeStructuredAdguardState(key string) error {
+	tx, err := s.db.DB().Begin()
+	if err != nil {
+		return fmt.Errorf("begin delete adguard_rule_item tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(`DELETE FROM adguard_rule_item WHERE config_key = ?`, key); err != nil {
+		return fmt.Errorf("delete adguard_rule_item %s: %w", key, err)
+	}
+	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceAdguard, key); err != nil {
+		return fmt.Errorf("delete legacy adguard_rule_item %s: %w", key, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete adguard_rule_item %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *runtimeStateStore) listStructuredAdguardState() ([]RuntimeStateEntry, error) {
+	rows, err := s.db.DB().Query(`
+		SELECT config_key, payload_json, updated_at_unix_ms
+		FROM adguard_rule_item
+		ORDER BY config_key ASC, rule_id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list adguard_rule_item: %w", err)
+	}
+	defer rows.Close()
+	return collectGroupedJSONArrayEntries(rows, runtimeNamespaceAdguard)
+}
+
+func (s *runtimeStateStore) getStructuredDiversionState(key string, dst any) (bool, error) {
+	rows, err := s.db.DB().Query(`
+		SELECT payload_json
+		FROM diversion_rule_source
+		WHERE config_key = ?
+		ORDER BY source_name ASC
+	`, key)
+	if err != nil {
+		return false, fmt.Errorf("query diversion_rule_source %s: %w", key, err)
+	}
+	defer rows.Close()
+
+	items, err := collectJSONArrayFromRows(rows)
+	if err != nil {
+		return false, fmt.Errorf("collect diversion_rule_source %s: %w", key, err)
+	}
+	if len(items) > 0 {
+		if err := json.Unmarshal(items, dst); err != nil {
+			return false, fmt.Errorf("decode diversion_rule_source %s: %w", key, err)
+		}
+		return true, nil
+	}
+
+	return s.getFromLegacyKV(runtimeNamespaceDiversion, key, dst)
+}
+
+func (s *runtimeStateStore) putStructuredDiversionState(key string, value any) error {
+	items, err := normalizeJSONArrayObjects(value)
+	if err != nil {
+		return fmt.Errorf("normalize diversion_rule_source %s: %w", key, err)
+	}
+
+	tx, err := s.db.DB().Begin()
+	if err != nil {
+		return fmt.Errorf("begin diversion_rule_source tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	if _, err = tx.Exec(`DELETE FROM diversion_rule_source WHERE config_key = ?`, key); err != nil {
+		return fmt.Errorf("clear diversion_rule_source %s: %w", key, err)
+	}
+	for _, item := range items {
+		sourceName := runtimeStringField(item, "name")
+		payloadJSON, err := json.Marshal(item)
+		if err != nil {
+			return fmt.Errorf("marshal diversion_rule_source %s/%s: %w", key, sourceName, err)
+		}
+		if _, err = tx.Exec(`
+			INSERT INTO diversion_rule_source (
+				config_key, source_name, source_type, files, url, enabled, auto_update, update_interval_hours, payload_json, updated_at_unix_ms
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch('subsec') * 1000)
+		`, key, sourceName, runtimeStringField(item, "type"), runtimeStringField(item, "files"),
+			runtimeStringField(item, "url"),
+			runtimeBoolToInt(runtimeBoolField(item, "enabled")),
+			runtimeBoolToInt(runtimeBoolField(item, "auto_update")),
+			runtimeIntField(item, "update_interval_hours"),
+			string(payloadJSON),
+		); err != nil {
+			return fmt.Errorf("insert diversion_rule_source %s/%s: %w", key, sourceName, err)
+		}
+	}
+	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceDiversion, key); err != nil {
+		return fmt.Errorf("cleanup legacy diversion_rule_source %s: %w", key, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit diversion_rule_source %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *runtimeStateStore) removeStructuredDiversionState(key string) error {
+	tx, err := s.db.DB().Begin()
+	if err != nil {
+		return fmt.Errorf("begin delete diversion_rule_source tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.Exec(`DELETE FROM diversion_rule_source WHERE config_key = ?`, key); err != nil {
+		return fmt.Errorf("delete diversion_rule_source %s: %w", key, err)
+	}
+	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceDiversion, key); err != nil {
+		return fmt.Errorf("delete legacy diversion_rule_source %s: %w", key, err)
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete diversion_rule_source %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *runtimeStateStore) listStructuredDiversionState() ([]RuntimeStateEntry, error) {
+	rows, err := s.db.DB().Query(`
+		SELECT config_key, payload_json, updated_at_unix_ms
+		FROM diversion_rule_source
+		ORDER BY config_key ASC, source_name ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list diversion_rule_source: %w", err)
+	}
+	defer rows.Close()
+	return collectGroupedJSONArrayEntries(rows, runtimeNamespaceDiversion)
+}
+
+func (s *runtimeStateStore) getFromLegacyKV(namespace, key string, dst any) (bool, error) {
+	row := s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, namespace, key)
+	var raw string
+	err := row.Scan(&raw)
+	switch err {
+	case nil:
+	case sql.ErrNoRows:
+		return false, nil
+	default:
+		return false, fmt.Errorf("query runtime state %s/%s: %w", namespace, key, err)
+	}
+	if err := json.Unmarshal([]byte(raw), dst); err != nil {
+		return false, fmt.Errorf("decode runtime state %s/%s: %w", namespace, key, err)
+	}
+	return true, nil
+}
+
+func collectJSONArrayFromRows(rows *sql.Rows) ([]byte, error) {
+	items := make([]json.RawMessage, 0)
+	for rows.Next() {
+		var payloadJSON string
+		if err := rows.Scan(&payloadJSON); err != nil {
+			return nil, err
+		}
+		items = append(items, json.RawMessage(payloadJSON))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(items) == 0 {
+		return nil, nil
+	}
+	return json.Marshal(items)
+}
+
+func collectGroupedJSONArrayEntries(rows *sql.Rows, namespace string) ([]RuntimeStateEntry, error) {
+	type grouped struct {
+		items     []json.RawMessage
+		updatedAt int64
+	}
+	groupedByKey := make(map[string]*grouped)
+	order := make([]string, 0)
+	for rows.Next() {
+		var key string
+		var payloadJSON string
+		var updatedAt int64
+		if err := rows.Scan(&key, &payloadJSON, &updatedAt); err != nil {
+			return nil, err
+		}
+		g := groupedByKey[key]
+		if g == nil {
+			g = &grouped{}
+			groupedByKey[key] = g
+			order = append(order, key)
+		}
+		g.items = append(g.items, json.RawMessage(payloadJSON))
+		if updatedAt > g.updatedAt {
+			g.updatedAt = updatedAt
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	entries := make([]RuntimeStateEntry, 0, len(order))
+	for _, key := range order {
+		raw, err := json.Marshal(groupedByKey[key].items)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, RuntimeStateEntry{
+			Namespace:       namespace,
+			Key:             key,
+			Value:           json.RawMessage(raw),
+			UpdatedAtUnixMS: groupedByKey[key].updatedAt,
+		})
+	}
+	return entries, nil
+}
+
+func normalizeJSONArrayObjects(value any) ([]map[string]any, error) {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	var items []map[string]any
+	if err := json.Unmarshal(data, &items); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+func runtimeStringField(item map[string]any, key string) string {
+	if item == nil {
+		return ""
+	}
+	if v, ok := item[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+func runtimeBoolField(item map[string]any, key string) bool {
+	if item == nil {
+		return false
+	}
+	if v, ok := item[key].(bool); ok {
+		return v
+	}
+	return false
+}
+
+func runtimeIntField(item map[string]any, key string) int {
+	if item == nil {
+		return 0
+	}
+	switch v := item[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case int64:
+		return int(v)
+	}
+	return 0
 }
 
 func runtimeBoolToInt(v bool) int {

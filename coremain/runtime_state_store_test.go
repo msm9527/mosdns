@@ -117,3 +117,69 @@ func TestRuntimeStateStore_StructuredUpstreamState(t *testing.T) {
 		t.Fatalf("unexpected upstream entries: %+v", entries)
 	}
 }
+
+func TestRuntimeStateStore_StructuredAdguardState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), runtimeStateDBFilename)
+	configKey := filepath.Join(t.TempDir(), "adguard", "config.json")
+	payload := []map[string]any{
+		{"id": "rule-1", "name": "gfw", "url": "https://example.com/gfw.txt", "enabled": true, "auto_update": true, "update_interval_hours": 24},
+		{"id": "rule-2", "name": "privacy", "url": "https://example.com/privacy.txt", "enabled": false, "auto_update": false, "update_interval_hours": 48},
+	}
+
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceAdguard, configKey, payload); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath adguard: %v", err)
+	}
+
+	var values []map[string]any
+	ok, err := LoadRuntimeStateJSONFromPath(dbPath, runtimeNamespaceAdguard, configKey, &values)
+	if err != nil {
+		t.Fatalf("LoadRuntimeStateJSONFromPath adguard: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected adguard state to exist")
+	}
+	if len(values) != 2 || values[0]["id"] != "rule-1" || values[1]["id"] != "rule-2" {
+		t.Fatalf("unexpected adguard values: %+v", values)
+	}
+
+	entries, err := ListRuntimeStateByNamespace(dbPath, runtimeNamespaceAdguard)
+	if err != nil {
+		t.Fatalf("ListRuntimeStateByNamespace adguard: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Key != configKey {
+		t.Fatalf("unexpected adguard entries: %+v", entries)
+	}
+}
+
+func TestRuntimeStateStore_StructuredDiversionState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), runtimeStateDBFilename)
+	configKey := filepath.Join(t.TempDir(), "rule", "rules.json")
+	payload := []map[string]any{
+		{"name": "geoipcn", "type": "geoipcn", "files": "geoipcn.srs", "url": "https://example.com/geoipcn.srs", "enabled": true, "auto_update": true, "update_interval_hours": 24},
+		{"name": "geositecn", "type": "geositecn", "files": "geositecn.srs", "url": "https://example.com/geositecn.srs", "enabled": false, "auto_update": false, "update_interval_hours": 48},
+	}
+
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceDiversion, configKey, payload); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath diversion: %v", err)
+	}
+
+	var values []map[string]any
+	ok, err := LoadRuntimeStateJSONFromPath(dbPath, runtimeNamespaceDiversion, configKey, &values)
+	if err != nil {
+		t.Fatalf("LoadRuntimeStateJSONFromPath diversion: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected diversion state to exist")
+	}
+	if len(values) != 2 || values[0]["name"] != "geoipcn" || values[1]["name"] != "geositecn" {
+		t.Fatalf("unexpected diversion values: %+v", values)
+	}
+
+	entries, err := ListRuntimeStateByNamespace(dbPath, runtimeNamespaceDiversion)
+	if err != nil {
+		t.Fatalf("ListRuntimeStateByNamespace diversion: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Key != configKey {
+		t.Fatalf("unexpected diversion entries: %+v", entries)
+	}
+}

@@ -285,5 +285,48 @@ func baseMigrations() []Migration {
 				ON upstream_override_item(protocol, updated_at_unix_ms DESC);
 			`,
 		},
+		{
+			ID: "0010_adguard_rule_item",
+			Up: `
+				CREATE TABLE IF NOT EXISTS adguard_rule_item (
+					config_key TEXT NOT NULL,
+					rule_id TEXT NOT NULL,
+					name TEXT NOT NULL DEFAULT '',
+					url TEXT NOT NULL DEFAULT '',
+					enabled INTEGER NOT NULL DEFAULT 0,
+					auto_update INTEGER NOT NULL DEFAULT 0,
+					update_interval_hours INTEGER NOT NULL DEFAULT 0,
+					payload_json TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (config_key, rule_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_adguard_rule_item_config
+				ON adguard_rule_item(config_key, updated_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_adguard_rule_item_enabled
+				ON adguard_rule_item(enabled, updated_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0011_diversion_rule_source",
+			Up: `
+				CREATE TABLE IF NOT EXISTS diversion_rule_source (
+					config_key TEXT NOT NULL,
+					source_name TEXT NOT NULL,
+					source_type TEXT NOT NULL DEFAULT '',
+					files TEXT NOT NULL DEFAULT '',
+					url TEXT NOT NULL DEFAULT '',
+					enabled INTEGER NOT NULL DEFAULT 0,
+					auto_update INTEGER NOT NULL DEFAULT 0,
+					update_interval_hours INTEGER NOT NULL DEFAULT 0,
+					payload_json TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (config_key, source_name)
+				);
+				CREATE INDEX IF NOT EXISTS idx_diversion_rule_source_config
+				ON diversion_rule_source(config_key, updated_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_diversion_rule_source_enabled
+				ON diversion_rule_source(enabled, updated_at_unix_ms DESC);
+			`,
+		},
 	}
 }
