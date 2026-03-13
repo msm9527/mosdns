@@ -88,7 +88,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 	p.scheduleRecoveryIfNeeded()
 
-	bp.RegAPI(p.api())
+	bp.M().GetAPIRouter().Mount("/api/v1/requery", p.api())
 
 	log.Printf("[requery] plugin instance created for config file: %s", p.filePath)
 	return p, nil

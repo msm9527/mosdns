@@ -252,7 +252,7 @@ func TestDomainOutputInferPolicyDefaultsWithoutPolicyBlock(t *testing.T) {
 	if p.decayDays != 21 {
 		t.Fatalf("decayDays = %d, want 21", p.decayDays)
 	}
-	if p.onDirtyURL != "http://127.0.0.1:9099/plugins/requery/enqueue" {
+	if p.onDirtyURL != "http://127.0.0.1:9099/api/v1/requery/enqueue" {
 		t.Fatalf("onDirtyURL = %q", p.onDirtyURL)
 	}
 	if p.verifyURL != "http://127.0.0.1:9099/plugins/my_realiplist/verify" {

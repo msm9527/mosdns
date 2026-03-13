@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -16,6 +17,65 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/miekg/dns"
 )
+
+func TestRequeryAPI_GetConfigAndStatus(t *testing.T) {
+	t.Parallel()
+
+	p := &Requery{
+		config: &Config{
+			Workflow: WorkflowSettings{Mode: "hybrid"},
+			Status:   Status{TaskState: "idle"},
+		},
+		status: Status{TaskState: "idle"},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	w := httptest.NewRecorder()
+	p.api().ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status for config: %d, body=%s", w.Code, w.Body.String())
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/status", nil)
+	w = httptest.NewRecorder()
+	p.api().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status for status: %d, body=%s", w.Code, w.Body.String())
+	}
+}
+
+func TestRequeryAPI_Enqueue(t *testing.T) {
+	t.Parallel()
+
+	p := &Requery{
+		config: &Config{
+			ExecutionSettings: ExecutionSettings{MaxQueueSize: 8},
+			Workflow:          WorkflowSettings{Mode: "hybrid"},
+		},
+		status:     Status{TaskState: "idle"},
+		queue:      make(refreshJobHeap, 0),
+		queueIndex: make(map[string]struct{}),
+		queueKick:  make(chan struct{}, 1),
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/enqueue", strings.NewReader(`{"domain":"example.com","reason":"observed"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	p.api().ServeHTTP(w, req)
+
+	if w.Code != http.StatusAccepted {
+		t.Fatalf("unexpected status for enqueue: %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode enqueue response: %v", err)
+	}
+	if payload["status"] != "queued" {
+		t.Fatalf("unexpected enqueue payload: %+v", payload)
+	}
+}
 
 func TestMergeAndFilterDomainsParsesQTypeMask(t *testing.T) {
 	t.Parallel()

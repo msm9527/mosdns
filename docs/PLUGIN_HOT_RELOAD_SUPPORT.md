@@ -33,7 +33,7 @@
 - `config/examples/*.yaml` 只算示例，不会被默认启动流程加载
 - 某些插件虽然不实现 `RuntimeConfigReloader`，但有自己的运行时 API，例如：
   - `switch`：通过 `/api/v1/switches/*` 即时修改状态
-  - `requery`：通过 `/plugins/requery/*` 即时触发、取消、改调度
+  - `requery`：通过 `/api/v1/requery/*` 即时触发、取消、改调度
 
 这类插件属于“有运行时操作”，但不属于“通过配置热重载重建插件实例”。
 

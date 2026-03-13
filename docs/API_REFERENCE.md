@@ -593,28 +593,28 @@
 - 除非特别说明，大多数条目应视为 `compat` 或 `internal`
 - 如果后续已有或新增同能力的 `/api/*` 收口接口，应优先迁移到核心 API
 
-### 4.1 Requery / 批量重建分流任务（`compat`，建议后续收口到 `/api/v1/requery/*`）
+### 4.1 Requery / 批量重建分流任务（`stable`）
 
-根路径：`/plugins/requery`
+根路径：`/api/v1/requery`
 
 这组接口用于“批量重建分流 / 快速预热缓存”流程本身，不负责直接读写具体分流列表内容。
 
 当前推荐优先使用聚合接口，减少前端请求次数：
 
-- `GET /plugins/requery/summary`
-- `POST /plugins/requery/rules/save`
-- `POST /plugins/requery/rules/flush`
+- `GET /api/v1/requery/summary`
+- `POST /api/v1/requery/rules/save`
+- `POST /api/v1/requery/rules/flush`
 
 典型调用链：
 
-1. `GET /plugins/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
-2. `POST /plugins/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
-3. `POST /plugins/requery/enqueue` 入队单域名按需刷新
-4. `POST /plugins/requery/cancel` 取消当前任务
-5. `POST /plugins/requery/scheduler/config` 更新定时刷新配置
-6. `POST /plugins/requery/rules/save` 批量保存当前分流规则
-7. `POST /plugins/requery/rules/flush` 批量清空动态分流规则
-8. `GET /plugins/requery/stats/source_file_counts` 获取刷新源文件统计
+1. `GET /api/v1/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
+2. `POST /api/v1/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
+3. `POST /api/v1/requery/enqueue` 入队单域名按需刷新
+4. `POST /api/v1/requery/cancel` 取消当前任务
+5. `POST /api/v1/requery/scheduler/config` 更新定时刷新配置
+6. `POST /api/v1/requery/rules/save` 批量保存当前分流规则
+7. `POST /api/v1/requery/rules/flush` 批量清空动态分流规则
+8. `GET /api/v1/requery/stats/source_file_counts` 获取刷新源文件统计
 
 三种任务模式：
 
@@ -642,18 +642,18 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/summary` | `compat` | 获取刷新分流聚合摘要 |
-| `GET` | `/` | `compat` | 获取完整 requery 配置 |
-| `GET` | `/status` | `compat` | 获取运行状态 |
-| `POST` | `/trigger` | `compat` | 手动触发一次刷新任务 |
-| `POST` | `/enqueue` | `compat` | 入队单域名刷新任务 |
-| `POST` | `/cancel` | `compat` | 取消当前任务 |
-| `POST` | `/scheduler/config` | `compat` | 更新调度配置 |
-| `POST` | `/rules/save` | `compat` | 批量保存 `url_actions.save_rules` 中的目标 |
-| `POST` | `/rules/flush` | `compat` | 批量清空 `url_actions.flush_rules` 中的目标 |
-| `GET` | `/stats/source_file_counts` | `compat` | 获取各源文件条目统计 |
+| `GET` | `/summary` | `stable` | 获取刷新分流聚合摘要 |
+| `GET` | `/` | `stable` | 获取完整 requery 配置 |
+| `GET` | `/status` | `stable` | 获取运行状态 |
+| `POST` | `/trigger` | `stable` | 手动触发一次刷新任务 |
+| `POST` | `/enqueue` | `stable` | 入队单域名刷新任务 |
+| `POST` | `/cancel` | `stable` | 取消当前任务 |
+| `POST` | `/scheduler/config` | `stable` | 更新调度配置 |
+| `POST` | `/rules/save` | `stable` | 批量保存 `url_actions.save_rules` 中的目标 |
+| `POST` | `/rules/flush` | `stable` | 批量清空 `url_actions.flush_rules` 中的目标 |
+| `GET` | `/stats/source_file_counts` | `stable` | 获取各源文件条目统计 |
 
-`GET /plugins/requery/summary` 返回核心字段：
+`GET /api/v1/requery/summary` 返回核心字段：
 
 - `config.domain_processing.source_files`
 - `config.url_actions.save_rules`
@@ -688,7 +688,7 @@
 - `status.last_error`
 - `memory_stats`
 
-`GET /plugins/requery` 返回核心字段：
+`GET /api/v1/requery` 返回核心字段：
 
 - `domain_processing.source_files`
 - `url_actions.save_rules`
@@ -719,7 +719,12 @@
 - `status.pending_queue`
 - `full_rebuild_task`
 
-`POST /plugins/requery/trigger` 请求体示例：
+说明：
+
+- 旧的 `/plugins/requery/*` 接口已移除
+- `requery` 现在只保留 `/api/v1/requery/*`
+
+`POST /api/v1/requery/trigger` 请求体示例：
 
 ```json
 {
@@ -734,7 +739,7 @@
 - `quick_rebuild`
 - `quick_prewarm`
 
-`POST /plugins/requery/trigger` 成功返回示例：
+`POST /api/v1/requery/trigger` 成功返回示例：
 
 ```json
 {
@@ -744,7 +749,7 @@
 }
 ```
 
-`POST /plugins/requery/enqueue` 请求体示例：
+`POST /api/v1/requery/enqueue` 请求体示例：
 
 ```json
 {
@@ -764,7 +769,7 @@
 - `reason` 会影响队列优先级，常见值：`observed`、`stale`、`conflict`、`error`
 - 如果队列判定为重复或无需处理，接口会返回 `202 Accepted` 且 `status=skipped`
 
-`POST /plugins/requery/enqueue` 成功返回示例：
+`POST /api/v1/requery/enqueue` 成功返回示例：
 
 ```json
 {
@@ -774,7 +779,7 @@
 }
 ```
 
-`POST /plugins/requery/rules/save` / `POST /plugins/requery/rules/flush` 返回示例：
+`POST /api/v1/requery/rules/save` / `POST /api/v1/requery/rules/flush` 返回示例：
 
 ```json
 {
@@ -795,7 +800,7 @@
 }
 ```
 
-`POST /plugins/requery/scheduler/config` 示例：
+`POST /api/v1/requery/scheduler/config` 示例：
 
 ```json
 {
@@ -870,7 +875,7 @@
   - 这套任务会真实发 DNS 查询重建分流结果，不是单纯内存刷新
   - 即使做了增量优化，`full_rebuild` 也不应被当成“秒级无感操作”
 
-`GET /plugins/requery/stats/source_file_counts` 返回示例：
+`GET /api/v1/requery/stats/source_file_counts` 返回示例：
 
 ```json
 {
@@ -1105,16 +1110,16 @@
 
 批量重建 / 预热主流程：
 
-- `GET /plugins/requery/summary`
-- `GET /plugins/requery`
-- `GET /plugins/requery/status`
-- `POST /plugins/requery/trigger`
-- `POST /plugins/requery/enqueue`
-- `POST /plugins/requery/cancel`
-- `POST /plugins/requery/scheduler/config`
-- `POST /plugins/requery/rules/save`
-- `POST /plugins/requery/rules/flush`
-- `GET /plugins/requery/stats/source_file_counts`
+- `GET /api/v1/requery/summary`
+- `GET /api/v1/requery`
+- `GET /api/v1/requery/status`
+- `POST /api/v1/requery/trigger`
+- `POST /api/v1/requery/enqueue`
+- `POST /api/v1/requery/cancel`
+- `POST /api/v1/requery/scheduler/config`
+- `POST /api/v1/requery/rules/save`
+- `POST /api/v1/requery/rules/flush`
+- `GET /api/v1/requery/stats/source_file_counts`
 
 分流记忆库保存 / 清空 / 校验：
 

@@ -32,7 +32,7 @@ const (
 	qtypeMaskA    uint8 = 1 << 0
 	qtypeMaskAAAA uint8 = 1 << 1
 
-	defaultDirtyNotifyPath = "/plugins/requery/enqueue"
+	defaultDirtyNotifyPath = "/api/v1/requery/enqueue"
 )
 
 func init() {

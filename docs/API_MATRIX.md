@@ -141,20 +141,20 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/requery/summary` | `compat` | 聚合状态与配置 |
-| `GET` | `/plugins/requery` | `compat` | 配置读取 |
-| `GET` | `/plugins/requery/status` | `compat` | 运行状态 |
-| `POST` | `/plugins/requery/trigger` | `compat` | 触发任务 |
-| `POST` | `/plugins/requery/enqueue` | `compat` | 入队按需刷新 |
-| `POST` | `/plugins/requery/cancel` | `compat` | 取消任务 |
-| `POST` | `/plugins/requery/scheduler/config` | `compat` | 更新调度配置 |
-| `POST` | `/plugins/requery/rules/save` | `compat` | 批量保存分流规则 |
-| `POST` | `/plugins/requery/rules/flush` | `compat` | 批量清空分流规则 |
-| `GET` | `/plugins/requery/stats/source_file_counts` | `compat` | 刷新源统计 |
+| `GET` | `/api/v1/requery/summary` | `stable` | 聚合状态与配置 |
+| `GET` | `/api/v1/requery` | `stable` | 配置读取 |
+| `GET` | `/api/v1/requery/status` | `stable` | 运行状态 |
+| `POST` | `/api/v1/requery/trigger` | `stable` | 触发任务 |
+| `POST` | `/api/v1/requery/enqueue` | `stable` | 入队按需刷新 |
+| `POST` | `/api/v1/requery/cancel` | `stable` | 取消任务 |
+| `POST` | `/api/v1/requery/scheduler/config` | `stable` | 更新调度配置 |
+| `POST` | `/api/v1/requery/rules/save` | `stable` | 批量保存分流规则 |
+| `POST` | `/api/v1/requery/rules/flush` | `stable` | 批量清空分流规则 |
+| `GET` | `/api/v1/requery/stats/source_file_counts` | `stable` | 刷新源统计 |
 
 建议：
 
-- 中期整体收口到 `/api/v1/requery/*`
+- 旧的 `/plugins/requery/*` 已移除，只保留 `/api/v1/requery/*`
 
 ## 4.3 缓存插件
 
