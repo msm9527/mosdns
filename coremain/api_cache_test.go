@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -13,7 +14,8 @@ import (
 
 type mockCacheController struct {
 	stats        CacheStatsSnapshot
-	entriesText  string
+	entries      []CacheEntry
+	total        int
 	flushErr     error
 	purgeCount   int
 	purgeErr     error
@@ -29,12 +31,11 @@ func (m *mockCacheController) SnapshotCacheStats() CacheStatsSnapshot {
 	return m.stats
 }
 
-func (m *mockCacheController) WriteEntries(w http.ResponseWriter, query string, offset, limit int) error {
+func (m *mockCacheController) CacheEntries(query string, offset, limit int) ([]CacheEntry, int, error) {
 	m.lastQuery = query
 	m.lastOffset = offset
 	m.lastLimit = limit
-	_, _ = w.Write([]byte(m.entriesText))
-	return nil
+	return m.entries, m.total, nil
 }
 
 func (m *mockCacheController) FlushRuntime(ctx context.Context) error {
@@ -51,7 +52,12 @@ func (m *mockCacheController) PurgeDomainRuntime(ctx context.Context, qname stri
 func TestCacheAPI_GetEntries(t *testing.T) {
 	m := &Mosdns{
 		plugins: map[string]any{
-			"cache_cn": &mockCacheController{entriesText: "entry-1\n"},
+			"cache_cn": &mockCacheController{
+				total: 1,
+				entries: []CacheEntry{
+					{Key: "example.com. A", DNSMessage: "dns message"},
+				},
+			},
 		},
 	}
 
@@ -70,8 +76,12 @@ func TestCacheAPI_GetEntries(t *testing.T) {
 	if controller.lastQuery != "example" || controller.lastOffset != 10 || controller.lastLimit != 20 {
 		t.Fatalf("unexpected query params %+v", controller)
 	}
-	if body := rr.Body.String(); body != "entry-1\n" {
-		t.Fatalf("unexpected body %q", body)
+	var body CacheEntriesResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if body.Tag != "cache_cn" || body.Total != 1 || len(body.Items) != 1 || body.Items[0].Key != "example.com. A" {
+		t.Fatalf("unexpected body %+v", body)
 	}
 }
 
@@ -147,4 +157,3 @@ func TestCacheAPI_FlushError(t *testing.T) {
 		t.Fatalf("unexpected status code %d", rr.Code)
 	}
 }
-

@@ -11,9 +11,26 @@ import (
 
 type CacheRuntimeController interface {
 	CacheStatsProvider
-	WriteEntries(w http.ResponseWriter, query string, offset, limit int) error
+	CacheEntries(query string, offset, limit int) ([]CacheEntry, int, error)
 	FlushRuntime(ctx context.Context) error
 	PurgeDomainRuntime(ctx context.Context, qname string, qtype uint16) (int, error)
+}
+
+type CacheEntry struct {
+	Key         string `json:"key"`
+	DomainSet   string `json:"domain_set,omitempty"`
+	StoredTime  string `json:"stored_time"`
+	MsgExpire   string `json:"msg_expire"`
+	CacheExpire string `json:"cache_expire"`
+	DNSMessage  string `json:"dns_message"`
+}
+
+type CacheEntriesResponse struct {
+	Tag    string       `json:"tag"`
+	Total  int          `json:"total"`
+	Offset int          `json:"offset"`
+	Limit  int          `json:"limit"`
+	Items  []CacheEntry `json:"items"`
 }
 
 type purgeDomainRequest struct {
@@ -49,7 +66,8 @@ func handleCacheStatsByTag(m *Mosdns) http.HandlerFunc {
 
 func handleCacheEntriesByTag(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		controller, ok := cacheControllerByTag(m, chi.URLParam(r, "tag"))
+		tag := chi.URLParam(r, "tag")
+		controller, ok := cacheControllerByTag(m, tag)
 		if !ok {
 			writeAPIError(w, http.StatusNotFound, "cache_not_found", "cache plugin not found")
 			return
@@ -57,10 +75,18 @@ func handleCacheEntriesByTag(m *Mosdns) http.HandlerFunc {
 
 		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		if err := controller.WriteEntries(w, r.URL.Query().Get("q"), offset, limit); err != nil {
+		items, total, err := controller.CacheEntries(r.URL.Query().Get("q"), offset, limit)
+		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "cache_entries_failed", err.Error())
 			return
 		}
+		writeJSON(w, http.StatusOK, CacheEntriesResponse{
+			Tag:    tag,
+			Total:  total,
+			Offset: offset,
+			Limit:  limit,
+			Items:  items,
+		})
 	}
 }
 

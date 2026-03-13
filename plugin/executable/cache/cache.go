@@ -1035,6 +1035,26 @@ func (c *Cache) WriteEntries(w http.ResponseWriter, query string, offset, limit 
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Header().Set("Content-Disposition", `inline; filename="cache.txt"`)
 
+	entries, _, err := c.CacheEntries(query, offset, limit)
+	if err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		fmt.Fprintf(w, "----- Cache Entry -----\n")
+		fmt.Fprintf(w, "Key:           %s\n", entry.Key)
+		if entry.DomainSet != "" {
+			fmt.Fprintf(w, "DomainSet:     %s\n", entry.DomainSet)
+		}
+		fmt.Fprintf(w, "StoredTime:    %s\n", entry.StoredTime)
+		fmt.Fprintf(w, "MsgExpire:     %s\n", entry.MsgExpire)
+		fmt.Fprintf(w, "CacheExpire:   %s\n", entry.CacheExpire)
+		fmt.Fprintf(w, "DNS Message:\n%s\n", entry.DNSMessage)
+	}
+	return nil
+}
+
+func (c *Cache) CacheEntries(query string, offset, limit int) ([]coremain.CacheEntry, int, error) {
+
 	query = strings.ToLower(query)
 	if limit <= 0 {
 		limit = 100
@@ -1049,6 +1069,7 @@ func (c *Cache) WriteEntries(w http.ResponseWriter, query string, offset, limit 
 	sentCount := 0
 	stopIteration := errors.New("limit reached")
 	reusableMsg := new(dns.Msg)
+	items := make([]coremain.CacheEntry, 0, 16)
 
 	err := c.backend.Range(func(k key, v *item, cacheExpirationTime time.Time) error {
 		if cacheExpirationTime.Before(now) {
@@ -1081,24 +1102,31 @@ func (c *Cache) WriteEntries(w http.ResponseWriter, query string, offset, limit 
 				return nil
 			}
 
-			fmt.Fprintf(w, "----- Cache Entry -----\n")
-			fmt.Fprintf(w, "Key:           %s\n", keyStr)
-			if v.domainSet != "" {
-				fmt.Fprintf(w, "DomainSet:     %s\n", v.domainSet)
-			}
-			fmt.Fprintf(w, "StoredTime:    %s\n", v.storedTime.Format(time.RFC3339))
-			fmt.Fprintf(w, "MsgExpire:     %s\n", v.expirationTime.Format(time.RFC3339))
-			fmt.Fprintf(w, "CacheExpire:   %s\n", cacheExpirationTime.Format(time.RFC3339))
-
 			if !isDeepMatched {
 				if err := reusableMsg.Unpack(v.resp); err != nil {
-					fmt.Fprintf(w, "DNS Message:\n<failed to unpack>\n")
-					goto endLoop
+					items = append(items, coremain.CacheEntry{
+						Key:         keyStr,
+						DomainSet:   v.domainSet,
+						StoredTime:  v.storedTime.Format(time.RFC3339),
+						MsgExpire:   v.expirationTime.Format(time.RFC3339),
+						CacheExpire: cacheExpirationTime.Format(time.RFC3339),
+						DNSMessage:  "<failed to unpack>",
+					})
+					sentCount++
+					if sentCount >= limit {
+						return stopIteration
+					}
+					return nil
 				}
 			}
-			fmt.Fprintf(w, "DNS Message:\n%s\n", dnsMsgToString(reusableMsg))
-
-		endLoop:
+			items = append(items, coremain.CacheEntry{
+				Key:         keyStr,
+				DomainSet:   v.domainSet,
+				StoredTime:  v.storedTime.Format(time.RFC3339),
+				MsgExpire:   v.expirationTime.Format(time.RFC3339),
+				CacheExpire: cacheExpirationTime.Format(time.RFC3339),
+				DNSMessage:  dnsMsgToString(reusableMsg),
+			})
 			sentCount++
 			if sentCount >= limit {
 				return stopIteration
@@ -1109,9 +1137,9 @@ func (c *Cache) WriteEntries(w http.ResponseWriter, query string, offset, limit 
 
 	if err != nil && err != stopIteration {
 		c.logger.Error("failed to enumerate cache", zap.Error(err))
-		return err
+		return nil, 0, err
 	}
-	return nil
+	return items, matchedCount, nil
 }
 
 // keyToString converts internal []byte key to human readable format

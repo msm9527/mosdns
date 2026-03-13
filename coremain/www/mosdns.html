@@ -1594,34 +1594,32 @@
                 const startTime = performance.now();
                 const response = await fetch(url);
                 if (!response.ok) throw new Error(`网络响应错误: ${response.status} ${response.statusText}`);
-                
-                const text = await response.text();
-                const entries = text.trim().split('----- Cache Entry -----').filter(entry => entry.trim() !== '');
+                const payload = await response.json();
                 const endTime = performance.now();
 
                 currentModalData.type = 'accordion';
-                currentModalData.rawEntries = entries.map((entryText, index) => {
-                    const questionMatch = entryText.match(/;; QUESTION SECTION:\s*;\s*([^\s]+)/);
-                    const domainSetMatch = entryText.match(/DomainSet:\s*(.+)/); // Look for DomainSet
-                    let headerTitle;
-
-                    if (questionMatch) {
-                        headerTitle = `${questionMatch[1].replace(/\.$/, '')}`; // Get domain name
-                    } else {
-                        headerTitle = `缓存条目 #${index + 1}`;
+                currentModalData.rawEntries = (payload.items || []).map((item, index) => {
+                    let headerTitle = item.key || `缓存条目 #${index + 1}`;
+                    if (item.domain_set) {
+                        headerTitle += ` [${item.domain_set}]`;
                     }
-                    
-                    if (domainSetMatch) {
-                        headerTitle += ` [${domainSetMatch[1].trim()}]`; // Append DomainSet to the title
-                    }
-                    
+                    const fullText = [
+                        '----- Cache Entry -----',
+                        `Key:           ${item.key || '-'}`,
+                        item.domain_set ? `DomainSet:     ${item.domain_set}` : '',
+                        `StoredTime:    ${item.stored_time || '-'}`,
+                        `MsgExpire:     ${item.msg_expire || '-'}`,
+                        `CacheExpire:   ${item.cache_expire || '-'}`,
+                        'DNS Message:',
+                        item.dns_message || '<empty>'
+                    ].filter(Boolean).join('\n');
                     return {
-                        headerTitle: headerTitle,
-                        fullText: entryText,
+                        headerTitle,
+                        fullText,
                         index: index 
                     };
                 });
-                currentModalData.totalCount = currentModalData.rawEntries.length;
+                currentModalData.totalCount = typeof payload.total === 'number' ? payload.total : currentModalData.rawEntries.length;
                 currentModalData.loadTime = (endTime - startTime).toFixed(2);
                 currentModalData.filteredEntries = currentModalData.rawEntries;
 

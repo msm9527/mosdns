@@ -2493,21 +2493,22 @@ function renderRuleTable(tbody, rules, mode) {
             }
             let newEntries = [];
             if (viewType === 'cache') {
-                let text = '';
-                if (result && typeof result === 'object' && result.totalCount !== undefined) {
-                    text = result.body;
-                    state.dataView.totalCount = result.totalCount;
-                } else {
-                    text = result;
-                }
-                const entries = text.trim() ? text.trim().split('----- Cache Entry -----').filter(entry => entry.trim() !== '') : [];
-                newEntries = entries.map((entryText, index) => {
-                    const questionMatch = entryText.match(/;; QUESTION SECTION:\s*;\s*([^\s]+)/);
-                    const domainSetMatch = entryText.match(/DomainSet:\s*(.+)/);
-                    let headerTitle = questionMatch ? questionMatch[1].replace(/\.$/, '') : `Entry #${state.dataView.currentOffset + index + 1}`;
-                    if (domainSetMatch) headerTitle += ` [${domainSetMatch[1].trim()}]`;
-                    return { headerTitle, fullText: entryText };
-                });
+                state.dataView.totalCount = typeof result?.total === 'number' ? result.total : 0;
+                newEntries = Array.isArray(result?.items) ? result.items.map((item, index) => {
+                    let headerTitle = item.key || `Entry #${state.dataView.currentOffset + index + 1}`;
+                    if (item.domain_set) headerTitle += ` [${item.domain_set}]`;
+                    const fullText = [
+                        '----- Cache Entry -----',
+                        `Key:           ${item.key || '-'}`,
+                        item.domain_set ? `DomainSet:     ${item.domain_set}` : '',
+                        `StoredTime:    ${item.stored_time || '-'}`,
+                        `MsgExpire:     ${item.msg_expire || '-'}`,
+                        `CacheExpire:   ${item.cache_expire || '-'}`,
+                        'DNS Message:',
+                        item.dns_message || '<empty>'
+                    ].filter(Boolean).join('\n');
+                    return { headerTitle, fullText };
+                }) : [];
             } else {
                 state.dataView.totalCount = typeof result?.total === 'number' ? result.total : 0;
                 newEntries = Array.isArray(result?.items) ? result.items.map((item) => ({

@@ -289,7 +289,7 @@
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/cache/stats` | `stable` | 一次性获取所有缓存实例统计 |
 | `GET` | `/api/v1/cache/{tag}/stats` | `stable` | 获取单缓存实例统计 |
-| `GET` | `/api/v1/cache/{tag}/entries` | `stable` | 查看单缓存实例内容 |
+| `GET` | `/api/v1/cache/{tag}/entries` | `stable` | 查看单缓存实例内容，返回结构化 JSON |
 | `POST` | `/api/v1/cache/{tag}/flush` | `stable` | 清空单缓存实例 |
 | `POST` | `/api/v1/cache/{tag}/purge_domain` | `stable` | 按域名精确清理缓存 |
 | `GET` | `/api/v1/data/domain_stats` | `stable` | 一次性获取所有域名统计实例计数 |
@@ -340,6 +340,27 @@
         "dump_interval": 36000,
         "wal_sync_interval": 1
       }
+    }
+  ]
+}
+```
+
+`GET /api/v1/cache/cache_all/entries?limit=2` 返回示例：
+
+```json
+{
+  "tag": "cache_all",
+  "total": 2,
+  "offset": 0,
+  "limit": 2,
+  "items": [
+    {
+      "key": "example.com. IN A",
+      "domain_set": "记忆直连",
+      "stored_time": "2026-03-13T11:20:00+08:00",
+      "msg_expire": "2026-03-13T11:25:00+08:00",
+      "cache_expire": "2026-03-13T12:20:00+08:00",
+      "dns_message": ";; opcode: QUERY, status: NOERROR ..."
     }
   ]
 }
