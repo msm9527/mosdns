@@ -377,15 +377,16 @@
 当前现状：
 
 - 统计已聚合
-- 但查看、清空仍然直接调用 `/plugins/{cache_tag}/*`
+- 历史上查看、清空曾直接调用 `/plugins/{cache_tag}/*`
 
-建议：
+当前结果：
 
-- 保留插件层明细接口
-- 但为 UI 常用操作补业务层 API：
-  - `/api/v1/cache/items`
+- 已补核心缓存接口：
+  - `/api/v1/cache/{tag}/stats`
+  - `/api/v1/cache/{tag}/entries`
   - `/api/v1/cache/{tag}/flush`
   - `/api/v1/cache/{tag}/purge_domain`
+- 旧的 `/plugins/{cache_tag}/*` 缓存路由已移除
 
 ## 6.5 数据/记忆库管理
 

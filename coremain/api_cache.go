@@ -1,0 +1,114 @@
+package coremain
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"strconv"
+
+	"github.com/go-chi/chi/v5"
+)
+
+type CacheRuntimeController interface {
+	CacheStatsProvider
+	WriteEntries(w http.ResponseWriter, query string, offset, limit int) error
+	FlushRuntime(ctx context.Context) error
+	PurgeDomainRuntime(ctx context.Context, qname string, qtype uint16) (int, error)
+}
+
+type purgeDomainRequest struct {
+	QName string `json:"qname"`
+	QType uint16 `json:"qtype,omitempty"`
+}
+
+type purgeDomainResponse struct {
+	QName  string `json:"qname"`
+	QType  uint16 `json:"qtype,omitempty"`
+	Purged int    `json:"purged"`
+}
+
+func RegisterCacheAPI(router *chi.Mux, m *Mosdns) {
+	router.Get("/api/v1/cache/{tag}/stats", handleCacheStatsByTag(m))
+	router.Get("/api/v1/cache/{tag}/entries", handleCacheEntriesByTag(m))
+	router.Post("/api/v1/cache/{tag}/flush", handleCacheFlushByTag(m))
+	router.Post("/api/v1/cache/{tag}/purge_domain", handleCachePurgeDomainByTag(m))
+}
+
+func handleCacheStatsByTag(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		controller, ok := cacheControllerByTag(m, chi.URLParam(r, "tag"))
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "cache_not_found", "cache plugin not found")
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(controller.SnapshotCacheStats())
+	}
+}
+
+func handleCacheEntriesByTag(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		controller, ok := cacheControllerByTag(m, chi.URLParam(r, "tag"))
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "cache_not_found", "cache plugin not found")
+			return
+		}
+
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
+		if err := controller.WriteEntries(w, r.URL.Query().Get("q"), offset, limit); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "cache_entries_failed", err.Error())
+			return
+		}
+	}
+}
+
+func handleCacheFlushByTag(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		controller, ok := cacheControllerByTag(m, chi.URLParam(r, "tag"))
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "cache_not_found", "cache plugin not found")
+			return
+		}
+		if err := controller.FlushRuntime(r.Context()); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "cache_flush_failed", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"message": "缓存已清空并触发后台持久化。"})
+	}
+}
+
+func handleCachePurgeDomainByTag(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		controller, ok := cacheControllerByTag(m, chi.URLParam(r, "tag"))
+		if !ok {
+			writeAPIError(w, http.StatusNotFound, "cache_not_found", "cache plugin not found")
+			return
+		}
+
+		var body purgeDomainRequest
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeAPIError(w, http.StatusBadRequest, "invalid_request_body", "invalid request body")
+			return
+		}
+
+		purged, err := controller.PurgeDomainRuntime(r.Context(), body.QName, body.QType)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "cache_purge_failed", err.Error())
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		_ = json.NewEncoder(w).Encode(purgeDomainResponse{
+			QName:  body.QName,
+			QType:  body.QType,
+			Purged: purged,
+		})
+	}
+}
+
+func cacheControllerByTag(m *Mosdns, tag string) (CacheRuntimeController, bool) {
+	controller, ok := m.GetPlugin(tag).(CacheRuntimeController)
+	return controller, ok && controller != nil
+}

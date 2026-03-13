@@ -160,22 +160,20 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/{cache_tag}/stats` | `internal` | 单缓存实例统计 |
-| `GET` | `/plugins/{cache_tag}/show` | `internal` | 查看缓存内容 |
-| `GET` | `/plugins/{cache_tag}/flush` | `internal` | 清空缓存 |
-| `GET` | `/plugins/{cache_tag}/save` | `internal` | 保存快照 |
-| `POST` | `/plugins/{cache_tag}/load_dump` | `internal` | 导入 dump |
-| `POST` | `/plugins/{cache_tag}/purge_domain` | `internal` | 按域名清缓存 |
+| `GET` | `/api/v1/cache/stats` | `stable` | 聚合缓存统计 |
+| `GET` | `/api/v1/cache/{tag}/stats` | `stable` | 单缓存实例统计 |
+| `GET` | `/api/v1/cache/{tag}/entries` | `stable` | 查看缓存内容 |
+| `POST` | `/api/v1/cache/{tag}/flush` | `stable` | 清空缓存 |
+| `POST` | `/api/v1/cache/{tag}/purge_domain` | `stable` | 按域名清缓存 |
 
 问题：
 
-- `GET /flush`、`GET /save` 带副作用
-- 适合运维/调试，不适合长期给 UI 直接依赖
+- 缓存内容仍然返回文本明细，后续可以再改为结构化 JSON
 
 建议：
 
-- 统计继续优先使用 `/api/v1/cache/stats`
-- 为常用动作逐步补 `/api/v1/cache/*`
+- 旧的 `/plugins/{cache_tag}/*` 已移除
+- UI 和兼容页面统一走 `/api/v1/cache/*`
 
 ## 4.4 记忆库/规则集数据接口
 
@@ -253,8 +251,8 @@
 | --- | --- | --- |
 | `GET` 带副作用 | `/plugins/{tag}/flush` `/plugins/{tag}/save` | 不符合 HTTP 语义 |
 | 返回纯文本 | 部分插件操作接口 | 不利于统一错误处理 |
-| 强耦合插件 tag | `/plugins/cache_all/*` `/plugins/geosite_cn/*` | 前端绑定实现细节 |
-| 业务与插件边界重叠 | `requery`、`rules`、`cache detail` | 核心 API 尚未完全收口 |
+| 强耦合插件 tag | `/plugins/geosite_cn/*` | 前端绑定实现细节 |
+| 业务与插件边界重叠 | `cache detail` 之外的 memory/list | 核心 API 尚未完全收口 |
 | 版本边界缺失 | 大多数 `/plugins/*` | 难以保证长期稳定性 |
 
 ## 6. 推荐迁移优先级

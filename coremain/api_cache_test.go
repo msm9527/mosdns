@@ -1,0 +1,150 @@
+package coremain
+
+import (
+	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+
+	"github.com/go-chi/chi/v5"
+)
+
+type mockCacheController struct {
+	stats        CacheStatsSnapshot
+	entriesText  string
+	flushErr     error
+	purgeCount   int
+	purgeErr     error
+	lastQuery    string
+	lastOffset   int
+	lastLimit    int
+	lastQName    string
+	lastQType    uint16
+	flushInvoked bool
+}
+
+func (m *mockCacheController) SnapshotCacheStats() CacheStatsSnapshot {
+	return m.stats
+}
+
+func (m *mockCacheController) WriteEntries(w http.ResponseWriter, query string, offset, limit int) error {
+	m.lastQuery = query
+	m.lastOffset = offset
+	m.lastLimit = limit
+	_, _ = w.Write([]byte(m.entriesText))
+	return nil
+}
+
+func (m *mockCacheController) FlushRuntime(ctx context.Context) error {
+	m.flushInvoked = true
+	return m.flushErr
+}
+
+func (m *mockCacheController) PurgeDomainRuntime(ctx context.Context, qname string, qtype uint16) (int, error) {
+	m.lastQName = qname
+	m.lastQType = qtype
+	return m.purgeCount, m.purgeErr
+}
+
+func TestCacheAPI_GetEntries(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_cn": &mockCacheController{entriesText: "entry-1\n"},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/cache/cache_cn/entries?q=example&offset=10&limit=20", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("tag", "cache_cn")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	handleCacheEntriesByTag(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d", rr.Code)
+	}
+	controller := m.plugins["cache_cn"].(*mockCacheController)
+	if controller.lastQuery != "example" || controller.lastOffset != 10 || controller.lastLimit != 20 {
+		t.Fatalf("unexpected query params %+v", controller)
+	}
+	if body := rr.Body.String(); body != "entry-1\n" {
+		t.Fatalf("unexpected body %q", body)
+	}
+}
+
+func TestCacheAPI_Flush(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_all": &mockCacheController{},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/cache_all/flush", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("tag", "cache_all")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	handleCacheFlushByTag(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d", rr.Code)
+	}
+	if !m.plugins["cache_all"].(*mockCacheController).flushInvoked {
+		t.Fatal("expected flush to be invoked")
+	}
+	if !strings.Contains(rr.Body.String(), "缓存已清空") {
+		t.Fatalf("unexpected body %q", rr.Body.String())
+	}
+}
+
+func TestCacheAPI_PurgeDomain(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_all": &mockCacheController{purgeCount: 3},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/cache_all/purge_domain", strings.NewReader(`{"qname":"example.com","qtype":1}`))
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("tag", "cache_all")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	handleCachePurgeDomainByTag(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d", rr.Code)
+	}
+	controller := m.plugins["cache_all"].(*mockCacheController)
+	if controller.lastQName != "example.com" || controller.lastQType != 1 {
+		t.Fatalf("unexpected purge args %+v", controller)
+	}
+	if !strings.Contains(rr.Body.String(), `"purged":3`) {
+		t.Fatalf("unexpected body %q", rr.Body.String())
+	}
+}
+
+func TestCacheAPI_FlushError(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_all": &mockCacheController{flushErr: errors.New("boom")},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/cache_all/flush", nil)
+	rctx := chi.NewRouteContext()
+	rctx.URLParams.Add("tag", "cache_all")
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
+	rr := httptest.NewRecorder()
+
+	handleCacheFlushByTag(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusInternalServerError {
+		t.Fatalf("unexpected status code %d", rr.Code)
+	}
+}
+

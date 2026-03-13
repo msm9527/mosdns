@@ -332,7 +332,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if err := c.RegMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.M().GetMetricsReg())); err != nil {
 		return nil, fmt.Errorf("failed to register metrics, %w", err)
 	}
-	bp.RegAPI(c.Api())
 	return c, nil
 }
 
@@ -1020,96 +1019,99 @@ func (c *Cache) Api() *chi.Mux {
 		c.writeStats(w)
 	})
 
-	// 优化后的查询 API：支持分页、后端搜索和分级匹配
 	r.Get("/show", func(w http.ResponseWriter, req *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		w.Header().Set("Content-Disposition", `inline; filename="cache.txt"`)
-
-		query := strings.ToLower(req.URL.Query().Get("q"))
+		query := req.URL.Query().Get("q")
 		limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 		offset, _ := strconv.Atoi(req.URL.Query().Get("offset"))
-
-		if limit <= 0 {
-			limit = 100
-		}
-		if offset < 0 {
-			offset = 0
-		}
-
-		isIPLike := strings.Contains(query, ".") || strings.Contains(query, ":")
-
-		now := time.Now()
-		matchedCount := 0
-		sentCount := 0
-		stopIteration := errors.New("limit reached")
-
-		reusableMsg := new(dns.Msg)
-
-		err := c.backend.Range(func(k key, v *item, cacheExpirationTime time.Time) error {
-			if cacheExpirationTime.Before(now) {
-				return nil
-			}
-
-			keyStr := keyToString(k)
-			found := false
-
-			// 第一级匹配：检查 Key
-			if query == "" || strings.Contains(strings.ToLower(keyStr), query) {
-				found = true
-			}
-
-			// 第二级匹配：启发式深度检查回答中的 IP
-			isDeepMatched := false
-			if !found && isIPLike {
-				if err := reusableMsg.Unpack(v.resp); err == nil {
-					for _, rr := range reusableMsg.Answer {
-						if strings.Contains(rr.String(), query) {
-							found = true
-							isDeepMatched = true
-							break
-						}
-					}
-				}
-			}
-
-			if found {
-				matchedCount++
-				if matchedCount <= offset {
-					return nil
-				}
-
-				fmt.Fprintf(w, "----- Cache Entry -----\n")
-				fmt.Fprintf(w, "Key:           %s\n", keyStr)
-				if v.domainSet != "" {
-					fmt.Fprintf(w, "DomainSet:     %s\n", v.domainSet)
-				}
-				fmt.Fprintf(w, "StoredTime:    %s\n", v.storedTime.Format(time.RFC3339))
-				fmt.Fprintf(w, "MsgExpire:     %s\n", v.expirationTime.Format(time.RFC3339))
-				fmt.Fprintf(w, "CacheExpire:   %s\n", cacheExpirationTime.Format(time.RFC3339))
-
-				if !isDeepMatched {
-					if err := reusableMsg.Unpack(v.resp); err != nil {
-						fmt.Fprintf(w, "DNS Message:\n<failed to unpack>\n")
-						goto endLoop
-					}
-				}
-				fmt.Fprintf(w, "DNS Message:\n%s\n", dnsMsgToString(reusableMsg))
-
-			endLoop:
-				sentCount++
-				if sentCount >= limit {
-					return stopIteration
-				}
-			}
-			return nil
-		})
-
-		if err != nil && err != stopIteration {
-			c.logger.Error("failed to enumerate cache", zap.Error(err))
+		if err := c.WriteEntries(w, query, offset, limit); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	})
 
 	return r
+}
+
+func (c *Cache) WriteEntries(w http.ResponseWriter, query string, offset, limit int) error {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	w.Header().Set("Content-Disposition", `inline; filename="cache.txt"`)
+
+	query = strings.ToLower(query)
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	isIPLike := strings.Contains(query, ".") || strings.Contains(query, ":")
+	now := time.Now()
+	matchedCount := 0
+	sentCount := 0
+	stopIteration := errors.New("limit reached")
+	reusableMsg := new(dns.Msg)
+
+	err := c.backend.Range(func(k key, v *item, cacheExpirationTime time.Time) error {
+		if cacheExpirationTime.Before(now) {
+			return nil
+		}
+
+		keyStr := keyToString(k)
+		found := false
+
+		if query == "" || strings.Contains(strings.ToLower(keyStr), query) {
+			found = true
+		}
+
+		isDeepMatched := false
+		if !found && isIPLike {
+			if err := reusableMsg.Unpack(v.resp); err == nil {
+				for _, rr := range reusableMsg.Answer {
+					if strings.Contains(rr.String(), query) {
+						found = true
+						isDeepMatched = true
+						break
+					}
+				}
+			}
+		}
+
+		if found {
+			matchedCount++
+			if matchedCount <= offset {
+				return nil
+			}
+
+			fmt.Fprintf(w, "----- Cache Entry -----\n")
+			fmt.Fprintf(w, "Key:           %s\n", keyStr)
+			if v.domainSet != "" {
+				fmt.Fprintf(w, "DomainSet:     %s\n", v.domainSet)
+			}
+			fmt.Fprintf(w, "StoredTime:    %s\n", v.storedTime.Format(time.RFC3339))
+			fmt.Fprintf(w, "MsgExpire:     %s\n", v.expirationTime.Format(time.RFC3339))
+			fmt.Fprintf(w, "CacheExpire:   %s\n", cacheExpirationTime.Format(time.RFC3339))
+
+			if !isDeepMatched {
+				if err := reusableMsg.Unpack(v.resp); err != nil {
+					fmt.Fprintf(w, "DNS Message:\n<failed to unpack>\n")
+					goto endLoop
+				}
+			}
+			fmt.Fprintf(w, "DNS Message:\n%s\n", dnsMsgToString(reusableMsg))
+
+		endLoop:
+			sentCount++
+			if sentCount >= limit {
+				return stopIteration
+			}
+		}
+		return nil
+	})
+
+	if err != nil && err != stopIteration {
+		c.logger.Error("failed to enumerate cache", zap.Error(err))
+		return err
+	}
+	return nil
 }
 
 // keyToString converts internal []byte key to human readable format

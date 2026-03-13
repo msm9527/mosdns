@@ -269,7 +269,7 @@
 
 ### 2.8 运行时聚合统计
 
-这组接口用于减少前端请求次数。
+这组接口用于减少前端请求次数，并统一缓存访问入口。
 
 - 缓存管理页不再分别请求多个 `/plugins/{cache_tag}/stats`
 - 域名统计卡片不再分别请求多个 `/plugins/.../show?limit=1`
@@ -278,6 +278,10 @@
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/cache/stats` | `stable` | 一次性获取所有缓存实例统计 |
+| `GET` | `/api/v1/cache/{tag}/stats` | `stable` | 获取单缓存实例统计 |
+| `GET` | `/api/v1/cache/{tag}/entries` | `stable` | 查看单缓存实例内容 |
+| `POST` | `/api/v1/cache/{tag}/flush` | `stable` | 清空单缓存实例 |
+| `POST` | `/api/v1/cache/{tag}/purge_domain` | `stable` | 按域名精确清理缓存 |
 | `GET` | `/api/v1/data/domain_stats` | `stable` | 一次性获取所有域名统计实例计数 |
 
 `GET /api/v1/cache/stats` 返回示例：
@@ -889,23 +893,21 @@
 }
 ```
 
-### 4.2 缓存插件（`internal`，UI 统计优先使用 `/api/v1/cache/stats`）
+### 4.2 缓存 API（`stable`）
 
-根路径：`/plugins/{cache_tag}`
+根路径：`/api/v1/cache`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/flush` | `internal` | 清空缓存并触发后台 dump |
-| `POST` | `/purge_domain` | `internal` | 按域名精确删除缓存项并立即 checkpoint |
-| `GET` | `/dump` | `internal` | 下载缓存 dump |
-| `GET` | `/save` | `internal` | 保存缓存到 dump 文件 |
-| `POST` | `/load_dump` | `internal` | 从请求体加载 dump |
-| `GET` | `/stats` | `internal` | 获取缓存统计 |
-| `GET` | `/show` | `internal` | 按文本查看缓存内容 |
+| `GET` | `/stats` | `stable` | 查看所有缓存实例聚合统计 |
+| `GET` | `/{tag}/stats` | `stable` | 查看单缓存实例统计 |
+| `GET` | `/{tag}/entries` | `stable` | 按文本查看缓存内容 |
+| `POST` | `/{tag}/flush` | `stable` | 清空缓存并触发后台持久化 |
+| `POST` | `/{tag}/purge_domain` | `stable` | 按域名精确删除缓存项并立即 checkpoint |
 
-`/show` 支持：`q, limit, offset`
+`/{tag}/entries` 支持：`q, limit, offset`
 
-`POST /purge_domain` 请求体示例：
+`POST /api/v1/cache/{tag}/purge_domain` 请求体示例：
 
 ```json
 {
@@ -920,6 +922,7 @@
 - `qtype` 选填。
 - 省略 `qtype` 时，会删除该域名在当前缓存实例中的所有记录。
 - 该接口会同步清理内存缓存并立即执行 checkpoint，避免重启后旧 WAL 把条目放回来。
+- 旧插件缓存路由 `/plugins/{cache_tag}/*` 已移除。
 
 补充：
 
@@ -1147,8 +1150,8 @@
 
 缓存清理：
 
-- `GET /plugins/cache_all/flush`
-- `GET /plugins/cache_all_noleak/flush`
+- `POST /api/v1/cache/cache_all/flush`
+- `POST /api/v1/cache/cache_all_noleak/flush`
 
 ### 5.4 规则与列表管理
 
@@ -1183,12 +1186,12 @@
 - `type: cache`
 - `tag: cache_all`
 
-实际 API 路径是：
+当前核心缓存路径是：
 
-- `/plugins/cache_all/show`
-- `/plugins/cache_all/stats`
+- `/api/v1/cache/cache_all/entries`
+- `/api/v1/cache/cache_all/stats`
 
-不是 `/plugins/cache/show`。
+不是 `/api/v1/cache/cache/show`。
 
 ### 6.3 稳定性使用建议
 
