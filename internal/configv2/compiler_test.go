@@ -62,13 +62,55 @@ func TestMigrateV1ToV2AndCompile(t *testing.T) {
 	}
 }
 
-func TestCompileDeclarativeWithoutLegacyFails(t *testing.T) {
+func TestCompileDeclarativeWithoutLegacy(t *testing.T) {
 	cfg := &Config{
-		Version:   CurrentVersion,
-		Listeners: []ListenerConfig{{Name: "udp_all", Protocol: "udp", Listen: ":53"}},
+		Version: CurrentVersion,
+		RuleProviders: []RuleProvider{
+			{Name: "cache", Source: "sub_config/cache.yaml", Type: "include"},
+		},
+		Upstreams: []UpstreamGroup{
+			{
+				Name:       "domestic",
+				PluginType: "forward",
+				Endpoints:  []string{"tls://1.1.1.1"},
+				Options: map[string]any{
+					"concurrent": 2,
+				},
+			},
+		},
+		Policies: []PolicyConfig{
+			{
+				Name: "sequence_main",
+				Type: "sequence",
+				Args: []map[string]any{
+					{"exec": "$domestic"},
+				},
+			},
+		},
+		Listeners: []ListenerConfig{{
+			Name:     "udp_all",
+			Protocol: "udp",
+			Listen:   ":53",
+			Entry:    "sequence_main",
+			Audit:    true,
+		}},
 	}
 
-	if _, err := Compile(cfg); err == nil {
-		t.Fatal("expected compile failure for pure declarative config without legacy support")
+	compiled, err := Compile(cfg)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(compiled.Include) != 1 {
+		t.Fatalf("unexpected include count: %+v", compiled.Include)
+	}
+	if len(compiled.Plugins) != 3 {
+		t.Fatalf("unexpected plugin count: %+v", compiled.Plugins)
+	}
+	if compiled.Plugins[0].Tag != "domestic" || compiled.Plugins[1].Tag != "sequence_main" || compiled.Plugins[2].Tag != "udp_all" {
+		t.Fatalf("unexpected plugin order: %+v", compiled.Plugins)
+	}
+	args, ok := compiled.Plugins[2].Args.(map[string]any)
+	if !ok || args["entry"] != "sequence_main" || args["listen"] != ":53" || args["enable_audit"] != true {
+		t.Fatalf("unexpected listener args: %#v", compiled.Plugins[2].Args)
 	}
 }

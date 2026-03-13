@@ -82,3 +82,53 @@ plugins:
 		t.Fatalf("unexpected output path %q", outputPath)
 	}
 }
+
+func TestLoadPureDeclarativeConfigV2(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.v2.yaml")
+	raw := `
+version: v2
+api:
+  http: "127.0.0.1:9099"
+rule_providers:
+  - name: cache
+    type: include
+    source: sub_config/cache.yaml
+upstreams:
+  - name: domestic
+    plugin_type: forward
+    endpoints:
+      - tls://1.1.1.1
+policies:
+  - name: sequence_main
+    type: sequence
+    args:
+      - exec: $domestic
+listeners:
+  - name: udp_all
+    protocol: udp
+    listen: ":53"
+    entry: sequence_main
+    audit: true
+`
+	if err := os.WriteFile(path, []byte(raw), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, _, err := loadConfig(path)
+	if err != nil {
+		t.Fatalf("loadConfig() error = %v", err)
+	}
+	if cfg.API.HTTP != "127.0.0.1:9099" {
+		t.Fatalf("unexpected api http %q", cfg.API.HTTP)
+	}
+	if len(cfg.Include) != 1 || cfg.Include[0] != "sub_config/cache.yaml" {
+		t.Fatalf("unexpected include: %+v", cfg.Include)
+	}
+	if len(cfg.Plugins) != 3 {
+		t.Fatalf("unexpected plugins: %+v", cfg.Plugins)
+	}
+	if cfg.Plugins[0].Tag != "domestic" || cfg.Plugins[1].Tag != "sequence_main" || cfg.Plugins[2].Tag != "udp_all" {
+		t.Fatalf("unexpected plugin order: %+v", cfg.Plugins)
+	}
+}

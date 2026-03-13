@@ -29,22 +29,26 @@ type ServerConfig struct {
 }
 
 type ListenerConfig struct {
-	Name     string `yaml:"name,omitempty"`
-	Protocol string `yaml:"protocol,omitempty"`
-	Listen   string `yaml:"listen,omitempty"`
-	Entry    string `yaml:"entry,omitempty"`
-	Audit    bool   `yaml:"audit,omitempty"`
+	Name     string         `yaml:"name,omitempty"`
+	Protocol string         `yaml:"protocol,omitempty"`
+	Listen   string         `yaml:"listen,omitempty"`
+	Entry    string         `yaml:"entry,omitempty"`
+	Audit    bool           `yaml:"audit,omitempty"`
+	Options  map[string]any `yaml:"options,omitempty"`
 }
 
 type UpstreamGroup struct {
-	Name       string   `yaml:"name,omitempty"`
-	PluginType string   `yaml:"plugin_type,omitempty"`
-	Endpoints  []string `yaml:"endpoints,omitempty"`
+	Name       string         `yaml:"name,omitempty"`
+	PluginType string         `yaml:"plugin_type,omitempty"`
+	Endpoints  []string       `yaml:"endpoints,omitempty"`
+	Options    map[string]any `yaml:"options,omitempty"`
 }
 
 type PolicyConfig struct {
 	Name    string `yaml:"name,omitempty"`
+	Type    string `yaml:"type,omitempty"`
 	Summary string `yaml:"summary,omitempty"`
+	Args    any    `yaml:"args,omitempty"`
 }
 
 type RuleProvider struct {
