@@ -181,21 +181,23 @@
 
 - `domain_set_light`
 - `ip_set`
+- `rewrite`
 - 部分 `domain_output`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/{tag}/show` | `internal` | 查看内容 |
-| `GET` | `/plugins/{tag}/save` | `internal` | 保存到文件 |
-| `GET` | `/plugins/{tag}/flush` | `internal` | 清空内容 |
-| `POST` | `/plugins/{tag}/post` | `internal` | 替换内容 |
+| `GET` | `/api/v1/lists/{tag}` | `stable` | 查看可编辑列表内容 |
+| `PUT` | `/api/v1/lists/{tag}` | `stable` | 替换可编辑列表内容 |
+| `GET` | `/plugins/{tag}/show` | `internal` | `domain_output` 等内部记忆库查看内容 |
+| `GET` | `/plugins/{tag}/save` | `internal` | 内部记忆库保存到文件 |
+| `GET` | `/plugins/{tag}/flush` | `internal` | 内部记忆库清空内容 |
 | `POST` | `/plugins/{tag}/verify` | `internal` | 按域名验证/发布 |
 | `GET` | `/plugins/{tag}/stats` | `internal` | 某些记忆库统计 |
 
 问题：
 
-- 命名和方法语义都偏历史
-- 不同插件能力相似，但路径未标准化
+- 可编辑列表已完成核心 API 收口
+- `domain_output` 及其 `save/flush/verify` 仍是内部能力，尚未统一到资源式 API
 
 ## 4.5 在线分流规则源
 
@@ -252,7 +254,7 @@
 | `GET` 带副作用 | `/plugins/{tag}/flush` `/plugins/{tag}/save` | 不符合 HTTP 语义 |
 | 返回纯文本 | 部分插件操作接口 | 不利于统一错误处理 |
 | 强耦合插件 tag | `/plugins/geosite_cn/*` | 前端绑定实现细节 |
-| 业务与插件边界重叠 | `cache detail` 之外的 memory/list | 核心 API 尚未完全收口 |
+| 业务与插件边界重叠 | `domain_output` memory 内部接口 | 核心 API 尚未完全收口 |
 | 版本边界缺失 | 大多数 `/plugins/*` | 难以保证长期稳定性 |
 
 ## 6. 推荐迁移优先级

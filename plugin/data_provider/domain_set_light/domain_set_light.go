@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -210,7 +211,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	// [注意] 这里故意忽略了 cfg.Sets 的处理
 	// 因为本插件不负责匹配，不需要持有其他插件的引用
 
-	bp.RegAPI(ds.api())
 	ds.startFileWatcher()
 	return ds, nil
 }
@@ -460,6 +460,56 @@ func (d *DomainSetLight) api() *chi.Mux {
 	}))
 
 	return r
+}
+
+func (d *DomainSetLight) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+
+	query = strings.ToLower(query)
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	matchedCount := 0
+	sentCount := 0
+	for _, rule := range d.rules {
+		found := query == "" || strings.Contains(strings.ToLower(rule), query)
+		if !found {
+			continue
+		}
+		matchedCount++
+		if matchedCount <= offset {
+			continue
+		}
+		fmt.Fprintln(w, rule)
+		sentCount++
+		if sentCount >= limit {
+			break
+		}
+	}
+	return nil
+}
+
+func (d *DomainSetLight) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {
+	if d.ruleFile == "" || !strings.EqualFold(filepath.Ext(d.ruleFile), ".txt") {
+		return 0, fmt.Errorf("no txt file configured, cannot post")
+	}
+
+	d.mu.Lock()
+	d.rules = append([]string(nil), values...)
+	d.mu.Unlock()
+
+	if err := writeRulesToFile(d.ruleFile, values); err != nil {
+		return 0, err
+	}
+
+	d.notifySubscribers()
+	return len(values), nil
 }
 
 // ==============================================================

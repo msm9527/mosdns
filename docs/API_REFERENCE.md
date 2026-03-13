@@ -982,28 +982,27 @@
 - 记录 `verified_at`
 - 会立即保存当前记忆库内容
 
-### 4.4 规则列表类：IPSet / DomainSet / Light 版本（`internal`）
+### 4.4 可编辑规则列表：IPSet / DomainSet Light / Rewrite（`stable`）
 
 这类接口常见于：
 
 - `client_ip`
 - `direct_ip`
-- `top_domains`
-- `my_fakeiplist`
-- `my_realiplist`
-- `my_nov4list`
-- `my_nov6list`
+- `whitelist`
+- `blocklist`
+- `greylist`
+- `realiplist`
+- `cnfakeipfilter`
+- `rewrite`
 
 常见路径：
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/plugins/{tag}/show` | `internal` | 查看当前内容 |
-| `GET` | `/plugins/{tag}/save` | `internal` | 保存到文件 |
-| `GET` | `/plugins/{tag}/flush` | `internal` | 清空内容 |
-| `POST` | `/plugins/{tag}/post` | `internal` | 用 `values[]` 替换内容 |
+| `GET` | `/api/v1/lists/{tag}` | `stable` | 查看当前列表内容 |
+| `PUT` | `/api/v1/lists/{tag}` | `stable` | 用 `values[]` 替换内容 |
 
-`POST /plugins/{tag}/post` 请求体：
+`PUT /api/v1/lists/{tag}` 请求体：
 
 ```json
 {
@@ -1013,6 +1012,11 @@
   ]
 }
 ```
+
+说明：
+
+- 旧的 `/plugins/{tag}/show` 和 `/plugins/{tag}/post` 在上述可编辑列表标签上已移除。
+- `save/flush` 这类历史动作不再由列表管理页直接使用。
 
 说明：
 
@@ -1164,10 +1168,9 @@
 - `PUT /api/v1/rules/diversion/{type}/{name}`
 - `DELETE /api/v1/rules/diversion/{type}/{name}`
 - `POST /api/v1/rules/diversion/{type}/{name}/update`
-- `GET /plugins/{tag}/show`
-- `POST /plugins/{tag}/post`
-- `GET /plugins/{tag}/save`
-- `GET /plugins/{tag}/flush`
+- `GET /api/v1/lists/{tag}`
+- `PUT /api/v1/lists/{tag}`
+- `domain_output` 等内部记忆库仍使用 `/plugins/{tag}/show|save|flush|verify`
 
 ## 6. 迁移说明
 

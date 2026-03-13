@@ -22,6 +22,7 @@ package ip_set
 import (
 	"bufio"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
@@ -101,7 +102,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if err != nil {
 		return nil, err
 	}
-	bp.RegAPI(p.api())
 	return p, nil
 }
 
@@ -290,6 +290,43 @@ func (d *IPSet) api() *chi.Mux {
 	})
 
 	return r
+}
+
+func (d *IPSet) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
+	d.mutex.Lock()
+	l := d.list
+	d.mutex.Unlock()
+
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	if l != nil {
+		l.ForEach(func(pfx netip.Prefix) {
+			_, _ = io.WriteString(w, normalizePrefix(pfx).String()+"\n")
+		})
+	}
+	return nil
+}
+
+func (d *IPSet) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {
+	tmpList := netlist.NewList()
+	for _, s := range values {
+		if pfx, err := parseNetipPrefix(s); err == nil {
+			tmpList.Append(pfx)
+		}
+	}
+	tmpList.Sort()
+
+	d.mutex.Lock()
+	defer d.mutex.Unlock()
+
+	d.list = tmpList
+	d.rebuildSnapshot()
+
+	if err := d.saveToFiles(); err != nil {
+		return 0, err
+	}
+
+	coremain.ManualGC()
+	return d.list.Len(), nil
 }
 
 // saveToFiles writes the current list to each configured file

@@ -2898,7 +2898,7 @@ const cacheManager = {
             try {
                 // 流式读取，最多加载 MAX_LINES 行，避免一次性 split 大字符串拖慢主线程
 // 这里的 this.MAX_LINES 是 10000
-const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, { 
+const res = await fetch(`/api/v1/lists/${encodeURIComponent(tag)}`, { 
     signal: this._abortController.signal 
 });
 
@@ -2972,8 +2972,8 @@ const res = await fetch(`/plugins/${tag}/show?limit=${this.MAX_LINES}`, {
             ui.setLoading(elements.listSaveBtn, true);
             try {
                 const values = elements.listContentTextArea.value.split('\n').map(s => s.trim()).filter(Boolean);
-                await api.fetch(`/plugins/${this.currentTag}/post`, {
-                    method: 'POST',
+                await api.fetch(`/api/v1/lists/${encodeURIComponent(this.currentTag)}`, {
+                    method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ values })
                 });

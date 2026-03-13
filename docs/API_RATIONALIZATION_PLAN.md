@@ -392,14 +392,19 @@
 
 当前现状：
 
-- `/plugins/{tag}/show`
-- `/plugins/{tag}/save`
-- `/plugins/{tag}/flush`
-- `/plugins/{tag}/post`
+- 可编辑列表已使用：
+  - `GET /api/v1/lists/{tag}`
+  - `PUT /api/v1/lists/{tag}`
+- `domain_output` 等内部记忆库仍保留：
+  - `/plugins/{tag}/show`
+  - `/plugins/{tag}/save`
+  - `/plugins/{tag}/flush`
+  - `/plugins/{tag}/verify`
 
 建议：
 
-- 长期改造成资源式 API：
+- 可编辑列表继续只保留 `/api/v1/lists/{tag}`
+- `domain_output` 长期改造成资源式 API：
   - `GET /api/v1/memory/{tag}/items`
   - `PUT /api/v1/memory/{tag}/items`
   - `POST /api/v1/memory/{tag}/save`

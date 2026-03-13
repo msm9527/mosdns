@@ -1346,8 +1346,8 @@
             } catch (e) { console.error("无法获取核心模式状态:", e); }
         }
         
-        async function postApi(path, payload) {
-            const response = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+        async function postApi(path, payload, method = 'POST') {
+            const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `请求失败，状态码: ${response.status}`); }
             const contentType = response.headers.get('content-type') || '';
             return contentType.includes('application/json') ? response.json() : response.text();
@@ -1571,7 +1571,7 @@
             if (submenuItems.length > 0) submenuItems[0].click();
             
             const fetchPromises = allProfiles.map(profile => 
-                fetch(`/plugins/${profile.tag}/show`).then(res => {
+                fetch(`/api/v1/lists/${profile.tag}`).then(res => {
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     return res.text();
                 }).then(text => ({ status: 'fulfilled', value: text, profile }))
@@ -1631,7 +1631,7 @@
             try {
                 statusEl.textContent = '正在保存...'; statusEl.classList.remove('error');
                 const values = textarea.value.split('\n').map(s => s.trim()).filter(Boolean);
-                await postApi(`/plugins/${profile.tag}/post`, { values });
+                await postApi(`/api/v1/lists/${profile.tag}`, { values }, 'PUT');
                 showToast(`“${profile.name}” 保存成功！`);
                 statusEl.textContent = `保存成功! ${new Date().toLocaleTimeString()} (共 ${values.length} 行)`;
             } catch (e) {

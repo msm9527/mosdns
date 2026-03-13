@@ -126,9 +126,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	}
 	r.rules = loadedRules
 
-	// Register API endpoints
-	bp.RegAPI(r.api())
-
 	return r, nil
 }
 
@@ -414,6 +411,40 @@ func (r *Rewrite) handlePost(w http.ResponseWriter, req *http.Request) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "rewrite rules replaced with %d entries", len(r.rules))
+}
+
+func (r *Rewrite) WriteListContent(w http.ResponseWriter, query string, offset, limit int) error {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, err := w.Write([]byte(strings.Join(r.rules, "\n")))
+	return err
+}
+
+func (r *Rewrite) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {
+	if r.ruleFile == "" {
+		return 0, fmt.Errorf("no rule file configured, cannot post rules")
+	}
+
+	tmpMatcher := domain.NewMixMatcher[*rewriteTarget]()
+	tmpMatcher.SetDefaultMatcher(domain.MatcherFull)
+
+	tmpRules, err := loadRulesFromReader(strings.NewReader(strings.Join(values, "\n")), tmpMatcher)
+	if err != nil {
+		return 0, fmt.Errorf("failed to parse new rules: %s", err)
+	}
+
+	r.mu.Lock()
+	r.matcher = tmpMatcher
+	r.rules = tmpRules
+	r.mu.Unlock()
+
+	if err := writeRulesToFile(r.ruleFile, r.rules); err != nil {
+		return 0, fmt.Errorf("in-memory rules updated, but failed to write to file: %s", err)
+	}
+
+	coremain.ManualGC()
+	return len(r.rules), nil
 }
 
 // --- Utility Functions ---
