@@ -46,7 +46,7 @@ func TestHandleRuntimeResources(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	RegisterRuntimeAPI(router)
+	RegisterRuntimeAPI(router, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/resources", nil)
 	w := httptest.NewRecorder()
@@ -89,7 +89,7 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	RegisterRuntimeAPI(router)
+	RegisterRuntimeAPI(router, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/summary", nil)
 	w := httptest.NewRecorder()
@@ -108,5 +108,53 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	}
 	if len(resp.Namespaces) == 0 {
 		t.Fatalf("expected namespace summary, got %+v", resp)
+	}
+}
+
+func TestRuntimeAliasesForOverridesAndUpstreams(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	if err := saveGlobalOverridesToRuntimeStore(&GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
+		t.Fatalf("saveGlobalOverridesToRuntimeStore: %v", err)
+	}
+	if err := saveUpstreamOverridesToRuntimeStore(GlobalUpstreamOverrides{
+		"test": {{Tag: "u1", Protocol: "udp", Addr: "8.8.8.8"}},
+	}); err != nil {
+		t.Fatalf("saveUpstreamOverridesToRuntimeStore: %v", err)
+	}
+
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/overrides", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected overrides status: %d body=%s", w.Code, w.Body.String())
+	}
+	var overrides GlobalOverridesResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &overrides); err != nil {
+		t.Fatalf("decode overrides: %v", err)
+	}
+	if overrides.Socks5 != "127.0.0.1:1080" {
+		t.Fatalf("unexpected overrides payload: %+v", overrides)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/runtime/upstreams", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected upstreams status: %d body=%s", w.Code, w.Body.String())
+	}
+	var upstreams GlobalUpstreamOverrides
+	if err := json.Unmarshal(w.Body.Bytes(), &upstreams); err != nil {
+		t.Fatalf("decode upstreams: %v", err)
+	}
+	if len(upstreams["test"]) != 1 {
+		t.Fatalf("unexpected upstreams payload: %+v", upstreams)
 	}
 }

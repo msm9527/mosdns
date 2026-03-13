@@ -37,10 +37,26 @@ type runtimeResourcesResponse struct {
 	Namespaces    map[string][]RuntimeStateEntry `json:"namespaces,omitempty"`
 }
 
-func RegisterRuntimeAPI(router *chi.Mux) {
+func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/runtime", func(r chi.Router) {
 		r.Get("/summary", handleRuntimeSummary)
 		r.Get("/resources", handleRuntimeResources)
+		r.Get("/overrides", func(w http.ResponseWriter, r *http.Request) {
+			handleGetOverrides(w, r, m)
+		})
+		r.Post("/overrides", func(w http.ResponseWriter, r *http.Request) {
+			handleSetOverridesWithMosdns(w, r, m)
+		})
+		r.Get("/clientname", handleGetClientname(m))
+		r.Put("/clientname", handlePutClientname(m))
+		r.Get("/upstreams", handleGetUpstreamConfig)
+		r.Put("/upstreams", func(w http.ResponseWriter, r *http.Request) {
+			handleReplaceUpstreamConfigWithMosdns(w, r, m)
+		})
+		r.Post("/upstreams", func(w http.ResponseWriter, r *http.Request) {
+			handleSetUpstreamConfigWithMosdns(w, r, m)
+		})
+		r.Get("/upstreams/tags", handleGetAliAPITags)
 	})
 }
 

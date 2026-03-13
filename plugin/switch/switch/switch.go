@@ -91,6 +91,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 
 	globalRegistry.apiOnce.Do(func() {
 		bp.M().GetAPIRouter().Mount("/api/v1/switches", coreSwitchesAPI())
+		bp.M().GetAPIRouter().Mount("/api/v1/runtime/switches", coreSwitchesAPI())
 	})
 
 	return sw, nil
