@@ -100,7 +100,7 @@ jobs:
               });
               core.info(`deleted existing tag ${tag}`);
             } catch (error) {
-              if (error.status !== 404) {
+              if (error.status !== 404 && error.status !== 422) {
                 throw error;
               }
               core.info(`no existing tag ${tag}`);
