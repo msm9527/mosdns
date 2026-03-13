@@ -59,6 +59,23 @@ plugins:
 	if result.Decision.Action != "sequence_fakeip" || result.Decision.Matched != 7 {
 		t.Fatalf("unexpected decision: %+v", result.Decision)
 	}
+	if len(result.DecisionPath) == 0 {
+		t.Fatalf("expected decision path")
+	}
+	if result.DecisionPath[len(result.DecisionPath)-1].DecisionHit && result.DecisionPath[len(result.DecisionPath)-1].Action == result.Decision.Action {
+		// okay for fallback case
+	} else {
+		foundWinner := false
+		for _, step := range result.DecisionPath {
+			if step.DecisionHit && step.Action == result.Decision.Action {
+				foundWinner = true
+				break
+			}
+		}
+		if !foundWinner {
+			t.Fatalf("expected winning step in decision path: %+v", result.DecisionPath)
+		}
+	}
 }
 
 func TestShuntAnalyzerConflicts(t *testing.T) {
@@ -152,6 +169,57 @@ plugins:
 	}
 	if payload.Count != 1 {
 		t.Fatalf("unexpected payload: %+v", payload)
+	}
+}
+
+func TestRuntimeShuntExplainCmdTable(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteFile(t, filepath.Join(baseDir, "rule", "switches.json"), `{
+  "block_response": "on",
+  "block_query_type": "on",
+  "block_ipv6": "off",
+  "ad_block": "off",
+  "core_mode": "secure"
+}`)
+	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
+	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
+	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
+plugins:
+  - tag: whitelist
+    type: domain_set_light
+    args:
+      files:
+        - "rule/whitelist.txt"
+  - tag: greylist
+    type: domain_set_light
+    args:
+      files:
+        - "rule/greylist.txt"
+  - tag: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: "未命中"
+      rules:
+        - tag: greylist
+          mark: 7
+          output_tag: "灰名单"
+        - tag: whitelist
+          mark: 8
+          output_tag: "白名单"
+`)
+
+	cmd := newRuntimeShuntCmd()
+	buf := new(strings.Builder)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"-d", baseDir, "explain", "--domain", "bing.com", "--qtype", "A", "--format", "table"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute: %v", err)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "DECISION_PATH") || !strings.Contains(out, "sequence_fakeip") || !strings.Contains(out, "greylist") {
+		t.Fatalf("unexpected table output: %s", out)
 	}
 }
 
