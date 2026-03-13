@@ -2,6 +2,7 @@ full:in.appcenter.ms
 full:onedrive.live.com
 full:www.metatrader5.com
 domain:google.cn
+domain:github.com
 domain:piaohua.com
 domain:4d4y.com
 domain:nflxvideo.net
