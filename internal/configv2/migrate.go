@@ -49,6 +49,7 @@ func MigrateV1ToV2(v1 *V1Config) (*Config, error) {
 	cfg.Upstreams = summarizeUpstreams(v1.Plugins)
 	cfg.RuleProviders = summarizeRuleProviders(v1.Include)
 	cfg.Policies = summarizePolicies(v1.Plugins)
+	cfg.Runtime = summarizeRuntime(v1.Plugins)
 
 	return cfg, nil
 }
@@ -147,6 +148,54 @@ func summarizePolicies(plugins []PluginConfig) []PolicyConfig {
 		})
 	}
 	return policies
+}
+
+func summarizeRuntime(plugins []PluginConfig) RuntimeConfig {
+	var runtime RuntimeConfig
+	for _, plugin := range plugins {
+		switch plugin.Type {
+		case "webinfo":
+			runtime.WebInfo = append(runtime.WebInfo, summarizeWebInfo(plugin))
+		case "requery":
+			runtime.Requery = append(runtime.Requery, summarizeRequery(plugin))
+		case "switch":
+			runtime.Switches = append(runtime.Switches, summarizeSwitch(plugin))
+		}
+	}
+	return runtime
+}
+
+func summarizeWebInfo(plugin PluginConfig) WebInfoConfig {
+	item := WebInfoConfig{Name: plugin.Tag}
+	if args, ok := plugin.Args.(map[string]any); ok {
+		if file, ok := args["file"].(string); ok {
+			item.File = file
+		}
+	}
+	return item
+}
+
+func summarizeRequery(plugin PluginConfig) RequeryConfig {
+	item := RequeryConfig{Name: plugin.Tag}
+	if args, ok := plugin.Args.(map[string]any); ok {
+		if file, ok := args["file"].(string); ok {
+			item.File = file
+		}
+	}
+	return item
+}
+
+func summarizeSwitch(plugin PluginConfig) SwitchConfig {
+	item := SwitchConfig{Name: plugin.Tag}
+	if args, ok := plugin.Args.(map[string]any); ok {
+		if name, ok := args["name"].(string); ok && strings.TrimSpace(name) != "" {
+			item.Name = name
+		}
+		if stateFile, ok := args["state_file_path"].(string); ok {
+			item.StateFile = stateFile
+		}
+	}
+	return item
 }
 
 func filepathBase(path string) string {

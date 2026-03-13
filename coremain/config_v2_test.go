@@ -97,6 +97,19 @@ plugins:
     args:
       upstreams:
         - tls://1.1.1.1
+  - tag: webinfo_client
+    type: webinfo
+    args:
+      file: config/webinfo/clientname.json
+  - tag: requery_main
+    type: requery
+    args:
+      file: config/webinfo/requeryconfig.json
+  - tag: core_mode
+    type: switch
+    args:
+      name: core_mode
+      state_file_path: config/switches.json
   - tag: sequence_main
     type: sequence
     args:
@@ -120,7 +133,7 @@ plugins:
 	if strings.Contains(text, "legacy:") {
 		t.Fatalf("expected pure declarative output, got:\n%s", text)
 	}
-	if !strings.Contains(text, "rule_providers:") || !strings.Contains(text, "upstreams:") || !strings.Contains(text, "listeners:") {
+	if !strings.Contains(text, "rule_providers:") || !strings.Contains(text, "upstreams:") || !strings.Contains(text, "listeners:") || !strings.Contains(text, "runtime:") {
 		t.Fatalf("expected declarative sections in output, got:\n%s", text)
 	}
 }
@@ -146,6 +159,17 @@ policies:
     type: sequence
     args:
       - exec: $domestic
+runtime:
+  base_dir: config
+  webinfo:
+    - name: webinfo_client
+      file: webinfo/clientname.json
+  requery:
+    - name: requery_main
+      file: webinfo/requeryconfig.json
+  switches:
+    - name: core_mode
+      state_file: switches.json
 listeners:
   - name: udp_all
     protocol: udp
@@ -167,10 +191,10 @@ listeners:
 	if len(cfg.Include) != 1 || cfg.Include[0] != "sub_config/cache.yaml" {
 		t.Fatalf("unexpected include: %+v", cfg.Include)
 	}
-	if len(cfg.Plugins) != 3 {
+	if len(cfg.Plugins) != 6 {
 		t.Fatalf("unexpected plugins: %+v", cfg.Plugins)
 	}
-	if cfg.Plugins[0].Tag != "domestic" || cfg.Plugins[1].Tag != "sequence_main" || cfg.Plugins[2].Tag != "udp_all" {
+	if cfg.Plugins[0].Tag != "domestic" || cfg.Plugins[1].Tag != "sequence_main" || cfg.Plugins[2].Tag != "webinfo_client" || cfg.Plugins[3].Tag != "requery_main" || cfg.Plugins[4].Tag != "core_mode" || cfg.Plugins[5].Tag != "udp_all" {
 		t.Fatalf("unexpected plugin order: %+v", cfg.Plugins)
 	}
 }

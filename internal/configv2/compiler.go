@@ -3,6 +3,7 @@ package configv2
 import (
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -69,6 +70,13 @@ func Compile(cfg *Config) (*CompiledConfig, error) {
 		}
 		if len(cfg.Policies) > 0 {
 			plugins, err := compilePolicies(cfg.Policies)
+			if err != nil {
+				return nil, err
+			}
+			compiled.Plugins = append(compiled.Plugins, plugins...)
+		}
+		if cfg.Runtime.hasEntries() {
+			plugins, err := compileRuntime(cfg.Runtime)
 			if err != nil {
 				return nil, err
 			}
@@ -188,4 +196,87 @@ func cloneMap(src map[string]any) map[string]any {
 		dst[k] = v
 	}
 	return dst
+}
+
+func (r RuntimeConfig) hasEntries() bool {
+	return len(r.WebInfo) > 0 || len(r.Requery) > 0 || len(r.Switches) > 0
+}
+
+func compileRuntime(runtime RuntimeConfig) ([]PluginConfig, error) {
+	plugins := make([]PluginConfig, 0, len(runtime.WebInfo)+len(runtime.Requery)+len(runtime.Switches))
+
+	for _, item := range runtime.WebInfo {
+		file := resolveRuntimePath(runtime.BaseDir, item.File)
+		if strings.TrimSpace(file) == "" {
+			return nil, errors.New("runtime webinfo file is required")
+		}
+		tag := strings.TrimSpace(item.Name)
+		if tag == "" {
+			tag = defaultRuntimeTag("webinfo", file)
+		}
+		plugins = append(plugins, PluginConfig{
+			Tag:  tag,
+			Type: "webinfo",
+			Args: map[string]any{"file": file},
+		})
+	}
+
+	for _, item := range runtime.Requery {
+		file := resolveRuntimePath(runtime.BaseDir, item.File)
+		if strings.TrimSpace(file) == "" {
+			return nil, errors.New("runtime requery file is required")
+		}
+		tag := strings.TrimSpace(item.Name)
+		if tag == "" {
+			tag = defaultRuntimeTag("requery", file)
+		}
+		plugins = append(plugins, PluginConfig{
+			Tag:  tag,
+			Type: "requery",
+			Args: map[string]any{"file": file},
+		})
+	}
+
+	for _, item := range runtime.Switches {
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			return nil, errors.New("runtime switch name is required")
+		}
+		stateFile := resolveRuntimePath(runtime.BaseDir, item.StateFile)
+		if strings.TrimSpace(stateFile) == "" {
+			return nil, fmt.Errorf("runtime switch %s state_file is required", name)
+		}
+		plugins = append(plugins, PluginConfig{
+			Tag:  name,
+			Type: "switch",
+			Args: map[string]any{
+				"name":            name,
+				"state_file_path": stateFile,
+			},
+		})
+	}
+
+	return plugins, nil
+}
+
+func resolveRuntimePath(baseDir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) || strings.TrimSpace(baseDir) == "" {
+		return path
+	}
+	return filepath.Join(strings.TrimSpace(baseDir), path)
+}
+
+func defaultRuntimeTag(prefix, path string) string {
+	base := filepath.Base(strings.TrimSpace(path))
+	if ext := filepath.Ext(base); ext != "" {
+		base = strings.TrimSuffix(base, ext)
+	}
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return prefix
+	}
+	return prefix + "_" + base
 }

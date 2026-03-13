@@ -13,6 +13,7 @@ type Config struct {
 	Upstreams     []UpstreamGroup  `yaml:"upstreams,omitempty"`
 	Policies      []PolicyConfig   `yaml:"policies,omitempty"`
 	RuleProviders []RuleProvider   `yaml:"rule_providers,omitempty"`
+	Runtime       RuntimeConfig    `yaml:"runtime,omitempty"`
 	Features      map[string]any   `yaml:"features,omitempty"`
 	Storage       StorageConfig    `yaml:"storage,omitempty"`
 	Exports       []ExportConfig   `yaml:"exports,omitempty"`
@@ -55,6 +56,28 @@ type RuleProvider struct {
 	Name   string `yaml:"name,omitempty"`
 	Source string `yaml:"source,omitempty"`
 	Type   string `yaml:"type,omitempty"`
+}
+
+type RuntimeConfig struct {
+	BaseDir  string           `yaml:"base_dir,omitempty"`
+	WebInfo  []WebInfoConfig  `yaml:"webinfo,omitempty"`
+	Requery  []RequeryConfig  `yaml:"requery,omitempty"`
+	Switches []SwitchConfig   `yaml:"switches,omitempty"`
+}
+
+type WebInfoConfig struct {
+	Name string `yaml:"name,omitempty"`
+	File string `yaml:"file,omitempty"`
+}
+
+type RequeryConfig struct {
+	Name string `yaml:"name,omitempty"`
+	File string `yaml:"file,omitempty"`
+}
+
+type SwitchConfig struct {
+	Name      string `yaml:"name,omitempty"`
+	StateFile string `yaml:"state_file,omitempty"`
 }
 
 type StorageConfig struct {
