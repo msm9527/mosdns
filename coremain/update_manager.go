@@ -174,6 +174,16 @@ func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy b
 		return m.httpClient, false, nil
 	}
 
+	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err == nil && ok {
+		if strings.TrimSpace(overrides.Socks5) != "" {
+			m.logger().Info("using socks5 proxy for update from runtime store", zap.String("proxy", overrides.Socks5))
+			return m.newSocks5Client(overrides.Socks5)
+		}
+		return m.httpClient, false, nil
+	} else if err != nil {
+		m.logWarn("failed to load runtime overrides, falling back to overrides file", err)
+	}
+
 	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
 	data, err := os.ReadFile(overridesPath)
 	if err != nil {
@@ -194,27 +204,31 @@ func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy b
 
 	if overrides.Socks5 != "" {
 		m.logger().Info("using socks5 proxy for update", zap.String("proxy", overrides.Socks5))
-		dialer, err := proxy.SOCKS5("tcp", overrides.Socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, true, fmt.Errorf("failed to create socks5 dialer: %w", err)
-		}
-
-		contextDialer, ok := dialer.(proxy.ContextDialer)
-		if !ok {
-			return nil, true, errors.New("proxy dialer does not support context")
-		}
-
-		httpTransport := &http.Transport{
-			DialContext: contextDialer.DialContext,
-		}
-		return &http.Client{
-			Transport: httpTransport,
-			Timeout:   httpTimeout,
-		}, true, nil
+		return m.newSocks5Client(overrides.Socks5)
 	}
 
 	// No socks5 config found in the file, use direct connection.
 	return m.httpClient, false, nil
+}
+
+func (m *UpdateManager) newSocks5Client(addr string) (*http.Client, bool, error) {
+	dialer, err := proxy.SOCKS5("tcp", addr, nil, proxy.Direct)
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to create socks5 dialer: %w", err)
+	}
+
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, true, errors.New("proxy dialer does not support context")
+	}
+
+	httpTransport := &http.Transport{
+		DialContext: contextDialer.DialContext,
+	}
+	return &http.Client{
+		Transport: httpTransport,
+		Timeout:   httpTimeout,
+	}, true, nil
 }
 
 // doRequestWithFallback handles the entire request lifecycle including proxy and fallback.
