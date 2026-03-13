@@ -1667,13 +1667,20 @@ func pluginTagFromActionURL(raw, expectedAction string) string {
 	}
 	path = strings.Trim(path, "/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 3 || parts[0] != "plugins" {
+	switch {
+	case len(parts) >= 3 && parts[0] == "plugins":
+		if expectedAction != "" && parts[2] != expectedAction {
+			return ""
+		}
+		return parts[1]
+	case len(parts) >= 5 && parts[0] == "api" && parts[1] == "v1" && (parts[2] == "memory" || parts[2] == "cache"):
+		if expectedAction != "" && parts[4] != expectedAction {
+			return ""
+		}
+		return parts[3]
+	default:
 		return ""
 	}
-	if expectedAction != "" && parts[2] != expectedAction {
-		return ""
-	}
-	return parts[1]
 }
 
 func pluginActionFromURL(raw string) (tag string, action string, ok bool) {
@@ -1687,10 +1694,14 @@ func pluginActionFromURL(raw string) (tag string, action string, ok bool) {
 	}
 	path = strings.Trim(path, "/")
 	parts := strings.Split(path, "/")
-	if len(parts) < 3 || parts[0] != "plugins" {
+	switch {
+	case len(parts) >= 3 && parts[0] == "plugins":
+		return parts[1], parts[2], true
+	case len(parts) >= 5 && parts[0] == "api" && parts[1] == "v1" && (parts[2] == "memory" || parts[2] == "cache"):
+		return parts[3], parts[4], true
+	default:
 		return "", "", false
 	}
-	return parts[1], parts[2], true
 }
 
 func (p *Requery) collectMemoryStats(saveURLs []string) []memoryStatView {

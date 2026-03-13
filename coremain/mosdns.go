@@ -117,6 +117,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	RegisterCacheAPI(m.httpMux, m)
 	RegisterListsAPI(m.httpMux, m)
 	RegisterMiscAPI(m.httpMux, m)
+	RegisterMemoryAPI(m.httpMux, m)
 	RegisterRuntimeStatsAPI(m.httpMux, m)
 	RegisterRulesAPI(m.httpMux, m)
 	RegisterUpdateAPI(m.httpMux)    // For binary updates

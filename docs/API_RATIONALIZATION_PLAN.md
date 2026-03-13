@@ -395,24 +395,20 @@
 - 可编辑列表已使用：
   - `GET /api/v1/lists/{tag}`
   - `PUT /api/v1/lists/{tag}`
-- `domain_output` 等内部记忆库仍保留：
-  - `/plugins/{tag}/show`
-  - `/plugins/{tag}/save`
-  - `/plugins/{tag}/flush`
-  - `/plugins/{tag}/verify`
+- 分流记忆库已迁移到：
+  - `/api/v1/memory/{tag}/entries`
+  - `/api/v1/memory/{tag}/save`
+  - `/api/v1/memory/{tag}/flush`
+  - `/api/v1/memory/{tag}/verify`
 
 建议：
 
 - 可编辑列表继续只保留 `/api/v1/lists/{tag}`
-- `domain_output` 长期改造成资源式 API：
-  - `GET /api/v1/memory/{tag}/items`
-  - `PUT /api/v1/memory/{tag}/items`
-  - `POST /api/v1/memory/{tag}/save`
-  - `DELETE /api/v1/memory/{tag}/items`
+- 分流记忆库统一只保留 `/api/v1/memory/{tag}/*`
 
 其中：
 
-- `GET /save`、`GET /flush` 应逐步淘汰
+- 旧的 `GET /save`、`GET /flush` 已淘汰
 
 ## 6.6 上游配置
 

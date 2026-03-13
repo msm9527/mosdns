@@ -24,7 +24,7 @@ plugins:
       file_rule: gen/realiprule.txt
       max_entries: 80000
       dump_interval: 36005
-      domain_set_url: "http://127.0.0.1:9099/plugins/my_realiprule/post"
+      domain_set_url: "http://127.0.0.1:9099/api/v1/lists/my_realiprule"
 
 #访问过的fakeip的域名清单和生成规则
   - tag: my_fakeiplist
@@ -34,7 +34,7 @@ plugins:
       file_rule: gen/fakeiprule.txt
       max_entries: 80000
       dump_interval: 36010
-      domain_set_url: "http://127.0.0.1:9099/plugins/my_fakeiprule/post"
+      domain_set_url: "http://127.0.0.1:9099/api/v1/lists/my_fakeiprule"
 
 #访问过的无v6 ip的域名清单和生成规则
   - tag: my_nov6list
@@ -44,7 +44,7 @@ plugins:
       file_rule: gen/nov6rule.txt
       max_entries: 120000
       dump_interval: 36040
-      domain_set_url: "http://127.0.0.1:9099/plugins/my_nov6rule/post"
+      domain_set_url: "http://127.0.0.1:9099/api/v1/lists/my_nov6rule"
 
 #访问过的无v4 v6 ip的域名清单和生成规则
   - tag: my_nov4list
@@ -54,7 +54,7 @@ plugins:
       file_rule: gen/nov4rule.txt
       max_entries: 80000
       dump_interval: 36030
-      domain_set_url: "http://127.0.0.1:9099/plugins/my_nov4rule/post"
+      domain_set_url: "http://127.0.0.1:9099/api/v1/lists/my_nov4rule"
 
 #节点域名无v6 ip的域名清单和生成规则
   - tag: my_nodenov6list
@@ -64,7 +64,7 @@ plugins:
       file_rule: gen/nodenov6rule.txt
       max_entries: 50000
       dump_interval: 36060
-      domain_set_url: "http://127.0.0.1:9099/plugins/my_nodenov6rule/post"
+      domain_set_url: "http://127.0.0.1:9099/api/v1/lists/my_nodenov6rule"
 
 #节点域名无v4 v6 ip的域名清单和生成规则
   - tag: my_nodenov4list
@@ -74,4 +74,4 @@ plugins:
       file_rule: gen/nodenov4rule.txt
       max_entries: 50000
       dump_interval: 36080
-      domain_set_url: "http://127.0.0.1:9099/plugins/my_nodenov4rule/post"
+      domain_set_url: "http://127.0.0.1:9099/api/v1/lists/my_nodenov4rule"

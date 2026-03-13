@@ -4,8 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"compress/zlib"
+	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,7 +18,6 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"github.com/go-chi/chi/v5"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
 	"go.uber.org/zap"
@@ -206,7 +205,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		ds.otherM = append(ds.otherM, provider.GetDomainMatcher())
 	}
 
-	bp.RegAPI(ds.api())
 	ds.startFileWatcher()
 	return ds, nil
 }
@@ -396,75 +394,44 @@ func statWatchedFile(path string) (watchedFileState, error) {
 	}, nil
 }
 
-func (d *DomainSet) api() *chi.Mux {
-	r := chi.NewRouter()
+func (d *DomainSet) WriteListContent(w http.ResponseWriter, _ string, _ int, _ int) error {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	for _, rule := range d.rules {
+		fmt.Fprintln(w, rule)
+	}
+	return nil
+}
 
-	r.Get("/show", func(w http.ResponseWriter, r *http.Request) {
-		d.mu.RLock()
-		defer d.mu.RUnlock()
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		for _, rule := range d.rules {
-			fmt.Fprintln(w, rule)
+func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int, error) {
+	d.mu.RLock()
+	ruleFile := d.ruleFile
+	d.mu.RUnlock()
+	if ruleFile == "" || !strings.EqualFold(filepath.Ext(ruleFile), ".txt") {
+		return 0, fmt.Errorf("no txt file configured, cannot replace")
+	}
+
+	tmpMix := domain.NewDomainMixMatcher()
+	tmpRules := make([]string, 0, len(values))
+	for _, pat := range values {
+		if err := tmpMix.Add(pat, struct{}{}); err == nil {
+			tmpRules = append(tmpRules, pat)
 		}
-	})
+	}
 
-	r.Get("/save", func(w http.ResponseWriter, r *http.Request) {
-		d.mu.RLock()
-		defer d.mu.RUnlock()
-		if d.ruleFile == "" {
-			http.Error(w, "no file configured", http.StatusInternalServerError)
-			return
-		}
-		if err := writeRulesToFile(d.ruleFile, d.rules); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	})
+	d.mu.Lock()
+	d.mixM = tmpMix
+	d.rules = tmpRules
+	d.mu.Unlock()
 
-	r.Post("/post", func(w http.ResponseWriter, r *http.Request) {
-		var p domainPayload
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
+	if err := writeRulesToFile(ruleFile, tmpRules); err != nil {
+		return 0, err
+	}
 
-		if d.ruleFile == "" || !strings.EqualFold(filepath.Ext(d.ruleFile), ".txt") {
-			http.Error(w, "no txt file configured, cannot post", http.StatusBadRequest)
-			return
-		}
-
-		tmpMix := domain.NewDomainMixMatcher()
-		tmpRules := make([]string, 0, len(p.Values))
-		for _, pat := range p.Values {
-			if err := tmpMix.Add(pat, struct{}{}); err == nil {
-				tmpRules = append(tmpRules, pat)
-			}
-		}
-
-		d.mu.Lock()
-		d.mixM = tmpMix
-		d.rules = tmpRules
-		d.mu.Unlock()
-
-		tmpMix = nil
-		tmpRules = nil
-
-		if err := writeRulesToFile(d.ruleFile, d.rules); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// 规则更新成功，通知订阅者
-		d.notifySubscribers()
-
-		coremain.ManualGC()
-
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "domain_set replaced with %d entries", len(d.rules))
-	})
-
-	return r
+	d.notifySubscribers()
+	coremain.ManualGC()
+	return len(tmpRules), nil
 }
 
 func writeRulesToFile(path string, rules []string) error {

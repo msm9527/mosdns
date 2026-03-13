@@ -1,6 +1,7 @@
 package domain_output
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -182,12 +183,8 @@ func TestDomainOutputNotifyDirtyAndVerify(t *testing.T) {
 	}
 	mu.Unlock()
 
-	req := httptest.NewRequest(http.MethodPost, "/verify", strings.NewReader(`{"domain":"example.com"}`))
-	req.Header.Set("Content-Type", "application/json")
-	rr := httptest.NewRecorder()
-	d.Api().ServeHTTP(rr, req)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("verify status code = %d body=%s", rr.Code, rr.Body.String())
+	if _, err := d.MarkDomainVerified(context.Background(), "example.com", ""); err != nil {
+		t.Fatalf("verify returned error: %v", err)
 	}
 
 	d.mu.Lock()
@@ -240,7 +237,7 @@ func TestDomainOutputInferPolicyDefaultsWithoutPolicyBlock(t *testing.T) {
 	cfg := &Args{
 		FileStat:     "gen/realiplist.txt",
 		FileRule:     "gen/realiprule.txt",
-		DomainSetURL: "http://127.0.0.1:9099/plugins/my_realiprule/post",
+		DomainSetURL: "http://127.0.0.1:9099/api/v1/lists/my_realiprule",
 	}
 	p := normalizePolicy(cfg)
 	if p.kind != "realip" {
@@ -255,7 +252,7 @@ func TestDomainOutputInferPolicyDefaultsWithoutPolicyBlock(t *testing.T) {
 	if p.onDirtyURL != "http://127.0.0.1:9099/api/v1/requery/enqueue" {
 		t.Fatalf("onDirtyURL = %q", p.onDirtyURL)
 	}
-	if p.verifyURL != "http://127.0.0.1:9099/plugins/my_realiplist/verify" {
+	if p.verifyURL != "http://127.0.0.1:9099/api/v1/memory/my_realiplist/verify" {
 		t.Fatalf("verifyURL = %q", p.verifyURL)
 	}
 }
@@ -266,7 +263,7 @@ func TestDomainOutputInferPolicyNodeNov4(t *testing.T) {
 	cfg := &Args{
 		FileStat:     "gen/nodenov4list.txt",
 		FileRule:     "gen/nodenov4rule.txt",
-		DomainSetURL: "http://127.0.0.1:9099/plugins/my_nodenov4rule/post",
+		DomainSetURL: "http://127.0.0.1:9099/api/v1/lists/my_nodenov4rule",
 	}
 	p := normalizePolicy(cfg)
 	if p.kind != "nov4" {
@@ -275,7 +272,7 @@ func TestDomainOutputInferPolicyNodeNov4(t *testing.T) {
 	if p.decayDays != 14 {
 		t.Fatalf("decayDays = %d, want 14", p.decayDays)
 	}
-	if p.verifyURL != "http://127.0.0.1:9099/plugins/my_nodenov4list/verify" {
+	if p.verifyURL != "http://127.0.0.1:9099/api/v1/memory/my_nodenov4list/verify" {
 		t.Fatalf("verifyURL = %q", p.verifyURL)
 	}
 }

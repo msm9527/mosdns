@@ -1019,7 +1019,7 @@
             { tag: 'ddnslist', name: 'DDNS 域名', icon: 'fa-sync-alt' },
         ];
         const hostsProfiles = [];
-        const ruleListPaths = ['top_domains/flush', 'my_fakeiplist/flush', 'my_nodenov4list/flush', 'my_nodenov6list/flush', 'my_notinlist/flush', 'my_nov4list/flush', 'my_nov6list/flush', 'my_realiplist/flush'];
+        const ruleListPaths = ['top_domains', 'my_fakeiplist', 'my_nodenov4list', 'my_nodenov6list', 'my_notinlist', 'my_nov4list', 'my_nov6list', 'my_realiplist'];
 
         function createElement(tag, className, innerText = '', id = '') { const el = D.createElement(tag); if (className) el.className = className; if (innerText) el.innerText = innerText; if (id) el.id = id; return el; }
         function formatNumber(num) { if (typeof num !== 'number' && isNaN(num = parseFloat(num))) { return num; } return num.toLocaleString('en-US'); }
@@ -1480,7 +1480,7 @@
                 if (tag === 'core_mode') {
                     coreMode = result.value;
                     try {
-                        const requests = ruleListPaths.map(path => fetch(`/plugins/${path}`));
+                        const requests = ruleListPaths.map(tag => fetch(`/api/v1/memory/${tag}/flush`, { method: 'POST' }));
                         await Promise.all(requests.map(async p => {
                             const res = await p;
                             if (!res.ok) throw new Error(`清空规则失败于: ${res.url} (${res.status})`);
@@ -1682,9 +1682,9 @@
         
         async function saveAllRulesAndNotify() {
             try {
-                const paths = ['top_domains/save','my_fakeiplist/save', 'my_nodenov4list/save', 'my_nodenov6list/save', 'my_notinlist/save', 'my_nov4list/save', 'my_nov6list/save', 'my_realiplist/save'];
+                const paths = ['top_domains', 'my_fakeiplist', 'my_nodenov4list', 'my_nodenov6list', 'my_notinlist', 'my_nov4list', 'my_nov6list', 'my_realiplist'];
                 showToast('正在保存分流规则...');
-                const requests = paths.map(p => fetch(`/plugins/${p}`));
+                const requests = paths.map(tag => fetch(`/api/v1/memory/${tag}/save`, { method: 'POST' }));
                 
                 await Promise.all(requests.map(async p => {
                     const res = await p;
@@ -1918,7 +1918,7 @@
                 getById(btnId).addEventListener('click', async () => {
                     if (msg && !confirm(msg)) return;
                     try {
-                        const requests = paths.map(p => fetch(`/plugins/${p}`));
+                        const requests = paths.map(tag => fetch(`/api/v1/memory/${tag}/flush`, { method: 'POST' }));
                         await Promise.all(requests.map(async p => {
                             const res = await p;
                             if (!res.ok) throw new Error(`操作失败于: ${res.url} (${res.status})`);
@@ -1933,11 +1933,11 @@
             getById('save-rules-btn').addEventListener('click', () => { if (confirm('确定保存所有分流规则吗?')) { saveAllRulesAndNotify(); } });
             createApiAction('flush-rules-btn', ruleListPaths, '【危险操作】确定清空所有分流规则吗?', '分流规则已清空。');
             getById('flush-cache-btn').addEventListener('click', async () => { if (!confirm('确定清空全部缓存吗? 此操作将根据当前核心运行模式清空对应的缓存。')) { return; } const cacheToFlush = coreMode === 'secure' ? 'cache_all_noleak' : 'cache_all'; const path = `/api/v1/cache/${cacheToFlush}/flush`; try { const response = await fetch(path, { method: 'POST' }); if (!response.ok) { const errorText = await response.text(); throw new Error(`清空缓存失败于 ${path}: ${errorText || response.statusText}`); } showToast('全部缓存已清空，正在刷新数据...', 'success'); await refreshData(false, true); } catch (e) { showToast('清空缓存操作失败！', 'error'); showErrorModal(e.message); } });
-            getById('restart-mosdns-btn').onclick = async () => { if (confirm('【危险操作】此操作将首先保存所有分流规则，然后重启 MosDNS。确定要继续吗?')) { const saveSuccess = await saveAllRulesAndNotify(); if (saveSuccess) { showToast('规则已保存，正在发送重启命令...', 'success'); try { const response = await fetch('/plugins/my_fakeiplist/restartall'); if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `重启命令请求失败，状态码: ${response.status}`); } showToast('MosDNS 正在重启，页面即将刷新...'); setTimeout(() => location.reload(), 2000); } catch (e) { showToast('重启命令发送失败', 'error'); showErrorModal(e.message); } } else { showToast('由于规则保存失败，重启操作已取消。', 'error'); } } };getById('dns-log-page-btn').onclick = () => { const url = `http://${window.location.hostname}:${window.location.port}/log`; window.open(url, '_blank'); };
+            getById('restart-mosdns-btn').onclick = async () => { if (confirm('【危险操作】此操作将首先保存所有分流规则，然后重启 MosDNS。确定要继续吗?')) { const saveSuccess = await saveAllRulesAndNotify(); if (saveSuccess) { showToast('规则已保存，正在发送重启命令...', 'success'); try { const response = await fetch('/api/v1/system/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ delay_ms: 500 }) }); if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `重启命令请求失败，状态码: ${response.status}`); } showToast('MosDNS 正在重启，页面即将刷新...'); setTimeout(() => location.reload(), 2000); } catch (e) { showToast('重启命令发送失败', 'error'); showErrorModal(e.message); } } else { showToast('由于规则保存失败，重启操作已取消。', 'error'); } } };getById('dns-log-page-btn').onclick = () => { const url = `http://${window.location.hostname}:${window.location.port}/log`; window.open(url, '_blank'); };
             
             const showEndpoints = { '请求排行': 'top_domains','fakeip 域名': 'my_fakeiplist', 'realip 域名': 'my_realiplist', '无 V4 域名': 'my_nov4list', '无 V6 域名': 'my_nov6list', '全部缓存（兼容）': 'cache_all', '全部缓存（安全）': 'cache_all_noleak','国内缓存': 'cache_cn', '国外缓存（兼容）': 'cache_google', '国外缓存（安全）': 'cache_google_node','节点缓存': 'cache_node' };
             const dvContainer = getById('data-view-buttons'); dvContainer.innerHTML = ''; 
-            Object.entries(showEndpoints).forEach(([name, path]) => { const btn = createElement('button', 'btn'); btn.textContent = name; btn.onclick = () => { if (path.startsWith('cache_')) { displayCacheDataInModal(`/api/v1/cache/${path}/entries`, name); } else { displayDataInModal(`/plugins/${path}/show`, name); } }; dvContainer.appendChild(btn); });
+            Object.entries(showEndpoints).forEach(([name, path]) => { const btn = createElement('button', 'btn'); btn.textContent = name; btn.onclick = () => { if (path.startsWith('cache_')) { displayCacheDataInModal(`/api/v1/cache/${path}/entries`, name); } else { displayDataInModal(`/api/v1/memory/${path}/entries`, name); } }; dvContainer.appendChild(btn); });
             
             const tabButtons = D.querySelectorAll('.tab-button');
             const tabContents = D.querySelectorAll('.control-section-body .tab-content');

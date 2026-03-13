@@ -2481,10 +2481,10 @@ function renderRuleTable(tbody, rules, mode) {
             let result;
             let viewType = 'domain';
             if (listTag) {
-                result = await api.fetch(`/plugins/${listTag}/show?q=${q}&offset=${offset}&limit=${limit}`);
+                result = await api.fetch(`/api/v1/memory/${listTag}/entries?q=${q}&offset=${offset}&limit=${limit}`);
                 viewType = 'domain';
             } else if (listType) {
-                const endpointMap = { fakeip: '/plugins/my_fakeiplist/show', realip: '/plugins/my_realiplist/show', nov4: '/plugins/my_nov4list/show', nov6: '/plugins/my_nov6list/show', total: '/plugins/top_domains/show' };
+                const endpointMap = { fakeip: '/api/v1/memory/my_fakeiplist/entries', realip: '/api/v1/memory/my_realiplist/entries', nov4: '/api/v1/memory/my_nov4list/entries', nov6: '/api/v1/memory/my_nov6list/entries', total: '/api/v1/memory/top_domains/entries' };
                 result = await api.fetch(`${endpointMap[listType]}?q=${q}&offset=${offset}&limit=${limit}`);
                 viewType = 'domain';
             } else if (cacheTag) {

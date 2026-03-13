@@ -188,16 +188,16 @@
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/lists/{tag}` | `stable` | 查看可编辑列表内容 |
 | `PUT` | `/api/v1/lists/{tag}` | `stable` | 替换可编辑列表内容 |
-| `GET` | `/plugins/{tag}/show` | `internal` | `domain_output` 等内部记忆库查看内容 |
-| `GET` | `/plugins/{tag}/save` | `internal` | 内部记忆库保存到文件 |
-| `GET` | `/plugins/{tag}/flush` | `internal` | 内部记忆库清空内容 |
-| `POST` | `/plugins/{tag}/verify` | `internal` | 按域名验证/发布 |
-| `GET` | `/plugins/{tag}/stats` | `internal` | 某些记忆库统计 |
+| `GET` | `/api/v1/memory/{tag}/entries` | `stable` | 查看分流记忆库内容 |
+| `POST` | `/api/v1/memory/{tag}/save` | `stable` | 保存分流记忆库 |
+| `POST` | `/api/v1/memory/{tag}/flush` | `stable` | 清空分流记忆库 |
+| `POST` | `/api/v1/memory/{tag}/verify` | `stable` | 按域名验证/发布 |
+| `GET` | `/api/v1/memory/{tag}/stats` | `stable` | 某些记忆库统计 |
 
 问题：
 
 - 可编辑列表已完成核心 API 收口
-- `domain_output` 及其 `save/flush/verify` 仍是内部能力，尚未统一到资源式 API
+- `domain_output` 已完成核心 API 收口
 
 ## 4.5 在线分流规则源
 
@@ -256,10 +256,10 @@
 
 | 问题类型 | 典型接口 | 说明 |
 | --- | --- | --- |
-| `GET` 带副作用 | `/plugins/{tag}/flush` `/plugins/{tag}/save` | 不符合 HTTP 语义 |
+| `GET` 带副作用 | 历史 `/plugins/{tag}/flush` `/plugins/{tag}/save` | 已逐步移除 |
 | 返回纯文本 | 部分插件操作接口 | 不利于统一错误处理 |
 | 强耦合插件 tag | `/plugins/geosite_cn/*` | 前端绑定实现细节 |
-| 业务与插件边界重叠 | `domain_output` memory 内部接口 | 核心 API 尚未完全收口 |
+| 业务与插件边界重叠 | 少量 `domain_set`/`webinfo` 内部接口 | 核心 API 尚未完全收口 |
 | 版本边界缺失 | 大多数 `/plugins/*` | 难以保证长期稳定性 |
 
 ## 6. 推荐迁移优先级

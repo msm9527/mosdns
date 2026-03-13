@@ -3,7 +3,6 @@ package domain_output
 import (
 	"container/heap"
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"sort"
@@ -13,7 +12,6 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
-	"github.com/go-chi/chi/v5"
 )
 
 type outputRankHeap []outputRankItem
@@ -209,11 +207,6 @@ func (d *domainOutput) isVerificationDue(entry *statEntry, now time.Time) bool {
 	return now.Sub(ts) >= threshold
 }
 
-type verifyRequest struct {
-	Domain     string `json:"domain"`
-	VerifiedAt string `json:"verified_at,omitempty"`
-}
-
 func (d *domainOutput) SaveToDisk(_ context.Context) error {
 	d.performWrite(WriteModeSave)
 	return nil
@@ -255,133 +248,49 @@ func (d *domainOutput) MarkDomainVerified(_ context.Context, domain, verifiedAt 
 	return updated, nil
 }
 
-func (d *domainOutput) Api() *chi.Mux {
-	r := chi.NewRouter()
+func (d *domainOutput) WriteEntries(w http.ResponseWriter, query string, offset, limit int) error {
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	query = strings.ToLower(query)
+	if limit <= 0 {
+		limit = 100
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	h := &outputRankHeap{}
+	heap.Init(h)
+	maxHeapSize := offset + limit
 
-	r.Get("/flush", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		if err := d.FlushRuntime(r.Context()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+	d.mu.Lock()
+	totalFiltered := 0
+	for domain, entry := range d.stats {
+		if query != "" && !strings.Contains(strings.ToLower(domain), query) {
+			continue
 		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("domain_output flushed"))
-	}))
+		totalFiltered++
+		item := outputRankItem{Domain: domain, Count: entry.Count, Date: entry.LastDate, Score: entry.Score, QMask: entry.QTypeMask, Prom: entry.Promoted}
+		if h.Len() < maxHeapSize {
+			heap.Push(h, item)
+		} else if item.Count > (*h)[0].Count {
+			heap.Pop(h)
+			heap.Push(h, item)
+		}
+	}
+	d.mu.Unlock()
 
-	r.Get("/save", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		if err := d.SaveToDisk(r.Context()); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("domain_output saved"))
-	}))
+	w.Header().Set("X-Total-Count", strconv.Itoa(totalFiltered))
+	w.Header().Set("Access-Control-Expose-Headers", "X-Total-Count")
 
-	r.Get("/show", func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		query := strings.ToLower(r.URL.Query().Get("q"))
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset"))
-		if limit <= 0 {
-			limit = 100
-		}
-		if offset < 0 {
-			offset = 0
-		}
-		h := &outputRankHeap{}
-		heap.Init(h)
-		maxHeapSize := offset + limit
-
-		d.mu.Lock()
-		totalFiltered := 0
-		for domain, entry := range d.stats {
-			if query != "" && !strings.Contains(strings.ToLower(domain), query) {
-				continue
-			}
-			totalFiltered++
-			item := outputRankItem{Domain: domain, Count: entry.Count, Date: entry.LastDate, Score: entry.Score, QMask: entry.QTypeMask, Prom: entry.Promoted}
-			if h.Len() < maxHeapSize {
-				heap.Push(h, item)
-			} else if item.Count > (*h)[0].Count {
-				heap.Pop(h)
-				heap.Push(h, item)
-			}
-		}
-		d.mu.Unlock()
-
-		w.Header().Set("X-Total-Count", strconv.Itoa(totalFiltered))
-		w.Header().Set("Access-Control-Expose-Headers", "X-Total-Count")
-
-		resultCount := h.Len()
-		sortedResult := make([]outputRankItem, resultCount)
-		for i := resultCount - 1; i >= 0; i-- {
-			sortedResult[i] = heap.Pop(h).(outputRankItem)
-		}
-		for i := offset; i < resultCount; i++ {
-			stat := sortedResult[i]
-			_, _ = fmt.Fprintf(w, "%010d %s %s qmask=%d score=%d promoted=%d\n", stat.Count, stat.Date, stat.Domain, stat.QMask, stat.Score, boolToInt(stat.Prom))
-		}
-	})
-
-	r.Get("/stats", func(w http.ResponseWriter, r *http.Request) {
-		d.mu.Lock()
-		totalEntries := len(d.stats)
-		dirtyEntries := 0
-		for _, entry := range d.stats {
-			if entry.RefreshState == "dirty" {
-				dirtyEntries++
-			}
-		}
-		d.mu.Unlock()
-		resp := statsResponse{
-			MemoryID:               d.memoryID,
-			Kind:                   d.policy.kind,
-			PromoteAfter:           d.policy.promoteAfter,
-			DecayDays:              d.policy.decayDays,
-			PublishMode:            d.policy.publishMode,
-			TrackQType:             d.policy.trackQType,
-			StaleAfterMinutes:      d.policy.staleAfterMinutes,
-			RefreshCooldownMinutes: d.policy.refreshCooldownMinutes,
-			MaxEntries:             d.maxEntries,
-			TotalEntries:           totalEntries,
-			DirtyEntries:           dirtyEntries,
-			PromotedEntries:        atomic.LoadInt64(&d.promotedCount),
-			PublishedRules:         atomic.LoadInt64(&d.publishedCount),
-			TotalObservations:      atomic.LoadInt64(&d.totalCount),
-			DroppedObservations:    atomic.LoadInt64(&d.droppedCount),
-			DroppedByBuffer:        atomic.LoadInt64(&d.droppedBufferCount),
-			DroppedByCap:           atomic.LoadInt64(&d.droppedByCapCount),
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(resp)
-	})
-
-	r.Post("/verify", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		var req verifyRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil || strings.TrimSpace(req.Domain) == "" {
-			http.Error(w, "invalid verify request", http.StatusBadRequest)
-			return
-		}
-		updated, err := d.MarkDomainVerified(r.Context(), req.Domain, req.VerifiedAt)
-		if err != nil {
-			if err.Error() == "domain not found" {
-				http.Error(w, err.Error(), http.StatusNotFound)
-				return
-			}
-			http.Error(w, err.Error(), http.StatusBadRequest)
-			return
-		}
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		_ = json.NewEncoder(w).Encode(map[string]any{"status": "success", "updated": updated})
-	}))
-
-	r.Get("/restartall", func(w http.ResponseWriter, req *http.Request) {
-		_ = d.Close()
-		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte("mosdns restarting"))
-		go restartSelf()
-	})
-
-	return r
+	resultCount := h.Len()
+	sortedResult := make([]outputRankItem, resultCount)
+	for i := resultCount - 1; i >= 0; i-- {
+		sortedResult[i] = heap.Pop(h).(outputRankItem)
+	}
+	for i := offset; i < resultCount; i++ {
+		stat := sortedResult[i]
+		_, _ = fmt.Fprintf(w, "%010d %s %s qmask=%d score=%d promoted=%d\n", stat.Count, stat.Date, stat.Domain, stat.QMask, stat.Score, boolToInt(stat.Prom))
+	}
+	return nil
 }
 
 func (d *domainOutput) sortedDomains() []string {

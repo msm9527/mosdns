@@ -184,7 +184,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	d := newDomainOutput(cfg)
 	d.loadFromFile()
 	go d.startWorker()
-	bp.RegAPI(d.Api())
 	return d, nil
 }
 
@@ -269,7 +268,7 @@ func normalizePolicy(cfg *Args) writePolicy {
 		trackQType = true
 		staleAfterMinutes = 360
 		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/plugins/my_realiplist/verify")
+		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_realiplist/verify")
 	case strings.Contains(infer, "fakeip"):
 		kind = "fakeip"
 		promoteAfter = 2
@@ -278,7 +277,7 @@ func normalizePolicy(cfg *Args) writePolicy {
 		trackQType = true
 		staleAfterMinutes = 240
 		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/plugins/my_fakeiplist/verify")
+		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_fakeiplist/verify")
 	case strings.Contains(infer, "nodenov4"):
 		kind = "nov4"
 		promoteAfter = 2
@@ -287,7 +286,7 @@ func normalizePolicy(cfg *Args) writePolicy {
 		trackQType = true
 		staleAfterMinutes = 180
 		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/plugins/my_nodenov4list/verify")
+		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nodenov4list/verify")
 	case strings.Contains(infer, "nodenov6"):
 		kind = "nov6"
 		promoteAfter = 2
@@ -296,7 +295,7 @@ func normalizePolicy(cfg *Args) writePolicy {
 		trackQType = true
 		staleAfterMinutes = 180
 		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/plugins/my_nodenov6list/verify")
+		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nodenov6list/verify")
 	case strings.Contains(infer, "nov4"):
 		kind = "nov4"
 		promoteAfter = 2
@@ -305,7 +304,7 @@ func normalizePolicy(cfg *Args) writePolicy {
 		trackQType = true
 		staleAfterMinutes = 180
 		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/plugins/my_nov4list/verify")
+		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nov4list/verify")
 	case strings.Contains(infer, "nov6"):
 		kind = "nov6"
 		promoteAfter = 2
@@ -314,7 +313,7 @@ func normalizePolicy(cfg *Args) writePolicy {
 		trackQType = true
 		staleAfterMinutes = 180
 		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/plugins/my_nov6list/verify")
+		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nov6list/verify")
 	}
 
 	if cfg.Policy != nil {
@@ -924,7 +923,11 @@ func (d *domainOutput) pushToDomainSet(rules []string) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.domainSetURL, bytes.NewReader(body))
+		method := http.MethodPost
+		if strings.Contains(d.domainSetURL, "/api/v1/lists/") {
+			method = http.MethodPut
+		}
+		req, err := http.NewRequestWithContext(ctx, method, d.domainSetURL, bytes.NewReader(body))
 		if err != nil {
 			return
 		}

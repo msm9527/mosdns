@@ -761,7 +761,7 @@
   "memory_id": "my_fakeiplist",
   "qtype_mask": 1,
   "reason": "observed",
-  "verify_url": "http://127.0.0.1:9099/plugins/my_fakeiplist/verify",
+  "verify_url": "http://127.0.0.1:9099/api/v1/memory/my_fakeiplist/verify",
   "observed_at": "2026-03-12T10:00:00Z"
 }
 ```
@@ -794,7 +794,7 @@
   "duration_ms": 112,
   "items": [
     {
-      "url": "http://127.0.0.1:9099/plugins/my_fakeiplist/save",
+      "url": "http://127.0.0.1:9099/api/v1/memory/my_fakeiplist/save",
       "tag": "my_fakeiplist",
       "ok": true,
       "status_code": 200,
@@ -928,9 +928,9 @@
 
 - 命中 `DDNS域名` 标签的缓存项，过期后不会再走 lazy stale 返回旧值，而是直接回源重查。
 
-### 4.3 domain_output / 分流记忆库与域名输出（`internal`）
+### 4.3 domain_output / 分流记忆库与域名输出（`stable`）
 
-根路径：`/plugins/{memory_tag}`
+根路径：`/api/v1/memory/{memory_tag}`
 
 这组接口是“刷新分流”真正读写的数据面。`requery` 任务最终会把结果发布到这些记忆库。
 
@@ -947,12 +947,11 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/flush` | `internal` | 清空并写盘 |
-| `GET` | `/save` | `internal` | 保存当前内存到文件 |
-| `GET` | `/show` | `internal` | 查看记忆数据 |
-| `GET` | `/stats` | `internal` | 获取统计信息 |
-| `POST` | `/verify` | `internal` | 标记域名已验证、清理 dirty 状态 |
-| `GET` | `/restartall` | `internal` | 触发程序重启 |
+| `POST` | `/flush` | `stable` | 清空并写盘 |
+| `POST` | `/save` | `stable` | 保存当前内存到文件 |
+| `GET` | `/entries` | `stable` | 查看记忆数据 |
+| `GET` | `/stats` | `stable` | 获取统计信息 |
+| `POST` | `/verify` | `stable` | 标记域名已验证、清理 dirty 状态 |
 
 `POST /verify` 示例：
 
@@ -963,7 +962,7 @@
 }
 ```
 
-`GET /plugins/{memory_tag}/stats` 返回核心字段：
+`GET /api/v1/memory/{memory_tag}/stats` 返回核心字段：
 
 - `memory_id`
 - `kind`
@@ -981,6 +980,7 @@
 - 把指定域名从 `dirty` 标记回写为 `clean`
 - 记录 `verified_at`
 - 会立即保存当前记忆库内容
+- 旧的 `/plugins/{memory_tag}/show|save|flush|verify|restartall` 已移除
 
 ### 4.4 可编辑规则列表：IPSet / DomainSet Light / Rewrite（`stable`）
 
@@ -1166,11 +1166,11 @@
 
 分流记忆库保存 / 清空 / 校验：
 
-- `GET /plugins/{memory_tag}/stats`
-- `GET /plugins/{memory_tag}/show`
-- `GET /plugins/{memory_tag}/save`
-- `GET /plugins/{memory_tag}/flush`
-- `POST /plugins/{memory_tag}/verify`
+- `GET /api/v1/memory/{memory_tag}/stats`
+- `GET /api/v1/memory/{memory_tag}/entries`
+- `POST /api/v1/memory/{memory_tag}/save`
+- `POST /api/v1/memory/{memory_tag}/flush`
+- `POST /api/v1/memory/{memory_tag}/verify`
 
 当前前端内置批量保存 / 批量清空会覆盖这些常见 tag：
 
@@ -1203,7 +1203,7 @@
 - `PUT /api/v1/lists/{tag}`
 - `GET /api/v1/clientname`
 - `PUT /api/v1/clientname`
-- `domain_output` 等内部记忆库仍使用 `/plugins/{tag}/show|save|flush|verify`
+- `domain_output` 记忆库已统一到 `/api/v1/memory/{tag}/*`
 
 ## 6. 迁移说明
 
