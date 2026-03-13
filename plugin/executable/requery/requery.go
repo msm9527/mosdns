@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/go-chi/chi/v5"
 	"github.com/miekg/dns"
 	"github.com/robfig/cron/v3"
@@ -111,6 +112,8 @@ type Requery struct {
 	scheduler  *cron.Cron
 	taskCtx    context.Context
 	taskCancel context.CancelFunc
+	activeRunID string
+	activeTriggerSource string
 	httpClient *http.Client
 	queue      refreshJobHeap
 	queueIndex map[string]struct{}
@@ -184,6 +187,7 @@ type ExecutionSettings struct {
 
 type Status struct {
 	TaskState          string    `json:"task_state"` // "idle", "running", "failed", "cancelled"
+	ActiveRunID        string    `json:"active_run_id,omitempty"`
 	TaskMode           string    `json:"task_mode,omitempty"`
 	TaskStage          string    `json:"task_stage,omitempty"`
 	TaskStageLabel     string    `json:"task_stage_label,omitempty"`
@@ -267,6 +271,7 @@ type summaryResponse struct {
 	Status      statusSnapshot    `json:"status"`
 	MemoryStats []memoryStatView  `json:"memory_stats"`
 	RuleTargets ruleActionTargets `json:"rule_targets"`
+	RecentRuns  []requeryruntime.Run `json:"recent_runs,omitempty"`
 }
 
 type batchActionItem struct {
@@ -381,16 +386,25 @@ func priorityForReason(reason string) int {
 // ----------------------------------------------------------------------------
 
 func (p *Requery) startTask(profile taskProfile) bool {
-	return p.startTaskWithRecovery(profile, nil)
+	return p.startTaskWithSource(profile, nil, "manual")
 }
 
 func (p *Requery) startTaskWithRecovery(profile taskProfile, recovery *FullRebuildTask) bool {
+	source := "manual"
+	if recovery != nil {
+		source = "recovery"
+	}
+	return p.startTaskWithSource(profile, recovery, source)
+}
+
+func (p *Requery) startTaskWithSource(profile taskProfile, recovery *FullRebuildTask, triggerSource string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.status.TaskState == "running" {
 		return false
 	}
+	p.activeTriggerSource = triggerSource
 	p.taskCtx, p.taskCancel = context.WithCancel(context.Background())
 	go p.runTask(p.taskCtx, profile, recovery)
 	return true
@@ -398,7 +412,7 @@ func (p *Requery) startTaskWithRecovery(profile taskProfile, recovery *FullRebui
 
 // runTask executes the entire requery workflow. It's designed to be run in a goroutine.
 func (p *Requery) runTask(ctx context.Context, profile taskProfile, recovery *FullRebuildTask) {
-	if !p.beginTaskExecution(profile) {
+	if !p.beginTaskExecution(profile, recovery) {
 		return
 	}
 	defer p.finishTaskExecution()
@@ -423,7 +437,13 @@ func (p *Requery) setTaskStage(stage, label string, total int64) {
 	p.status.TaskStageLabel = label
 	p.status.TaskStageProcessed = 0
 	p.status.TaskStageTotal = total
+	if err := p.saveStateUnlocked(); err != nil {
+		log.Printf("[requery] WARN: failed to persist stage state: %v", err)
+	}
 	p.mu.Unlock()
+	if err := p.persistRunSnapshot("running", time.Time{}); err != nil {
+		log.Printf("[requery] WARN: failed to persist stage snapshot: %v", err)
+	}
 }
 
 // mergeAndFilterDomains builds the effective candidate set for the task.
@@ -1522,6 +1542,9 @@ func (p *Requery) api() *chi.Mux {
 	r.Get("/", p.handleGetConfig)
 	r.Get("/status", p.handleGetStatus)
 	r.Get("/summary", p.handleGetSummary)
+	r.Get("/jobs", p.handleGetJobs)
+	r.Get("/runs", p.handleGetRuns)
+	r.Get("/checkpoints", p.handleGetCheckpoints)
 	r.Post("/trigger", p.handleTriggerTask)
 	r.Post("/enqueue", p.handleEnqueueRefresh)
 	r.Post("/cancel", p.handleCancelTask)
@@ -1540,11 +1563,17 @@ func (p *Requery) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 
 	memoryStats := p.collectMemoryStats(cfg.URLActions.SaveRules)
 	status.MemoryStats = memoryStats
+	recentRuns, err := p.listRuntimeRuns(10)
+	if err != nil {
+		p.jsonError(w, "Failed to load recent run history", http.StatusInternalServerError)
+		return
+	}
 	summary := summaryResponse{
 		Config:      cfg,
 		Status:      status,
 		MemoryStats: memoryStats,
 		RuleTargets: status.BatchCapabilities,
+		RecentRuns:  recentRuns,
 	}
 	p.jsonResponse(w, summary, http.StatusOK)
 }
@@ -1558,6 +1587,36 @@ func (p *Requery) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 func (p *Requery) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	p.jsonResponse(w, p.currentStatus(), http.StatusOK)
+}
+
+func (p *Requery) handleGetJobs(w http.ResponseWriter, r *http.Request) {
+	jobs, err := p.listRuntimeJobs()
+	if err != nil {
+		p.jsonError(w, "Failed to load runtime jobs", http.StatusInternalServerError)
+		return
+	}
+	p.jsonResponse(w, jobs, http.StatusOK)
+}
+
+func (p *Requery) handleGetRuns(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	runs, err := p.listRuntimeRuns(limit)
+	if err != nil {
+		p.jsonError(w, "Failed to load runtime runs", http.StatusInternalServerError)
+		return
+	}
+	p.jsonResponse(w, runs, http.StatusOK)
+}
+
+func (p *Requery) handleGetCheckpoints(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	checkpoints, err := p.listRuntimeCheckpoints(runID, limit)
+	if err != nil {
+		p.jsonError(w, "Failed to load runtime checkpoints", http.StatusInternalServerError)
+		return
+	}
+	p.jsonResponse(w, checkpoints, http.StatusOK)
 }
 
 func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
@@ -1796,7 +1855,7 @@ func (p *Requery) setupScheduler() error {
 	jobFunc := func() {
 		profile := p.profileForMode("quick_rebuild", 0)
 		log.Printf("[requery] Scheduler is triggering a task: %s.", profile.Mode)
-		if ok := p.startTask(profile); !ok {
+		if ok := p.startTaskWithSource(profile, nil, "scheduler"); !ok {
 			log.Println("[requery] Scheduler skipped: previous task is still running.")
 		}
 	}
@@ -1970,8 +2029,8 @@ func (p *Requery) setFailedState(format string, args ...any) {
 	if p.fullTask != nil {
 		p.fullTask.LastError = p.lastError
 		p.fullTask = nil
-		_ = p.saveStateUnlocked()
 	}
+	_ = p.saveStateUnlocked()
 	log.Printf("[requery] ERROR: Task failed: "+format, args...)
 }
 
@@ -1982,8 +2041,8 @@ func (p *Requery) setCancelledState(reason string) {
 	p.lastError = reason
 	if p.fullTask != nil {
 		p.fullTask = nil
-		_ = p.saveStateUnlocked()
 	}
+	_ = p.saveStateUnlocked()
 	log.Println("[requery] INFO: Task cancelled:", reason)
 }
 

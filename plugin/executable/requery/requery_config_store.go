@@ -239,6 +239,9 @@ func (p *Requery) loadConfig() error {
 			return fmt.Errorf("failed to save requery state: %w", err)
 		}
 	}
+	if err := p.syncRuntimeJobsLocked(); err != nil {
+		return fmt.Errorf("failed to sync runtime requery jobs: %w", err)
+	}
 	return nil
 }
 
@@ -264,7 +267,9 @@ func (p *Requery) saveConfigUnlocked() error {
 		_ = os.Remove(tmpFile)
 		return fmt.Errorf("failed to rename temporary config file: %w", err)
 	}
-
+	if err := p.syncRuntimeJobsLocked(); err != nil {
+		return fmt.Errorf("failed to sync runtime requery jobs: %w", err)
+	}
 	return nil
 }
 
@@ -276,6 +281,12 @@ func (p *Requery) loadStateUnlocked(legacyStatus Status, legacyTask *FullRebuild
 			p.status.TaskState = "idle"
 		}
 		p.fullTask = cloneFullRebuildTask(runtimeState.FullRebuildTask)
+		p.activeRunID = p.status.ActiveRunID
+		if p.activeRunID == "" && p.fullTask != nil {
+			p.activeRunID = p.fullTask.TaskID
+			p.status.ActiveRunID = p.activeRunID
+			return true, nil
+		}
 		return false, nil
 	} else if err != nil {
 		return false, fmt.Errorf("failed to load runtime requery state: %w", err)
@@ -290,6 +301,11 @@ func (p *Requery) loadStateUnlocked(legacyStatus Status, legacyTask *FullRebuild
 				p.status.TaskState = "idle"
 			}
 			p.fullTask = cloneFullRebuildTask(legacyTask)
+			p.activeRunID = p.status.ActiveRunID
+			if p.activeRunID == "" && p.fullTask != nil {
+				p.activeRunID = p.fullTask.TaskID
+				p.status.ActiveRunID = p.activeRunID
+			}
 			return true, nil
 		}
 		return false, fmt.Errorf("failed to read state file %s: %w", statePath, err)
@@ -304,6 +320,12 @@ func (p *Requery) loadStateUnlocked(legacyStatus Status, legacyTask *FullRebuild
 		p.status.TaskState = "idle"
 	}
 	p.fullTask = cloneFullRebuildTask(state.FullRebuildTask)
+	p.activeRunID = p.status.ActiveRunID
+	if p.activeRunID == "" && p.fullTask != nil {
+		p.activeRunID = p.fullTask.TaskID
+		p.status.ActiveRunID = p.activeRunID
+		return true, nil
+	}
 	return false, nil
 }
 

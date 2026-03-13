@@ -162,5 +162,67 @@ func baseMigrations() []Migration {
 				ON system_event(component, created_at_unix_ms DESC);
 			`,
 		},
+		{
+			ID: "0003_requery_job",
+			Up: `
+				CREATE TABLE IF NOT EXISTS requery_job (
+					job_id TEXT PRIMARY KEY,
+					config_key TEXT NOT NULL,
+					mode TEXT NOT NULL,
+					trigger_source TEXT NOT NULL,
+					enabled INTEGER NOT NULL DEFAULT 1,
+					definition_json TEXT NOT NULL DEFAULT '{}',
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
+				);
+				CREATE INDEX IF NOT EXISTS idx_requery_job_config_key
+				ON requery_job(config_key, updated_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0004_requery_run",
+			Up: `
+				CREATE TABLE IF NOT EXISTS requery_run (
+					run_id TEXT PRIMARY KEY,
+					config_key TEXT NOT NULL,
+					job_id TEXT NOT NULL DEFAULT '',
+					mode TEXT NOT NULL,
+					trigger_source TEXT NOT NULL,
+					state TEXT NOT NULL,
+					stage TEXT NOT NULL DEFAULT '',
+					stage_label TEXT NOT NULL DEFAULT '',
+					total INTEGER NOT NULL DEFAULT 0,
+					completed INTEGER NOT NULL DEFAULT 0,
+					error_text TEXT NOT NULL DEFAULT '',
+					metadata_json TEXT NOT NULL DEFAULT '{}',
+					started_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					ended_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
+				);
+				CREATE INDEX IF NOT EXISTS idx_requery_run_config_key
+				ON requery_run(config_key, updated_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_requery_run_mode_state
+				ON requery_run(mode, state, updated_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0005_requery_checkpoint",
+			Up: `
+				CREATE TABLE IF NOT EXISTS requery_checkpoint (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					config_key TEXT NOT NULL,
+					run_id TEXT NOT NULL,
+					stage TEXT NOT NULL,
+					completed INTEGER NOT NULL DEFAULT 0,
+					total INTEGER NOT NULL DEFAULT 0,
+					snapshot_json TEXT NOT NULL DEFAULT '{}',
+					created_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					FOREIGN KEY(run_id) REFERENCES requery_run(run_id) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_requery_checkpoint_run
+				ON requery_checkpoint(run_id, created_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_requery_checkpoint_config_key
+				ON requery_checkpoint(config_key, created_at_unix_ms DESC);
+			`,
+		},
 	}
 }

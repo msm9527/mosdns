@@ -9,30 +9,56 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
 
-func (p *Requery) beginTaskExecution(profile taskProfile) bool {
+func (p *Requery) beginTaskExecution(profile taskProfile, recovery *FullRebuildTask) bool {
+	var runID string
+	startedAt := time.Now().UTC()
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if p.status.TaskState == "running" {
+		p.mu.Unlock()
 		log.Println("[requery] Task trigger ignored: a task is already running.")
 		return false
 	}
 
+	if recovery != nil && recovery.TaskID != "" {
+		runID = recovery.TaskID
+		if !recovery.StartedAt.IsZero() {
+			startedAt = recovery.StartedAt.UTC()
+		}
+	} else {
+		runID = generateRunID()
+	}
+
+	p.activeRunID = runID
 	p.status.TaskState = "running"
+	p.status.ActiveRunID = runID
 	p.status.TaskMode = profile.Mode
 	p.status.TaskStage = ""
 	p.status.TaskStageLabel = ""
 	p.status.TaskStageProcessed = 0
 	p.status.TaskStageTotal = 0
-	p.status.LastRunStartTime = time.Now().UTC()
+	p.status.LastRunStartTime = startedAt
 	p.status.LastRunEndTime = time.Time{}
 	p.status.Progress.Processed = 0
 	p.status.Progress.Total = 0
 	p.lastError = ""
+	if err := p.saveStateUnlocked(); err != nil {
+		p.mu.Unlock()
+		log.Printf("[requery] WARN: failed to persist task start state: %v", err)
+		return false
+	}
+	p.mu.Unlock()
+
+	if err := p.persistRunSnapshot("running", time.Time{}); err != nil {
+		log.Printf("[requery] WARN: failed to persist run snapshot on start: %v", err)
+	}
 	return true
 }
 
 func (p *Requery) finishTaskExecution() {
+	endedAt := time.Now().UTC()
+	var finalState string
+	var activeRunID string
 	p.mu.Lock()
 
 	if p.status.TaskState == "running" {
@@ -53,8 +79,22 @@ func (p *Requery) finishTaskExecution() {
 	p.status.TaskStageLabel = ""
 	p.status.TaskStageProcessed = 0
 	p.status.TaskStageTotal = 0
+	activeRunID = p.activeRunID
+	finalState = p.status.TaskState
+	p.activeRunID = ""
+	p.activeTriggerSource = ""
+	p.status.ActiveRunID = ""
+	if err := p.saveStateUnlocked(); err != nil {
+		log.Printf("[requery] WARN: failed to persist final task state: %v", err)
+	}
 	p.taskCancel = nil
 	p.mu.Unlock()
+
+	if activeRunID != "" {
+		if err := p.persistRunSnapshot(finalState, endedAt); err != nil {
+			log.Printf("[requery] WARN: failed to persist run snapshot on finish: %v", err)
+		}
+	}
 
 	log.Println("[requery] Task finished, triggering background memory release...")
 	coremain.ManualGC()
@@ -148,12 +188,20 @@ func (p *Requery) syncTaskProgress(plan taskCandidatePlan, recovery *FullRebuild
 		p.status.LastRunDomainCount = recovery.Total
 		p.status.Progress.Total = int64(recovery.Total)
 		p.status.Progress.Processed = int64(recovery.Completed)
+		p.status.ActiveRunID = recovery.TaskID
+		p.activeRunID = recovery.TaskID
 		p.status.TaskStage = recovery.Stage
 		p.status.TaskStageLabel = recovery.StageLabel
 		p.status.TaskStageProcessed = stageProcessed(recovery)
 		p.status.TaskStageTotal = stageTotal(recovery)
 		p.lastError = ""
+		if err := p.saveStateUnlocked(); err != nil {
+			log.Printf("[requery] WARN: failed to persist recovery state: %v", err)
+		}
 		p.mu.Unlock()
+		if err := p.persistRunSnapshot("running", time.Time{}); err != nil {
+			log.Printf("[requery] WARN: failed to persist recovery run snapshot: %v", err)
+		}
 		return
 	}
 
@@ -161,6 +209,9 @@ func (p *Requery) syncTaskProgress(plan taskCandidatePlan, recovery *FullRebuild
 	p.mu.Lock()
 	p.status.LastRunDomainCount = totalDomains
 	p.status.Progress.Total = int64(totalDomains)
+	if err := p.saveStateUnlocked(); err != nil {
+		log.Printf("[requery] WARN: failed to persist task progress state: %v", err)
+	}
 	p.mu.Unlock()
 }
 
@@ -170,6 +221,15 @@ func (p *Requery) prepareRecoveryTask(plan taskCandidatePlan, recovery *FullRebu
 	}
 	if recovery == nil {
 		recovery = newFullRebuildTask(plan)
+		p.mu.Lock()
+		if p.activeRunID != "" {
+			recovery.TaskID = p.activeRunID
+		} else {
+			p.activeRunID = recovery.TaskID
+		}
+		p.activeRunID = recovery.TaskID
+		p.status.ActiveRunID = recovery.TaskID
+		p.mu.Unlock()
 	} else {
 		recovery = cloneFullRebuildTask(recovery)
 		recovery.ResumeCount++

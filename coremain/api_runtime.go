@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -38,6 +39,8 @@ type runtimeResourcesResponse struct {
 	Requery       map[string]json.RawMessage     `json:"requery,omitempty"`
 	Datasets      []GeneratedDatasetEntry        `json:"datasets,omitempty"`
 	Events        []SystemEventEntry             `json:"events,omitempty"`
+	RequeryJobs   []requeryruntime.Job           `json:"requery_jobs,omitempty"`
+	RequeryRuns   []requeryruntime.Run           `json:"requery_runs,omitempty"`
 	Namespaces    map[string][]RuntimeStateEntry `json:"namespaces,omitempty"`
 }
 
@@ -145,6 +148,8 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 		Requery:       make(map[string]json.RawMessage),
 		Datasets:      make([]GeneratedDatasetEntry, 0),
 		Events:        make([]SystemEventEntry, 0),
+		RequeryJobs:   make([]requeryruntime.Job, 0),
+		RequeryRuns:   make([]requeryruntime.Run, 0),
 		Namespaces:    make(map[string][]RuntimeStateEntry),
 	}
 
@@ -171,6 +176,18 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 		resp.Events = events
 	} else {
 		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LOAD_EVENTS_FAILED", err.Error())
+		return
+	}
+	if jobs, err := requeryruntime.ListJobs(dbPath, ""); err == nil {
+		resp.RequeryJobs = jobs
+	} else {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LOAD_REQUERY_JOBS_FAILED", err.Error())
+		return
+	}
+	if runs, err := requeryruntime.ListRuns(dbPath, "", 20); err == nil {
+		resp.RequeryRuns = runs
+	} else {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_LOAD_REQUERY_RUNS_FAILED", err.Error())
 		return
 	}
 

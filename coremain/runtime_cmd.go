@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 
+	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/spf13/cobra"
 )
 
@@ -14,6 +15,7 @@ type runtimeCmdContext struct {
 	configPath string
 	baseDir    string
 	limit      int
+	runID      string
 }
 
 func newRuntimeCmd() *cobra.Command {
@@ -106,6 +108,95 @@ func newRuntimeCmd() *cobra.Command {
 	eventsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of events to print")
 	runtimeCmd.AddCommand(eventsCmd)
 
+	legacyCmd := &cobra.Command{
+		Use:   "legacy",
+		Short: "Import legacy JSON runtime files into SQLite.",
+	}
+	legacyImportCmd := &cobra.Command{
+		Use:   "import",
+		Short: "Import known legacy runtime state files from a directory into SQLite.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			summary, err := ImportLegacyRuntimeState(baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := json.Marshal(summary)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	legacyCmd.AddCommand(legacyImportCmd)
+	runtimeCmd.AddCommand(legacyCmd)
+
+	requeryCmd := &cobra.Command{
+		Use:   "requery",
+		Short: "Inspect requery jobs, runs, and checkpoints stored in runtime SQLite.",
+	}
+	requeryJobsCmd := &cobra.Command{
+		Use:   "jobs",
+		Short: "List requery job definitions as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryJobsJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryRunsCmd := &cobra.Command{
+		Use:   "runs",
+		Short: "List recent requery runs as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryRunsJSON(filepath.Join(baseDir, runtimeStateDBFilename), ctx.limit)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryRunsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of runs to print")
+	requeryCheckpointsCmd := &cobra.Command{
+		Use:   "checkpoints",
+		Short: "List recent requery checkpoints as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryCheckpointsJSON(filepath.Join(baseDir, runtimeStateDBFilename), ctx.runID, ctx.limit)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryCheckpointsCmd.Flags().StringVar(&ctx.runID, "run-id", "", "specific run id to filter checkpoints")
+	requeryCheckpointsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of checkpoints to print")
+	requeryCmd.AddCommand(requeryJobsCmd, requeryRunsCmd, requeryCheckpointsCmd)
+	runtimeCmd.AddCommand(requeryCmd)
+
 	return runtimeCmd
 }
 
@@ -174,6 +265,30 @@ func runtimeEventsJSON(dbPath string, limit int) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(events)
+}
+
+func runtimeRequeryJobsJSON(dbPath string) ([]byte, error) {
+	jobs, err := requeryruntime.ListJobs(dbPath, "")
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(jobs)
+}
+
+func runtimeRequeryRunsJSON(dbPath string, limit int) ([]byte, error) {
+	runs, err := requeryruntime.ListRuns(dbPath, "", limit)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(runs)
+}
+
+func runtimeRequeryCheckpointsJSON(dbPath, runID string, limit int) ([]byte, error) {
+	checkpoints, err := requeryruntime.ListCheckpoints(dbPath, "", runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(checkpoints)
 }
 
 func parseExportedFilesOutput(s string) (int, error) {

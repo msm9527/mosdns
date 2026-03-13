@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -50,6 +51,29 @@ func TestHandleRuntimeResources(t *testing.T) {
 	}
 	if err := RecordSystemEvent("runtime.test", "info", "hello", map[string]any{"ok": true}); err != nil {
 		t.Fatalf("RecordSystemEvent: %v", err)
+	}
+	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
+	if err := requeryruntime.ReplaceJobs(dbPath, "cfg-a", []requeryruntime.Job{{
+		JobID:         "cfg-a/full_rebuild/manual",
+		ConfigKey:     "cfg-a",
+		Mode:          "full_rebuild",
+		TriggerSource: "manual",
+		Enabled:       true,
+		Definition:    json.RawMessage(`{"limit":0}`),
+	}}); err != nil {
+		t.Fatalf("ReplaceJobs: %v", err)
+	}
+	if err := requeryruntime.SaveRun(dbPath, requeryruntime.Run{
+		RunID:         "run-1",
+		ConfigKey:     "cfg-a",
+		JobID:         "cfg-a/full_rebuild/manual",
+		Mode:          "full_rebuild",
+		TriggerSource: "manual",
+		State:         "completed",
+		Total:         10,
+		Completed:     10,
+	}); err != nil {
+		t.Fatalf("SaveRun: %v", err)
 	}
 
 	router := chi.NewRouter()
@@ -94,6 +118,12 @@ func TestHandleRuntimeResources(t *testing.T) {
 	}
 	if !foundRuntimeTest {
 		t.Fatalf("expected runtime.test event in payload: %+v", resp.Events)
+	}
+	if len(resp.RequeryJobs) != 1 || resp.RequeryJobs[0].Mode != "full_rebuild" {
+		t.Fatalf("unexpected requery jobs payload: %+v", resp.RequeryJobs)
+	}
+	if len(resp.RequeryRuns) != 1 || resp.RequeryRuns[0].RunID != "run-1" {
+		t.Fatalf("unexpected requery runs payload: %+v", resp.RequeryRuns)
 	}
 }
 
