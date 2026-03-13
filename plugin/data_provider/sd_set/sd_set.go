@@ -23,7 +23,6 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"github.com/go-chi/chi/v5"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
 	"golang.org/x/net/proxy"
@@ -74,6 +73,7 @@ type SdSet struct {
 
 var _ data_provider.DomainMatcherProvider = (*SdSet)(nil)
 var _ io.Closer = (*SdSet)(nil)
+
 // 确保实现了 RuleExporter 接口
 var _ data_provider.RuleExporter = (*SdSet)(nil)
 
@@ -464,7 +464,7 @@ func (p *SdSet) reloadAllRules() error {
 
 	p.matcher.Store(newMatcher)
 	log.Printf("[%s] finished reloading. Total active rules: %d", PluginType, totalRules)
-        newMatcher = nil 
+	newMatcher = nil
 
 	if rulesCountUpdated {
 		log.Printf("[%s] Rule counts have changed, saving configuration...", PluginType)
@@ -475,7 +475,7 @@ func (p *SdSet) reloadAllRules() error {
 
 	// 规则更新完毕（无论是手动、API还是定时器），通知订阅者
 	p.notifySubscribers()
-        coremain.ManualGC() 
+	coremain.ManualGC()
 	return nil
 }
 
@@ -522,7 +522,7 @@ func (p *SdSet) downloadAndUpdateLocalFile(ctx context.Context, sourceName strin
 	tempMatcher := domain.NewDomainMixMatcher()
 	// Modified: pass enableRegexp to validation
 	ok, count, _ := tryLoadSRS(srsData, tempMatcher, enableRegexp)
-        tempMatcher = nil 
+	tempMatcher = nil
 	if !ok {
 		return fmt.Errorf("downloaded file for '%s' is not a valid SRS file or is corrupted", sourceName)
 	}
@@ -545,7 +545,7 @@ func (p *SdSet) downloadAndUpdateLocalFile(ctx context.Context, sourceName strin
 	if err := p.saveConfig(); err != nil {
 		log.Printf("[%s] ERROR: failed to save config after updating '%s': %v", PluginType, sourceName, err)
 	}
-        srsData = nil
+	srsData = nil
 	return nil
 }
 
@@ -589,126 +589,12 @@ func (p *SdSet) backgroundUpdater() {
 			wg.Wait()
 			log.Printf("[%s] auto-update: downloads finished, triggering reload.", PluginType)
 			p.reloadAllRules()
-                        coremain.ManualGC()
+			coremain.ManualGC()
 		case <-p.ctx.Done():
 			log.Printf("[%s] background updater is shutting down.", PluginType)
 			return
 		}
 	}
-}
-
-func (p *SdSet) api() *chi.Mux {
-	r := chi.NewRouter()
-	r.Get("/config", func(w http.ResponseWriter, r *http.Request) {
-		p.mu.RLock()
-		defer p.mu.RUnlock()
-		sources := make([]*RuleSource, 0, len(p.sources))
-		for _, src := range p.sources {
-			sources = append(sources, src)
-		}
-		sort.Slice(sources, func(i, j int) bool { return sources[i].Name < sources[j].Name })
-		jsonResponse(w, sources, http.StatusOK)
-	})
-	r.Post("/update/{name}", func(w http.ResponseWriter, r *http.Request) {
-		name := chi.URLParam(r, "name")
-		p.mu.RLock()
-		_, ok := p.sources[name]
-		p.mu.RUnlock()
-		if !ok {
-			jsonError(w, fmt.Sprintf("source '%s' not found", name), http.StatusNotFound)
-			return
-		}
-		go func() {
-			log.Printf("[%s] manual update triggered for source '%s'.", PluginType, name)
-			updateCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout)
-			defer cancel()
-			if err := p.downloadAndUpdateLocalFile(updateCtx, name); err != nil {
-				log.Printf("[%s] ERROR: failed to manually update source '%s': %v", PluginType, name, err)
-				return
-			}
-			log.Printf("[%s] manual update for '%s' successful, triggering reload.", PluginType, name)
-			p.reloadAllRules()
-		}()
-		jsonResponse(w, map[string]string{"message": fmt.Sprintf("update process for '%s' started in the background", name)}, http.StatusAccepted)
-	})
-	r.Put("/config/{name}", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		name := chi.URLParam(r, "name")
-		var reqData RuleSource
-		if err := json.NewDecoder(r.Body).Decode(&reqData); err != nil {
-			jsonError(w, "invalid request body", http.StatusBadRequest)
-			return
-		}
-		if strings.TrimSpace(reqData.Files) == "" || strings.TrimSpace(reqData.URL) == "" {
-			jsonError(w, "'files' and 'url' fields are required", http.StatusBadRequest)
-			return
-		}
-		reqData.Name = name
-		var updatedSource *RuleSource
-		var statusCode int
-		p.mu.Lock()
-		existing, isUpdate := p.sources[name]
-		if isUpdate {
-			existing.Type = reqData.Type
-			existing.Files = reqData.Files
-			existing.URL = reqData.URL
-			existing.Enabled = reqData.Enabled
-			existing.EnableRegexp = reqData.EnableRegexp // Added: update config
-			existing.AutoUpdate = reqData.AutoUpdate
-			existing.UpdateIntervalHours = reqData.UpdateIntervalHours
-			updatedSource = existing
-			statusCode = http.StatusOK
-		} else {
-			reqData.RuleCount = 0
-			reqData.LastUpdated = time.Time{}
-			p.sources[name] = &reqData
-			updatedSource = &reqData
-			statusCode = http.StatusCreated
-		}
-		p.mu.Unlock()
-		if err := p.saveConfig(); err != nil {
-			jsonError(w, "failed to save config", http.StatusInternalServerError)
-			return
-		}
-		go p.reloadAllRules()
-		jsonResponse(w, updatedSource, statusCode)
-	}))
-	r.Delete("/config/{name}", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		name := chi.URLParam(r, "name")
-		var srcToDelete *RuleSource
-		p.mu.Lock()
-		src, ok := p.sources[name]
-		if ok {
-			srcToDelete = src
-			delete(p.sources, name)
-		}
-		p.mu.Unlock()
-		if !ok {
-			jsonError(w, "source not found", http.StatusNotFound)
-			return
-		}
-		if srcToDelete.Files != "" {
-			if err := os.Remove(srcToDelete.Files); err != nil && !os.IsNotExist(err) {
-				log.Printf("[%s] WARN: failed to delete srs file %s: %v", PluginType, srcToDelete.Files, err)
-			}
-		}
-		if err := p.saveConfig(); err != nil {
-			jsonError(w, "failed to save config", http.StatusInternalServerError)
-			return
-		}
-		go p.reloadAllRules()
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	return r
-}
-
-func jsonResponse(w http.ResponseWriter, data any, statusCode int) {
-	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.WriteHeader(statusCode)
-	json.NewEncoder(w).Encode(data)
-}
-
-func jsonError(w http.ResponseWriter, message string, code int) {
-	jsonResponse(w, map[string]string{"error": message}, code)
 }
 
 var (

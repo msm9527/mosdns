@@ -6,13 +6,10 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,7 +17,6 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"github.com/go-chi/chi/v5"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
 	"go.uber.org/zap"
@@ -39,10 +35,6 @@ type Args struct {
 	Exps  []string `yaml:"exps"`
 	Sets  []string `yaml:"sets"` // 保留字段以防配置文件报错，但内部不再加载
 	Files []string `yaml:"files"`
-}
-
-type domainPayload struct {
-	Values []string `json:"values"`
 }
 
 // 接口实现检查
@@ -361,105 +353,6 @@ func statWatchedFile(path string) (watchedFileState, error) {
 		size:    info.Size(),
 		modTime: info.ModTime(),
 	}, nil
-}
-
-// ================== API FUNCTION (CORRECTED) ==================
-
-func (d *DomainSetLight) api() *chi.Mux {
-	r := chi.NewRouter()
-
-	// 优化后的 show 接口：支持分页和后端搜索
-	r.Get("/show", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) { // 这里定义的变量是 r
-		d.mu.RLock()
-		defer d.mu.RUnlock()
-
-		// 获取分页和搜索参数
-		query := strings.ToLower(r.URL.Query().Get("q"))
-		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))   // 修改这里：req -> r
-		offset, _ := strconv.Atoi(r.URL.Query().Get("offset")) // 修改这里：req -> r
-
-		if limit <= 0 {
-			limit = 100
-		}
-		if offset < 0 {
-			offset = 0
-		}
-
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-
-		matchedCount := 0
-		sentCount := 0
-
-		for _, rule := range d.rules {
-			found := false
-			if query == "" {
-				found = true
-			} else {
-				if strings.Contains(strings.ToLower(rule), query) {
-					found = true
-				}
-			}
-
-			if found {
-				matchedCount++
-				if matchedCount <= offset {
-					continue
-				}
-
-				fmt.Fprintln(w, rule)
-				sentCount++
-
-				if sentCount >= limit {
-					break
-				}
-			}
-		}
-	}))
-
-	r.Get("/save", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		d.mu.RLock()
-		defer d.mu.RUnlock()
-		if d.ruleFile == "" {
-			http.Error(w, "no file configured", http.StatusInternalServerError)
-			return
-		}
-		if err := writeRulesToFile(d.ruleFile, d.rules); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.WriteHeader(http.StatusOK)
-	}))
-
-	r.Post("/post", coremain.WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-		var p domainPayload
-		if err := json.NewDecoder(r.Body).Decode(&p); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		if d.ruleFile == "" || !strings.EqualFold(filepath.Ext(d.ruleFile), ".txt") {
-			http.Error(w, "no txt file configured, cannot post", http.StatusBadRequest)
-			return
-		}
-
-		// [优化] 直接替换 slice，无需重建 Trie
-		d.mu.Lock()
-		d.rules = p.Values
-		d.mu.Unlock()
-
-		if err := writeRulesToFile(d.ruleFile, d.rules); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		// 规则更新成功，通知订阅者 (domain_mapper)
-		d.notifySubscribers()
-
-		w.WriteHeader(http.StatusOK)
-		fmt.Fprintf(w, "domain_set_light replaced with %d entries", len(d.rules))
-	}))
-
-	return r
 }
 
 func (d *DomainSetLight) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {

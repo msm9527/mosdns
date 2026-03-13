@@ -26,11 +26,9 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net"
-	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +39,6 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
-	"github.com/go-chi/chi/v5"
 	"github.com/miekg/dns"
 )
 
@@ -82,11 +79,6 @@ type Rewrite struct {
 }
 
 var _ coremain.RuntimeConfigReloader = (*Rewrite)(nil)
-
-// apiPayload is used for decoding JSON from the /post API endpoint.
-type apiPayload struct {
-	Values []string `json:"values"`
-}
 
 // Init initializes the plugin from the configuration.
 func Init(bp *coremain.BP, args any) (any, error) {
@@ -354,63 +346,6 @@ func (r *Rewrite) handleDomainRewrite(ctx context.Context, qCtx *query_context.C
 	}
 
 	qCtx.SetResponse(finalResp)
-}
-
-// --- API Methods ---
-
-func (r *Rewrite) api() *chi.Mux {
-	router := chi.NewRouter()
-	router.Get("/show", r.handleShow)
-	router.Post("/post", r.handlePost)
-	return router
-}
-
-func (r *Rewrite) handleShow(w http.ResponseWriter, req *http.Request) {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.Write([]byte(strings.Join(r.rules, "\n")))
-}
-
-func (r *Rewrite) handlePost(w http.ResponseWriter, req *http.Request) {
-	var p apiPayload
-	if err := json.NewDecoder(req.Body).Decode(&p); err != nil {
-		http.Error(w, "invalid JSON payload", http.StatusBadRequest)
-		return
-	}
-
-	if r.ruleFile == "" {
-		http.Error(w, "no rule file configured, cannot post rules", http.StatusBadRequest)
-		return
-	}
-
-	tmpMatcher := domain.NewMixMatcher[*rewriteTarget]()
-	tmpMatcher.SetDefaultMatcher(domain.MatcherFull)
-
-	tmpRules, err := loadRulesFromReader(strings.NewReader(strings.Join(p.Values, "\n")), tmpMatcher)
-	if err != nil {
-		http.Error(w, fmt.Sprintf("failed to parse new rules: %s", err), http.StatusBadRequest)
-		return
-	}
-
-	r.mu.Lock()
-	r.matcher = tmpMatcher
-	r.rules = tmpRules
-	r.mu.Unlock()
-
-	tmpMatcher = nil
-	tmpRules = nil
-
-	if err := writeRulesToFile(r.ruleFile, r.rules); err != nil {
-		http.Error(w, fmt.Sprintf("In-memory rules updated, but failed to write to file: %s", err), http.StatusInternalServerError)
-		return
-	}
-
-	coremain.ManualGC()
-
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "rewrite rules replaced with %d entries", len(r.rules))
 }
 
 func (r *Rewrite) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {

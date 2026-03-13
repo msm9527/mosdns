@@ -179,7 +179,7 @@ api:
 - 插件通过 `coremain.RegNewPluginFunc(type, init, argsFactory)` 注册。
 - `plugin/enabled_plugins.go` 通过 blank import 激活各插件 init。
 - 启动时按配置 `plugins` 顺序实例化。
-- 每个插件可通过 `BP.RegAPI()` 将子路由挂载到 `/plugins/{tag}`。
+- 当前插件管理与对外能力统一优先收口到核心 `/api/v1/*`、`/api/v2/*` 路由，不再依赖通用 `/plugins/{tag}` 挂载约定。
 
 ## 8.2 插件类型总览（按类型常量汇总）
 
@@ -208,13 +208,10 @@ api:
 
 ## 9. 插件 API 总体规范
 
-- 基础路径：`/plugins/{plugin_tag}`（`plugin_tag` 来自 YAML 中插件 `tag`）
-- 常见接口风格：
-  - `GET /show`：查看当前内存规则/状态
-  - `POST /post`：提交并替换规则
-  - `GET /save`：将内存状态落盘
-  - `GET /flush`：清空并落盘
-- 详细接口见 [API_REFERENCE.md](./API_REFERENCE.md)
+- 当前对外接口以 `/api/v1/*`、`/api/v2/*` 为准。
+- 历史上插件曾暴露过 `/plugins/{plugin_tag}` 风格接口，但这类通用挂载约定已移除。
+- 文档里若仍提到 `/show`、`/post`、`/save`、`/flush` 等插件子路径，应视为历史兼容说明，不再作为新增接口模式。
+- 当前可用接口以 [API_REFERENCE.md](./API_REFERENCE.md) 中列出的标准路径为准。
 
 ## 10. 可观测性与诊断
 

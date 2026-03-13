@@ -24,10 +24,8 @@ import (
 	"compress/zlib"
 	"context"
 	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
-	"net/http"
 	"net/netip"
 	"os"
 	"strings"
@@ -38,7 +36,6 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/netlist"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"github.com/go-chi/chi/v5"
 	"github.com/sagernet/sing/common/varbin"
 	"go4.org/netipx"
 )
@@ -207,89 +204,6 @@ func (d *IPSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []corema
 	}()
 
 	return nil
-}
-
-// api registers HTTP routes: show, save, flush, post
-func (d *IPSet) api() *chi.Mux {
-	r := chi.NewRouter()
-
-	// GET /show: list in-memory prefixes
-	r.Get("/show", func(w http.ResponseWriter, r *http.Request) {
-		d.mutex.Lock()
-		l := d.list
-		d.mutex.Unlock()
-
-		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-		if l != nil {
-			l.ForEach(func(pfx netip.Prefix) {
-				io.WriteString(w, normalizePrefix(pfx).String()+"\n")
-			})
-		}
-	})
-
-	// GET /save: persist to files
-	r.Get("/save", func(w http.ResponseWriter, r *http.Request) {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-		if err := d.saveToFiles(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Write([]byte("ip_set rules saved"))
-	})
-
-	// GET /flush: clear in-memory and save empty list
-	r.Get("/flush", func(w http.ResponseWriter, r *http.Request) {
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-
-		d.list = netlist.NewList()
-
-		d.rebuildSnapshot()
-
-		if err := d.saveToFiles(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-		w.Write([]byte("ip_set flushed and saved"))
-		coremain.ManualGC()
-	})
-
-	// POST /post: replace in-memory list with provided values and save
-	r.Post("/post", func(w http.ResponseWriter, r *http.Request) {
-		var body struct {
-			Values []string `json:"values"`
-		}
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			http.Error(w, "invalid JSON", http.StatusBadRequest)
-			return
-		}
-
-		tmpList := netlist.NewList()
-		for _, s := range body.Values {
-			if pfx, err := parseNetipPrefix(s); err == nil {
-				tmpList.Append(pfx)
-			}
-		}
-		tmpList.Sort()
-
-		d.mutex.Lock()
-		defer d.mutex.Unlock()
-
-		d.list = tmpList
-
-		d.rebuildSnapshot()
-
-		if err := d.saveToFiles(); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
-
-		w.Write([]byte(fmt.Sprintf("ip_set replaced with %d entries", d.list.Len())))
-		coremain.ManualGC()
-	})
-
-	return r
 }
 
 func (d *IPSet) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {

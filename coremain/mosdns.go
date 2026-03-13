@@ -251,10 +251,6 @@ func (m *Mosdns) GetGlobalOverrides() *GlobalOverrides {
 	return CloneGlobalOverrides(m.globalOverrides)
 }
 
-func (m *Mosdns) RegPluginAPI(tag string, mux *chi.Mux) {
-	m.httpMux.Mount("/plugins/"+tag, mux)
-}
-
 func newMetricsReg() *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))

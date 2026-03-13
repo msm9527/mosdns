@@ -4,7 +4,7 @@
 
 - 缓存插件：`type: cache`
 - 配置文件：`config/sub_config/cache.yaml`
-- 运行态接口：`/plugins/{cache_tag}/stats`
+- 运行态接口：`/api/v1/cache/{cache_tag}/stats`
 
 本手册用于指导当前缓存实例从仅 snapshot 模式切换到 `snapshot + WAL` 模式，并提供观测与回滚步骤。
 
@@ -31,7 +31,7 @@
 
 1. 确认每个缓存实例的 `dump_file` 和 `wal_file` 路径独立，不能复用同一 `.wal` 文件。
 2. 确认运行用户对 `cache/` 目录具备创建、写入、重命名权限。
-3. 确认现网监控已能访问 `/plugins/{cache_tag}/stats`。
+3. 确认现网监控已能访问 `/api/v1/cache/{cache_tag}/stats`。
 4. 确认 UI 已切到 `/stats`，不要再用 `/metrics` 文本推导缓存状态。
 5. 变更前保留现有 `.dump` 文件，避免同时丢失 snapshot 基线和 WAL 增量。
 
@@ -51,7 +51,7 @@
 
 ## 发布后观测点
 
-以 `GET /plugins/{cache_tag}/stats` 为准，重点看以下字段：
+以 `GET /api/v1/cache/{cache_tag}/stats` 为准，重点看以下字段：
 
 也可以直接使用仓库脚本：
 
@@ -148,7 +148,7 @@ python -X utf8 "scripts/check_cache_stats.py" \
 
 处理：
 
-1. 直接访问 `/plugins/{cache_tag}/stats` 确认接口返回。
+1. 直接访问 `/api/v1/cache/{cache_tag}/stats` 确认接口返回。
 2. 若 `/stats` 正常，优先检查前端缓存标签是否与插件 `tag` 一致。
 3. 不要回退到解析 `/metrics` 文本的旧方案。
 
@@ -160,7 +160,7 @@ python -X utf8 "scripts/check_cache_stats.py" \
 2. 在目标实例中删除 `wal_sync_interval`。
 3. 保留 `dump_file` 和 `dump_interval`。
 4. 重启服务。
-5. 用 `/plugins/{cache_tag}/stats` 确认：
+5. 用 `/api/v1/cache/{cache_tag}/stats` 确认：
    - `wal_file` 为空
    - `last_wal_replay.status` 不再作为必要观测项
    - `last_dump.status` 正常
@@ -170,7 +170,7 @@ python -X utf8 "scripts/check_cache_stats.py" \
 - [ ] 已完成配置变更备份
 - [ ] 已确认 `cache/` 目录写权限
 - [ ] 已确认灰度实例清单
-- [ ] 已确认 `/plugins/{cache_tag}/stats` 可访问
+- [ ] 已确认 `/api/v1/cache/{cache_tag}/stats` 可访问
 - [ ] 已确认 UI 已切换到 `/stats`
 - [ ] 已记录回滚人、回滚条件和窗口时间
 
