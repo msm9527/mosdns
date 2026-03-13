@@ -73,7 +73,43 @@
 
 获取抓取到的日志，返回 JSON 数组。
 
-### 2.3 审计 API v1
+### 2.3 运行态聚合 API
+
+根路径：`/api/v1/runtime`
+
+| 方法 | 子路径 | 等级 | 说明 |
+| --- | --- | --- | --- |
+| `GET` | `/summary` | `stable` | 获取运行态命名空间概览、存储引擎和聚合摘要 |
+| `GET` | `/resources` | `stable` | 获取运行态资源聚合结果 |
+| `GET` | `/requery/jobs` | `stable` | 获取 requery 任务定义 |
+| `GET` | `/requery/runs` | `stable` | 获取最近 requery 运行历史 |
+| `GET` | `/requery/checkpoints` | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
+| `POST` | `/requery/enqueue` | `stable` | 触发 requery 任务入队 |
+
+`GET /api/v1/runtime/summary` 重点用于：
+
+- 前端首页或诊断页做统一状态拉取
+- 确认当前运行态是否已经由 SQLite 接管
+- 查看 `switch / webinfo / requery / adguard_rule / diversion_rule / generated_dataset` 是否有数据
+
+`GET /api/v1/runtime/resources` 当前会聚合：
+
+- `switches`
+- `webinfo`
+- `requery`
+- `requery_jobs`
+- `requery_runs`
+- `adguard`
+- `diversion`
+- `datasets`
+- `events`
+
+说明：
+
+- `adguard_rule` 与 `diversion_rule` 是稳定资源域，不建议前端继续直接读取旧 JSON 文件。
+- `generated_dataset` 属于动态规则导出真源，对应的兼容文件可由 CLI 重新导出。
+
+### 2.4 审计 API v1
 
 根路径：`/api/v1/audit`
 
@@ -126,7 +162,7 @@
 - `POST /clear`：会同时清空内存窗口和已落盘的审计历史。
 - `POST /capacity`：设置保存后立即生效，无需重启服务。
 
-### 2.4 审计 API v2
+### 2.5 审计 API v2
 
 根路径：`/api/v2/audit`
 
@@ -153,7 +189,7 @@
 }
 ```
 
-### 2.5 覆盖配置
+### 2.6 覆盖配置
 
 根路径：`/api/v1/overrides`
 
@@ -178,7 +214,7 @@
 }
 ```
 
-### 2.6 配置管理
+### 2.7 配置管理
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
@@ -248,7 +284,7 @@
 }
 ```
 
-### 2.7 版本检查与程序更新
+### 2.8 版本检查与程序更新
 
 根路径：`/api/v1/update`
 

@@ -1,5 +1,18 @@
 # mosdns V2 重构实施清单
 
+## 0. 当前实施状态（2026-03-13）
+
+截至当前代码基线，`Phase 0 ~ Phase 9` 对应的核心目标已经完成主线落地，具体表现为：
+
+- SQLite 已作为运行态与动态规则的主真源之一
+- 审计、runtime state、requery、adguard、diversion datasets 已进入统一治理路径
+- `config v2`、`config migrate`、`config validate` 已可用
+- `/api/v1/runtime/*` 已成为稳定聚合接口
+- 内置前端页面已切到稳定 runtime API
+- 旧 JSON/TXT 路径保留为兼容导入导出物，而不是首选真源
+
+当前剩余工作主要是“兼容期结束后的历史清理”，而不再是架构主线缺失。
+
 ## 1. 文档定位
 
 本文档是 [REARCHITECTURE_V2.md](./REARCHITECTURE_V2.md) 的实施版任务清单。
