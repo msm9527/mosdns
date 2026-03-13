@@ -13,12 +13,13 @@ import (
 const runtimeStateDBFilename = "runtime.db"
 
 type runtimeStateStore struct {
-	mu   sync.Mutex
-	path string
-	db   *runtimesqlite.RuntimeDB
+	db *runtimesqlite.RuntimeDB
 }
 
-var globalRuntimeStateStore runtimeStateStore
+var globalRuntimeStateStore struct {
+	mu    sync.Mutex
+	paths map[string]*runtimesqlite.RuntimeDB
+}
 
 func defaultRuntimeStateDBPath() string {
 	baseDir := MainConfigBaseDir
@@ -29,27 +30,30 @@ func defaultRuntimeStateDBPath() string {
 }
 
 func getRuntimeStateStore() (*runtimeStateStore, error) {
-	path := defaultRuntimeStateDBPath()
+	return getRuntimeStateStoreByPath(defaultRuntimeStateDBPath())
+}
+
+func getRuntimeStateStoreByPath(path string) (*runtimeStateStore, error) {
+	if path == "" {
+		path = defaultRuntimeStateDBPath()
+	}
 
 	globalRuntimeStateStore.mu.Lock()
 	defer globalRuntimeStateStore.mu.Unlock()
 
-	if globalRuntimeStateStore.db != nil && globalRuntimeStateStore.path == path {
-		return &globalRuntimeStateStore, nil
+	if globalRuntimeStateStore.paths == nil {
+		globalRuntimeStateStore.paths = make(map[string]*runtimesqlite.RuntimeDB)
 	}
-	if globalRuntimeStateStore.db != nil {
-		_ = globalRuntimeStateStore.db.Close()
-		globalRuntimeStateStore.db = nil
-		globalRuntimeStateStore.path = ""
+	if db := globalRuntimeStateStore.paths[path]; db != nil {
+		return &runtimeStateStore{db: db}, nil
 	}
 
 	db, err := runtimesqlite.Open(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open runtime state db: %w", err)
 	}
-	globalRuntimeStateStore.db = db
-	globalRuntimeStateStore.path = path
-	return &globalRuntimeStateStore, nil
+	globalRuntimeStateStore.paths[path] = db
+	return &runtimeStateStore{db: db}, nil
 }
 
 func (s *runtimeStateStore) get(namespace, key string, dst any) (bool, error) {
@@ -96,7 +100,11 @@ func (s *runtimeStateStore) remove(namespace, key string) error {
 }
 
 func LoadRuntimeStateJSON(namespace, key string, dst any) (bool, error) {
-	store, err := getRuntimeStateStore()
+	return LoadRuntimeStateJSONFromPath("", namespace, key, dst)
+}
+
+func LoadRuntimeStateJSONFromPath(path, namespace, key string, dst any) (bool, error) {
+	store, err := getRuntimeStateStoreByPath(path)
 	if err != nil {
 		return false, err
 	}
@@ -104,7 +112,11 @@ func LoadRuntimeStateJSON(namespace, key string, dst any) (bool, error) {
 }
 
 func SaveRuntimeStateJSON(namespace, key string, value any) error {
-	store, err := getRuntimeStateStore()
+	return SaveRuntimeStateJSONToPath("", namespace, key, value)
+}
+
+func SaveRuntimeStateJSONToPath(path, namespace, key string, value any) error {
+	store, err := getRuntimeStateStoreByPath(path)
 	if err != nil {
 		return err
 	}
@@ -112,7 +124,11 @@ func SaveRuntimeStateJSON(namespace, key string, value any) error {
 }
 
 func DeleteRuntimeStateJSON(namespace, key string) error {
-	store, err := getRuntimeStateStore()
+	return DeleteRuntimeStateJSONFromPath("", namespace, key)
+}
+
+func DeleteRuntimeStateJSONFromPath(path, namespace, key string) error {
+	store, err := getRuntimeStateStoreByPath(path)
 	if err != nil {
 		return err
 	}

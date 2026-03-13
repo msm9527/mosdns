@@ -247,7 +247,7 @@ func (p *Requery) saveConfigUnlocked() error {
 		return errors.New("requery config is nil")
 	}
 	payload := configFromPersisted(p.config)
-	if err := coremain.SaveRuntimeStateJSON(runtimeStateNamespaceRequery, p.runtimeConfigKey(), payload); err != nil {
+	if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), payload); err != nil {
 		return fmt.Errorf("failed to save runtime config state: %w", err)
 	}
 
@@ -270,7 +270,7 @@ func (p *Requery) saveConfigUnlocked() error {
 
 func (p *Requery) loadStateUnlocked(legacyStatus Status, legacyTask *FullRebuildTask) (bool, error) {
 	var runtimeState persistedState
-	if ok, err := coremain.LoadRuntimeStateJSON(runtimeStateNamespaceRequery, p.runtimeStateKey(), &runtimeState); err == nil && ok {
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeStateKey(), &runtimeState); err == nil && ok {
 		p.status = runtimeState.Status
 		if p.status.TaskState == "" {
 			p.status.TaskState = "idle"
@@ -309,7 +309,7 @@ func (p *Requery) loadStateUnlocked(legacyStatus Status, legacyTask *FullRebuild
 
 func (p *Requery) saveStateUnlocked() error {
 	payload := cloneState(p.status, p.fullTask)
-	if err := coremain.SaveRuntimeStateJSON(runtimeStateNamespaceRequery, p.runtimeStateKey(), payload); err != nil {
+	if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeStateKey(), payload); err != nil {
 		return fmt.Errorf("failed to save runtime requery state: %w", err)
 	}
 
@@ -335,13 +335,17 @@ func (p *Requery) runtimeConfigKey() string {
 	return filepath.Clean(p.filePath) + ":config"
 }
 
+func (p *Requery) runtimeDBPath() string {
+	return filepath.Join(filepath.Dir(filepath.Clean(p.filePath)), "runtime.db")
+}
+
 func (p *Requery) runtimeStateKey() string {
 	return filepath.Clean(stateFilePath(p.filePath)) + ":state"
 }
 
 func (p *Requery) loadPersistedConfigUnlocked() (Config, Status, *FullRebuildTask, bool, bool, error) {
 	var persisted persistedConfig
-	if ok, err := coremain.LoadRuntimeStateJSON(runtimeStateNamespaceRequery, p.runtimeConfigKey(), &persisted); err == nil && ok {
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), &persisted); err == nil && ok {
 		return Config{
 			DomainProcessing:  persisted.DomainProcessing,
 			URLActions:        persisted.URLActions,

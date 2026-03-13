@@ -231,8 +231,9 @@ func (s *stateStore) Set(def switchmeta.Definition, value string) error {
 func (s *stateStore) read() (map[string]string, error) {
 	runtimeKey := s.runtimeStateKey()
 	if runtimeKey != "" {
+		dbPath := filepath.Join(filepath.Dir(filepath.Clean(s.path)), "runtime.db")
 		values := make(map[string]string)
-		ok, err := coremain.LoadRuntimeStateJSON(runtimeStateNamespaceSwitch, runtimeKey, &values)
+		ok, err := coremain.LoadRuntimeStateJSONFromPath(dbPath, runtimeStateNamespaceSwitch, runtimeKey, &values)
 		if err == nil && ok {
 			return values, nil
 		}
@@ -266,7 +267,8 @@ func (s *stateStore) read() (map[string]string, error) {
 func (s *stateStore) write(values map[string]string) error {
 	runtimeKey := s.runtimeStateKey()
 	if runtimeKey != "" {
-		if err := coremain.SaveRuntimeStateJSON(runtimeStateNamespaceSwitch, runtimeKey, values); err != nil {
+		dbPath := filepath.Join(filepath.Dir(filepath.Clean(s.path)), "runtime.db")
+		if err := coremain.SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceSwitch, runtimeKey, values); err != nil {
 			return err
 		}
 	}
