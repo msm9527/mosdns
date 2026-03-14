@@ -4,6 +4,7 @@
 - [mosdns V2 完全重构蓝图](./REARCHITECTURE_V2.md)
 - [mosdns V2 重构实施清单](./REARCHITECTURE_V2_IMPLEMENTATION_CHECKLIST.md)
 - [mosdns V2 重构交付总结](./REARCHITECTURE_V2_DELIVERY_SUMMARY.md)
+- [mosdns V2 重构状态复盘、缺口与优化建议](./REARCHITECTURE_V2_STATUS_REVIEW.md)
 - [mosdns V2 重构 PR 说明模板](./REARCHITECTURE_V2_PR_BODY.md)
 - [mosdns V2 运行态与迁移运维手册](./RUNTIME_V2_OPERATOR_GUIDE.md)
 - [运行态状态基线盘点](./RUNTIME_STATE_BASELINE.md)
