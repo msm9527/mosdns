@@ -13,10 +13,10 @@ import (
 )
 
 const (
-	runtimeNamespaceSwitch  = "switch"
-	runtimeNamespaceWebinfo = "webinfo"
-	runtimeNamespaceRequery = "requery"
-	runtimeNamespaceAdguard = "adguard_rule"
+	runtimeNamespaceSwitch    = "switch"
+	runtimeNamespaceWebinfo   = "webinfo"
+	runtimeNamespaceRequery   = "requery"
+	runtimeNamespaceAdguard   = "adguard_rule"
 	runtimeNamespaceDiversion = "diversion_rule"
 )
 
@@ -54,6 +54,7 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 		r.Get("/resources", handleRuntimeResources)
 		r.Get("/datasets", handleRuntimeDatasets)
 		r.Post("/datasets/export", handleRuntimeDatasetsExport)
+		r.Post("/datasets/verify", handleRuntimeDatasetsVerify)
 		r.Get("/events", handleRuntimeEvents)
 		r.Get("/overrides", func(w http.ResponseWriter, r *http.Request) {
 			handleGetOverrides(w, r, m)
@@ -130,6 +131,21 @@ func handleRuntimeDatasetsExport(w http.ResponseWriter, _ *http.Request) {
 		"status":         "success",
 		"exported_files": exported,
 	})
+}
+
+func handleRuntimeDatasetsVerify(w http.ResponseWriter, _ *http.Request) {
+	summary, err := VerifyGeneratedDatasetsOnFiles(defaultRuntimeStateDBPath())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_DATASETS_VERIFY_FAILED", err.Error())
+		return
+	}
+	_ = RecordSystemEvent("runtime.datasets", "info", "verified generated datasets against files", map[string]any{
+		"checked":  summary.Checked,
+		"matched":  summary.Matched,
+		"missing":  summary.Missing,
+		"mismatch": summary.Mismatch,
+	})
+	writeJSON(w, http.StatusOK, summary)
 }
 
 func handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {

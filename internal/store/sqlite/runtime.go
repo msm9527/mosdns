@@ -328,5 +328,18 @@ func baseMigrations() []Migration {
 				ON diversion_rule_source(enabled, updated_at_unix_ms DESC);
 			`,
 		},
+		{
+			ID: "0012_generated_dataset_integrity",
+			Up: `
+				ALTER TABLE generated_dataset ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
+				ALTER TABLE generated_dataset ADD COLUMN content_sha256 TEXT NOT NULL DEFAULT '';
+				ALTER TABLE generated_dataset ADD COLUMN last_verified_at_unix_ms INTEGER NOT NULL DEFAULT 0;
+				ALTER TABLE generated_dataset ADD COLUMN last_verified_status TEXT NOT NULL DEFAULT '';
+				ALTER TABLE generated_dataset ADD COLUMN last_verified_error TEXT NOT NULL DEFAULT '';
+				ALTER TABLE generated_dataset ADD COLUMN last_file_sha256 TEXT NOT NULL DEFAULT '';
+				CREATE INDEX IF NOT EXISTS idx_generated_dataset_sha
+				ON generated_dataset(content_sha256, updated_at_unix_ms DESC);
+			`,
+		},
 	}
 }

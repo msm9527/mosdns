@@ -85,7 +85,24 @@ func newRuntimeCmd() *cobra.Command {
 		},
 		SilenceUsage: true,
 	}
-	datasetsCmd.AddCommand(datasetsListCmd, datasetsExportCmd)
+	datasetsVerifyCmd := &cobra.Command{
+		Use:   "verify",
+		Short: "Verify generated datasets against exported files.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeDatasetsVerifyJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	datasetsCmd.AddCommand(datasetsListCmd, datasetsExportCmd, datasetsVerifyCmd)
 	runtimeCmd.AddCommand(datasetsCmd)
 
 	eventsCmd := &cobra.Command{
@@ -281,6 +298,14 @@ func runtimeDatasetsJSON(dbPath string) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(datasets)
+}
+
+func runtimeDatasetsVerifyJSON(dbPath string) ([]byte, error) {
+	summary, err := VerifyGeneratedDatasetsOnFiles(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(summary)
 }
 
 func runtimeEventsJSON(dbPath string, limit int) ([]byte, error) {

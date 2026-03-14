@@ -64,6 +64,21 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	if len(datasets) != 1 || datasets[0].Key != target {
 		t.Fatalf("unexpected datasets: %+v", datasets)
 	}
+	if datasets[0].Version != 1 || datasets[0].ContentSHA256 == "" {
+		t.Fatalf("expected dataset integrity metadata: %+v", datasets)
+	}
+
+	verifyJSON, err := runtimeDatasetsVerifyJSON(dbPath)
+	if err != nil {
+		t.Fatalf("runtimeDatasetsVerifyJSON: %v", err)
+	}
+	var verifySummary GeneratedDatasetVerifySummary
+	if err := json.Unmarshal(verifyJSON, &verifySummary); err != nil {
+		t.Fatalf("decode verify summary: %v", err)
+	}
+	if verifySummary.Checked != 1 || verifySummary.Missing != 1 {
+		t.Fatalf("unexpected verify summary before export: %+v", verifySummary)
+	}
 
 	eventsJSON, err := runtimeEventsJSON(dbPath, 20)
 	if err != nil {
@@ -203,6 +218,36 @@ func TestRuntimeCmdDatasetsExportOutput(t *testing.T) {
 	}
 	if exported != 1 {
 		t.Fatalf("unexpected exported count: %d output=%q", exported, buf.String())
+	}
+}
+
+func TestRuntimeCmdDatasetsVerifyOutput(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
+	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
+	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	}
+
+	cmd := newRuntimeCmd()
+	buf := new(strings.Builder)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"-d", MainConfigBaseDir, "datasets", "verify"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	var summary GeneratedDatasetVerifySummary
+	if err := json.Unmarshal([]byte(buf.String()), &summary); err != nil {
+		t.Fatalf("decode verify output: %v output=%q", err, buf.String())
+	}
+	if summary.Checked != 1 || summary.Missing != 1 {
+		t.Fatalf("unexpected verify output: %+v", summary)
 	}
 }
 

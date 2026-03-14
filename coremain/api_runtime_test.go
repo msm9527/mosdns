@@ -210,6 +210,23 @@ func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 	if len(datasets) != 1 || datasets[0].Key != target {
 		t.Fatalf("unexpected datasets: %+v", datasets)
 	}
+	if datasets[0].Version != 1 || datasets[0].ContentSHA256 == "" {
+		t.Fatalf("expected dataset integrity metadata: %+v", datasets)
+	}
+
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/runtime/datasets/verify", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected verify status: %d body=%s", w.Code, w.Body.String())
+	}
+	var verifySummary GeneratedDatasetVerifySummary
+	if err := json.Unmarshal(w.Body.Bytes(), &verifySummary); err != nil {
+		t.Fatalf("decode verify summary: %v", err)
+	}
+	if verifySummary.Checked != 1 || verifySummary.Missing != 1 {
+		t.Fatalf("unexpected verify summary: %+v", verifySummary)
+	}
 
 	req = httptest.NewRequest(http.MethodPost, "/api/v1/runtime/datasets/export", nil)
 	w = httptest.NewRecorder()
