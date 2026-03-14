@@ -182,6 +182,38 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	}
 }
 
+func TestHandleRuntimeHealth(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
+	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	}
+
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var resp runtimeHealthResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if resp.StorageEngine != "sqlite" || len(resp.Checks) == 0 {
+		t.Fatalf("unexpected health payload: %+v", resp)
+	}
+}
+
 func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()

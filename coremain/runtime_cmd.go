@@ -47,6 +47,25 @@ func newRuntimeCmd() *cobra.Command {
 	}
 	runtimeCmd.AddCommand(summaryCmd)
 
+	healthCmd := &cobra.Command{
+		Use:   "health",
+		Short: "Run runtime health/self-check as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeHealthJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	runtimeCmd.AddCommand(healthCmd)
+
 	datasetsCmd := &cobra.Command{
 		Use:   "datasets",
 		Short: "List and export generated datasets stored in runtime SQLite.",
@@ -306,6 +325,14 @@ func runtimeDatasetsVerifyJSON(dbPath string) ([]byte, error) {
 		return nil, err
 	}
 	return json.Marshal(summary)
+}
+
+func runtimeHealthJSON(dbPath string) ([]byte, error) {
+	resp, err := runtimeHealthReport(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(resp)
 }
 
 func runtimeEventsJSON(dbPath string, limit int) ([]byte, error) {

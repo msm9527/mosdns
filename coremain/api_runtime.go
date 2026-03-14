@@ -3,6 +3,7 @@ package coremain
 import (
 	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -31,6 +32,22 @@ type runtimeSummaryResponse struct {
 	Namespaces    []runtimeNamespaceSummary `json:"namespaces"`
 }
 
+type runtimeHealthCheck struct {
+	Name    string         `json:"name"`
+	Status  string         `json:"status"`
+	Message string         `json:"message,omitempty"`
+	Details map[string]any `json:"details,omitempty"`
+}
+
+type runtimeHealthResponse struct {
+	StorageEngine string               `json:"storage_engine"`
+	DBPath        string               `json:"db_path"`
+	DBExists      bool                 `json:"db_exists"`
+	DBSizeBytes   int64                `json:"db_size_bytes"`
+	Status        string               `json:"status"`
+	Checks        []runtimeHealthCheck `json:"checks"`
+}
+
 type runtimeResourcesResponse struct {
 	StorageEngine string                         `json:"storage_engine"`
 	DBPath        string                         `json:"db_path"`
@@ -50,6 +67,7 @@ type runtimeResourcesResponse struct {
 
 func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/runtime", func(r chi.Router) {
+		r.Get("/health", handleRuntimeHealth)
 		r.Get("/summary", handleRuntimeSummary)
 		r.Get("/resources", handleRuntimeResources)
 		r.Get("/datasets", handleRuntimeDatasets)
@@ -107,6 +125,15 @@ func handleRuntimeSummary(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, summary)
+}
+
+func handleRuntimeHealth(w http.ResponseWriter, _ *http.Request) {
+	resp, err := runtimeHealthReport(defaultRuntimeStateDBPath())
+	if err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_HEALTH_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func handleRuntimeDatasets(w http.ResponseWriter, _ *http.Request) {
@@ -259,4 +286,181 @@ func handleRuntimeResources(w http.ResponseWriter, _ *http.Request) {
 	resp.Switches = ordered
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func runtimeHealthReport(dbPath string) (*runtimeHealthResponse, error) {
+	resp := &runtimeHealthResponse{
+		StorageEngine: "sqlite",
+		DBPath:        dbPath,
+		Status:        "ok",
+		Checks:        make([]runtimeHealthCheck, 0, 8),
+	}
+
+	addCheck := func(check runtimeHealthCheck) {
+		resp.Checks = append(resp.Checks, check)
+		switch check.Status {
+		case "error":
+			resp.Status = "error"
+		case "warn":
+			if resp.Status != "error" {
+				resp.Status = "warn"
+			}
+		}
+	}
+
+	if info, err := os.Stat(dbPath); err == nil {
+		resp.DBExists = true
+		resp.DBSizeBytes = info.Size()
+		addCheck(runtimeHealthCheck{
+			Name:   "sqlite_file",
+			Status: "ok",
+			Details: map[string]any{
+				"exists":     true,
+				"size_bytes": info.Size(),
+			},
+		})
+	} else if os.IsNotExist(err) {
+		addCheck(runtimeHealthCheck{
+			Name:    "sqlite_file",
+			Status:  "warn",
+			Message: "runtime db does not exist yet",
+			Details: map[string]any{"exists": false},
+		})
+	} else {
+		return nil, err
+	}
+
+	store, err := getRuntimeStateStoreByPath(dbPath)
+	if err != nil {
+		addCheck(runtimeHealthCheck{Name: "sqlite_open", Status: "error", Message: err.Error()})
+		return resp, nil
+	}
+	if size, err := store.db.FileSizeBytes(); err == nil && size > 0 {
+		resp.DBExists = true
+		if size > resp.DBSizeBytes {
+			resp.DBSizeBytes = size
+		}
+	}
+	addCheck(runtimeHealthCheck{Name: "sqlite_open", Status: "ok"})
+
+	namespaces := []string{
+		runtimeStateNamespaceOverrides,
+		runtimeStateNamespaceUpstreams,
+		runtimeNamespaceSwitch,
+		runtimeNamespaceWebinfo,
+		runtimeNamespaceRequery,
+		runtimeNamespaceAdguard,
+		runtimeNamespaceDiversion,
+		runtimeStateNamespaceGeneratedDataset,
+	}
+	namespaceCounts := make(map[string]int, len(namespaces))
+	for _, namespace := range namespaces {
+		entries, err := ListRuntimeStateByNamespace(dbPath, namespace)
+		if err != nil {
+			addCheck(runtimeHealthCheck{
+				Name:    "namespace_summary",
+				Status:  "error",
+				Message: err.Error(),
+				Details: map[string]any{"namespace": namespace},
+			})
+			goto checksContinue
+		}
+		namespaceCounts[namespace] = len(entries)
+	}
+	addCheck(runtimeHealthCheck{
+		Name:    "namespace_summary",
+		Status:  "ok",
+		Details: map[string]any{"counts": namespaceCounts},
+	})
+
+checksContinue:
+	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err != nil {
+		addCheck(runtimeHealthCheck{Name: "runtime_overrides", Status: "error", Message: err.Error()})
+	} else {
+		addCheck(runtimeHealthCheck{
+			Name:   "runtime_overrides",
+			Status: "ok",
+			Details: map[string]any{
+				"present": ok,
+				"count": func() int {
+					if overrides == nil {
+						return 0
+					}
+					return len(overrides.Replacements)
+				}(),
+			},
+		})
+	}
+
+	if upstreams, ok, err := loadUpstreamOverridesFromRuntimeStore(); err != nil {
+		addCheck(runtimeHealthCheck{Name: "runtime_upstreams", Status: "error", Message: err.Error()})
+	} else {
+		total := 0
+		for _, items := range upstreams {
+			total += len(items)
+		}
+		addCheck(runtimeHealthCheck{
+			Name:   "runtime_upstreams",
+			Status: "ok",
+			Details: map[string]any{
+				"present": ok,
+				"groups":  len(upstreams),
+				"items":   total,
+			},
+		})
+	}
+
+	if verify, err := VerifyGeneratedDatasetsOnFiles(dbPath); err != nil {
+		addCheck(runtimeHealthCheck{Name: "generated_datasets", Status: "error", Message: err.Error()})
+	} else {
+		status := "ok"
+		message := ""
+		if verify.Mismatch > 0 {
+			status = "warn"
+			message = "generated dataset files have mismatches"
+		} else if verify.Missing > 0 {
+			status = "warn"
+			message = "some generated dataset files are missing"
+		}
+		addCheck(runtimeHealthCheck{
+			Name:    "generated_datasets",
+			Status:  status,
+			Message: message,
+			Details: map[string]any{
+				"checked":  verify.Checked,
+				"matched":  verify.Matched,
+				"missing":  verify.Missing,
+				"mismatch": verify.Mismatch,
+			},
+		})
+	}
+
+	if runs, err := requeryruntime.ListRuns(dbPath, "", 20); err != nil {
+		addCheck(runtimeHealthCheck{Name: "requery_runs", Status: "error", Message: err.Error()})
+	} else {
+		failed := 0
+		for _, run := range runs {
+			state := strings.ToLower(strings.TrimSpace(run.State))
+			if state == "failed" || state == "error" {
+				failed++
+			}
+		}
+		status := "ok"
+		message := ""
+		if failed > 0 {
+			status = "warn"
+			message = "recent requery runs contain failures"
+		}
+		addCheck(runtimeHealthCheck{
+			Name:    "requery_runs",
+			Status:  status,
+			Message: message,
+			Details: map[string]any{
+				"recent_runs": len(runs),
+				"failed":      failed,
+			},
+		})
+	}
+
+	return resp, nil
 }

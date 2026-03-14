@@ -53,6 +53,18 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 		t.Fatalf("unexpected summary: %+v", summary)
 	}
 
+	healthJSON, err := runtimeHealthJSON(dbPath)
+	if err != nil {
+		t.Fatalf("runtimeHealthJSON: %v", err)
+	}
+	var health runtimeHealthResponse
+	if err := json.Unmarshal(healthJSON, &health); err != nil {
+		t.Fatalf("decode health: %v", err)
+	}
+	if health.StorageEngine != "sqlite" || len(health.Checks) == 0 {
+		t.Fatalf("unexpected health: %+v", health)
+	}
+
 	datasetsJSON, err := runtimeDatasetsJSON(dbPath)
 	if err != nil {
 		t.Fatalf("runtimeDatasetsJSON: %v", err)
@@ -248,6 +260,36 @@ func TestRuntimeCmdDatasetsVerifyOutput(t *testing.T) {
 	}
 	if summary.Checked != 1 || summary.Missing != 1 {
 		t.Fatalf("unexpected verify output: %+v", summary)
+	}
+}
+
+func TestRuntimeCmdHealthOutput(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
+	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
+	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	}
+
+	cmd := newRuntimeCmd()
+	buf := new(strings.Builder)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"-d", MainConfigBaseDir, "health"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	var health runtimeHealthResponse
+	if err := json.Unmarshal([]byte(buf.String()), &health); err != nil {
+		t.Fatalf("decode health output: %v output=%q", err, buf.String())
+	}
+	if health.StorageEngine != "sqlite" || len(health.Checks) == 0 {
+		t.Fatalf("unexpected health output: %+v", health)
 	}
 }
 
