@@ -2,8 +2,10 @@ package requeryruntime
 
 import (
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 func TestRequeryRuntimeStoreLifecycle(t *testing.T) {
@@ -99,5 +101,73 @@ func TestRequeryRuntimeStoreLifecycle(t *testing.T) {
 	}
 	if len(checkpoints) != 1 || checkpoints[0].RunID != "run-1" {
 		t.Fatalf("unexpected checkpoints: %+v", checkpoints)
+	}
+}
+
+func TestPruneHistory(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "runtime.db")
+	t.Cleanup(func() {
+		_ = ResetForTesting(dbPath)
+	})
+
+	now := time.Now().UTC()
+	for i := 0; i < 3; i++ {
+		runID := fmt.Sprintf("run-%d", i+1)
+		updatedAt := now.Add(time.Duration(-i) * time.Hour).UnixMilli()
+		if err := SaveRun(dbPath, Run{
+			RunID:           runID,
+			ConfigKey:       "cfg-a",
+			Mode:            "full_rebuild",
+			TriggerSource:   "manual",
+			State:           "completed",
+			StartedAtUnixMS: updatedAt - 1000,
+			EndedAtUnixMS:   updatedAt,
+			UpdatedAtUnixMS: updatedAt,
+		}); err != nil {
+			t.Fatalf("SaveRun %s: %v", runID, err)
+		}
+		for j := 0; j < 3; j++ {
+			if err := SaveCheckpoint(dbPath, Checkpoint{
+				ConfigKey:       "cfg-a",
+				RunID:           runID,
+				Stage:           fmt.Sprintf("stage-%d", j),
+				Completed:       j + 1,
+				Total:           3,
+				Snapshot:        json.RawMessage(fmt.Sprintf(`{"idx":%d}`, j)),
+				CreatedAtUnixMS: updatedAt + int64(j),
+			}); err != nil {
+				t.Fatalf("SaveCheckpoint %s/%d: %v", runID, j, err)
+			}
+		}
+	}
+
+	summary, err := PruneHistory(dbPath, PruneOptions{
+		KeepRuns:              2,
+		KeepCheckpointsPerRun: 1,
+	})
+	if err != nil {
+		t.Fatalf("PruneHistory: %v", err)
+	}
+	if summary.DeletedRuns != 1 || summary.DeletedCheckpoints != 4 {
+		t.Fatalf("unexpected prune summary: %+v", summary)
+	}
+	if summary.RemainingRuns != 2 || summary.RemainingChecks != 2 {
+		t.Fatalf("unexpected remaining counts: %+v", summary)
+	}
+
+	runs, err := ListRuns(dbPath, "", 10)
+	if err != nil {
+		t.Fatalf("ListRuns after prune: %v", err)
+	}
+	if len(runs) != 2 || runs[0].RunID != "run-1" || runs[1].RunID != "run-2" {
+		t.Fatalf("unexpected runs after prune: %+v", runs)
+	}
+
+	checkpoints, err := ListCheckpoints(dbPath, "", "", 10)
+	if err != nil {
+		t.Fatalf("ListCheckpoints after prune: %v", err)
+	}
+	if len(checkpoints) != 2 {
+		t.Fatalf("unexpected checkpoints after prune: %+v", checkpoints)
 	}
 }

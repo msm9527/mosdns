@@ -49,6 +49,20 @@ type Checkpoint struct {
 	CreatedAtUnixMS int64           `json:"created_at_unix_ms"`
 }
 
+type PruneOptions struct {
+	KeepRuns              int `json:"keep_runs"`
+	KeepCheckpointsPerRun int `json:"keep_checkpoints_per_run"`
+	MaxRunAgeDays         int `json:"max_run_age_days"`
+	MaxCheckpointAgeDays  int `json:"max_checkpoint_age_days"`
+}
+
+type PruneSummary struct {
+	DeletedRuns        int64 `json:"deleted_runs"`
+	DeletedCheckpoints int64 `json:"deleted_checkpoints"`
+	RemainingRuns      int   `json:"remaining_runs"`
+	RemainingChecks    int   `json:"remaining_checkpoints"`
+}
+
 var globalStore struct {
 	mu    sync.Mutex
 	paths map[string]*runtimesqlite.RuntimeDB
@@ -406,4 +420,131 @@ func LoadRun(path, runID string) (*Run, error) {
 	default:
 		return nil, fmt.Errorf("load requery run %s: %w", runID, err)
 	}
+}
+
+func PruneHistory(path string, opts PruneOptions) (*PruneSummary, error) {
+	if opts.KeepRuns <= 0 {
+		opts.KeepRuns = 50
+	}
+	if opts.KeepCheckpointsPerRun <= 0 {
+		opts.KeepCheckpointsPerRun = 20
+	}
+
+	db, err := dbForPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	tx, err := db.DB().Begin()
+	if err != nil {
+		return nil, fmt.Errorf("begin requery prune tx: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+
+	summary := &PruneSummary{}
+	now := time.Now().UTC()
+
+	if opts.MaxCheckpointAgeDays > 0 {
+		cutoff := now.Add(-time.Duration(opts.MaxCheckpointAgeDays) * 24 * time.Hour).UnixMilli()
+		result, execErr := tx.Exec(`DELETE FROM requery_checkpoint WHERE created_at_unix_ms < ?`, cutoff)
+		if execErr != nil {
+			err = fmt.Errorf("delete aged checkpoints: %w", execErr)
+			return nil, err
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			summary.DeletedCheckpoints += n
+		}
+	}
+
+	if opts.MaxRunAgeDays > 0 {
+		cutoff := now.Add(-time.Duration(opts.MaxRunAgeDays) * 24 * time.Hour).UnixMilli()
+		result, execErr := tx.Exec(`DELETE FROM requery_run WHERE updated_at_unix_ms < ?`, cutoff)
+		if execErr != nil {
+			err = fmt.Errorf("delete aged runs: %w", execErr)
+			return nil, err
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			summary.DeletedRuns += n
+		}
+	}
+
+	if opts.KeepRuns > 0 {
+		result, execErr := tx.Exec(`
+			DELETE FROM requery_run
+			WHERE run_id IN (
+				SELECT run_id
+				FROM requery_run
+				ORDER BY updated_at_unix_ms DESC, run_id DESC
+				LIMIT -1 OFFSET ?
+			)
+		`, opts.KeepRuns)
+		if execErr != nil {
+			err = fmt.Errorf("trim requery runs: %w", execErr)
+			return nil, err
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			summary.DeletedRuns += n
+		}
+	}
+
+	runIDs, err := listRunIDsTx(tx)
+	if err != nil {
+		return nil, err
+	}
+	for _, runID := range runIDs {
+		result, execErr := tx.Exec(`
+			DELETE FROM requery_checkpoint
+			WHERE id IN (
+				SELECT id
+				FROM requery_checkpoint
+				WHERE run_id = ?
+				ORDER BY created_at_unix_ms DESC, id DESC
+				LIMIT -1 OFFSET ?
+			)
+		`, runID, opts.KeepCheckpointsPerRun)
+		if execErr != nil {
+			err = fmt.Errorf("trim checkpoints for run %s: %w", runID, execErr)
+			return nil, err
+		}
+		if n, _ := result.RowsAffected(); n > 0 {
+			summary.DeletedCheckpoints += n
+		}
+	}
+
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM requery_run`).Scan(&summary.RemainingRuns); err != nil {
+		return nil, fmt.Errorf("count remaining runs: %w", err)
+	}
+	if err = tx.QueryRow(`SELECT COUNT(*) FROM requery_checkpoint`).Scan(&summary.RemainingChecks); err != nil {
+		return nil, fmt.Errorf("count remaining checkpoints: %w", err)
+	}
+
+	if err = tx.Commit(); err != nil {
+		return nil, fmt.Errorf("commit requery prune tx: %w", err)
+	}
+	return summary, nil
+}
+
+func listRunIDsTx(tx *sql.Tx) ([]string, error) {
+	rows, err := tx.Query(`SELECT run_id FROM requery_run ORDER BY updated_at_unix_ms DESC, run_id DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list run ids: %w", err)
+	}
+	defer rows.Close()
+
+	var runIDs []string
+	for rows.Next() {
+		var runID string
+		if err := rows.Scan(&runID); err != nil {
+			return nil, fmt.Errorf("scan run id: %w", err)
+		}
+		runIDs = append(runIDs, runID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate run ids: %w", err)
+	}
+	return runIDs, nil
 }

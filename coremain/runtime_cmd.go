@@ -16,6 +16,10 @@ type runtimeCmdContext struct {
 	baseDir    string
 	limit      int
 	runID      string
+	keepRuns   int
+	keepChecks int
+	ageDays    int
+	checkAge   int
 }
 
 func newRuntimeCmd() *cobra.Command {
@@ -251,7 +255,33 @@ func newRuntimeCmd() *cobra.Command {
 	}
 	requeryCheckpointsCmd.Flags().StringVar(&ctx.runID, "run-id", "", "specific run id to filter checkpoints")
 	requeryCheckpointsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of checkpoints to print")
-	requeryCmd.AddCommand(requeryJobsCmd, requeryRunsCmd, requeryCheckpointsCmd)
+	requeryPruneCmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Prune old requery run/checkpoint history.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryPruneJSON(filepath.Join(baseDir, runtimeStateDBFilename), requeryruntime.PruneOptions{
+				KeepRuns:              ctx.keepRuns,
+				KeepCheckpointsPerRun: ctx.keepChecks,
+				MaxRunAgeDays:         ctx.ageDays,
+				MaxCheckpointAgeDays:  ctx.checkAge,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryPruneCmd.Flags().IntVar(&ctx.keepRuns, "keep-runs", 50, "keep at most this many recent runs")
+	requeryPruneCmd.Flags().IntVar(&ctx.keepChecks, "keep-checkpoints", 20, "keep at most this many recent checkpoints per run")
+	requeryPruneCmd.Flags().IntVar(&ctx.ageDays, "max-run-age-days", 0, "delete runs older than this many days before count trimming")
+	requeryPruneCmd.Flags().IntVar(&ctx.checkAge, "max-checkpoint-age-days", 0, "delete checkpoints older than this many days before count trimming")
+	requeryCmd.AddCommand(requeryJobsCmd, requeryRunsCmd, requeryCheckpointsCmd, requeryPruneCmd)
 	runtimeCmd.AddCommand(requeryCmd)
 	runtimeCmd.AddCommand(newRuntimeShuntCmd())
 
@@ -365,6 +395,14 @@ func runtimeRequeryCheckpointsJSON(dbPath, runID string, limit int) ([]byte, err
 		return nil, err
 	}
 	return json.Marshal(checkpoints)
+}
+
+func runtimeRequeryPruneJSON(dbPath string, opts requeryruntime.PruneOptions) ([]byte, error) {
+	summary, err := requeryruntime.PruneHistory(dbPath, opts)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(summary)
 }
 
 func parseExportedFilesOutput(s string) (int, error) {

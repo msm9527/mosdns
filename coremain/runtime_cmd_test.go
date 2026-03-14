@@ -2,10 +2,12 @@ package coremain
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 )
@@ -326,6 +328,58 @@ func TestRuntimeCmdRequeryRunsOutput(t *testing.T) {
 	}
 	if len(runs) != 1 || runs[0].RunID != "run-1" {
 		t.Fatalf("unexpected runs output: %+v", runs)
+	}
+}
+
+func TestRuntimeCmdRequeryPruneOutput(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
+	for i := 0; i < 3; i++ {
+		runID := fmt.Sprintf("run-%d", i+1)
+		now := time.Now().UTC().UnixMilli() - int64(i*1000)
+		if err := requeryruntime.SaveRun(dbPath, requeryruntime.Run{
+			RunID:           runID,
+			ConfigKey:       "cfg-a",
+			Mode:            "full_rebuild",
+			TriggerSource:   "manual",
+			State:           "completed",
+			StartedAtUnixMS: now - 500,
+			EndedAtUnixMS:   now,
+			UpdatedAtUnixMS: now,
+		}); err != nil {
+			t.Fatalf("SaveRun: %v", err)
+		}
+		if err := requeryruntime.SaveCheckpoint(dbPath, requeryruntime.Checkpoint{
+			ConfigKey: "cfg-a",
+			RunID:     runID,
+			Stage:     "priority",
+			Completed: 1,
+			Total:     1,
+			Snapshot:  json.RawMessage(`{"ok":true}`),
+		}); err != nil {
+			t.Fatalf("SaveCheckpoint: %v", err)
+		}
+	}
+
+	cmd := newRuntimeCmd()
+	buf := new(strings.Builder)
+	cmd.SetOut(buf)
+	cmd.SetErr(buf)
+	cmd.SetArgs([]string{"-d", MainConfigBaseDir, "requery", "prune", "--keep-runs", "2", "--keep-checkpoints", "1"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("cmd.Execute() error = %v", err)
+	}
+	var summary requeryruntime.PruneSummary
+	if err := json.Unmarshal([]byte(buf.String()), &summary); err != nil {
+		t.Fatalf("decode prune output: %v output=%q", err, buf.String())
+	}
+	if summary.DeletedRuns != 1 || summary.RemainingRuns != 2 {
+		t.Fatalf("unexpected prune output: %+v", summary)
 	}
 }
 
