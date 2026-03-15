@@ -1,370 +1,63 @@
 # mosdns V2 重构实施清单
 
-## 0. 当前实施状态（2026-03-13）
-
-截至当前代码基线，`Phase 0 ~ Phase 9` 对应的核心目标已经完成主线落地，具体表现为：
-
-- SQLite 已作为运行态与动态规则的主真源之一
-- 审计、runtime state、requery、adguard、diversion datasets 已进入统一治理路径
-- `config v2`、`config migrate`、`config validate` 已可用
-- `/api/v1/runtime/*` 已成为稳定聚合接口
-- 内置前端页面已切到稳定 runtime API
-- 旧 JSON/TXT 路径保留为兼容导入导出物，而不是首选真源
-
-当前剩余工作主要是“兼容期结束后的历史清理”，而不再是架构主线缺失。
-
 ## 1. 文档定位
 
-本文档是 [REARCHITECTURE_V2.md](./REARCHITECTURE_V2.md) 的实施版任务清单。
+本文档记录全新 V2 重构的执行清单与完成状态。
 
-目标是把“完全重构蓝图”拆成可以执行、验收和回滚的阶段，而不是一次性大爆炸重写。
+当前仓库遵循的实施原则只有三条：
 
-## 2. 总实施原则
+- 直接建设纯 V2，不维护迁移主线
+- 运行态只认 `runtime.db`
+- 配置入口只认 `config v2`
 
-- 只允许分阶段迁移，不允许一步到位全量替换
-- 先建设支撑层，再切业务层
-- 先双写，再切读，最后移除旧路径
-- 所有阶段都要有验收条件和回滚开关
-- 保持用户侧功能连续，不接受因为重构导致功能缺失
+## 2. 已完成的实施项
 
-## 3. Phase 0：基线冻结
+### 2.1 runtime 存储
 
-### 3.1 目标
+- [x] 删除 `runtime_kv`
+- [x] 为 webinfo / requery 建立结构化表
+- [x] 删除 runtime store 中的 legacy fallback 逻辑
+- [x] 删除 旧 runtime import/export 命令、实现与测试
 
-把当前系统的配置、接口、动态文件和运行行为盘清楚，形成对照基线。
+### 2.2 runtime API / CLI / 前端
 
-### 3.2 任务
+- [x] 删除 `runtime resources 聚合接口`
+- [x] 删除 `/api/v1/runtime/requery/*` 顶层别名
+- [x] 删除 `/api/v1/runtime/clientname` 顶层别名
+- [x] 前端改用 `/api/v1/runtime/requery/*` 与 `/api/v1/runtime/clientname`
+- [x] runtime CLI 收口到 summary / health / datasets / events / requery / shunt
 
-- 盘点所有运行态写文件点
-- 盘点当前核心 API 与前端调用关系
-- 盘点所有动态生成规则和导出文件
-- 固化压测基线、重启恢复基线、导入导出基线
-- 标记哪些旧接口必须兼容
+### 2.3 config v2
 
-### 3.3 交付物
+- [x] 删除 `旧迁移命令`
+- [x] 删除 `internal/configv2/migrate.go`
+- [x] 删除 `legacy` block 类型与编译路径
+- [x] 显式拒绝 `legacy` / `include` / `plugins` 旧键
+- [x] `loadConfig` 只接受 v2 文档
 
-- 动态文件清单
-- API 对照表
-- 前端依赖清单
-- 基线测试说明
+### 2.4 文档与验证
 
-### 3.4 验收
+- [x] 更新核心架构文档到纯 V2 口径
+- [x] 更新运维文档到新 runtime API / CLI
+- [x] 更新 PR 模板与交付总结
+- [ ] 执行最终全量验证
+- [ ] 收口 task truth artifacts
 
-- 能回答“某个运行态数据当前写到哪里、谁在读、谁在改”
-- 能回答“某个 UI 页面依赖哪些 API 和文件”
+## 3. 稳定验证项
 
-### 3.5 回滚
+完成收口前必须通过：
 
-- 只读阶段，无回滚成本
+```bash
+go test ./...
+```
 
-## 4. Phase 1：SQLite 支撑层
+同时应确认：
 
-### 4.1 目标
+- 文档不再引用已删除的 `runtime resources 聚合接口`
+- 文档不再引用已删除的 `/api/v1/runtime/requery/*` 顶层路径
+- 文档不再引用已删除的 `/api/v1/runtime/clientname` 顶层路径
+- 文档不再引用 `旧迁移命令`
 
-先把 SQLite 基础设施落下，不接入业务。
+## 4. 当前结论
 
-### 4.2 任务
-
-- 新增 SQLite 打开、关闭、迁移、事务封装
-- 定义 schema migration 机制
-- 初始化 pragma：
-  - `journal_mode=WAL`
-  - `synchronous=NORMAL`
-  - `foreign_keys=ON`
-  - `busy_timeout=3000`
-- 建立 repository 组织规范
-- 增加健康检查和诊断接口
-
-### 4.3 建议首批表
-
-- `schema_migrations`
-- `runtime_kv`
-- `system_event`
-
-### 4.4 验收
-
-- 空库可自动初始化
-- migration 可重复执行
-- 数据库损坏或锁竞争时能输出明确错误
-
-### 4.5 回滚
-
-- 不启用 SQLite 业务路径即可回退
-
-## 5. Phase 2：审计日志 SQLite 化
-
-### 5.1 目标
-
-优先迁移审计，因为收益最大、风险最低。
-
-### 5.2 任务
-
-- 抽象 `AuditStorage`
-- 保留现有内存窗口与摘要
-- 新增 `SQLiteAuditStorage`
-- 先双写 `ndjson + SQLite`
-- 增加深分页和历史筛选读 SQLite
-- 最后把重启恢复切到 SQLite
-
-### 5.3 涉及表
-
-- `audit_log`
-- `audit_rollup_hour`
-- `audit_rollup_day`
-
-### 5.4 验收
-
-- UI 首页和统计无感变化
-- 深分页性能优于全文件扫描
-- 重启恢复不再依赖 `ndjson` 回放
-
-### 5.5 回滚
-
-- 切回旧审计存储实现
-- 保留 `ndjson` 兼容期
-
-## 6. Phase 3：运行态状态收口
-
-### 6.1 目标
-
-把分散的 JSON 运行态统一进入 SQLite。
-
-### 6.2 任务
-
-- 迁移 switch 状态
-- 迁移 overrides
-- 迁移 upstream profiles
-- 迁移 webinfo / clientname
-- 把文件写入改为数据库写入 + 可选兼容导出
-
-### 6.3 对应表
-
-- `switch_state`
-- `override_rule`
-- `upstream_profile`
-- `upstream_endpoint`
-- `runtime_kv`
-
-### 6.4 验收
-
-- 运行态修改可在数据库中追踪
-- UI 不再依赖 JSON 文件作为真源
-- 重启后状态从 SQLite 恢复
-
-### 6.5 回滚
-
-- 保留旧文件导入逻辑
-- 可以单模块切回文件实现
-
-## 7. Phase 4：requery 任务系统化
-
-### 7.1 目标
-
-把 requery 从“插件状态文件”升级成“任务系统”。
-
-### 7.2 任务
-
-- 拆分任务定义、运行实例、恢复点、事件日志
-- 重构恢复与 checkpoint 模型
-- 增加运行历史和任务诊断
-- 统一调度与任务控制 API
-
-### 7.3 对应表
-
-- `requery_job`
-- `requery_run`
-- `requery_checkpoint`
-- `system_event`
-
-### 7.4 验收
-
-- 中断恢复可验证
-- 可区分任务定义和任务执行历史
-- 运行失败可追踪原因
-
-### 7.5 回滚
-
-- 保留旧 JSON 兼容导入
-- 调度入口可切回原路径
-
-## 8. Phase 5：动态规则真源切换
-
-### 8.1 目标
-
-把动态规则从“文件混合真源”改成“数据库真源 + 文件导出物”。
-
-### 8.2 任务
-
-- 抽象统一 dataset 模型
-- 将动态规则生成元数据写入数据库
-- 新增 exporter，把数据库内容导出到 `config/gen/*.txt`、SRS 等兼容文件
-- 记录每次导出版本、时间、来源和结果
-
-### 8.3 对应表
-
-- `generated_dataset`
-- `export_snapshot`
-
-### 8.4 验收
-
-- 文件删掉后仍可从数据库重新导出
-- 导出结果可追踪版本
-- 插件消费的兼容文件仍可工作
-
-### 8.5 回滚
-
-- 保留旧文件生成链路
-- exporter 可单独关闭
-
-## 9. Phase 6：config v2 与迁移器
-
-### 9.1 目标
-
-把“插件装配配置”升级为“声明式业务配置”。
-
-### 9.2 任务
-
-- 定义 `config v2` schema
-- 编写 `v1 -> v2` 一次性迁移工具
-- 编写 `v2 -> plugin graph` 编译器
-- 为关键场景写 golden tests
-
-### 9.3 迁移工具建议
-
-命令建议：
-
-- `mosdns config migrate --from v1 --input config/config.yaml --output config/config.v2.yaml`
-- `mosdns config compile --input config/config.v2.yaml`
-
-### 9.4 验收
-
-- 现有典型配置可迁出 `v2`
-- 编译结果与当前主要行为保持等价
-- 迁移器输出明确告警，不悄悄丢失语义
-
-### 9.5 回滚
-
-- 保持 `v1` 启动链路兼容一段时间
-- `v2` 先作为可选入口
-
-## 10. Phase 7：稳定核心 API
-
-### 10.1 目标
-
-让前端只依赖稳定资源接口。
-
-### 10.2 任务
-
-- 新增稳定资源 API：
-  - `/api/v1/runtime`
-  - `/api/v1/switches`
-  - `/api/v1/upstreams`
-  - `/api/v1/overrides`
-  - `/api/v1/requery/jobs`
-  - `/api/v1/requery/runs`
-  - `/api/v1/datasets`
-  - `/api/v1/exports`
-- 为旧接口增加弃用日志
-- 给前端提供统一 DTO 和分页约定
-
-### 10.3 验收
-
-- 前端主页面不再依赖插件实例名
-- 旧接口仍兼容一段时间
-- 新接口返回格式统一
-
-### 10.4 回滚
-
-- 前端可暂时继续调用旧接口
-- 后端保留兼容层
-
-## 11. Phase 8：前端逐步迁移
-
-### 11.1 目标
-
-前端完全脱离插件直连模式。
-
-### 11.2 任务
-
-- 把页面按资源域切分：
-  - 系统
-  - 审计
-  - 上游
-  - 开关
-  - 任务
-  - 动态规则
-- 用统一 API client 替代分散请求
-- 移除对文件结构和插件 tag 的直接依赖
-
-### 11.3 验收
-
-- 前端主功能都走稳定核心 API
-- 切换后功能不减少
-- 接口错误处理一致
-
-### 11.4 回滚
-
-- 页面可临时回退到旧 API client
-
-## 12. Phase 9：收尾与清理
-
-### 12.1 目标
-
-移除历史包袱，但仅在兼容期结束后进行。
-
-### 12.2 任务
-
-- 清理不再作为真源的 JSON 状态文件
-- 清理不再使用的历史接口
-- 清理过时配置说明和旧导出路径
-- 更新开发文档与运维文档
-
-### 12.3 验收
-
-- 系统真源唯一且清晰
-- 文档与实现一致
-- 没有残留“同一能力两套真源”
-
-### 12.4 回滚
-
-- 该阶段必须在前面阶段稳定运行后再做
-
-## 13. 风险控制
-
-重点风险：
-
-- `config v1 -> v2` 存在语义不等价风险
-- 动态规则数据库真源与导出文件之间可能短暂不一致
-- 前端迁移时可能误把历史实现细节当成业务语义
-- `requery` 恢复逻辑复杂，必须做专门回归
-
-控制措施：
-
-- 每阶段都要做兼容层
-- 每阶段都要能回滚
-- 每阶段都要有独立验收
-- 优先做双写和灰度，而不是直接切换
-
-## 14. 推荐执行顺序
-
-建议按以下顺序推进：
-
-1. SQLite 支撑层
-2. 审计日志 SQLite 化
-3. 运行态状态收口
-4. requery 任务系统化
-5. 动态规则真源切换
-6. config v2 与迁移器
-7. 稳定核心 API
-8. 前端逐步迁移
-9. 收尾清理
-
-## 15. 完成标志
-
-满足以下条件，可认为 V2 重构完成：
-
-- 新增运行态能力时默认落 SQLite，而不是新增 JSON 文件
-- 前端不再依赖插件实例名
-- `config v2` 成为主配置入口
-- 动态规则以数据库为真源、文件为导出物
-- 审计、任务、开关、上游等能力具有统一治理模型
+V2 已不是阶段性迁移工程，而是仓库当前唯一有效主线。

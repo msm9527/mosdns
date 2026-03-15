@@ -211,7 +211,7 @@
 - `refresh_cooldown_minutes`
   - 同一域名刷新后，多久内不重复进入队列
 - `on_dirty_url`
-  - 脏条目上报地址，通常指向 `/api/v1/requery/enqueue`
+  - 脏条目上报地址，通常指向 `/api/v1/runtime/requery/enqueue`
 - `verify_url`
   - 刷新完成后回写验证状态的地址
 
@@ -226,7 +226,7 @@ policy:
   publish_mode: promoted_only
   stale_after_minutes: 360
   refresh_cooldown_minutes: 120
-  on_dirty_url: "http://127.0.0.1:9099/api/v1/requery/enqueue"
+  on_dirty_url: "http://127.0.0.1:9099/api/v1/runtime/requery/enqueue"
   verify_url: "http://127.0.0.1:9099/api/v1/memory/my_realiplist/verify"
 ```
 

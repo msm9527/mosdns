@@ -159,10 +159,10 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 	return NewMosdns(cfg)
 }
 
-// loadConfig load a config from a file. If filePath is empty, it will
+// loadConfig loads a v2 config from a file. If filePath is empty, it will
 // automatically search and load a file which name start with "config".
 func loadConfig(filePath string) (*Config, string, error) {
-	v, raw, fileUsed, err := resolveConfigInput(filePath)
+	_, raw, fileUsed, err := resolveConfigInput(filePath)
 	if err != nil {
 		return nil, "", err
 	}
@@ -171,18 +171,12 @@ func loadConfig(filePath string) (*Config, string, error) {
 	if err != nil {
 		return nil, "", err
 	}
-
-	var cfg *Config
-	if isV2 {
-		cfg, err = compileConfigV2(raw)
-		if err != nil {
-			return nil, "", fmt.Errorf("failed to compile config v2: %w", err)
-		}
-	} else {
-		cfg, err = decodeV1Config(v)
-		if err != nil {
-			return nil, "", err
-		}
+	if !isV2 {
+		return nil, "", fmt.Errorf("only config v2 is supported: %s", fileUsed)
+	}
+	cfg, err := compileConfigV2(raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to compile config v2: %w", err)
 	}
 
 	cfg.baseDir = resolveBaseDir(fileUsed)

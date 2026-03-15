@@ -89,7 +89,6 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 	p.scheduleRecoveryIfNeeded()
 
-	bp.M().GetAPIRouter().Mount("/api/v1/requery", p.api())
 	bp.M().GetAPIRouter().Mount("/api/v1/runtime/requery", p.api())
 
 	log.Printf("[requery] plugin instance created for config file: %s", p.filePath)
@@ -102,23 +101,23 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 
 // Requery is the main struct for the plugin.
 type Requery struct {
-	mu         sync.RWMutex
-	m          *coremain.Mosdns
-	filePath   string
-	config     *Config
-	status     Status
-	fullTask   *FullRebuildTask
-	lastError  string
-	scheduler  *cron.Cron
-	taskCtx    context.Context
-	taskCancel context.CancelFunc
-	activeRunID string
+	mu                  sync.RWMutex
+	m                   *coremain.Mosdns
+	filePath            string
+	config              *Config
+	status              Status
+	fullTask            *FullRebuildTask
+	lastError           string
+	scheduler           *cron.Cron
+	taskCtx             context.Context
+	taskCancel          context.CancelFunc
+	activeRunID         string
 	activeTriggerSource string
-	httpClient *http.Client
-	queue      refreshJobHeap
-	queueIndex map[string]struct{}
-	queueKick  chan struct{}
-	resumeOnce sync.Once
+	httpClient          *http.Client
+	queue               refreshJobHeap
+	queueIndex          map[string]struct{}
+	queueKick           chan struct{}
+	resumeOnce          sync.Once
 }
 
 // Config maps directly to the requeryconfig.json file structure.
@@ -267,10 +266,10 @@ type memoryStatView struct {
 }
 
 type summaryResponse struct {
-	Config      *Config           `json:"config"`
-	Status      statusSnapshot    `json:"status"`
-	MemoryStats []memoryStatView  `json:"memory_stats"`
-	RuleTargets ruleActionTargets `json:"rule_targets"`
+	Config      *Config              `json:"config"`
+	Status      statusSnapshot       `json:"status"`
+	MemoryStats []memoryStatView     `json:"memory_stats"`
+	RuleTargets ruleActionTargets    `json:"rule_targets"`
 	RecentRuns  []requeryruntime.Run `json:"recent_runs,omitempty"`
 }
 

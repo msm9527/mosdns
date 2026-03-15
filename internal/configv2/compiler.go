@@ -10,6 +10,14 @@ import (
 )
 
 func Load(raw []byte) (*Config, error) {
+	var meta map[string]any
+	if err := yaml.Unmarshal(raw, &meta); err != nil {
+		return nil, fmt.Errorf("parse config v2 metadata: %w", err)
+	}
+	if hasForbiddenV2Keys(meta) {
+		return nil, errors.New("config v2 contains forbidden legacy keys")
+	}
+
 	var cfg Config
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, fmt.Errorf("parse config v2: %w", err)
@@ -21,6 +29,18 @@ func Load(raw []byte) (*Config, error) {
 		return nil, fmt.Errorf("unsupported config version %q", cfg.Version)
 	}
 	return &cfg, nil
+}
+
+func hasForbiddenV2Keys(meta map[string]any) bool {
+	if len(meta) == 0 {
+		return false
+	}
+	for _, key := range []string{"legacy", "include", "plugins"} {
+		if _, ok := meta[key]; ok {
+			return true
+		}
+	}
+	return false
 }
 
 func IsV2Version(version string) bool {
@@ -48,47 +68,41 @@ func Compile(cfg *Config) (*CompiledConfig, error) {
 		API: cfg.API,
 	}
 
-	hasLegacyCompat := len(cfg.Legacy.Include) > 0 || len(cfg.Legacy.Plugins) > 0
-	if hasLegacyCompat {
-		compiled.Include = append(compiled.Include, cfg.Legacy.Include...)
-		compiled.Plugins = append(compiled.Plugins, cfg.Legacy.Plugins...)
-	} else {
-		for _, provider := range cfg.RuleProviders {
-			if strings.TrimSpace(provider.Source) == "" {
-				continue
-			}
-			if provider.Type == "" || provider.Type == "include" {
-				compiled.Include = append(compiled.Include, provider.Source)
-			}
+	for _, provider := range cfg.RuleProviders {
+		if strings.TrimSpace(provider.Source) == "" {
+			continue
 		}
-		if len(cfg.Upstreams) > 0 {
-			plugins, err := compileUpstreams(cfg.Upstreams)
-			if err != nil {
-				return nil, err
-			}
-			compiled.Plugins = append(compiled.Plugins, plugins...)
+		if provider.Type == "" || provider.Type == "include" {
+			compiled.Include = append(compiled.Include, provider.Source)
 		}
-		if len(cfg.Policies) > 0 {
-			plugins, err := compilePolicies(cfg.Policies)
-			if err != nil {
-				return nil, err
-			}
-			compiled.Plugins = append(compiled.Plugins, plugins...)
+	}
+	if len(cfg.Upstreams) > 0 {
+		plugins, err := compileUpstreams(cfg.Upstreams)
+		if err != nil {
+			return nil, err
 		}
-		if cfg.Runtime.hasEntries() {
-			plugins, err := compileRuntime(cfg.Runtime)
-			if err != nil {
-				return nil, err
-			}
-			compiled.Plugins = append(compiled.Plugins, plugins...)
+		compiled.Plugins = append(compiled.Plugins, plugins...)
+	}
+	if len(cfg.Policies) > 0 {
+		plugins, err := compilePolicies(cfg.Policies)
+		if err != nil {
+			return nil, err
 		}
-		if len(cfg.Listeners) > 0 {
-			plugins, err := compileListeners(cfg.Listeners)
-			if err != nil {
-				return nil, err
-			}
-			compiled.Plugins = append(compiled.Plugins, plugins...)
+		compiled.Plugins = append(compiled.Plugins, plugins...)
+	}
+	if cfg.Runtime.hasEntries() {
+		plugins, err := compileRuntime(cfg.Runtime)
+		if err != nil {
+			return nil, err
 		}
+		compiled.Plugins = append(compiled.Plugins, plugins...)
+	}
+	if len(cfg.Listeners) > 0 {
+		plugins, err := compileListeners(cfg.Listeners)
+		if err != nil {
+			return nil, err
+		}
+		compiled.Plugins = append(compiled.Plugins, plugins...)
 	}
 
 	if len(compiled.Include) == 0 && len(compiled.Plugins) == 0 &&

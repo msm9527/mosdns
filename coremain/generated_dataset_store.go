@@ -47,16 +47,7 @@ func LoadGeneratedDatasetFromPath(path, key string) (*GeneratedDataset, bool, er
 			Content: entry.Content,
 		}, true, nil
 	}
-
-	var dataset GeneratedDataset
-	ok, err := LoadRuntimeStateJSONFromPath(path, runtimeStateNamespaceGeneratedDataset, key, &dataset)
-	if err != nil {
-		return nil, false, err
-	}
-	if !ok {
-		return nil, false, nil
-	}
-	return &dataset, true, nil
+	return nil, false, nil
 }
 
 func SaveGeneratedDatasetToPath(path, key, format, content string) error {
@@ -123,9 +114,6 @@ func SaveGeneratedDatasetToPath(path, key, format, content string) error {
 	`, key, key, format, content, sha256Text(content)); err != nil {
 		return fmt.Errorf("save generated_dataset %s: %w", key, err)
 	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceGeneratedDataset, key); err != nil {
-		return fmt.Errorf("cleanup legacy generated dataset %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit generated_dataset %s: %w", key, err)
 	}
@@ -142,28 +130,7 @@ func ListGeneratedDatasetsFromPath(path string) ([]GeneratedDatasetEntry, error)
 	if err != nil {
 		return nil, err
 	}
-	if len(datasets) > 0 {
-		return datasets, nil
-	}
-
-	entries, err := ListRuntimeStateByNamespace(path, runtimeStateNamespaceGeneratedDataset)
-	if err != nil {
-		return nil, err
-	}
-	fallback := make([]GeneratedDatasetEntry, 0, len(entries))
-	for _, entry := range entries {
-		var dataset GeneratedDataset
-		if err := json.Unmarshal(entry.Value, &dataset); err != nil {
-			return nil, fmt.Errorf("decode generated dataset %s: %w", entry.Key, err)
-		}
-		fallback = append(fallback, GeneratedDatasetEntry{
-			Key:             entry.Key,
-			Format:          dataset.Format,
-			Content:         dataset.Content,
-			UpdatedAtUnixMS: entry.UpdatedAtUnixMS,
-		})
-	}
-	return fallback, nil
+	return datasets, nil
 }
 
 func ExportGeneratedDatasetsToFiles(path string) (int, error) {

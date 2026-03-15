@@ -358,7 +358,7 @@ func (p *Requery) runtimeConfigKey() string {
 }
 
 func (p *Requery) runtimeDBPath() string {
-	return filepath.Join(filepath.Dir(filepath.Clean(p.filePath)), "runtime.db")
+	return coremain.RuntimeStateDBPathForPath(p.filePath)
 }
 
 func (p *Requery) runtimeStateKey() string {

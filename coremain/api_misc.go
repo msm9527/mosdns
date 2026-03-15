@@ -19,8 +19,6 @@ type ReverseLookupController interface {
 }
 
 func RegisterMiscAPI(router *chi.Mux, m *Mosdns) {
-	router.Get("/api/v1/clientname", handleGetClientname(m))
-	router.Put("/api/v1/clientname", handlePutClientname(m))
 	router.Get("/api/v1/reverse_lookup", handleReverseLookup(m))
 }
 

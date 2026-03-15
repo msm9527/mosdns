@@ -2,135 +2,107 @@
 
 ## 1. 文档定位
 
-本文档用于给代码评审、联调和发版说明提供一份浓缩版交付摘要。
+本文档用于给代码评审、联调和发版说明提供一份简明交付摘要。
 
-如果你只想快速回答下面几个问题，可以优先看这份文档：
+当前仓库已经按全新 V2 主线收口：
 
-- 这轮 V2 重构到底交付了什么？
-- 现在运行态真源是什么？
-- 前端应该调用哪些 API？
-- 运维应该用哪些命令迁移和回滚？
+- `config v2` 是唯一配置入口
+- `runtime.db` 是唯一运行态真源
+- 文件只承担静态输入、缓存持久化和显式导出物角色
+- 前端与外部调用统一走新 V2 API
 
-## 2. 已交付的核心变化
+## 2. 已交付能力
 
-### 2.1 运行态真源收口
+### 2.1 运行态真源
 
-以下运行态能力已接入 SQLite 主路径：
+以下运行态数据已进入 SQLite 结构化存储：
 
-- 审计日志与摘要
 - overrides
 - upstreams
 - switch
-- webinfo
-- requery 配置、状态、任务历史、checkpoint
+- webinfo / clientname
+- requery 配置、状态、job、run、checkpoint
 - AdGuard 规则配置
 - diversion 规则源配置
-- generated datasets / 动态规则导出元数据
+- generated datasets
+- system events
 
-### 2.2 稳定核心 API
+### 2.2 稳定 API
 
-已建立并落地 `/api/v1/runtime/*` 稳定资源域，重点包括：
+当前前端和外部调用应使用以下接口：
 
-- `/api/v1/runtime/summary`
-- `/api/v1/runtime/resources`
-- `/api/v1/runtime/requery/jobs`
-- `/api/v1/runtime/requery/runs`
-- `/api/v1/runtime/requery/checkpoints`
-- `/api/v1/runtime/requery/enqueue`
+- `GET /api/v1/runtime/summary`
+- `GET /api/v1/runtime/health`
+- `GET /api/v1/runtime/datasets`
+- `POST /api/v1/runtime/datasets/verify`
+- `POST /api/v1/runtime/datasets/export`
+- `GET /api/v1/runtime/events`
+- `GET /api/v1/runtime/clientname`
+- `PUT /api/v1/runtime/clientname`
+- `/api/v1/runtime/requery/*`
 
-### 2.3 CLI 与迁移工具
+旧的 `runtime resources 聚合接口`、`/api/v1/runtime/requery/*`、`/api/v1/runtime/clientname` 顶层别名已移除。
 
-已提供：
+### 2.3 CLI
+
+当前运维命令集已收口到：
 
 - `mosdns runtime summary`
+- `mosdns runtime health`
 - `mosdns runtime events`
-- `mosdns runtime datasets list/export`
-- `mosdns runtime requery jobs|runs|checkpoints`
-- `mosdns runtime legacy import/export`
-- `mosdns config migrate`
+- `mosdns runtime datasets list|verify|export`
+- `mosdns runtime requery jobs|runs|checkpoints|prune`
+- `mosdns runtime shunt explain|conflicts`
 - `mosdns config validate`
+
+`旧迁移命令` 与 `旧 runtime import/export` 已删除。
 
 ### 2.4 config v2
 
-`config v2` 已具备：
+`config v2` 已切为唯一配置主线：
 
-- v1 -> v2 一次性迁移
-- 最小纯声明式输出
-- 编译回当前 plugin graph
-- runtime plugin 声明能力
+- `loadConfig` 只接受 v2 文档
+- `legacy` / `include` / `plugins` 旧键会被显式拒绝
+- 编译链仅服务于纯 V2 schema
 
-## 3. 真源模型变化
-
-### 改造前
-
-- YAML、JSON、TXT、ndjson 多真源并存
-- UI 经常依赖具体插件实例或文件结构
-- 动态规则文件既是导出物，又承担真源职责
+## 3. 真源模型
 
 ### 改造后
 
 - 静态真源：`config v2`
-- 运行态真源：SQLite
-- 文件系统：静态模板、兼容导出物、缓存持久化、导入导出包
+- 运行态真源：`runtime.db`
+- 导出文件：由数据库或配置显式生成，不反向驱动运行态
 
-## 4. 前端与联调约定
+## 4. 联调约定
 
-前端现在应优先依赖：
+前端和脚本应：
 
-- `/api/v1/runtime/summary`
-- `/api/v1/runtime/resources`
+- 通过 `/api/v1/runtime/summary` 获取概览
+- 通过 `/api/v1/runtime/health`、`/datasets`、`/events` 获取运行态细分信息
+- 通过 `/api/v1/runtime/requery/*` 获取任务状态与执行控制
+- 通过 `/api/v1/runtime/clientname` 读写 webinfo clientname
 
-而不是：
+不再依赖：
 
-- 直接读取历史 JSON 文件
-- 依赖插件实例 tag
-- 假设某个动态规则一定存在某个导出文件
+- 历史 JSON 文件
+- 顶层别名接口
+- 旧配置迁移链路
 
-## 5. 兼容策略
+## 5. 建议验收方式
 
-当前仍保留兼容闭环：
-
-- `legacy import`：旧 JSON -> SQLite
-- `legacy export`：SQLite -> 旧 JSON
-- `datasets export`：SQLite -> 兼容 TXT/SRS/规则文件
-
-因此当前阶段属于：
-
-**SQLite 为真源，文件为兼容导出物，旧路径可回滚但不再推荐作为首选读写路径。**
-
-## 6. 建议验收方式
-
-### 开发/联调
-
-1. 启动 mosdns
+1. 启动 mosdns 并加载 v2 配置
 2. 调用 `/api/v1/runtime/summary`
-3. 调用 `/api/v1/runtime/resources`
-4. 验证 requery jobs/runs/checkpoints
-5. 删除动态规则导出文件后执行 `mosdns runtime datasets export`
-6. 执行 `mosdns runtime legacy export` 和 `import` 验证兼容闭环
+3. 调用 `/api/v1/runtime/health`
+4. 调用 `/api/v1/runtime/datasets` 与 `/api/v1/runtime/events`
+5. 验证 `/api/v1/runtime/requery/*` 返回正常
+6. 删除动态规则导出文件后执行 `mosdns runtime datasets export`
+7. 执行 `go test ./...`
 
-### 运维/回滚
+## 6. 当前结论
 
-1. 先执行 `mosdns runtime legacy export`
-2. 备份导出的 JSON/TXT 文件
-3. 如需临时回退，再切回旧兼容路径
+本轮不再是“边做边兼容”的过渡架构，而是已经切到纯 V2 主线：
 
-## 7. 当前状态判断
-
-如果满足以下条件，可以认为本轮 V2 主线已经交付：
-
-- 运行态不再以新增 JSON 文件为默认扩展方式
-- 新前端可仅依赖稳定 runtime API
-- `config v2` 可以迁出并校验
-- requery 已具备任务历史和 checkpoint 视图
-- 动态规则可从数据库重新导出
-
-## 8. 剩余事项性质
-
-当前剩余项主要属于：
-
-- 兼容期结束后的历史清理
-- 更细粒度的 schema 继续规范化
-- 非主路径页面/脚本进一步清理旧调用
-
-也就是说，当前不再是“架构未完成”，而是“兼容收尾与长期治理”。
+- 代码路径不再维护 legacy runtime 导入导出
+- 配置入口不再接受 v1 风格文档
+- runtime API 不再保留已移除的别名 surface
+- 文档、CLI、前端与测试统一指向新 V2 模型

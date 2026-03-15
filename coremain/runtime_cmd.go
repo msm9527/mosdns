@@ -148,55 +148,6 @@ func newRuntimeCmd() *cobra.Command {
 	eventsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of events to print")
 	runtimeCmd.AddCommand(eventsCmd)
 
-	legacyCmd := &cobra.Command{
-		Use:   "legacy",
-		Short: "Import legacy JSON runtime files into SQLite.",
-	}
-	legacyImportCmd := &cobra.Command{
-		Use:   "import",
-		Short: "Import known legacy runtime state files from a directory into SQLite.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
-			if err != nil {
-				return err
-			}
-			summary, err := ImportLegacyRuntimeState(baseDir)
-			if err != nil {
-				return err
-			}
-			data, err := json.Marshal(summary)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return err
-		},
-		SilenceUsage: true,
-	}
-	legacyExportCmd := &cobra.Command{
-		Use:   "export",
-		Short: "Export runtime state from SQLite back to legacy JSON files.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
-			if err != nil {
-				return err
-			}
-			summary, err := ExportLegacyRuntimeState(baseDir)
-			if err != nil {
-				return err
-			}
-			data, err := json.Marshal(summary)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return err
-		},
-		SilenceUsage: true,
-	}
-	legacyCmd.AddCommand(legacyImportCmd, legacyExportCmd)
-	runtimeCmd.AddCommand(legacyCmd)
-
 	requeryCmd := &cobra.Command{
 		Use:   "requery",
 		Short: "Inspect requery jobs, runs, and checkpoints stored in runtime SQLite.",

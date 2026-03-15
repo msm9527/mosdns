@@ -5,6 +5,37 @@ import (
 	"testing"
 )
 
+func TestRuntimeStateDBPathForPath(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	refPath := filepath.Join(MainConfigBaseDir, "runtime", "clientname.json")
+	got := RuntimeStateDBPathForPath(refPath)
+	want := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
+	if got != want {
+		t.Fatalf("unexpected runtime db path with main config base dir: got %q want %q", got, want)
+	}
+}
+
+func TestRuntimeStateDBPathForPathWithoutMainConfigBaseDir(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = ""
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	refDir := t.TempDir()
+	refPath := filepath.Join(refDir, "runtime", "clientname.json")
+	got := RuntimeStateDBPathForPath(refPath)
+	want := filepath.Join(filepath.Dir(refPath), runtimeStateDBFilename)
+	if got != want {
+		t.Fatalf("unexpected runtime db path fallback: got %q want %q", got, want)
+	}
+}
+
 func TestRuntimeStateStore_StructuredSwitchState(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), runtimeStateDBFilename)
 	switchFile := filepath.Join(t.TempDir(), "switches.json")
@@ -115,6 +146,67 @@ func TestRuntimeStateStore_StructuredUpstreamState(t *testing.T) {
 	}
 	if len(entries) != 1 || entries[0].Key != "test_plugin" {
 		t.Fatalf("unexpected upstream entries: %+v", entries)
+	}
+}
+
+func TestRuntimeStateStore_StructuredWebinfoState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), runtimeStateDBFilename)
+	configKey := filepath.Join(t.TempDir(), "webinfo", "clientname.json")
+	payload := map[string]string{"1.1.1.1": "cloudflare"}
+
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceWebinfo, configKey, payload); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath webinfo: %v", err)
+	}
+
+	var values map[string]string
+	ok, err := LoadRuntimeStateJSONFromPath(dbPath, runtimeNamespaceWebinfo, configKey, &values)
+	if err != nil {
+		t.Fatalf("LoadRuntimeStateJSONFromPath webinfo: %v", err)
+	}
+	if !ok || values["1.1.1.1"] != "cloudflare" {
+		t.Fatalf("unexpected webinfo values: ok=%v payload=%+v", ok, values)
+	}
+
+	entries, err := ListRuntimeStateByNamespace(dbPath, runtimeNamespaceWebinfo)
+	if err != nil {
+		t.Fatalf("ListRuntimeStateByNamespace webinfo: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Key != configKey {
+		t.Fatalf("unexpected webinfo entries: %+v", entries)
+	}
+}
+
+func TestRuntimeStateStore_StructuredRequeryState(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), runtimeStateDBFilename)
+	configKey := filepath.Join(t.TempDir(), "webinfo", "requeryconfig.json") + ":config"
+	stateKey := filepath.Join(t.TempDir(), "webinfo", "requeryconfig.state.json") + ":state"
+
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceRequery, configKey, map[string]any{
+		"workflow": map[string]any{"mode": "hybrid"},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath requery config: %v", err)
+	}
+	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceRequery, stateKey, map[string]any{
+		"status": map[string]any{"task_state": "idle"},
+	}); err != nil {
+		t.Fatalf("SaveRuntimeStateJSONToPath requery state: %v", err)
+	}
+
+	var configPayload map[string]any
+	ok, err := LoadRuntimeStateJSONFromPath(dbPath, runtimeNamespaceRequery, configKey, &configPayload)
+	if err != nil {
+		t.Fatalf("LoadRuntimeStateJSONFromPath requery config: %v", err)
+	}
+	if !ok {
+		t.Fatalf("expected requery config to exist")
+	}
+
+	entries, err := ListRuntimeStateByNamespace(dbPath, runtimeNamespaceRequery)
+	if err != nil {
+		t.Fatalf("ListRuntimeStateByNamespace requery: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("unexpected requery entries: %+v", entries)
 	}
 }
 

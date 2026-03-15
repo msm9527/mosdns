@@ -38,6 +38,17 @@ func defaultRuntimeStateDBPath() string {
 	return filepath.Join(baseDir, runtimeStateDBFilename)
 }
 
+func RuntimeStateDBPathForPath(referencePath string) string {
+	if MainConfigBaseDir != "" {
+		return defaultRuntimeStateDBPath()
+	}
+	cleanPath := filepath.Clean(strings.TrimSpace(referencePath))
+	if cleanPath == "" || cleanPath == "." {
+		return defaultRuntimeStateDBPath()
+	}
+	return filepath.Join(filepath.Dir(cleanPath), runtimeStateDBFilename)
+}
+
 func getRuntimeStateStore() (*runtimeStateStore, error) {
 	return getRuntimeStateStoreByPath(defaultRuntimeStateDBPath())
 }
@@ -69,6 +80,10 @@ func (s *runtimeStateStore) get(namespace, key string, dst any) (bool, error) {
 	switch namespace {
 	case runtimeNamespaceSwitch:
 		return s.getStructuredSwitchState(key, dst)
+	case runtimeNamespaceWebinfo:
+		return s.getStructuredWebinfoState(key, dst)
+	case runtimeNamespaceRequery:
+		return s.getStructuredRequeryState(key, dst)
 	case runtimeStateNamespaceOverrides:
 		return s.getStructuredGlobalOverrides(key, dst)
 	case runtimeStateNamespaceUpstreams:
@@ -78,28 +93,17 @@ func (s *runtimeStateStore) get(namespace, key string, dst any) (bool, error) {
 	case runtimeNamespaceDiversion:
 		return s.getStructuredDiversionState(key, dst)
 	}
-	row := s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, namespace, key)
-
-	var raw string
-	err := row.Scan(&raw)
-	switch err {
-	case nil:
-	case sql.ErrNoRows:
-		return false, nil
-	default:
-		return false, fmt.Errorf("query runtime state %s/%s: %w", namespace, key, err)
-	}
-
-	if err := json.Unmarshal([]byte(raw), dst); err != nil {
-		return false, fmt.Errorf("decode runtime state %s/%s: %w", namespace, key, err)
-	}
-	return true, nil
+	return false, fmt.Errorf("unsupported runtime namespace %q", namespace)
 }
 
 func (s *runtimeStateStore) put(namespace, key string, value any) error {
 	switch namespace {
 	case runtimeNamespaceSwitch:
 		return s.putStructuredSwitchState(key, value)
+	case runtimeNamespaceWebinfo:
+		return s.putStructuredWebinfoState(key, value)
+	case runtimeNamespaceRequery:
+		return s.putStructuredRequeryState(key, value)
 	case runtimeStateNamespaceOverrides:
 		return s.putStructuredGlobalOverrides(key, value)
 	case runtimeStateNamespaceUpstreams:
@@ -109,26 +113,17 @@ func (s *runtimeStateStore) put(namespace, key string, value any) error {
 	case runtimeNamespaceDiversion:
 		return s.putStructuredDiversionState(key, value)
 	}
-	data, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal runtime state %s/%s: %w", namespace, key, err)
-	}
-	if _, err := s.db.DB().Exec(`
-		INSERT INTO runtime_kv (namespace, key, value_json, updated_at_unix_ms)
-		VALUES (?, ?, ?, unixepoch('subsec') * 1000)
-		ON CONFLICT(namespace, key) DO UPDATE SET
-			value_json = excluded.value_json,
-			updated_at_unix_ms = excluded.updated_at_unix_ms
-	`, namespace, key, string(data)); err != nil {
-		return fmt.Errorf("save runtime state %s/%s: %w", namespace, key, err)
-	}
-	return nil
+	return fmt.Errorf("unsupported runtime namespace %q", namespace)
 }
 
 func (s *runtimeStateStore) remove(namespace, key string) error {
 	switch namespace {
 	case runtimeNamespaceSwitch:
 		return s.removeStructuredSwitchState(key)
+	case runtimeNamespaceWebinfo:
+		return s.removeStructuredWebinfoState(key)
+	case runtimeNamespaceRequery:
+		return s.removeStructuredRequeryState(key)
 	case runtimeStateNamespaceOverrides:
 		return s.removeStructuredGlobalOverrides(key)
 	case runtimeStateNamespaceUpstreams:
@@ -138,86 +133,227 @@ func (s *runtimeStateStore) remove(namespace, key string) error {
 	case runtimeNamespaceDiversion:
 		return s.removeStructuredDiversionState(key)
 	}
-	if _, err := s.db.DB().Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, namespace, key); err != nil {
-		return fmt.Errorf("delete runtime state %s/%s: %w", namespace, key, err)
-	}
-	return nil
+	return fmt.Errorf("unsupported runtime namespace %q", namespace)
 }
 
 func (s *runtimeStateStore) list(namespace string) ([]RuntimeStateEntry, error) {
 	if namespace == runtimeNamespaceSwitch {
 		return s.listStructuredSwitchState()
 	}
+	if namespace == runtimeNamespaceWebinfo {
+		return s.listStructuredWebinfoState()
+	}
+	if namespace == runtimeNamespaceRequery {
+		return s.listStructuredRequeryState()
+	}
 	if namespace == runtimeStateNamespaceOverrides {
-		entries, err := s.listStructuredGlobalOverrides()
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) > 0 {
-			return entries, nil
-		}
+		return s.listStructuredGlobalOverrides()
 	}
 	if namespace == runtimeStateNamespaceUpstreams {
-		entries, err := s.listStructuredUpstreamOverrides()
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) > 0 {
-			return entries, nil
-		}
+		return s.listStructuredUpstreamOverrides()
 	}
 	if namespace == runtimeNamespaceAdguard {
-		entries, err := s.listStructuredAdguardState()
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) > 0 {
-			return entries, nil
-		}
+		return s.listStructuredAdguardState()
 	}
 	if namespace == runtimeNamespaceDiversion {
-		entries, err := s.listStructuredDiversionState()
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) > 0 {
-			return entries, nil
-		}
+		return s.listStructuredDiversionState()
 	}
 	if namespace == runtimeStateNamespaceGeneratedDataset {
-		entries, err := listStructuredGeneratedDatasetEntries(s.db.DB())
-		if err != nil {
-			return nil, err
-		}
-		if len(entries) > 0 {
-			return entries, nil
-		}
+		return listStructuredGeneratedDatasetEntries(s.db.DB())
 	}
-	rows, err := s.db.DB().Query(`
-		SELECT namespace, key, value_json, updated_at_unix_ms
-		FROM runtime_kv
-		WHERE namespace = ?
-		ORDER BY key ASC
-	`, namespace)
+	return nil, fmt.Errorf("unsupported runtime namespace %q", namespace)
+}
+
+func (s *runtimeStateStore) getStructuredWebinfoState(key string, dst any) (bool, error) {
+	return getStructuredJSONStateByKey(s.db.DB(), "webinfo_state", "file_path", key, dst)
+}
+
+func (s *runtimeStateStore) putStructuredWebinfoState(key string, value any) error {
+	return putStructuredJSONStateByKey(s.db.DB(), "webinfo_state", "file_path", key, value)
+}
+
+func (s *runtimeStateStore) removeStructuredWebinfoState(key string) error {
+	return removeStructuredJSONStateByKey(s.db.DB(), "webinfo_state", "file_path", key)
+}
+
+func (s *runtimeStateStore) listStructuredWebinfoState() ([]RuntimeStateEntry, error) {
+	return listStructuredJSONStateByKey(s.db.DB(), "webinfo_state", "file_path", runtimeNamespaceWebinfo)
+}
+
+func (s *runtimeStateStore) getStructuredRequeryState(key string, dst any) (bool, error) {
+	filePath, stateKind, err := parseRequeryStateKey(key)
 	if err != nil {
-		return nil, fmt.Errorf("list runtime state namespace %s: %w", namespace, err)
+		return false, err
+	}
+	row := s.db.DB().QueryRow(`
+		SELECT payload_json
+		FROM requery_state
+		WHERE file_path = ? AND state_kind = ?
+	`, filePath, stateKind)
+	return scanStructuredJSONRow(row, runtimeNamespaceRequery, key, dst)
+}
+
+func (s *runtimeStateStore) putStructuredRequeryState(key string, value any) error {
+	filePath, stateKind, err := parseRequeryStateKey(key)
+	if err != nil {
+		return err
+	}
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal requery_state %s: %w", key, err)
+	}
+	if _, err := s.db.DB().Exec(`
+		INSERT INTO requery_state (file_path, state_kind, payload_json, updated_at_unix_ms)
+		VALUES (?, ?, ?, unixepoch('subsec') * 1000)
+		ON CONFLICT(file_path, state_kind) DO UPDATE SET
+			payload_json = excluded.payload_json,
+			updated_at_unix_ms = excluded.updated_at_unix_ms
+	`, filePath, stateKind, string(data)); err != nil {
+		return fmt.Errorf("save requery_state %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *runtimeStateStore) removeStructuredRequeryState(key string) error {
+	filePath, stateKind, err := parseRequeryStateKey(key)
+	if err != nil {
+		return err
+	}
+	if _, err := s.db.DB().Exec(`DELETE FROM requery_state WHERE file_path = ? AND state_kind = ?`, filePath, stateKind); err != nil {
+		return fmt.Errorf("delete requery_state %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *runtimeStateStore) listStructuredRequeryState() ([]RuntimeStateEntry, error) {
+	rows, err := s.db.DB().Query(`
+		SELECT file_path, state_kind, payload_json, updated_at_unix_ms
+		FROM requery_state
+		ORDER BY file_path ASC, state_kind ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list requery_state: %w", err)
 	}
 	defer rows.Close()
 
-	var entries []RuntimeStateEntry
+	entries := make([]RuntimeStateEntry, 0)
 	for rows.Next() {
-		var entry RuntimeStateEntry
-		var raw string
-		if err := rows.Scan(&entry.Namespace, &entry.Key, &raw, &entry.UpdatedAtUnixMS); err != nil {
-			return nil, fmt.Errorf("scan runtime state namespace %s: %w", namespace, err)
+		var filePath string
+		var stateKind string
+		var payloadJSON string
+		var updatedAt int64
+		if err := rows.Scan(&filePath, &stateKind, &payloadJSON, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan requery_state: %w", err)
 		}
-		entry.Value = json.RawMessage(raw)
-		entries = append(entries, entry)
+		entries = append(entries, RuntimeStateEntry{
+			Namespace:       runtimeNamespaceRequery,
+			Key:             composeRequeryStateKey(filePath, stateKind),
+			Value:           json.RawMessage(payloadJSON),
+			UpdatedAtUnixMS: updatedAt,
+		})
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate runtime state namespace %s: %w", namespace, err)
+		return nil, fmt.Errorf("iterate requery_state: %w", err)
 	}
 	return entries, nil
+}
+
+func getStructuredJSONStateByKey(db *sql.DB, table, keyColumn, key string, dst any) (bool, error) {
+	query := fmt.Sprintf(`SELECT payload_json FROM %s WHERE %s = ?`, table, keyColumn)
+	row := db.QueryRow(query, key)
+	return scanStructuredJSONRow(row, table, key, dst)
+}
+
+func putStructuredJSONStateByKey(db *sql.DB, table, keyColumn, key string, value any) error {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return fmt.Errorf("marshal %s %s: %w", table, key, err)
+	}
+	stmt := fmt.Sprintf(`
+		INSERT INTO %s (%s, payload_json, updated_at_unix_ms)
+		VALUES (?, ?, unixepoch('subsec') * 1000)
+		ON CONFLICT(%s) DO UPDATE SET
+			payload_json = excluded.payload_json,
+			updated_at_unix_ms = excluded.updated_at_unix_ms
+	`, table, keyColumn, keyColumn)
+	if _, err := db.Exec(stmt, key, string(data)); err != nil {
+		return fmt.Errorf("save %s %s: %w", table, key, err)
+	}
+	return nil
+}
+
+func removeStructuredJSONStateByKey(db *sql.DB, table, keyColumn, key string) error {
+	stmt := fmt.Sprintf(`DELETE FROM %s WHERE %s = ?`, table, keyColumn)
+	if _, err := db.Exec(stmt, key); err != nil {
+		return fmt.Errorf("delete %s %s: %w", table, key, err)
+	}
+	return nil
+}
+
+func listStructuredJSONStateByKey(db *sql.DB, table, keyColumn, namespace string) ([]RuntimeStateEntry, error) {
+	query := fmt.Sprintf(`
+		SELECT %s, payload_json, updated_at_unix_ms
+		FROM %s
+		ORDER BY %s ASC
+	`, keyColumn, table, keyColumn)
+	rows, err := db.Query(query)
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	entries := make([]RuntimeStateEntry, 0)
+	for rows.Next() {
+		var key string
+		var payloadJSON string
+		var updatedAt int64
+		if err := rows.Scan(&key, &payloadJSON, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan %s: %w", table, err)
+		}
+		entries = append(entries, RuntimeStateEntry{
+			Namespace:       namespace,
+			Key:             key,
+			Value:           json.RawMessage(payloadJSON),
+			UpdatedAtUnixMS: updatedAt,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate %s: %w", table, err)
+	}
+	return entries, nil
+}
+
+func scanStructuredJSONRow(row *sql.Row, namespace, key string, dst any) (bool, error) {
+	var payloadJSON string
+	err := row.Scan(&payloadJSON)
+	switch err {
+	case nil:
+	case sql.ErrNoRows:
+		return false, nil
+	default:
+		return false, fmt.Errorf("query %s %s: %w", namespace, key, err)
+	}
+	if err := json.Unmarshal([]byte(payloadJSON), dst); err != nil {
+		return false, fmt.Errorf("decode %s %s: %w", namespace, key, err)
+	}
+	return true, nil
+}
+
+func parseRequeryStateKey(key string) (string, string, error) {
+	idx := strings.LastIndex(key, ":")
+	if idx <= 0 || idx == len(key)-1 {
+		return "", "", fmt.Errorf("invalid requery runtime key %q", key)
+	}
+	filePath := key[:idx]
+	stateKind := key[idx+1:]
+	if stateKind != "config" && stateKind != "state" {
+		return "", "", fmt.Errorf("unsupported requery runtime kind %q", stateKind)
+	}
+	return filePath, stateKind, nil
+}
+
+func composeRequeryStateKey(filePath, stateKind string) string {
+	return filePath + ":" + stateKind
 }
 
 func (s *runtimeStateStore) getStructuredSwitchState(key string, dst any) (bool, error) {
@@ -254,21 +390,7 @@ func (s *runtimeStateStore) getStructuredSwitchState(key string, dst any) (bool,
 		}
 		return true, nil
 	}
-
-	row := s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceSwitch, key)
-	var raw string
-	err = row.Scan(&raw)
-	switch err {
-	case nil:
-	case sql.ErrNoRows:
-		return false, nil
-	default:
-		return false, fmt.Errorf("query runtime state %s/%s: %w", runtimeNamespaceSwitch, key, err)
-	}
-	if err := json.Unmarshal([]byte(raw), dst); err != nil {
-		return false, fmt.Errorf("decode runtime state %s/%s: %w", runtimeNamespaceSwitch, key, err)
-	}
-	return true, nil
+	return false, nil
 }
 
 func (s *runtimeStateStore) putStructuredSwitchState(key string, value any) error {
@@ -309,9 +431,6 @@ func (s *runtimeStateStore) putStructuredSwitchState(key string, value any) erro
 		}
 	}
 
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceSwitch, key); err != nil {
-		return fmt.Errorf("cleanup legacy runtime switch state %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit switch_state %s: %w", key, err)
 	}
@@ -330,9 +449,6 @@ func (s *runtimeStateStore) removeStructuredSwitchState(key string) error {
 	}()
 	if _, err = tx.Exec(`DELETE FROM switch_state WHERE file_path = ?`, key); err != nil {
 		return fmt.Errorf("delete switch_state %s: %w", key, err)
-	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceSwitch, key); err != nil {
-		return fmt.Errorf("delete legacy switch_state %s: %w", key, err)
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete switch_state %s: %w", key, err)
@@ -377,33 +493,6 @@ func (s *runtimeStateStore) listStructuredSwitchState() ([]RuntimeStateEntry, er
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate switch_state: %w", err)
 	}
-	if len(groupedByFile) == 0 {
-		rows, err := s.db.DB().Query(`
-			SELECT namespace, key, value_json, updated_at_unix_ms
-			FROM runtime_kv
-			WHERE namespace = ?
-			ORDER BY key ASC
-		`, runtimeNamespaceSwitch)
-		if err != nil {
-			return nil, fmt.Errorf("list legacy switch runtime state: %w", err)
-		}
-		defer rows.Close()
-		var entries []RuntimeStateEntry
-		for rows.Next() {
-			var entry RuntimeStateEntry
-			var raw string
-			if err := rows.Scan(&entry.Namespace, &entry.Key, &raw, &entry.UpdatedAtUnixMS); err != nil {
-				return nil, fmt.Errorf("scan legacy switch runtime state: %w", err)
-			}
-			entry.Value = json.RawMessage(raw)
-			entries = append(entries, entry)
-		}
-		if err := rows.Err(); err != nil {
-			return nil, fmt.Errorf("iterate legacy switch runtime state: %w", err)
-		}
-		return entries, nil
-	}
-
 	entries := make([]RuntimeStateEntry, 0, len(order))
 	for _, filePath := range order {
 		raw, err := json.Marshal(groupedByFile[filePath].values)
@@ -449,21 +538,7 @@ func (s *runtimeStateStore) getStructuredGlobalOverrides(key string, dst any) (b
 	default:
 		return false, fmt.Errorf("query global_override_state %s: %w", key, err)
 	}
-
-	row = s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceOverrides, key)
-	var raw string
-	err = row.Scan(&raw)
-	switch err {
-	case nil:
-	case sql.ErrNoRows:
-		return false, nil
-	default:
-		return false, fmt.Errorf("query runtime state %s/%s: %w", runtimeStateNamespaceOverrides, key, err)
-	}
-	if err := json.Unmarshal([]byte(raw), dst); err != nil {
-		return false, fmt.Errorf("decode runtime state %s/%s: %w", runtimeStateNamespaceOverrides, key, err)
-	}
-	return true, nil
+	return false, nil
 }
 
 func (s *runtimeStateStore) putStructuredGlobalOverrides(key string, value any) error {
@@ -501,9 +576,6 @@ func (s *runtimeStateStore) putStructuredGlobalOverrides(key string, value any) 
 	`, key, payload.Socks5, payload.ECS, string(replacementsJSON)); err != nil {
 		return fmt.Errorf("save global_override_state %s: %w", key, err)
 	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceOverrides, key); err != nil {
-		return fmt.Errorf("cleanup legacy runtime overrides %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit global_override_state %s: %w", key, err)
 	}
@@ -522,9 +594,6 @@ func (s *runtimeStateStore) removeStructuredGlobalOverrides(key string) error {
 	}()
 	if _, err = tx.Exec(`DELETE FROM global_override_state WHERE scope_key = ?`, key); err != nil {
 		return fmt.Errorf("delete global_override_state %s: %w", key, err)
-	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceOverrides, key); err != nil {
-		return fmt.Errorf("delete legacy global_override_state %s: %w", key, err)
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete global_override_state %s: %w", key, err)
@@ -610,21 +679,7 @@ func (s *runtimeStateStore) getStructuredUpstreamOverrides(key string, dst any) 
 		}
 		return true, nil
 	}
-
-	row := s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceUpstreams, key)
-	var raw string
-	err = row.Scan(&raw)
-	switch err {
-	case nil:
-	case sql.ErrNoRows:
-		return false, nil
-	default:
-		return false, fmt.Errorf("query runtime state %s/%s: %w", runtimeStateNamespaceUpstreams, key, err)
-	}
-	if err := json.Unmarshal([]byte(raw), dst); err != nil {
-		return false, fmt.Errorf("decode runtime state %s/%s: %w", runtimeStateNamespaceUpstreams, key, err)
-	}
-	return true, nil
+	return false, nil
 }
 
 func (s *runtimeStateStore) putStructuredUpstreamOverrides(key string, value any) error {
@@ -673,9 +728,6 @@ func (s *runtimeStateStore) putStructuredUpstreamOverrides(key string, value any
 		}
 	}
 
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceUpstreams, key); err != nil {
-		return fmt.Errorf("cleanup legacy runtime upstreams %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit upstream_override_item %s: %w", key, err)
 	}
@@ -694,9 +746,6 @@ func (s *runtimeStateStore) removeStructuredUpstreamOverrides(key string) error 
 	}()
 	if _, err = tx.Exec(`DELETE FROM upstream_override_item`); err != nil {
 		return fmt.Errorf("delete upstream_override_item: %w", err)
-	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeStateNamespaceUpstreams, key); err != nil {
-		return fmt.Errorf("delete legacy upstream_override_item %s: %w", key, err)
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete upstream_override_item %s: %w", key, err)
@@ -785,8 +834,7 @@ func (s *runtimeStateStore) getStructuredAdguardState(key string, dst any) (bool
 		}
 		return true, nil
 	}
-
-	return s.getFromLegacyKV(runtimeNamespaceAdguard, key, dst)
+	return false, nil
 }
 
 func (s *runtimeStateStore) putStructuredAdguardState(key string, value any) error {
@@ -830,9 +878,6 @@ func (s *runtimeStateStore) putStructuredAdguardState(key string, value any) err
 			return fmt.Errorf("insert adguard_rule_item %s/%s: %w", key, ruleID, err)
 		}
 	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceAdguard, key); err != nil {
-		return fmt.Errorf("cleanup legacy adguard_rule_item %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit adguard_rule_item %s: %w", key, err)
 	}
@@ -851,9 +896,6 @@ func (s *runtimeStateStore) removeStructuredAdguardState(key string) error {
 	}()
 	if _, err = tx.Exec(`DELETE FROM adguard_rule_item WHERE config_key = ?`, key); err != nil {
 		return fmt.Errorf("delete adguard_rule_item %s: %w", key, err)
-	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceAdguard, key); err != nil {
-		return fmt.Errorf("delete legacy adguard_rule_item %s: %w", key, err)
 	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete adguard_rule_item %s: %w", key, err)
@@ -896,8 +938,7 @@ func (s *runtimeStateStore) getStructuredDiversionState(key string, dst any) (bo
 		}
 		return true, nil
 	}
-
-	return s.getFromLegacyKV(runtimeNamespaceDiversion, key, dst)
+	return false, nil
 }
 
 func (s *runtimeStateStore) putStructuredDiversionState(key string, value any) error {
@@ -939,9 +980,6 @@ func (s *runtimeStateStore) putStructuredDiversionState(key string, value any) e
 			return fmt.Errorf("insert diversion_rule_source %s/%s: %w", key, sourceName, err)
 		}
 	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceDiversion, key); err != nil {
-		return fmt.Errorf("cleanup legacy diversion_rule_source %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit diversion_rule_source %s: %w", key, err)
 	}
@@ -961,9 +999,6 @@ func (s *runtimeStateStore) removeStructuredDiversionState(key string) error {
 	if _, err = tx.Exec(`DELETE FROM diversion_rule_source WHERE config_key = ?`, key); err != nil {
 		return fmt.Errorf("delete diversion_rule_source %s: %w", key, err)
 	}
-	if _, err = tx.Exec(`DELETE FROM runtime_kv WHERE namespace = ? AND key = ?`, runtimeNamespaceDiversion, key); err != nil {
-		return fmt.Errorf("delete legacy diversion_rule_source %s: %w", key, err)
-	}
 	if err = tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete diversion_rule_source %s: %w", key, err)
 	}
@@ -981,23 +1016,6 @@ func (s *runtimeStateStore) listStructuredDiversionState() ([]RuntimeStateEntry,
 	}
 	defer rows.Close()
 	return collectGroupedJSONArrayEntries(rows, runtimeNamespaceDiversion)
-}
-
-func (s *runtimeStateStore) getFromLegacyKV(namespace, key string, dst any) (bool, error) {
-	row := s.db.DB().QueryRow(`SELECT value_json FROM runtime_kv WHERE namespace = ? AND key = ?`, namespace, key)
-	var raw string
-	err := row.Scan(&raw)
-	switch err {
-	case nil:
-	case sql.ErrNoRows:
-		return false, nil
-	default:
-		return false, fmt.Errorf("query runtime state %s/%s: %w", namespace, key, err)
-	}
-	if err := json.Unmarshal([]byte(raw), dst); err != nil {
-		return false, fmt.Errorf("decode runtime state %s/%s: %w", namespace, key, err)
-	}
-	return true, nil
 }
 
 func collectJSONArrayFromRows(rows *sql.Rows) ([]byte, error) {

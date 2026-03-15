@@ -136,15 +136,29 @@ func ensureSchema(db *sql.DB, migrations []Migration) error {
 func baseMigrations() []Migration {
 	return []Migration{
 		{
-			ID: "0001_runtime_kv",
+			ID: "0001_webinfo_state",
 			Up: `
-				CREATE TABLE IF NOT EXISTS runtime_kv (
-					namespace TEXT NOT NULL,
-					key TEXT NOT NULL,
-					value_json TEXT NOT NULL,
-					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
-					PRIMARY KEY (namespace, key)
+				CREATE TABLE IF NOT EXISTS webinfo_state (
+					file_path TEXT PRIMARY KEY,
+					payload_json TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
 				);
+			`,
+		},
+		{
+			ID: "0002_requery_state",
+			Up: `
+				CREATE TABLE IF NOT EXISTS requery_state (
+					file_path TEXT NOT NULL,
+					state_kind TEXT NOT NULL,
+					payload_json TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (file_path, state_kind)
+				);
+				CREATE INDEX IF NOT EXISTS idx_requery_state_file
+				ON requery_state(file_path, updated_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_requery_state_kind
+				ON requery_state(state_kind, updated_at_unix_ms DESC);
 			`,
 		},
 		{

@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	"github.com/IrineSistiana/mosdns/v5/internal/configv2"
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/spf13/viper"
 	"gopkg.in/yaml.v3"
 )
@@ -56,34 +55,6 @@ func isConfigV2Document(raw []byte) (bool, error) {
 		s := strings.TrimSpace(fmt.Sprint(v))
 		return configv2.IsV2Version(s), nil
 	}
-}
-
-func decodeV1Config(v *viper.Viper) (*Config, error) {
-	decoderOpt := func(cfg *mapstructure.DecoderConfig) {
-		cfg.ErrorUnused = true
-		cfg.TagName = "yaml"
-		cfg.WeaklyTypedInput = true
-	}
-
-	cfg := new(Config)
-	if err := v.Unmarshal(cfg, decoderOpt); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-	return cfg, nil
-}
-
-func decodeV1CompatConfig(v *viper.Viper) (*configv2.V1Config, error) {
-	decoderOpt := func(cfg *mapstructure.DecoderConfig) {
-		cfg.ErrorUnused = true
-		cfg.TagName = "yaml"
-		cfg.WeaklyTypedInput = true
-	}
-
-	cfg := new(configv2.V1Config)
-	if err := v.Unmarshal(cfg, decoderOpt); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal v1 compat config: %w", err)
-	}
-	return cfg, nil
 }
 
 func compileConfigV2(raw []byte) (*Config, error) {

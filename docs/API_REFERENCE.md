@@ -18,7 +18,7 @@
 - 缓存：优先使用 `/api/v1/cache/*`
 - 分流记忆库：优先使用 `/api/v1/memory/*`
 - 可编辑列表：优先使用 `/api/v1/lists/*`
-- `clientname` / `reverse_lookup`：优先使用 `/api/v1/clientname`、`/api/v1/reverse_lookup`
+- `clientname` / `reverse_lookup`：优先使用 `/api/v1/runtime/clientname`、`/api/v1/reverse_lookup`
 
 ## 1. 基础约定
 
@@ -80,7 +80,11 @@
 | 方法 | 子路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/summary` | `stable` | 获取运行态命名空间概览、存储引擎和聚合摘要 |
-| `GET` | `/resources` | `stable` | 获取运行态资源聚合结果 |
+| `GET` | `/health` | `stable` | 获取运行态自检结果 |
+| `GET` | `/datasets` | `stable` | 获取 generated datasets 列表 |
+| `POST` | `/datasets/export` | `stable` | 导出 generated datasets 到文件 |
+| `POST` | `/datasets/verify` | `stable` | 校验 generated datasets 与文件一致性 |
+| `GET` | `/events` | `stable` | 获取 runtime system events |
 | `GET` | `/requery/jobs` | `stable` | 获取 requery 任务定义 |
 | `GET` | `/requery/runs` | `stable` | 获取最近 requery 运行历史 |
 | `GET` | `/requery/checkpoints` | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
@@ -92,22 +96,10 @@
 - 确认当前运行态是否已经由 SQLite 接管
 - 查看 `switch / webinfo / requery / adguard_rule / diversion_rule / generated_dataset` 是否有数据
 
-`GET /api/v1/runtime/resources` 当前会聚合：
-
-- `switches`
-- `webinfo`
-- `requery`
-- `requery_jobs`
-- `requery_runs`
-- `adguard`
-- `diversion`
-- `datasets`
-- `events`
-
 说明：
 
-- `adguard_rule` 与 `diversion_rule` 是稳定资源域，不建议前端继续直接读取旧 JSON 文件。
-- `generated_dataset` 属于动态规则导出真源，对应的兼容文件可由 CLI 重新导出。
+- `generated_dataset` 属于动态规则导出真源，对应文件通过显式 export 动作生成。
+- 运行态页面应按模块分别调用 `/summary`、`/health`、`/datasets`、`/events` 与 `/runtime/requery/*`，不再依赖单一大聚合接口。
 
 ### 2.4 审计 API v1
 
@@ -668,26 +660,26 @@
 
 ### 4.1 Requery / 批量重建分流任务（`stable`）
 
-根路径：`/api/v1/requery`
+根路径：`/api/v1/runtime/requery`
 
 这组接口用于“批量重建分流 / 快速预热缓存”流程本身，不负责直接读写具体分流列表内容。
 
 当前推荐优先使用聚合接口，减少前端请求次数：
 
-- `GET /api/v1/requery/summary`
-- `POST /api/v1/requery/rules/save`
-- `POST /api/v1/requery/rules/flush`
+- `GET /api/v1/runtime/requery/summary`
+- `POST /api/v1/runtime/requery/rules/save`
+- `POST /api/v1/runtime/requery/rules/flush`
 
 典型调用链：
 
-1. `GET /api/v1/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
-2. `POST /api/v1/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
-3. `POST /api/v1/requery/enqueue` 入队单域名按需刷新
-4. `POST /api/v1/requery/cancel` 取消当前任务
-5. `POST /api/v1/requery/scheduler/config` 更新定时刷新配置
-6. `POST /api/v1/requery/rules/save` 批量保存当前分流规则
-7. `POST /api/v1/requery/rules/flush` 批量清空动态分流规则
-8. `GET /api/v1/requery/stats/source_file_counts` 获取刷新源文件统计
+1. `GET /api/v1/runtime/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
+2. `POST /api/v1/runtime/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
+3. `POST /api/v1/runtime/requery/enqueue` 入队单域名按需刷新
+4. `POST /api/v1/runtime/requery/cancel` 取消当前任务
+5. `POST /api/v1/runtime/requery/scheduler/config` 更新定时刷新配置
+6. `POST /api/v1/runtime/requery/rules/save` 批量保存当前分流规则
+7. `POST /api/v1/runtime/requery/rules/flush` 批量清空动态分流规则
+8. `GET /api/v1/runtime/requery/stats/source_file_counts` 获取刷新源文件统计
 
 三种任务模式：
 
@@ -726,7 +718,7 @@
 | `POST` | `/rules/flush` | `stable` | 批量清空 `url_actions.flush_rules` 中的目标 |
 | `GET` | `/stats/source_file_counts` | `stable` | 获取各源文件条目统计 |
 
-`GET /api/v1/requery/summary` 返回核心字段：
+`GET /api/v1/runtime/requery/summary` 返回核心字段：
 
 - `config.domain_processing.source_files`
 - `config.url_actions.save_rules`
@@ -761,7 +753,7 @@
 - `status.last_error`
 - `memory_stats`
 
-`GET /api/v1/requery` 返回核心字段：
+`GET /api/v1/runtime/requery` 返回核心字段：
 
 - `domain_processing.source_files`
 - `url_actions.save_rules`
@@ -795,9 +787,9 @@
 说明：
 
 - 旧的 `/plugins/requery/*` 接口已移除
-- `requery` 现在只保留 `/api/v1/requery/*`
+- `requery` 现在只保留 `/api/v1/runtime/requery/*`
 
-`POST /api/v1/requery/trigger` 请求体示例：
+`POST /api/v1/runtime/requery/trigger` 请求体示例：
 
 ```json
 {
@@ -812,7 +804,7 @@
 - `quick_rebuild`
 - `quick_prewarm`
 
-`POST /api/v1/requery/trigger` 成功返回示例：
+`POST /api/v1/runtime/requery/trigger` 成功返回示例：
 
 ```json
 {
@@ -822,7 +814,7 @@
 }
 ```
 
-`POST /api/v1/requery/enqueue` 请求体示例：
+`POST /api/v1/runtime/requery/enqueue` 请求体示例：
 
 ```json
 {
@@ -842,7 +834,7 @@
 - `reason` 会影响队列优先级，常见值：`observed`、`stale`、`conflict`、`error`
 - 如果队列判定为重复或无需处理，接口会返回 `202 Accepted` 且 `status=skipped`
 
-`POST /api/v1/requery/enqueue` 成功返回示例：
+`POST /api/v1/runtime/requery/enqueue` 成功返回示例：
 
 ```json
 {
@@ -852,7 +844,7 @@
 }
 ```
 
-`POST /api/v1/requery/rules/save` / `POST /api/v1/requery/rules/flush` 返回示例：
+`POST /api/v1/runtime/requery/rules/save` / `POST /api/v1/runtime/requery/rules/flush` 返回示例：
 
 ```json
 {
@@ -873,7 +865,7 @@
 }
 ```
 
-`POST /api/v1/requery/scheduler/config` 示例：
+`POST /api/v1/runtime/requery/scheduler/config` 示例：
 
 ```json
 {
@@ -948,7 +940,7 @@
   - 这套任务会真实发 DNS 查询重建分流结果，不是单纯内存刷新
   - 即使做了增量优化，`full_rebuild` 也不应被当成“秒级无感操作”
 
-`GET /api/v1/requery/stats/source_file_counts` 返回示例：
+`GET /api/v1/runtime/requery/stats/source_file_counts` 返回示例：
 
 ```json
 {
@@ -1178,11 +1170,11 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/clientname` | `stable` | 获取客户端别名映射 |
-| `PUT` | `/api/v1/clientname` | `stable` | 更新客户端别名映射 |
+| `GET` | `/api/v1/runtime/clientname` | `stable` | 获取客户端别名映射 |
+| `PUT` | `/api/v1/runtime/clientname` | `stable` | 更新客户端别名映射 |
 | `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
 
-`PUT /api/v1/clientname` 请求体示例：
+`PUT /api/v1/runtime/clientname` 请求体示例：
 
 ```json
 {
@@ -1255,16 +1247,16 @@
 
 批量重建 / 预热主流程：
 
-- `GET /api/v1/requery/summary`
-- `GET /api/v1/requery`
-- `GET /api/v1/requery/status`
-- `POST /api/v1/requery/trigger`
-- `POST /api/v1/requery/enqueue`
-- `POST /api/v1/requery/cancel`
-- `POST /api/v1/requery/scheduler/config`
-- `POST /api/v1/requery/rules/save`
-- `POST /api/v1/requery/rules/flush`
-- `GET /api/v1/requery/stats/source_file_counts`
+- `GET /api/v1/runtime/requery/summary`
+- `GET /api/v1/runtime/requery`
+- `GET /api/v1/runtime/requery/status`
+- `POST /api/v1/runtime/requery/trigger`
+- `POST /api/v1/runtime/requery/enqueue`
+- `POST /api/v1/runtime/requery/cancel`
+- `POST /api/v1/runtime/requery/scheduler/config`
+- `POST /api/v1/runtime/requery/rules/save`
+- `POST /api/v1/runtime/requery/rules/flush`
+- `GET /api/v1/runtime/requery/stats/source_file_counts`
 
 分流记忆库保存 / 清空 / 校验：
 
@@ -1303,8 +1295,8 @@
 - `POST /api/v1/rules/diversion/{type}/{name}/update`
 - `GET /api/v1/lists/{tag}`
 - `PUT /api/v1/lists/{tag}`
-- `GET /api/v1/clientname`
-- `PUT /api/v1/clientname`
+- `GET /api/v1/runtime/clientname`
+- `PUT /api/v1/runtime/clientname`
 - `domain_output` 记忆库已统一到 `/api/v1/memory/{tag}/*`
 
 ## 6. 迁移说明

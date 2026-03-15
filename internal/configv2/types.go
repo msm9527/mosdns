@@ -17,7 +17,6 @@ type Config struct {
 	Features      map[string]any   `yaml:"features,omitempty"`
 	Storage       StorageConfig    `yaml:"storage,omitempty"`
 	Exports       []ExportConfig   `yaml:"exports,omitempty"`
-	Legacy        LegacyConfig     `yaml:"legacy,omitempty"`
 }
 
 type APIConfig struct {
@@ -59,10 +58,10 @@ type RuleProvider struct {
 }
 
 type RuntimeConfig struct {
-	BaseDir  string           `yaml:"base_dir,omitempty"`
-	WebInfo  []WebInfoConfig  `yaml:"webinfo,omitempty"`
-	Requery  []RequeryConfig  `yaml:"requery,omitempty"`
-	Switches []SwitchConfig   `yaml:"switches,omitempty"`
+	BaseDir  string          `yaml:"base_dir,omitempty"`
+	WebInfo  []WebInfoConfig `yaml:"webinfo,omitempty"`
+	Requery  []RequeryConfig `yaml:"requery,omitempty"`
+	Switches []SwitchConfig  `yaml:"switches,omitempty"`
 }
 
 type WebInfoConfig struct {
@@ -88,11 +87,6 @@ type ExportConfig struct {
 	Name   string `yaml:"name,omitempty"`
 	Type   string `yaml:"type,omitempty"`
 	Target string `yaml:"target,omitempty"`
-}
-
-type LegacyConfig struct {
-	Include []string       `yaml:"include,omitempty"`
-	Plugins []PluginConfig `yaml:"plugins,omitempty"`
 }
 
 type PluginConfig struct {

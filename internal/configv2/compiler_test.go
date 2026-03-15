@@ -2,94 +2,16 @@ package configv2
 
 import "testing"
 
-func TestMigrateV1ToV2AndCompile(t *testing.T) {
-	v1 := &V1Config{
-		API: APIConfig{HTTP: "127.0.0.1:9099"},
-		Include: []string{
-			"sub_config/cache.yaml",
-			"sub_config/forward.yaml",
-		},
-		Plugins: []PluginConfig{
-			{
-				Tag:  "udp_all",
-				Type: "udp_server",
-				Args: map[string]any{
-					"listen":       ":53",
-					"entry":        "sequence_main",
-					"enable_audit": true,
-				},
-			},
-			{
-				Tag:  "domestic",
-				Type: "forward",
-				Args: map[string]any{
-					"upstreams": []any{"tls://1.1.1.1", "https://dns.google/dns-query"},
-				},
-			},
-			{
-				Tag:  "sequence_main",
-				Type: "sequence",
-			},
-			{
-				Tag:  "webinfo_client",
-				Type: "webinfo",
-				Args: map[string]any{
-					"file": "config/webinfo/clientname.json",
-				},
-			},
-			{
-				Tag:  "requery_main",
-				Type: "requery",
-				Args: map[string]any{
-					"file": "config/webinfo/requeryconfig.json",
-				},
-			},
-			{
-				Tag:  "core_mode",
-				Type: "switch",
-				Args: map[string]any{
-					"name":            "core_mode",
-					"state_file_path": "config/switches.json",
-				},
-			},
-		},
-	}
+func TestLoadRejectsLegacyKeys(t *testing.T) {
+	raw := []byte(`
+version: v2
+legacy:
+  include:
+    - sub_config/cache.yaml
+`)
 
-	cfg, err := MigrateV1ToV2(v1)
-	if err != nil {
-		t.Fatalf("MigrateV1ToV2() error = %v", err)
-	}
-	if cfg.Version != CurrentVersion {
-		t.Fatalf("unexpected version %q", cfg.Version)
-	}
-	if len(cfg.Legacy.Include) != 2 || len(cfg.Legacy.Plugins) != 6 {
-		t.Fatalf("legacy block not preserved: %+v", cfg.Legacy)
-	}
-	if len(cfg.Listeners) != 1 || cfg.Listeners[0].Listen != ":53" {
-		t.Fatalf("unexpected listeners: %+v", cfg.Listeners)
-	}
-	if len(cfg.Upstreams) != 1 || len(cfg.Upstreams[0].Endpoints) != 2 {
-		t.Fatalf("unexpected upstream summary: %+v", cfg.Upstreams)
-	}
-	if len(cfg.Runtime.WebInfo) != 1 || cfg.Runtime.WebInfo[0].File != "config/webinfo/clientname.json" {
-		t.Fatalf("unexpected runtime webinfo summary: %+v", cfg.Runtime)
-	}
-	if len(cfg.Runtime.Requery) != 1 || cfg.Runtime.Requery[0].File != "config/webinfo/requeryconfig.json" {
-		t.Fatalf("unexpected runtime requery summary: %+v", cfg.Runtime)
-	}
-	if len(cfg.Runtime.Switches) != 1 || cfg.Runtime.Switches[0].StateFile != "config/switches.json" {
-		t.Fatalf("unexpected runtime switch summary: %+v", cfg.Runtime)
-	}
-
-	compiled, err := Compile(cfg)
-	if err != nil {
-		t.Fatalf("Compile() error = %v", err)
-	}
-	if compiled.API.HTTP != "127.0.0.1:9099" {
-		t.Fatalf("unexpected api http %q", compiled.API.HTTP)
-	}
-	if len(compiled.Include) != 2 || len(compiled.Plugins) != 6 {
-		t.Fatalf("compiled legacy graph mismatch: %+v", compiled)
+	if _, err := Load(raw); err == nil {
+		t.Fatalf("expected legacy keys to be rejected")
 	}
 }
 

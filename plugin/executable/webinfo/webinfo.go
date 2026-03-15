@@ -67,7 +67,7 @@ func (p *WebInfo) loadData() error {
 	defer p.mu.Unlock()
 
 	if key := p.runtimeStateKey(); key != "" {
-		dbPath := filepath.Join(filepath.Dir(filepath.Clean(p.filePath)), "runtime.db")
+		dbPath := coremain.RuntimeStateDBPathForPath(p.filePath)
 		var d interface{}
 		ok, err := coremain.LoadRuntimeStateJSONFromPath(dbPath, runtimeStateNamespaceWebinfo, key, &d)
 		if err == nil && ok {
@@ -110,7 +110,7 @@ func (p *WebInfo) loadData() error {
 // saveData 将内存中的数据保存到文件（原子写入）
 func (p *WebInfo) saveData() error {
 	if key := p.runtimeStateKey(); key != "" {
-		dbPath := filepath.Join(filepath.Dir(filepath.Clean(p.filePath)), "runtime.db")
+		dbPath := coremain.RuntimeStateDBPathForPath(p.filePath)
 		if err := coremain.SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceWebinfo, key, p.data); err != nil {
 			return err
 		}
