@@ -28,7 +28,7 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/summary", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/summary", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -63,7 +63,7 @@ func TestHandleRuntimeHealth(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/health", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/health", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 
@@ -95,7 +95,7 @@ func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/datasets", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/datasets", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -112,7 +112,7 @@ func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 		t.Fatalf("expected dataset integrity metadata: %+v", datasets)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/runtime/datasets/verify", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/control/datasets/verify", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -126,7 +126,7 @@ func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 		t.Fatalf("unexpected verify summary: %+v", verifySummary)
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/runtime/datasets/export", nil)
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/control/datasets/export", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -148,14 +148,14 @@ func TestHandleRuntimeEvents(t *testing.T) {
 		MainConfigBaseDir = oldBaseDir
 	})
 
-	if err := RecordSystemEvent("runtime.test", "info", "hello", map[string]any{"ok": true}); err != nil {
+	if err := RecordSystemEvent("control.test", "info", "hello", map[string]any{"ok": true}); err != nil {
 		t.Fatalf("RecordSystemEvent: %v", err)
 	}
 
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/events?component=runtime.test&limit=10", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/events?component=control.test&limit=10", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -165,7 +165,7 @@ func TestHandleRuntimeEvents(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
-	if len(events) != 1 || events[0].Component != "runtime.test" || events[0].Message != "hello" {
+	if len(events) != 1 || events[0].Component != "control.test" || events[0].Message != "hello" {
 		t.Fatalf("unexpected events payload: %+v", events)
 	}
 }
@@ -189,7 +189,7 @@ func TestRuntimeAliasesForOverridesAndUpstreams(t *testing.T) {
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/runtime/overrides", nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/overrides", nil)
 	w := httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {
@@ -203,7 +203,7 @@ func TestRuntimeAliasesForOverridesAndUpstreams(t *testing.T) {
 		t.Fatalf("unexpected overrides payload: %+v", overrides)
 	}
 
-	req = httptest.NewRequest(http.MethodGet, "/api/v1/runtime/upstreams", nil)
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/control/upstreams", nil)
 	w = httptest.NewRecorder()
 	router.ServeHTTP(w, req)
 	if w.Code != http.StatusOK {

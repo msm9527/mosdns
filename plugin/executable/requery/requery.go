@@ -89,7 +89,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 	p.scheduleRecoveryIfNeeded()
 
-	bp.M().GetAPIRouter().Mount("/api/v1/runtime/requery", p.api())
+	bp.M().GetAPIRouter().Mount("/api/v1/control/requery", p.api())
 
 	log.Printf("[requery] plugin instance created for config file: %s", p.filePath)
 	return p, nil
@@ -1638,7 +1638,7 @@ func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
 		"message":   fmt.Sprintf("%s任务已开始。", profile.DisplayName),
 		"task_mode": profile.Mode,
 	}, http.StatusOK)
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.requery", "info", "triggered requery task", map[string]any{
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "info", "triggered requery task", map[string]any{
 		"mode":  profile.Mode,
 		"limit": payload.Limit,
 	})
@@ -1675,7 +1675,7 @@ func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 
 	p.taskCancel()
 	log.Println("[requery] Task cancellation requested via API.")
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.requery", "warn", "cancelled running requery task", map[string]any{
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "warn", "cancelled running requery task", map[string]any{
 		"task_state": p.status.TaskState,
 		"task_mode":  p.status.TaskMode,
 	})
@@ -1745,7 +1745,7 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	p.rescheduleTasks()
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.requery", "info", "updated requery scheduler config", map[string]any{
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "info", "updated requery scheduler config", map[string]any{
 		"enabled":          p.config.Scheduler.Enabled,
 		"mode":             p.config.Workflow.Mode,
 		"interval_minutes": p.config.Scheduler.IntervalMinutes,

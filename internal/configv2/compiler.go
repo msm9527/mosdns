@@ -35,7 +35,7 @@ func hasForbiddenV2Keys(meta map[string]any) bool {
 	if len(meta) == 0 {
 		return false
 	}
-	for _, key := range []string{"legacy", "include", "plugins"} {
+	for _, key := range []string{"legacy", "include", "plugins", "runtime"} {
 		if _, ok := meta[key]; ok {
 			return true
 		}
@@ -90,8 +90,8 @@ func Compile(cfg *Config) (*CompiledConfig, error) {
 		}
 		compiled.Plugins = append(compiled.Plugins, plugins...)
 	}
-	if cfg.Runtime.hasEntries() {
-		plugins, err := compileRuntime(cfg.Runtime)
+	if cfg.Control.hasEntries() {
+		plugins, err := compileControl(cfg.Control)
 		if err != nil {
 			return nil, err
 		}
@@ -212,17 +212,17 @@ func cloneMap(src map[string]any) map[string]any {
 	return dst
 }
 
-func (r RuntimeConfig) hasEntries() bool {
+func (r ControlConfig) hasEntries() bool {
 	return len(r.WebInfo) > 0 || len(r.Requery) > 0 || len(r.Switches) > 0
 }
 
-func compileRuntime(runtime RuntimeConfig) ([]PluginConfig, error) {
+func compileControl(runtime ControlConfig) ([]PluginConfig, error) {
 	plugins := make([]PluginConfig, 0, len(runtime.WebInfo)+len(runtime.Requery)+len(runtime.Switches))
 
 	for _, item := range runtime.WebInfo {
 		file := resolveRuntimePath(runtime.BaseDir, item.File)
 		if strings.TrimSpace(file) == "" {
-			return nil, errors.New("runtime webinfo file is required")
+			return nil, errors.New("control webinfo file is required")
 		}
 		tag := strings.TrimSpace(item.Name)
 		if tag == "" {
@@ -238,7 +238,7 @@ func compileRuntime(runtime RuntimeConfig) ([]PluginConfig, error) {
 	for _, item := range runtime.Requery {
 		file := resolveRuntimePath(runtime.BaseDir, item.File)
 		if strings.TrimSpace(file) == "" {
-			return nil, errors.New("runtime requery file is required")
+			return nil, errors.New("control requery file is required")
 		}
 		tag := strings.TrimSpace(item.Name)
 		if tag == "" {
@@ -254,11 +254,11 @@ func compileRuntime(runtime RuntimeConfig) ([]PluginConfig, error) {
 	for _, item := range runtime.Switches {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
-			return nil, errors.New("runtime switch name is required")
+			return nil, errors.New("control switch name is required")
 		}
 		stateFile := resolveRuntimePath(runtime.BaseDir, item.StateFile)
 		if strings.TrimSpace(stateFile) == "" {
-			return nil, fmt.Errorf("runtime switch %s state_file is required", name)
+			return nil, fmt.Errorf("control switch %s state_file is required", name)
 		}
 		plugins = append(plugins, PluginConfig{
 			Tag:  name,

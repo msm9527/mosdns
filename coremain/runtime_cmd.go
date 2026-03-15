@@ -22,19 +22,19 @@ type runtimeCmdContext struct {
 	checkAge   int
 }
 
-func newRuntimeCmd() *cobra.Command {
+func newControlCmd() *cobra.Command {
 	ctx := &runtimeCmdContext{}
 
 	runtimeCmd := &cobra.Command{
-		Use:   "runtime",
-		Short: "Inspect and export mosdns runtime state stored in SQLite.",
+		Use:   "control",
+		Short: "Inspect and operate mosdns control state stored in SQLite.",
 	}
-	runtimeCmd.PersistentFlags().StringVarP(&ctx.configPath, "config", "c", "", "config file used to resolve the runtime database directory")
-	runtimeCmd.PersistentFlags().StringVarP(&ctx.baseDir, "dir", "d", "", "runtime base directory, defaults to config directory or current working directory")
+	runtimeCmd.PersistentFlags().StringVarP(&ctx.configPath, "config", "c", "", "config file used to resolve the control database directory")
+	runtimeCmd.PersistentFlags().StringVarP(&ctx.baseDir, "dir", "d", "", "control base directory, defaults to config directory or current working directory")
 
 	summaryCmd := &cobra.Command{
 		Use:   "summary",
-		Short: "Print runtime namespace summary as JSON.",
+		Short: "Print control namespace summary as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
 			if err != nil {
@@ -53,7 +53,7 @@ func newRuntimeCmd() *cobra.Command {
 
 	healthCmd := &cobra.Command{
 		Use:   "health",
-		Short: "Run runtime health/self-check as JSON.",
+		Short: "Run control health/self-check as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
 			if err != nil {
@@ -72,7 +72,7 @@ func newRuntimeCmd() *cobra.Command {
 
 	datasetsCmd := &cobra.Command{
 		Use:   "datasets",
-		Short: "List and export generated datasets stored in runtime SQLite.",
+		Short: "List and export generated datasets stored in control SQLite.",
 	}
 	datasetsListCmd := &cobra.Command{
 		Use:   "list",
@@ -130,7 +130,7 @@ func newRuntimeCmd() *cobra.Command {
 
 	eventsCmd := &cobra.Command{
 		Use:   "events",
-		Short: "List recent runtime system events as JSON.",
+		Short: "List recent control system events as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
 			if err != nil {
@@ -150,7 +150,7 @@ func newRuntimeCmd() *cobra.Command {
 
 	requeryCmd := &cobra.Command{
 		Use:   "requery",
-		Short: "Inspect requery jobs, runs, and checkpoints stored in runtime SQLite.",
+		Short: "Inspect requery jobs, runs, and checkpoints stored in control SQLite.",
 	}
 	requeryJobsCmd := &cobra.Command{
 		Use:   "jobs",

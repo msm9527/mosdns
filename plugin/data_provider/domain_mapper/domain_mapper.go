@@ -60,7 +60,7 @@ type DomainMapper struct {
 }
 
 var _ sequence.Executable = (*DomainMapper)(nil)
-var _ coremain.RuntimeConfigReloader = (*DomainMapper)(nil)
+var _ coremain.ControlConfigReloader = (*DomainMapper)(nil)
 
 func validateDomainMapperMark(scope string, mark uint8) error {
 	if mark > 63 {
@@ -324,7 +324,7 @@ func (dm *DomainMapper) reloadFromConfig(cfg *Args) error {
 	return nil
 }
 
-func (dm *DomainMapper) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (dm *DomainMapper) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(dm.pluginTag, dm.baseArgs, effective, global); err != nil {
 		return err

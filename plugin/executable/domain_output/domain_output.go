@@ -32,7 +32,7 @@ const (
 	qtypeMaskA    uint8 = 1 << 0
 	qtypeMaskAAAA uint8 = 1 << 1
 
-	defaultDirtyNotifyPath = "/api/v1/runtime/requery/enqueue"
+	defaultDirtyNotifyPath = "/api/v1/control/requery/enqueue"
 )
 
 func init() {
@@ -916,7 +916,7 @@ func (d *domainOutput) renderGeneratedRuleContent(snapshot writeSnapshot) string
 func (d *domainOutput) runtimeDBPath() string {
 	for _, path := range []string{d.fileStat, d.fileRule, d.genRule} {
 		if strings.TrimSpace(path) != "" {
-			return filepath.Join(filepath.Dir(filepath.Clean(path)), "runtime.db")
+			return coremain.RuntimeStateDBPathForPath(path)
 		}
 	}
 	return ""

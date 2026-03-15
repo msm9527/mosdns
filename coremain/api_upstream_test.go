@@ -17,7 +17,7 @@ import (
 
 type testRuntimeReloader struct{}
 
-func (t *testRuntimeReloader) ReloadRuntimeConfig(_ *GlobalOverrides, _ []UpstreamOverrideConfig) error {
+func (t *testRuntimeReloader) ReloadControlConfig(_ *GlobalOverrides, _ []UpstreamOverrideConfig) error {
 	return nil
 }
 

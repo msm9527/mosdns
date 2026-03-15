@@ -29,8 +29,8 @@ import (
 
 // [修改] 插件类型名称
 const (
-	PluginType      = "sd_set_light"
-	downloadTimeout = 60 * time.Second
+	PluginType       = "sd_set_light"
+	downloadTimeout  = 60 * time.Second
 	runtimeNamespace = "diversion_rule"
 )
 
@@ -77,7 +77,7 @@ type SdSetLight struct {
 var _ data_provider.DomainMatcherProvider = (*SdSetLight)(nil)
 var _ io.Closer = (*SdSetLight)(nil)
 var _ data_provider.RuleExporter = (*SdSetLight)(nil)
-var _ coremain.RuntimeConfigReloader = (*SdSetLight)(nil)
+var _ coremain.ControlConfigReloader = (*SdSetLight)(nil)
 
 // 接口定义，用于解耦
 type RuleReceiver interface {
@@ -376,7 +376,7 @@ func (p *SdSetLight) TriggerDiversionRuleUpdate(name string) error {
 	return nil
 }
 
-func (p *SdSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (p *SdSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
 		return err
@@ -493,7 +493,7 @@ func (p *SdSetLight) saveConfig() error {
 }
 
 func (p *SdSetLight) runtimeDBPath() string {
-	return filepath.Join(filepath.Dir(filepath.Clean(p.localConfigFile)), "runtime.db")
+	return coremain.RuntimeStateDBPathForPath(p.localConfigFile)
 }
 
 func (p *SdSetLight) runtimeConfigKey() string {

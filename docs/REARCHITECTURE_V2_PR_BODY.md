@@ -9,7 +9,7 @@
 本次改动围绕 mosdns 全新 V2 主线展开，目标是把原先分散在 YAML、JSON、TXT、ndjson 和插件内部状态中的配置与运行态模型收口为：
 
 - `config v2` 作为唯一配置入口
-- `runtime.db` 作为唯一运行态真源
+- `control.db` 作为唯一运行态真源
 - 文件系统只保留静态输入、缓存持久化与显式导出物角色
 - 前端统一依赖新 V2 API
 
@@ -27,9 +27,9 @@
 ### 2. runtime surface
 
 - 删除 `runtime resources 聚合接口`
-- 删除 `/api/v1/runtime/requery/*` 顶层别名
-- 删除 `/api/v1/runtime/clientname` 顶层别名
-- 前端调用统一到 `/api/v1/runtime/*`
+- 删除 `/api/v1/control/requery/*` 顶层别名
+- 删除 `/api/v1/control/clientname` 顶层别名
+- 前端调用统一到 `/api/v1/control/*`
 
 ### 3. config v2
 

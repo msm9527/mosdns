@@ -9,7 +9,7 @@ import (
 )
 
 func TestRequeryRuntimeStoreLifecycle(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "runtime.db")
+	dbPath := filepath.Join(t.TempDir(), "control.db")
 	t.Cleanup(func() {
 		_ = ResetForTesting(dbPath)
 	})
@@ -105,7 +105,7 @@ func TestRequeryRuntimeStoreLifecycle(t *testing.T) {
 }
 
 func TestPruneHistory(t *testing.T) {
-	dbPath := filepath.Join(t.TempDir(), "runtime.db")
+	dbPath := filepath.Join(t.TempDir(), "control.db")
 	t.Cleanup(func() {
 		_ = ResetForTesting(dbPath)
 	})

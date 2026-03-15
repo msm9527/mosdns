@@ -165,7 +165,7 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	payload.Prepare()
 	if m != nil {
 		m.setGlobalOverrides(CloneGlobalOverrides(&payload))
-		if err := m.ReloadRuntimeConfig(""); err != nil {
+		if err := m.ReloadControlConfig(""); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_RELOAD_FAILED", "Settings saved but runtime apply failed: "+err.Error())
 			return
 		}
@@ -175,7 +175,7 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	if m != nil {
 		message = "全局覆盖配置已保存并生效。"
 	}
-	_ = RecordSystemEvent("runtime.overrides", "info", "saved global overrides", map[string]any{
+	_ = RecordSystemEvent("control.overrides", "info", "saved global overrides", map[string]any{
 		"socks5":       payload.Socks5,
 		"ecs":          payload.ECS,
 		"replacements": len(payload.Replacements),

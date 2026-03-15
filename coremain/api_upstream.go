@@ -263,7 +263,7 @@ func saveUpstreamOverridesToRuntimeStore(cfg GlobalUpstreamOverrides) error {
 	for _, items := range cfg {
 		totalItems += len(items)
 	}
-	_ = RecordSystemEvent("runtime.upstreams", "info", "saved upstream overrides", map[string]any{
+	_ = RecordSystemEvent("control.upstreams", "info", "saved upstream overrides", map[string]any{
 		"groups":      len(cfg),
 		"total_items": totalItems,
 	})
@@ -359,7 +359,7 @@ func applyUpstreamRuntimeReload(m *Mosdns, pluginTag string) error {
 	if m == nil {
 		return nil
 	}
-	return m.ReloadRuntimeConfig(pluginTag)
+	return m.ReloadControlConfig(pluginTag)
 }
 
 func parseQueryBool(r *http.Request, key string) bool {
@@ -777,7 +777,7 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 	}
 
 	if m != nil {
-		if err := m.ReloadRuntimeConfig(payload.PluginTag); err != nil {
+		if err := m.ReloadControlConfig(payload.PluginTag); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}

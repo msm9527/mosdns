@@ -18,10 +18,10 @@
 V2 现在按下面的边界运行：
 
 - `config v2`：唯一静态配置入口
-- `runtime.db`：唯一运行态真源
+- `control.db`：唯一运行态真源
 - 文件系统：静态输入、缓存持久化、显式导出物
 - 前端：基于现有页面代码重构，但只依赖新 V2 API
-- CLI：统一通过 `mosdns runtime` 与 `mosdns config validate`
+- CLI：统一通过 `mosdns control` 与 `mosdns config validate`
 
 不再维护：
 
@@ -29,8 +29,8 @@ V2 现在按下面的边界运行：
 - `旧 runtime import/export`
 - `旧迁移命令`
 - `runtime resources 聚合接口`
-- `/api/v1/runtime/requery/*` 顶层别名
-- `/api/v1/runtime/clientname` 顶层别名
+- `/api/v1/control/requery/*` 顶层别名
+- `/api/v1/control/clientname` 顶层别名
 - `legacy` / `include` / `plugins` 旧配置入口
 
 ## 3. 已完成项
@@ -55,21 +55,21 @@ V2 现在按下面的边界运行：
 
 当前稳定接口集中在：
 
-- `/api/v1/runtime/summary`
-- `/api/v1/runtime/health`
-- `/api/v1/runtime/datasets`
-- `/api/v1/runtime/datasets/verify`
-- `/api/v1/runtime/datasets/export`
-- `/api/v1/runtime/events`
-- `/api/v1/runtime/clientname`
-- `/api/v1/runtime/requery/*`
+- `/api/v1/control/summary`
+- `/api/v1/control/health`
+- `/api/v1/control/datasets`
+- `/api/v1/control/datasets/verify`
+- `/api/v1/control/datasets/export`
+- `/api/v1/control/events`
+- `/api/v1/control/clientname`
+- `/api/v1/control/requery/*`
 
 CLI 统一到：
 
-- `mosdns runtime summary|health|events`
-- `mosdns runtime datasets list|verify|export`
-- `mosdns runtime requery jobs|runs|checkpoints|prune`
-- `mosdns runtime shunt explain|conflicts`
+- `mosdns control summary|health|events`
+- `mosdns control datasets list|verify|export`
+- `mosdns control requery jobs|runs|checkpoints|prune`
+- `mosdns control shunt explain|conflicts`
 
 ### 3.3 config v2 收口
 
@@ -82,7 +82,7 @@ CLI 统一到：
 
 ### 3.4 前端与文档收口
 
-- 前端 requery 与 clientname 调用已改到 `/api/v1/runtime/*`
+- 前端 requery 与 clientname 调用已改到 `/api/v1/control/*`
 - 文档主线改为纯 V2 口径
 - 运维文档不再描述 legacy 导入导出和回退链路
 

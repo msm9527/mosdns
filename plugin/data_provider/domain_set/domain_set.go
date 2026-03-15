@@ -70,7 +70,7 @@ type DomainSet struct {
 	fileStates  map[string]watchedFileState
 }
 
-var _ coremain.RuntimeConfigReloader = (*DomainSet)(nil)
+var _ coremain.ControlConfigReloader = (*DomainSet)(nil)
 
 // GetRules 实现 RuleExporter 接口
 func (d *DomainSet) GetRules() ([]string, error) {
@@ -241,7 +241,7 @@ func (d *DomainSet) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
 }
 
-func (d *DomainSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(d.pluginTag, d.baseArgs, effective, global); err != nil {
 		return err

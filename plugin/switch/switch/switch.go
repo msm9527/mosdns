@@ -90,8 +90,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	globalRegistry.instances[def.Name] = sw
 
 	globalRegistry.apiOnce.Do(func() {
-		bp.M().GetAPIRouter().Mount("/api/v1/switches", coreSwitchesAPI())
-		bp.M().GetAPIRouter().Mount("/api/v1/runtime/switches", coreSwitchesAPI())
+		bp.M().GetAPIRouter().Mount("/api/v1/control/switches", coreSwitchesAPI())
 	})
 
 	return sw, nil
@@ -370,7 +369,7 @@ func handleUpdateSwitch(w http.ResponseWriter, r *http.Request) {
 		writeSwitchErrorJSON(w, http.StatusInternalServerError, "SWITCH_UPDATE_FAILED", "failed to update switch store: "+err.Error())
 		return
 	}
-	_ = coremain.RecordSystemEventToPath(filepath.Join(filepath.Dir(filepath.Clean(sw.store.path)), "runtime.db"), "runtime.switches", "info", "updated switch value", map[string]any{
+	_ = coremain.RecordSystemEventToPath(coremain.RuntimeStateDBPathForPath(sw.store.path), "control.switches", "info", "updated switch value", map[string]any{
 		"name":  def.Name,
 		"value": value,
 	})

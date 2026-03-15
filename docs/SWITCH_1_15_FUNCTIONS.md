@@ -48,7 +48,7 @@
 
 ## 接口
 
-- 集中读取：`GET /api/v1/switches`
-- 单个读取：`GET /api/v1/switches/{name}`
-- 单个修改：`PUT /api/v1/switches/{name}`
+- 集中读取：`GET /api/v1/control/switches`
+- 单个读取：`GET /api/v1/control/switches/{name}`
+- 单个修改：`PUT /api/v1/control/switches/{name}`
 - 旧的 `/plugins/switches/*` 和 `/plugins/{switch_name}` 已移除，默认 UI 已统一走核心接口，修改后实时生效

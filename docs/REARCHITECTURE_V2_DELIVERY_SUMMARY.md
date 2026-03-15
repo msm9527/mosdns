@@ -7,7 +7,7 @@
 当前仓库已经按全新 V2 主线收口：
 
 - `config v2` 是唯一配置入口
-- `runtime.db` 是唯一运行态真源
+- `control.db` 是唯一运行态真源
 - 文件只承担静态输入、缓存持久化和显式导出物角色
 - 前端与外部调用统一走新 V2 API
 
@@ -31,28 +31,28 @@
 
 当前前端和外部调用应使用以下接口：
 
-- `GET /api/v1/runtime/summary`
-- `GET /api/v1/runtime/health`
-- `GET /api/v1/runtime/datasets`
-- `POST /api/v1/runtime/datasets/verify`
-- `POST /api/v1/runtime/datasets/export`
-- `GET /api/v1/runtime/events`
-- `GET /api/v1/runtime/clientname`
-- `PUT /api/v1/runtime/clientname`
-- `/api/v1/runtime/requery/*`
+- `GET /api/v1/control/summary`
+- `GET /api/v1/control/health`
+- `GET /api/v1/control/datasets`
+- `POST /api/v1/control/datasets/verify`
+- `POST /api/v1/control/datasets/export`
+- `GET /api/v1/control/events`
+- `GET /api/v1/control/clientname`
+- `PUT /api/v1/control/clientname`
+- `/api/v1/control/requery/*`
 
-旧的 `runtime resources 聚合接口`、`/api/v1/runtime/requery/*`、`/api/v1/runtime/clientname` 顶层别名已移除。
+旧的 `runtime resources 聚合接口`、`/api/v1/control/requery/*`、`/api/v1/control/clientname` 顶层别名已移除。
 
 ### 2.3 CLI
 
 当前运维命令集已收口到：
 
-- `mosdns runtime summary`
-- `mosdns runtime health`
-- `mosdns runtime events`
-- `mosdns runtime datasets list|verify|export`
-- `mosdns runtime requery jobs|runs|checkpoints|prune`
-- `mosdns runtime shunt explain|conflicts`
+- `mosdns control summary`
+- `mosdns control health`
+- `mosdns control events`
+- `mosdns control datasets list|verify|export`
+- `mosdns control requery jobs|runs|checkpoints|prune`
+- `mosdns control shunt explain|conflicts`
 - `mosdns config validate`
 
 `旧迁移命令` 与 `旧 runtime import/export` 已删除。
@@ -70,17 +70,17 @@
 ### 改造后
 
 - 静态真源：`config v2`
-- 运行态真源：`runtime.db`
+- 运行态真源：`control.db`
 - 导出文件：由数据库或配置显式生成，不反向驱动运行态
 
 ## 4. 联调约定
 
 前端和脚本应：
 
-- 通过 `/api/v1/runtime/summary` 获取概览
-- 通过 `/api/v1/runtime/health`、`/datasets`、`/events` 获取运行态细分信息
-- 通过 `/api/v1/runtime/requery/*` 获取任务状态与执行控制
-- 通过 `/api/v1/runtime/clientname` 读写 webinfo clientname
+- 通过 `/api/v1/control/summary` 获取概览
+- 通过 `/api/v1/control/health`、`/datasets`、`/events` 获取运行态细分信息
+- 通过 `/api/v1/control/requery/*` 获取任务状态与执行控制
+- 通过 `/api/v1/control/clientname` 读写 webinfo clientname
 
 不再依赖：
 
@@ -91,11 +91,11 @@
 ## 5. 建议验收方式
 
 1. 启动 mosdns 并加载 v2 配置
-2. 调用 `/api/v1/runtime/summary`
-3. 调用 `/api/v1/runtime/health`
-4. 调用 `/api/v1/runtime/datasets` 与 `/api/v1/runtime/events`
-5. 验证 `/api/v1/runtime/requery/*` 返回正常
-6. 删除动态规则导出文件后执行 `mosdns runtime datasets export`
+2. 调用 `/api/v1/control/summary`
+3. 调用 `/api/v1/control/health`
+4. 调用 `/api/v1/control/datasets` 与 `/api/v1/control/events`
+5. 验证 `/api/v1/control/requery/*` 返回正常
+6. 删除动态规则导出文件后执行 `mosdns control datasets export`
 7. 执行 `go test ./...`
 
 ## 6. 当前结论

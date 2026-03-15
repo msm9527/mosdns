@@ -46,7 +46,7 @@ type runtimeHealthResponse struct {
 }
 
 func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
-	router.Route("/api/v1/runtime", func(r chi.Router) {
+	router.Route("/api/v1/control", func(r chi.Router) {
 		r.Get("/health", handleRuntimeHealth)
 		r.Get("/summary", handleRuntimeSummary)
 		r.Get("/datasets", handleRuntimeDatasets)
@@ -130,7 +130,7 @@ func handleRuntimeDatasetsExport(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_DATASETS_EXPORT_FAILED", err.Error())
 		return
 	}
-	_ = RecordSystemEvent("runtime.datasets", "info", "exported generated datasets to files", map[string]any{
+	_ = RecordSystemEvent("control.datasets", "info", "exported generated datasets to files", map[string]any{
 		"exported_files": exported,
 	})
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -145,7 +145,7 @@ func handleRuntimeDatasetsVerify(w http.ResponseWriter, _ *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_DATASETS_VERIFY_FAILED", err.Error())
 		return
 	}
-	_ = RecordSystemEvent("runtime.datasets", "info", "verified generated datasets against files", map[string]any{
+	_ = RecordSystemEvent("control.datasets", "info", "verified generated datasets against files", map[string]any{
 		"checked":  summary.Checked,
 		"matched":  summary.Matched,
 		"missing":  summary.Missing,
@@ -200,7 +200,7 @@ func runtimeHealthReport(dbPath string) (*runtimeHealthResponse, error) {
 		addCheck(runtimeHealthCheck{
 			Name:    "sqlite_file",
 			Status:  "warn",
-			Message: "runtime db does not exist yet",
+			Message: "control db does not exist yet",
 			Details: map[string]any{"exists": false},
 		})
 	} else {
@@ -252,10 +252,10 @@ func runtimeHealthReport(dbPath string) (*runtimeHealthResponse, error) {
 
 checksContinue:
 	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err != nil {
-		addCheck(runtimeHealthCheck{Name: "runtime_overrides", Status: "error", Message: err.Error()})
+		addCheck(runtimeHealthCheck{Name: "control_overrides", Status: "error", Message: err.Error()})
 	} else {
 		addCheck(runtimeHealthCheck{
-			Name:   "runtime_overrides",
+			Name:   "control_overrides",
 			Status: "ok",
 			Details: map[string]any{
 				"present": ok,
@@ -270,14 +270,14 @@ checksContinue:
 	}
 
 	if upstreams, ok, err := loadUpstreamOverridesFromRuntimeStore(); err != nil {
-		addCheck(runtimeHealthCheck{Name: "runtime_upstreams", Status: "error", Message: err.Error()})
+		addCheck(runtimeHealthCheck{Name: "control_upstreams", Status: "error", Message: err.Error()})
 	} else {
 		total := 0
 		for _, items := range upstreams {
 			total += len(items)
 		}
 		addCheck(runtimeHealthCheck{
-			Name:   "runtime_upstreams",
+			Name:   "control_upstreams",
 			Status: "ok",
 			Details: map[string]any{
 				"present": ok,

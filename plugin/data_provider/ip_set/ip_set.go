@@ -79,7 +79,7 @@ type IPSet struct {
 	mutex sync.Mutex
 }
 
-var _ coremain.RuntimeConfigReloader = (*IPSet)(nil)
+var _ coremain.ControlConfigReloader = (*IPSet)(nil)
 
 func (d *IPSet) GetIPMatcher() netlist.Matcher {
 	return d
@@ -170,7 +170,7 @@ func (d *IPSet) rebuildSnapshot() {
 	d.matcherVal.Store(mg)
 }
 
-func (d *IPSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (d *IPSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(d.pluginTag, d.baseArgs, effective, global); err != nil {
 		return err

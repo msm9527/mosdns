@@ -49,8 +49,8 @@ import (
 )
 
 const (
-	PluginType      = "si_set"
-	downloadTimeout = 60 * time.Second
+	PluginType       = "si_set"
+	downloadTimeout  = 60 * time.Second
 	runtimeNamespace = "diversion_rule"
 )
 
@@ -119,7 +119,7 @@ type SiSet struct {
 // Ensure SiSet implements required interfaces.
 var _ data_provider.IPMatcherProvider = (*SiSet)(nil)
 var _ io.Closer = (*SiSet)(nil)
-var _ coremain.RuntimeConfigReloader = (*SiSet)(nil)
+var _ coremain.ControlConfigReloader = (*SiSet)(nil)
 
 var _ netlist.Matcher = (*SiSet)(nil)
 
@@ -346,7 +346,7 @@ func (p *SiSet) TriggerDiversionRuleUpdate(name string) error {
 	return nil
 }
 
-func (p *SiSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (p *SiSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
 		return err
@@ -472,7 +472,7 @@ func (p *SiSet) saveConfig() error {
 }
 
 func (p *SiSet) runtimeDBPath() string {
-	return filepath.Join(filepath.Dir(filepath.Clean(p.localConfigFile)), "runtime.db")
+	return coremain.RuntimeStateDBPathForPath(p.localConfigFile)
 }
 
 func (p *SiSet) runtimeConfigKey() string {

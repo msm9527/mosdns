@@ -40,7 +40,7 @@ func TestCompileDeclarativeWithoutLegacy(t *testing.T) {
 				},
 			},
 		},
-		Runtime: RuntimeConfig{
+		Control: ControlConfig{
 			BaseDir: "config",
 			WebInfo: []WebInfoConfig{{
 				Name: "webinfo_client",

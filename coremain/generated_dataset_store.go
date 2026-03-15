@@ -272,7 +272,7 @@ func listStructuredGeneratedDatasets(db *sql.DB) ([]GeneratedDatasetEntry, error
 	}
 	defer rows.Close()
 
-	var datasets []GeneratedDatasetEntry
+	datasets := make([]GeneratedDatasetEntry, 0)
 	for rows.Next() {
 		var entry GeneratedDatasetEntry
 		if err := rows.Scan(

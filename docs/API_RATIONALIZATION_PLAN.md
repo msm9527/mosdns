@@ -150,8 +150,8 @@
 例如前端当前直接调用：
 
 - `/plugins/cache_all/flush`
-- `/api/v1/runtime/requery/summary`
-- `/api/v1/switches`
+- `/api/v1/control/requery/summary`
+- `/api/v1/control/switches`
 - `/plugins/geosite_cn/config`
 
 这些路径的问题是：
@@ -258,8 +258,8 @@
 
 例如优先考虑：
 
-- `/api/v1/switches`
-- `/api/v1/runtime/requery`
+- `/api/v1/control/switches`
+- `/api/v1/control/requery`
 - `/api/v1/rules/adguard`
 - `/api/v1/rules/diversion`
 - `/api/v1/cache`
@@ -269,7 +269,7 @@
 
 - `/plugins/cache_all`
 - `/plugins/geosite_cn`
-- `/api/v1/runtime/requery`
+- `/api/v1/control/requery`
 
 ## 5. 推荐分层模型
 
@@ -305,7 +305,7 @@
 
 - `/api/v1/cache/stats`
 - `/api/v1/data/domain_stats`
-- `/api/v1/runtime/requery/summary`
+- `/api/v1/control/requery/summary`
 
 后续建议继续推广这类设计。
 
@@ -330,7 +330,7 @@
 
 当前现状：
 
-- 已完成收口到 `/api/v1/switches/*`
+- 已完成收口到 `/api/v1/control/switches/*`
 - 旧的 `/plugins/switches/*` 和 `/plugins/{switch_name}` 已移除
 
 后续建议：
@@ -343,13 +343,13 @@
 当前现状：
 
 - 逻辑已经较完整
-- 已收口到 `/api/v1/runtime/requery/*`
+- 已收口到 `/api/v1/control/requery/*`
 
 建议：
 
-- 已完成迁移到 `/api/v1/runtime/requery/*`
+- 已完成迁移到 `/api/v1/control/requery/*`
 - `summary / trigger / cancel / scheduler / rules` 继续保留现有语义
-- `/api/v1/runtime/requery/*` 作为唯一入口
+- `/api/v1/control/requery/*` 作为唯一入口
 
 ## 6.3 规则管理
 
@@ -423,8 +423,8 @@
 当前现状：
 
 - `clientname` 已迁移到：
-  - `GET /api/v1/runtime/clientname`
-  - `PUT /api/v1/runtime/clientname`
+  - `GET /api/v1/control/clientname`
+  - `PUT /api/v1/control/clientname`
 - `reverse_lookup` 已迁移到：
   - `GET /api/v1/reverse_lookup?ip=...`
 - 旧的 `/plugins/clientname` 和 `/plugins/reverse_lookup` 已移除

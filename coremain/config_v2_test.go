@@ -69,7 +69,7 @@ policies:
     type: sequence
     args:
       - exec: $domestic
-runtime:
+control:
   base_dir: config
   webinfo:
     - name: webinfo_client

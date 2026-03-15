@@ -7,7 +7,7 @@
 当前仓库遵循的实施原则只有三条：
 
 - 直接建设纯 V2，不维护迁移主线
-- 运行态只认 `runtime.db`
+- 运行态只认 `control.db`
 - 配置入口只认 `config v2`
 
 ## 2. 已完成的实施项
@@ -22,9 +22,9 @@
 ### 2.2 runtime API / CLI / 前端
 
 - [x] 删除 `runtime resources 聚合接口`
-- [x] 删除 `/api/v1/runtime/requery/*` 顶层别名
-- [x] 删除 `/api/v1/runtime/clientname` 顶层别名
-- [x] 前端改用 `/api/v1/runtime/requery/*` 与 `/api/v1/runtime/clientname`
+- [x] 删除 `/api/v1/control/requery/*` 顶层别名
+- [x] 删除 `/api/v1/control/clientname` 顶层别名
+- [x] 前端改用 `/api/v1/control/requery/*` 与 `/api/v1/control/clientname`
 - [x] runtime CLI 收口到 summary / health / datasets / events / requery / shunt
 
 ### 2.3 config v2
@@ -54,8 +54,8 @@ go test ./...
 同时应确认：
 
 - 文档不再引用已删除的 `runtime resources 聚合接口`
-- 文档不再引用已删除的 `/api/v1/runtime/requery/*` 顶层路径
-- 文档不再引用已删除的 `/api/v1/runtime/clientname` 顶层路径
+- 文档不再引用已删除的 `/api/v1/control/requery/*` 顶层路径
+- 文档不再引用已删除的 `/api/v1/control/clientname` 顶层路径
 - 文档不再引用 `旧迁移命令`
 
 ## 4. 当前结论

@@ -1341,7 +1341,7 @@
         function hideErrorModal() { getById('error-modal').classList.remove('visible'); }
         async function updateCoreModeStatus() {
             try {
-                const response = await fetch('/api/v1/runtime/switches/core_mode');
+                const response = await fetch('/api/v1/control/switches/core_mode');
                 if (response.ok) { const payload = await response.json(); coreMode = payload?.value || 'secure'; }
             } catch (e) { console.error("无法获取核心模式状态:", e); }
         }
@@ -1356,7 +1356,7 @@
         // 覆盖配置：加载与保存（移动版表单）
         async function pLoadOverridesToForm() {
             try {
-                const res = await fetch('/api/v1/runtime/overrides');
+                const res = await fetch('/api/v1/control/overrides');
                 if (!res.ok) throw new Error(`加载覆盖配置失败: ${res.status}`);
                 const data = await res.json();
                 getById('p-override-socks5').value = (data && data.socks5) || '';
@@ -1378,7 +1378,7 @@
                 return;
             }
             try {
-                await postApi('/api/v1/runtime/overrides', payload);
+                await postApi('/api/v1/control/overrides', payload);
                 showToast('覆盖配置已保存并立即生效');
             } catch (e) {
                 showToast('保存覆盖配置失败', 'error');
@@ -1392,7 +1392,7 @@
             isMgmtTabInitialized.config = false;
             try {
                 await updateCoreModeStatus();
-                const response = await fetch('/api/v1/runtime/switches');
+                const response = await fetch('/api/v1/control/switches');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const list = await response.json();
                 const valueMap = new Map(list.map(item => [item.name, item.value]));
@@ -1473,7 +1473,7 @@
             const tag = button.dataset.switchTag, valueToPost = button.dataset.value, control = button.parentElement;
             control.classList.add('loading');
             try {
-                const result = await fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
+                const result = await fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
                     if (!res.ok) throw new Error(await res.text());
                     return res.json();
                 });
@@ -1510,7 +1510,7 @@
             if (wrapper) wrapper.classList.add('loading');
             select.disabled = true;
             try {
-                await fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
+                await fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
                     if (!res.ok) throw new Error(await res.text());
                     return res.json();
                 });
@@ -1529,7 +1529,7 @@
             const profile = switchProfiles.find(p => p.tag === tag);
             const valueToPost = checkbox.checked ? profile.valueForOn : profile.valueForOff;
             try {
-                await fetch(`/api/v1/runtime/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
+                await fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) }).then(async res => {
                     if (!res.ok) throw new Error(await res.text());
                     return res.json();
                 });

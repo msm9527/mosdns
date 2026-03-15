@@ -12,7 +12,7 @@ import (
 	runtimesqlite "github.com/IrineSistiana/mosdns/v5/internal/store/sqlite"
 )
 
-const runtimeStateDBFilename = "runtime.db"
+const runtimeStateDBFilename = "control.db"
 
 type runtimeStateStore struct {
 	db *runtimesqlite.RuntimeDB

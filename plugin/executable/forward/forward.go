@@ -109,7 +109,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 
 var _ sequence.Executable = (*Forward)(nil)
 var _ sequence.QuickConfigurableExec = (*Forward)(nil)
-var _ coremain.RuntimeConfigReloader = (*Forward)(nil)
+var _ coremain.ControlConfigReloader = (*Forward)(nil)
 
 type Forward struct {
 	runtimeMu  sync.RWMutex
@@ -250,7 +250,7 @@ func (f *Forward) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrappe
 	return f.args, us, nil
 }
 
-func (f *Forward) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (f *Forward) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	f.runtimeMu.RLock()
 	base := cloneArgs(f.baseArgs)
 	metricsTag := f.metricsTag

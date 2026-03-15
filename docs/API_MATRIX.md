@@ -74,16 +74,16 @@
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
-| `GET` | `/api/v1/runtime/summary` | 运行态聚合 | `stable` | 获取 SQLite 运行态摘要与命名空间概览 |
-| `GET` | `/api/v1/runtime/health` | 运行态聚合 | `stable` | 获取运行态自检结果 |
-| `GET` | `/api/v1/runtime/datasets` | 运行态聚合 | `stable` | 获取 generated datasets 列表 |
-| `POST` | `/api/v1/runtime/datasets/export` | 运行态聚合 | `stable` | 导出 generated datasets 到文件 |
-| `POST` | `/api/v1/runtime/datasets/verify` | 运行态聚合 | `stable` | 校验 generated datasets 与文件一致性 |
-| `GET` | `/api/v1/runtime/events` | 运行态聚合 | `stable` | 获取 runtime system events |
-| `GET` | `/api/v1/runtime/requery/jobs` | requery 任务 | `stable` | 获取任务定义 |
-| `GET` | `/api/v1/runtime/requery/runs` | requery 任务 | `stable` | 获取最近运行历史 |
-| `GET` | `/api/v1/runtime/requery/checkpoints` | requery 任务 | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
-| `POST` | `/api/v1/runtime/requery/enqueue` | requery 任务 | `stable` | 触发运行态 requery 入队 |
+| `GET` | `/api/v1/control/summary` | 运行态聚合 | `stable` | 获取 SQLite 运行态摘要与命名空间概览 |
+| `GET` | `/api/v1/control/health` | 运行态聚合 | `stable` | 获取运行态自检结果 |
+| `GET` | `/api/v1/control/datasets` | 运行态聚合 | `stable` | 获取 generated datasets 列表 |
+| `POST` | `/api/v1/control/datasets/export` | 运行态聚合 | `stable` | 导出 generated datasets 到文件 |
+| `POST` | `/api/v1/control/datasets/verify` | 运行态聚合 | `stable` | 校验 generated datasets 与文件一致性 |
+| `GET` | `/api/v1/control/events` | 运行态聚合 | `stable` | 获取 runtime system events |
+| `GET` | `/api/v1/control/requery/jobs` | requery 任务 | `stable` | 获取任务定义 |
+| `GET` | `/api/v1/control/requery/runs` | requery 任务 | `stable` | 获取最近运行历史 |
+| `GET` | `/api/v1/control/requery/checkpoints` | requery 任务 | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
+| `POST` | `/api/v1/control/requery/enqueue` | requery 任务 | `stable` | 触发运行态 requery 入队 |
 
 ## 3.5 覆盖配置
 
@@ -143,33 +143,33 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/switches` | `stable` | 获取全部开关 |
-| `GET` | `/api/v1/switches/{name}` | `stable` | 获取单开关 |
-| `PUT` | `/api/v1/switches/{name}` | `stable` | 更新单开关 |
+| `GET` | `/api/v1/control/switches` | `stable` | 获取全部开关 |
+| `GET` | `/api/v1/control/switches/{name}` | `stable` | 获取单开关 |
+| `PUT` | `/api/v1/control/switches/{name}` | `stable` | 更新单开关 |
 
 说明：
 
 - `switches` 旧插件接口已移除
-- 开关能力只保留 `/api/v1/switches/*`
+- 开关能力只保留 `/api/v1/control/switches/*`
 
 ## 4.2 分流刷新（requery）
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/runtime/requery/summary` | `stable` | 聚合状态与配置 |
-| `GET` | `/api/v1/runtime/requery` | `stable` | 配置读取 |
-| `GET` | `/api/v1/runtime/requery/status` | `stable` | 运行状态 |
-| `POST` | `/api/v1/runtime/requery/trigger` | `stable` | 触发任务 |
-| `POST` | `/api/v1/runtime/requery/enqueue` | `stable` | 入队按需刷新 |
-| `POST` | `/api/v1/runtime/requery/cancel` | `stable` | 取消任务 |
-| `POST` | `/api/v1/runtime/requery/scheduler/config` | `stable` | 更新调度配置 |
-| `POST` | `/api/v1/runtime/requery/rules/save` | `stable` | 批量保存分流规则 |
-| `POST` | `/api/v1/runtime/requery/rules/flush` | `stable` | 批量清空分流规则 |
-| `GET` | `/api/v1/runtime/requery/stats/source_file_counts` | `stable` | 刷新源统计 |
+| `GET` | `/api/v1/control/requery/summary` | `stable` | 聚合状态与配置 |
+| `GET` | `/api/v1/control/requery` | `stable` | 配置读取 |
+| `GET` | `/api/v1/control/requery/status` | `stable` | 运行状态 |
+| `POST` | `/api/v1/control/requery/trigger` | `stable` | 触发任务 |
+| `POST` | `/api/v1/control/requery/enqueue` | `stable` | 入队按需刷新 |
+| `POST` | `/api/v1/control/requery/cancel` | `stable` | 取消任务 |
+| `POST` | `/api/v1/control/requery/scheduler/config` | `stable` | 更新调度配置 |
+| `POST` | `/api/v1/control/requery/rules/save` | `stable` | 批量保存分流规则 |
+| `POST` | `/api/v1/control/requery/rules/flush` | `stable` | 批量清空分流规则 |
+| `GET` | `/api/v1/control/requery/stats/source_file_counts` | `stable` | 刷新源统计 |
 
 建议：
 
-- 旧的 `/plugins/requery/*` 与 `/api/v1/runtime/requery/*` 已移除，只保留 `/api/v1/runtime/requery/*`
+- 旧的 `/plugins/requery/*` 与 `/api/v1/control/requery/*` 已移除，只保留 `/api/v1/control/requery/*`
 
 ## 4.3 缓存插件
 
@@ -252,9 +252,9 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/runtime/clientname` | `stable` | 获取客户端别名配置 |
-| `PUT` | `/api/v1/runtime/clientname` | `stable` | 更新客户端别名配置 |
-| `GET` | `/api/v1/switches/core_mode` | `stable` | 当前核心模式 |
+| `GET` | `/api/v1/control/clientname` | `stable` | 获取客户端别名配置 |
+| `PUT` | `/api/v1/control/clientname` | `stable` | 更新客户端别名配置 |
+| `GET` | `/api/v1/control/switches/core_mode` | `stable` | 当前核心模式 |
 | `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
 
 说明：

@@ -29,8 +29,8 @@ import (
 )
 
 const (
-	PluginType      = "sd_set"
-	downloadTimeout = 60 * time.Second
+	PluginType       = "sd_set"
+	downloadTimeout  = 60 * time.Second
 	runtimeNamespace = "diversion_rule"
 )
 
@@ -437,7 +437,7 @@ func (p *SdSet) saveConfig() error {
 }
 
 func (p *SdSet) runtimeDBPath() string {
-	return filepath.Join(filepath.Dir(filepath.Clean(p.localConfigFile)), "runtime.db")
+	return coremain.RuntimeStateDBPathForPath(p.localConfigFile)
 }
 
 func (p *SdSet) runtimeConfigKey() string {

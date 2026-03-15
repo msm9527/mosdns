@@ -199,7 +199,7 @@ func buildEffectiveArgs(pluginTag string, base *Args, global *coremain.GlobalOve
 
 var _ sequence.Executable = (*AliAPI)(nil)
 var _ sequence.QuickConfigurableExec = (*AliAPI)(nil)
-var _ coremain.RuntimeConfigReloader = (*AliAPI)(nil)
+var _ coremain.ControlConfigReloader = (*AliAPI)(nil)
 
 // AliAPI represents the aliapi plugin instance.
 type AliAPI struct {
@@ -369,7 +369,7 @@ func (f *AliAPI) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrapper
 	return f.args, us, nil
 }
 
-func (f *AliAPI) ReloadRuntimeConfig(global *coremain.GlobalOverrides, upstreams []coremain.UpstreamOverrideConfig) error {
+func (f *AliAPI) ReloadControlConfig(global *coremain.GlobalOverrides, upstreams []coremain.UpstreamOverrideConfig) error {
 	f.runtimeMu.RLock()
 	base := cloneArgs(f.baseArgs)
 	pluginTag := f.pluginTag

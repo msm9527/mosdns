@@ -100,7 +100,7 @@ func init() {
 	)
 	rootCmd.AddCommand(serviceCmd)
 	rootCmd.AddCommand(newConfigCmd())
-	rootCmd.AddCommand(newRuntimeCmd())
+	rootCmd.AddCommand(newControlCmd())
 }
 
 func AddSubCmd(c *cobra.Command) {

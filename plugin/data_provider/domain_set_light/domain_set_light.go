@@ -82,7 +82,7 @@ type DomainSetLight struct {
 	fileStates  map[string]watchedFileState
 }
 
-var _ coremain.RuntimeConfigReloader = (*DomainSetLight)(nil)
+var _ coremain.ControlConfigReloader = (*DomainSetLight)(nil)
 
 // GetRules 实现 RuleExporter 接口
 func (d *DomainSetLight) GetRules() ([]string, error) {
@@ -227,7 +227,7 @@ func (d *DomainSetLight) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
 }
 
-func (d *DomainSetLight) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (d *DomainSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(d.pluginTag, d.baseArgs, effective, global); err != nil {
 		return err

@@ -36,7 +36,7 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
-	if err := RecordSystemEvent("runtime.test", "info", "hello", map[string]any{"ok": true}); err != nil {
+	if err := RecordSystemEvent("control.test", "info", "hello", map[string]any{"ok": true}); err != nil {
 		t.Fatalf("RecordSystemEvent: %v", err)
 	}
 	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceAdguard, "config.json", []map[string]any{{"id": "rule-1"}}); err != nil {
@@ -102,7 +102,7 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	if err := json.Unmarshal(eventsJSON, &events); err != nil {
 		t.Fatalf("decode events: %v", err)
 	}
-	if len(events) == 0 || events[0].Component != "runtime.test" {
+	if len(events) == 0 || events[0].Component != "control.test" {
 		t.Fatalf("unexpected events: %+v", events)
 	}
 
@@ -218,7 +218,7 @@ func TestRuntimeCmdDatasetsExportOutput(t *testing.T) {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
-	cmd := newRuntimeCmd()
+	cmd := newControlCmd()
 	buf := new(strings.Builder)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
@@ -248,7 +248,7 @@ func TestRuntimeCmdDatasetsVerifyOutput(t *testing.T) {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
-	cmd := newRuntimeCmd()
+	cmd := newControlCmd()
 	buf := new(strings.Builder)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
@@ -278,7 +278,7 @@ func TestRuntimeCmdHealthOutput(t *testing.T) {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
-	cmd := newRuntimeCmd()
+	cmd := newControlCmd()
 	buf := new(strings.Builder)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
@@ -313,7 +313,7 @@ func TestRuntimeCmdRequeryRunsOutput(t *testing.T) {
 		t.Fatalf("SaveRun: %v", err)
 	}
 
-	cmd := newRuntimeCmd()
+	cmd := newControlCmd()
 	buf := new(strings.Builder)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)
@@ -366,7 +366,7 @@ func TestRuntimeCmdRequeryPruneOutput(t *testing.T) {
 		}
 	}
 
-	cmd := newRuntimeCmd()
+	cmd := newControlCmd()
 	buf := new(strings.Builder)
 	cmd.SetOut(buf)
 	cmd.SetErr(buf)

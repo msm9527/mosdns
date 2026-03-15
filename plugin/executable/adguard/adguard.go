@@ -103,7 +103,7 @@ type AdguardRule struct {
 // 确保实现了必要的接口
 var _ data_provider.RuleExporter = (*AdguardRule)(nil)          // 新增接口
 var _ data_provider.DomainMatcherProvider = (*AdguardRule)(nil) // 原有接口
-var _ coremain.RuntimeConfigReloader = (*AdguardRule)(nil)
+var _ coremain.ControlConfigReloader = (*AdguardRule)(nil)
 
 // RuleReceiver 接口用于解耦解析和存储逻辑，使 parseRules 既能用于构建 Matcher 也能用于导出
 type RuleReceiver interface {
@@ -291,7 +291,7 @@ func (p *AdguardRule) CreateAdguardRule(item coremain.AdguardRuleItem) (coremain
 	if err := p.saveConfig(); err != nil {
 		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
 	}
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.rules.adguard", "info", "created adguard rule", map[string]any{
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "info", "created adguard rule", map[string]any{
 		"id":      newRule.ID,
 		"name":    newRule.Name,
 		"enabled": newRule.Enabled,
@@ -357,7 +357,7 @@ func (p *AdguardRule) UpdateAdguardRule(id string, item coremain.AdguardRuleItem
 	if err := p.saveConfig(); err != nil {
 		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
 	}
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.rules.adguard", "info", "updated adguard rule", map[string]any{
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "info", "updated adguard rule", map[string]any{
 		"id":      out.ID,
 		"name":    out.Name,
 		"enabled": out.Enabled,
@@ -384,7 +384,7 @@ func (p *AdguardRule) DeleteAdguardRule(id string) error {
 	if err := p.saveConfig(); err != nil {
 		return coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
 	}
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.rules.adguard", "warn", "deleted adguard rule", map[string]any{
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "warn", "deleted adguard rule", map[string]any{
 		"id": id,
 	})
 
@@ -393,7 +393,7 @@ func (p *AdguardRule) DeleteAdguardRule(id string) error {
 }
 
 func (p *AdguardRule) TriggerAdguardUpdate() error {
-	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "runtime.rules.adguard", "info", "triggered adguard rule update", map[string]any{})
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "info", "triggered adguard rule update", map[string]any{})
 	go func() {
 		log.Println("[adguard_rule] Manual update triggered for all enabled rules.")
 
@@ -502,7 +502,7 @@ func (p *AdguardRule) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
 }
 
-func (p *AdguardRule) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (p *AdguardRule) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
 		return err
@@ -614,7 +614,7 @@ func (p *AdguardRule) saveConfig() error {
 }
 
 func (p *AdguardRule) runtimeDBPath() string {
-	return filepath.Join(filepath.Dir(filepath.Clean(p.configFile)), "runtime.db")
+	return coremain.RuntimeStateDBPathForPath(p.configFile)
 }
 
 func (p *AdguardRule) runtimeConfigKey() string {

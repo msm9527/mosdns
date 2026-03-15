@@ -13,7 +13,7 @@ type Config struct {
 	Upstreams     []UpstreamGroup  `yaml:"upstreams,omitempty"`
 	Policies      []PolicyConfig   `yaml:"policies,omitempty"`
 	RuleProviders []RuleProvider   `yaml:"rule_providers,omitempty"`
-	Runtime       RuntimeConfig    `yaml:"runtime,omitempty"`
+	Control       ControlConfig    `yaml:"control,omitempty"`
 	Features      map[string]any   `yaml:"features,omitempty"`
 	Storage       StorageConfig    `yaml:"storage,omitempty"`
 	Exports       []ExportConfig   `yaml:"exports,omitempty"`
@@ -57,7 +57,7 @@ type RuleProvider struct {
 	Type   string `yaml:"type,omitempty"`
 }
 
-type RuntimeConfig struct {
+type ControlConfig struct {
 	BaseDir  string          `yaml:"base_dir,omitempty"`
 	WebInfo  []WebInfoConfig `yaml:"webinfo,omitempty"`
 	Requery  []RequeryConfig `yaml:"requery,omitempty"`
@@ -80,7 +80,7 @@ type SwitchConfig struct {
 }
 
 type StorageConfig struct {
-	RuntimeDB string `yaml:"runtime_db,omitempty"`
+	ControlDB string `yaml:"control_db,omitempty"`
 }
 
 type ExportConfig struct {
