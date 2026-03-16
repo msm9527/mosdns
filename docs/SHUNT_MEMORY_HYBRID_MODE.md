@@ -97,7 +97,7 @@
 - 是否超过陈旧窗口
 - 是否仍在冷却窗口内
 
-满足条件时，`domain_output` 会向 `requery` 的 `/enqueue` 上报一个刷新任务。
+满足条件时，`domain_memory_pool` 会向 `requery` 的 `/enqueue` 上报一个刷新任务。
 
 ## 4.2 低频巡检
 
@@ -203,9 +203,9 @@
 - `execution_settings.max_queue_size`
   - 按需刷新队列上限
 
-## 7.2 `domain_output.yaml`
+## 7.2 `config/custom_config/memory_pools.yaml`
 
-每类分流记忆条目还需要配置自己的刷新策略。
+每类分流记忆条目都通过 `config/custom_config/memory_pools.yaml` 配置自己的刷新策略。
 
 常见字段：
 
@@ -213,24 +213,26 @@
   - 多久后认为条目需要重新验证
 - `refresh_cooldown_minutes`
   - 同一域名刷新后，多久内不重复进入队列
-- `on_dirty_url`
-  - 脏条目上报地址，通常指向 `/api/v1/control/requery/enqueue`
-- `verify_url`
-  - 刷新完成后回写验证状态的地址
+- `requery_tag`
+  - 脏条目推送到哪个 `requery` 插件
 
 示例：
 
 ```yaml
-policy:
-  kind: realip
+my_realiplist:
+  kind: memory
+  publish_to: my_realiprule
+  requery_tag: requery
   promote_after: 2
-  decay_days: 21
   track_qtype: true
-  publish_mode: promoted_only
   stale_after_minutes: 360
   refresh_cooldown_minutes: 120
-  on_dirty_url: "http://127.0.0.1:9099/api/v1/control/requery/enqueue"
-  verify_url: "http://127.0.0.1:9099/api/v1/memory/my_realiplist/verify"
+  max_domains: 80000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600
 ```
 
 ## 8. 推荐默认值
@@ -281,7 +283,7 @@ policy:
 
 ### 9.2 看分流记忆列表状态
 
-每个 `domain_output` 实例的 `/stats` 可看到：
+每个 `domain_memory_pool` / `domain_stats_pool` 实例的 `/stats` 可看到：
 
 - `total_entries`
 - `dirty_entries`
@@ -292,7 +294,7 @@ policy:
 
 - 按需刷新在入队
 - 但刷新闭环没有跑完
-- 需要检查 `requery` 和 `verify_url`
+- 需要检查 `requery` 与对应 pool 的 `/verify` 闭环
 
 ## 10. 什么时候该手动点“开始全新任务”
 

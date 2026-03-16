@@ -81,9 +81,6 @@
 | --- | --- | --- | --- |
 | `GET` | `/summary` | `stable` | 获取运行态命名空间概览、存储引擎和聚合摘要 |
 | `GET` | `/health` | `stable` | 获取运行态自检结果 |
-| `GET` | `/datasets` | `stable` | 获取 generated datasets 列表 |
-| `POST` | `/datasets/export` | `stable` | 导出 generated datasets 到文件 |
-| `POST` | `/datasets/verify` | `stable` | 校验 generated datasets 与文件一致性 |
 | `GET` | `/events` | `stable` | 获取 runtime system events |
 | `GET` | `/requery/jobs` | `stable` | 获取 requery 任务定义 |
 | `GET` | `/requery/runs` | `stable` | 获取最近 requery 运行历史 |
@@ -94,12 +91,12 @@
 
 - 前端首页或诊断页做统一状态拉取
 - 确认当前运行态是否已经由 SQLite 接管
-- 查看 `switch / webinfo / requery / adguard_rule / diversion_rule / generated_dataset` 是否有数据
+- 查看 `switch / webinfo / requery / adguard_rule / diversion_rule / domain_pool_*` 是否有数据
 
 说明：
 
-- `generated_dataset` 属于动态规则导出真源，对应文件通过显式 export 动作生成。
-- 运行态页面应按模块分别调用 `/summary`、`/health`、`/datasets`、`/events` 与 `/runtime/requery/*`，不再依赖单一大聚合接口。
+- 动态域名记忆与统计真源已经统一为 SQLite `domain_pool_*` 表。
+- 运行态页面应按模块分别调用 `/summary`、`/health`、`/events` 与 `/runtime/requery/*`，不再依赖单一大聚合接口。
 
 ### 2.4 审计 API v1
 
@@ -436,7 +433,7 @@
 
 - `key`: 前端使用的稳定标识
 - `name`: 展示名称
-- `tag`: 对应 domain_output 插件 tag
+- `tag`: 对应 memory pool / stats pool 插件 tag
 - `memory_id`: 插件内部内存实例标识
 - `kind`: 统计类型，例如 `fakeip`、`realip`、`nov4`、`nov6`、`generic`
 - `total_entries`: 当前内存中统计条目数
@@ -988,11 +985,11 @@
 
 - 命中 `DDNS域名` 标签的缓存项，过期后不会再走 lazy stale 返回旧值，而是直接回源重查。
 
-### 4.3 domain_output / 分流记忆库与域名输出（`stable`）
+### 4.3 domain_memory_pool / domain_stats_pool（`stable`）
 
 根路径：`/api/v1/memory/{memory_tag}`
 
-这组接口是“刷新分流”真正读写的数据面。`requery` 任务最终会把结果发布到这些记忆库。
+这组接口是“刷新分流”真正读写的数据面。`requery` 任务最终会把结果发布到这些记忆池。
 
 常见 tag：
 
@@ -1003,12 +1000,11 @@
 - `my_nov6list`
 - `my_nodenov4list`
 - `my_nodenov6list`
-- `my_notinlist`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
 | `POST` | `/flush` | `stable` | 清空并写盘 |
-| `POST` | `/save` | `stable` | 保存当前内存到文件 |
+| `POST` | `/save` | `stable` | 立即把当前内存刷入 SQLite |
 | `GET` | `/entries` | `stable` | 查看记忆数据 |
 | `GET` | `/stats` | `stable` | 获取统计信息 |
 | `POST` | `/verify` | `stable` | 标记域名已验证、清理 dirty 状态 |
@@ -1297,7 +1293,7 @@
 - `PUT /api/v1/lists/{tag}`
 - `GET /api/v1/control/clientname`
 - `PUT /api/v1/control/clientname`
-- `domain_output` 记忆库已统一到 `/api/v1/memory/{tag}/*`
+- memory pool / stats pool 已统一到 `/api/v1/memory/{tag}/*`
 
 ## 6. 迁移说明
 

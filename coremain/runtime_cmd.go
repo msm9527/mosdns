@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 
 	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/spf13/cobra"
@@ -69,64 +68,6 @@ func newControlCmd() *cobra.Command {
 		SilenceUsage: true,
 	}
 	runtimeCmd.AddCommand(healthCmd)
-
-	datasetsCmd := &cobra.Command{
-		Use:   "datasets",
-		Short: "List and export generated datasets stored in control SQLite.",
-	}
-	datasetsListCmd := &cobra.Command{
-		Use:   "list",
-		Short: "List generated datasets as JSON.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
-			if err != nil {
-				return err
-			}
-			data, err := runtimeDatasetsJSON(dbPath)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return err
-		},
-		SilenceUsage: true,
-	}
-	datasetsExportCmd := &cobra.Command{
-		Use:   "export",
-		Short: "Export generated datasets from SQLite back to files.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
-			if err != nil {
-				return err
-			}
-			exported, err := ExportGeneratedDatasetsToFiles(dbPath)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "exported_files=%d\n", exported)
-			return err
-		},
-		SilenceUsage: true,
-	}
-	datasetsVerifyCmd := &cobra.Command{
-		Use:   "verify",
-		Short: "Verify generated datasets against exported files.",
-		RunE: func(cmd *cobra.Command, args []string) error {
-			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
-			if err != nil {
-				return err
-			}
-			data, err := runtimeDatasetsVerifyJSON(dbPath)
-			if err != nil {
-				return err
-			}
-			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
-			return err
-		},
-		SilenceUsage: true,
-	}
-	datasetsCmd.AddCommand(datasetsListCmd, datasetsExportCmd, datasetsVerifyCmd)
-	runtimeCmd.AddCommand(datasetsCmd)
 
 	eventsCmd := &cobra.Command{
 		Use:   "events",
@@ -285,7 +226,6 @@ func runtimeSummaryJSON(dbPath string) ([]byte, error) {
 		runtimeNamespaceRequery,
 		runtimeNamespaceAdguard,
 		runtimeNamespaceDiversion,
-		runtimeStateNamespaceGeneratedDataset,
 	}
 	resp := runtimeSummaryResponse{
 		StorageEngine: "sqlite",
@@ -303,22 +243,6 @@ func runtimeSummaryJSON(dbPath string) ([]byte, error) {
 		})
 	}
 	return json.Marshal(resp)
-}
-
-func runtimeDatasetsJSON(dbPath string) ([]byte, error) {
-	datasets, err := ListGeneratedDatasetsFromPath(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(datasets)
-}
-
-func runtimeDatasetsVerifyJSON(dbPath string) ([]byte, error) {
-	summary, err := VerifyGeneratedDatasetsOnFiles(dbPath)
-	if err != nil {
-		return nil, err
-	}
-	return json.Marshal(summary)
 }
 
 func runtimeHealthJSON(dbPath string) ([]byte, error) {
@@ -367,16 +291,4 @@ func runtimeRequeryPruneJSON(dbPath string, opts requeryruntime.PruneOptions) ([
 		return nil, err
 	}
 	return json.Marshal(summary)
-}
-
-func parseExportedFilesOutput(s string) (int, error) {
-	const prefix = "exported_files="
-	if len(s) < len(prefix) || s[:len(prefix)] != prefix {
-		return 0, fmt.Errorf("unexpected export output %q", s)
-	}
-	value := s[len(prefix):]
-	if len(value) > 0 && value[len(value)-1] == '\n' {
-		value = value[:len(value)-1]
-	}
-	return strconv.Atoi(value)
 }

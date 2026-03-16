@@ -90,33 +90,6 @@ func TestPollWatchedFilesReloadsMatcher(t *testing.T) {
 	}
 }
 
-func TestLoadGeneratedRuntimeRules(t *testing.T) {
-	oldBaseDir := coremain.MainConfigBaseDir
-	coremain.MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		coremain.MainConfigBaseDir = oldBaseDir
-	})
-
-	generatedFrom := "my_realiplist"
-	dbPath := coremain.RuntimeStateDBPath()
-	key := coremain.DomainOutputRuleDatasetKey(generatedFrom)
-	if err := coremain.SaveGeneratedDatasetToPath(dbPath, key, coremain.GeneratedDatasetFormatDomainOutputRule, "full:runtime.example\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
-	}
-
-	ds := &DomainSet{mixM: domain.NewDomainMixMatcher()}
-	rules, err := ds.loadGeneratedRuntimeRules(generatedFrom)
-	if err != nil {
-		t.Fatalf("loadGeneratedRuntimeRules: %v", err)
-	}
-	if len(rules) != 1 || rules[0] != "full:runtime.example" {
-		t.Fatalf("unexpected generated rules: %#v", rules)
-	}
-	if _, ok := ds.Match("runtime.example."); !ok {
-		t.Fatal("expected matcher to load generated dataset content")
-	}
-}
-
 func TestLoadGeneratedRulesFromExporter(t *testing.T) {
 	exporter := &mockRuleExporter{rules: []string{"full:runtime.example"}}
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
@@ -188,32 +161,14 @@ func TestGeneratedExporterSubscriptionReloadsMatcher(t *testing.T) {
 	}
 }
 
-func TestReplaceListRuntimePersistsGeneratedDataset(t *testing.T) {
-	oldBaseDir := coremain.MainConfigBaseDir
-	coremain.MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		coremain.MainConfigBaseDir = oldBaseDir
-	})
-
-	generatedFrom := "my_fakeiplist"
+func TestReplaceListRuntimeRejectsGeneratedSource(t *testing.T) {
 	ds := &DomainSet{
-		generatedFrom: generatedFrom,
+		pluginTag:     "my_fakeiprule",
+		generatedFrom: "my_fakeiplist",
 		mixM:          domain.NewDomainMixMatcher(),
 	}
 
-	replaced, err := ds.ReplaceListRuntime(nil, []string{"full:example.com"})
-	if err != nil {
-		t.Fatalf("ReplaceListRuntime: %v", err)
-	}
-	if replaced != 1 {
-		t.Fatalf("unexpected replaced count: %d", replaced)
-	}
-
-	dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(coremain.RuntimeStateDBPath(), coremain.DomainOutputRuleDatasetKey(generatedFrom))
-	if err != nil {
-		t.Fatalf("LoadGeneratedDatasetFromPath: %v", err)
-	}
-	if !ok || dataset.Content != "full:example.com\n" {
-		t.Fatalf("unexpected generated dataset: ok=%v dataset=%+v", ok, dataset)
+	if _, err := ds.ReplaceListRuntime(nil, []string{"full:example.com"}); err == nil {
+		t.Fatal("expected ReplaceListRuntime to reject generated sources")
 	}
 }

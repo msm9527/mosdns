@@ -67,7 +67,8 @@
 | 插件类型 | 源码文件 | 对应配置文件 | 备注 |
 | --- | --- | --- | --- |
 | `cache` | `plugin/executable/cache/cache.go` | `config/sub_config/cache.yaml` | 缓存清空可即时执行，但缓存插件配置本身不支持热重载 |
-| `domain_output` | `plugin/executable/domain_output/domain_output.go` | `config/sub_config/domain_output.yaml` | 配置改动不支持运行时重建 |
+| `domain_memory_pool` | `plugin/executable/domain_memory_pool/domain_memory_pool.go` | `config/sub_config/20-data-sources.yaml` `config/custom_config/memory_pools.yaml` | 池实例与策略文件改动当前按重启处理更稳妥 |
+| `domain_stats_pool` | `plugin/executable/domain_stats_pool/domain_stats_pool.go` | `config/sub_config/20-data-sources.yaml` `config/custom_config/memory_pools.yaml` | 同上 |
 | `fallback` | `plugin/executable/sequence/fallback/fallback.go` | `config/sub_config/for_singbox.yaml` | 当前未实现热重载接口 |
 | `requery` | `plugin/executable/requery/requery.go` | `config/sub_config/requery.yaml` | 调度和触发有运行时 API，但 YAML 配置本身不走 `ControlConfigReloader` |
 | `switch` | `plugin/switch/switch/switch.go` | `config/sub_config/switch.yaml` | 开关值通过 `/api/v1/control/switches/*` 即时生效，但插件定义本身不支持热重载 |

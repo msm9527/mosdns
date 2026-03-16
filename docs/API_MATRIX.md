@@ -76,9 +76,6 @@
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/control/summary` | 运行态聚合 | `stable` | 获取 SQLite 运行态摘要与命名空间概览 |
 | `GET` | `/api/v1/control/health` | 运行态聚合 | `stable` | 获取运行态自检结果 |
-| `GET` | `/api/v1/control/datasets` | 运行态聚合 | `stable` | 获取 generated datasets 列表 |
-| `POST` | `/api/v1/control/datasets/export` | 运行态聚合 | `stable` | 导出 generated datasets 到文件 |
-| `POST` | `/api/v1/control/datasets/verify` | 运行态聚合 | `stable` | 校验 generated datasets 与文件一致性 |
 | `GET` | `/api/v1/control/events` | 运行态聚合 | `stable` | 获取 runtime system events |
 | `GET` | `/api/v1/control/requery/jobs` | requery 任务 | `stable` | 获取任务定义 |
 | `GET` | `/api/v1/control/requery/runs` | requery 任务 | `stable` | 获取最近运行历史 |
@@ -194,14 +191,15 @@
 - `domain_set_light`
 - `ip_set`
 - `rewrite`
-- 部分 `domain_output`
+- `domain_memory_pool`
+- `domain_stats_pool`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/lists/{tag}` | `stable` | 查看可编辑列表内容 |
 | `PUT` | `/api/v1/lists/{tag}` | `stable` | 替换可编辑列表内容 |
 | `GET` | `/api/v1/memory/{tag}/entries` | `stable` | 查看分流记忆库内容 |
-| `POST` | `/api/v1/memory/{tag}/save` | `stable` | 保存分流记忆库 |
+| `POST` | `/api/v1/memory/{tag}/save` | `stable` | 立即把当前分流记忆刷入 SQLite |
 | `POST` | `/api/v1/memory/{tag}/flush` | `stable` | 清空分流记忆库 |
 | `POST` | `/api/v1/memory/{tag}/verify` | `stable` | 按域名验证/发布 |
 | `GET` | `/api/v1/memory/{tag}/stats` | `stable` | 某些记忆库统计 |
@@ -209,7 +207,7 @@
 问题：
 
 - 可编辑列表已完成核心 API 收口
-- `domain_output` 已完成核心 API 收口
+- memory pool / stats pool 已完成核心 API 收口
 
 ## 4.5 在线分流规则源
 

@@ -1,8 +1,6 @@
 package domain_stats_pool
 
 import (
-	"fmt"
-	"strings"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -96,16 +94,4 @@ func atomicStoreIfGreater(target *int64, value int64) {
 		return
 	}
 	*target = value
-}
-
-func (d *domainStatsPool) saveSnapshotToGeneratedDataset(snapshot writeSnapshot) error {
-	_ = snapshot
-	return nil
-}
-
-func (d *domainStatsPool) verifyStoredDomain(domain string) error {
-	if strings.TrimSpace(domain) == "" {
-		return fmt.Errorf("domain is empty")
-	}
-	return nil
 }

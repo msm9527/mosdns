@@ -94,7 +94,7 @@ policies:
   # 记忆类规则 provider。
   # 说明：
   # - `generated_from` 表示直接订阅对应 memory pool 插件的规则导出接口
-  # - 不再把 generated_dataset 当成主读取路径
+  # - 运行态累计与发布状态完全来自 SQLite 的 domain_pool_* 表
   - name: my_realiprule
     type: domain_set_light
     args:

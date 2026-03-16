@@ -79,23 +79,23 @@ type outputRankItem struct {
 }
 
 type aggregateEntry struct {
-	Domain               string
-	Count                int
-	Date                 string
-	Score                int
-	QMask                uint8
-	FlagsMask            uint8
-	VariantCount         int
-	DirtyVariantCount    int
-	Promoted             bool
-	LastSource           string
-	LastSeenAt           string
-	LastDirtyAt          string
-	LastVerifiedAt       string
-	CooldownUntil        string
-	DirtyReason          string
-	RefreshState         string
-	ConflictCount        int
+	Domain            string
+	Count             int
+	Date              string
+	Score             int
+	QMask             uint8
+	FlagsMask         uint8
+	VariantCount      int
+	DirtyVariantCount int
+	Promoted          bool
+	LastSource        string
+	LastSeenAt        string
+	LastDirtyAt       string
+	LastVerifiedAt    string
+	CooldownUntil     string
+	DirtyReason       string
+	RefreshState      string
+	ConflictCount     int
 }
 
 type writeSnapshot struct {
@@ -107,12 +107,12 @@ type writeSnapshot struct {
 }
 
 type domainMemoryPool struct {
-	pluginTag  string
-	manager    *coremain.Mosdns
-	logger     *zap.Logger
-	dbPath     string
-	policy     writePolicy
-	memoryID   string
+	pluginTag   string
+	manager     *coremain.Mosdns
+	logger      *zap.Logger
+	dbPath      string
+	policy      writePolicy
+	memoryID    string
 	enableFlags bool
 
 	stats              map[string]*statEntry
@@ -121,7 +121,7 @@ type domainMemoryPool struct {
 	rules              []string
 	subscribers        []func()
 
-	mu     sync.Mutex
+	mu      sync.Mutex
 	writeMu sync.Mutex
 
 	totalCount         int64
@@ -168,21 +168,21 @@ func newDomainMemoryPool(pluginTag string, manager *coremain.Mosdns, logger *zap
 		return nil, err
 	}
 	return &domainMemoryPool{
-		pluginTag:           strings.TrimSpace(pluginTag),
-		manager:             manager,
-		logger:              logger,
-		dbPath:              coremain.RuntimeStateDBPath(),
-		policy:              policy,
-		memoryID:            policy.raw.MemoryID,
-		enableFlags:         policy.trackFlags,
-		stats:               make(map[string]*statEntry),
-		domainVariantCount:  make(map[string]int),
-		rules:               make([]string, 0),
-		subscribers:         make([]func(), 0),
-		recordChan:          make(chan *logItem, RecordBufferLimit),
-		writeSignalChan:     make(chan struct{}, 1),
-		stopChan:            make(chan struct{}),
-		workerDoneChan:      make(chan struct{}),
+		pluginTag:          strings.TrimSpace(pluginTag),
+		manager:            manager,
+		logger:             logger,
+		dbPath:             coremain.RuntimeStateDBPath(),
+		policy:             policy,
+		memoryID:           policy.raw.MemoryID,
+		enableFlags:        policy.trackFlags,
+		stats:              make(map[string]*statEntry),
+		domainVariantCount: make(map[string]int),
+		rules:              make([]string, 0),
+		subscribers:        make([]func(), 0),
+		recordChan:         make(chan *logItem, RecordBufferLimit),
+		writeSignalChan:    make(chan struct{}, 1),
+		stopChan:           make(chan struct{}),
+		workerDoneChan:     make(chan struct{}),
 	}, nil
 }
 
@@ -509,7 +509,7 @@ func (d *domainMemoryPool) buildSnapshot(mode WriteMode) writeSnapshot {
 
 	items, rules, promotedCount, dirtyCount, domains := buildAggregatedOutputs(aggregated)
 	state := coremain.DomainPoolState{
-		Meta: buildPoolMeta(d, len(domains), len(variants), promotedCount, dirtyCount, len(rules)),
+		Meta:     buildPoolMeta(d, len(domains), len(variants), promotedCount, dirtyCount, len(rules)),
 		Domains:  domains,
 		Variants: variants,
 	}
@@ -545,8 +545,8 @@ func (d *domainMemoryPool) resetStateLocked() {
 
 func (d *domainMemoryPool) emptySnapshot() writeSnapshot {
 	return writeSnapshot{
-		items:  []outputRankItem{},
-		rules:  []string{},
+		items: []outputRankItem{},
+		rules: []string{},
 		state: coremain.DomainPoolState{
 			Meta: buildPoolMeta(d, 0, 0, 0, 0, 0),
 		},

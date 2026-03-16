@@ -25,14 +25,16 @@ func (d *DomainSet) loadGeneratedRules(generatedFrom string) (data_provider.Rule
 		}
 		return exporter, rules, nil
 	}
-	rules, err := d.loadGeneratedRuntimeRules(generatedFrom)
-	return nil, rules, err
+	return nil, nil, fmt.Errorf("generated_from source %s is unavailable", generatedFrom)
 }
 
 func (d *DomainSet) resolveGeneratedExporter(generatedFrom string) (data_provider.RuleExporter, bool, error) {
 	tag := strings.TrimSpace(generatedFrom)
-	if tag == "" || d.bp == nil || d.bp.M() == nil {
+	if tag == "" {
 		return nil, false, nil
+	}
+	if d.bp == nil || d.bp.M() == nil {
+		return nil, false, fmt.Errorf("generated_from source %s requires a running plugin manager", tag)
 	}
 	pluginInterface := d.bp.M().GetPlugin(tag)
 	if pluginInterface == nil {

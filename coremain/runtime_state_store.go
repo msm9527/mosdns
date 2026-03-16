@@ -155,9 +155,6 @@ func (s *runtimeStateStore) list(namespace string) ([]RuntimeStateEntry, error) 
 	if namespace == runtimeNamespaceDiversion {
 		return s.listStructuredDiversionState()
 	}
-	if namespace == runtimeStateNamespaceGeneratedDataset {
-		return listStructuredGeneratedDatasetEntries(s.db.DB())
-	}
 	return nil, fmt.Errorf("unsupported runtime namespace %q", namespace)
 }
 

@@ -24,7 +24,7 @@
 - `requery`
 - `adguard_rule`
 - `diversion_rule`
-- `generated_dataset`
+- `domain_pool_meta / domain_pool_domain / domain_pool_variant`
 - `system_event`
 
 ### 2.2 文件系统角色
@@ -44,16 +44,15 @@
 - `upstreams.yaml` 是用户可手改的上游 DNS 组真源
 - `switches.yaml` 是用户可手改的功能开关真源
 - `clientname.yaml` 是用户可手改的客户端别名真源
-- 前端保存会直接改这两个文件，并触发热重载
+- 前端保存会直接改这些文件，并触发热重载
 - 手工修改后重启，也会按文件内容生效
 - 这两类配置不再写入 SQLite
 
-对于 `config/gen/*.txt`：
+对于动态域名池：
 
-- `domain_output` 生成的统计和规则首先写入 SQLite `generated_dataset`
-- `domain_set` / `domain_set_light` 启动时优先从 `generated_dataset` 恢复
-- `POST /api/v1/control/datasets/export` 只负责把当前数据库内容显式导出回文件，便于查看、备份或外部兼容
-- 未执行 export 时，`gen/*.txt` 缺失不应影响运行态正确性
+- `domain_memory_pool` / `domain_stats_pool` 的运行态累计、dirty 状态和发布状态都只写 SQLite `domain_pool_*` 表
+- `domain_set` / `domain_set_light` 通过 `generated_from` 直接订阅对应 pool 插件，不再依赖中间导出文件
+- `config/gen/` 不再承担运行态真源角色
 
 ## 3. 稳定 API
 
@@ -61,20 +60,9 @@
 
 - `GET /api/v1/control/summary`
 - `GET /api/v1/control/health`
-- `GET /api/v1/control/datasets`
 - `GET /api/v1/control/events`
 
-### 3.2 datasets 动作
-
-- `POST /api/v1/control/datasets/verify`
-- `POST /api/v1/control/datasets/export`
-
-说明：
-
-- `verify` 校验的是“当前数据库内容”和“已导出文件”是否一致
-- `export` 是显式导出动作，不再代表常规运行态持久化
-
-### 3.3 自定义控制配置
+### 3.2 自定义控制配置
 
 - `GET /api/v1/control/overrides`
 - `POST /api/v1/control/overrides`
@@ -88,7 +76,7 @@
 - 保存成功后会尝试热重载
 - 如果你是手工改文件，则重启后生效
 
-### 3.4 requery
+### 3.3 requery
 
 - `GET /api/v1/control/requery`
 - `GET /api/v1/control/requery/summary`
@@ -103,7 +91,7 @@
 - `POST /api/v1/control/requery/rules/save`
 - `POST /api/v1/control/requery/rules/flush`
 
-### 3.5 clientname
+### 3.4 clientname
 
 - `GET /api/v1/control/clientname`
 - `PUT /api/v1/control/clientname`
@@ -121,7 +109,6 @@
 mosdns control summary -c config/config.v2.yaml
 mosdns control health -c config/config.v2.yaml
 mosdns control events -c config/config.v2.yaml --limit 50
-mosdns control datasets list -c config/config.v2.yaml
 mosdns control requery jobs -c config/config.v2.yaml
 mosdns control requery runs -c config/config.v2.yaml --limit 20
 mosdns control requery checkpoints -c config/config.v2.yaml --run-id <run-id> --limit 50
@@ -130,8 +117,6 @@ mosdns control requery checkpoints -c config/config.v2.yaml --run-id <run-id> --
 ### 4.2 运行态动作
 
 ```bash
-mosdns control datasets verify -c config/config.v2.yaml
-mosdns control datasets export -c config/config.v2.yaml
 mosdns control requery prune -c config/config.v2.yaml --keep-runs 50 --keep-checkpoints 20
 mosdns control shunt explain -c config/config.v2.yaml --domain example.com --qtype A --format table
 mosdns control shunt conflicts -c config/config.v2.yaml --limit 20 --format table
@@ -147,7 +132,7 @@ mosdns config validate -c config/config.v2.yaml
 
 若满足以下条件，可以认为 V2 运行态工作正常：
 
-- `/api/v1/control/summary`、`/health`、`/datasets`、`/events` 可正常返回
+- `/api/v1/control/summary`、`/health`、`/events` 可正常返回
 - `requery` 可以看到 jobs / runs / checkpoints
-- 删除动态规则导出文件后可通过 `mosdns control datasets export` 重新导出
+- `/api/v1/data/domain_stats` 与 `/api/v1/memory/{tag}/entries` 能看到动态域名池数据
 - `mosdns config validate` 通过

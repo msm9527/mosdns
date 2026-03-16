@@ -109,7 +109,6 @@ func runtimeHealthReport(dbPath string, m *Mosdns) (*runtimeHealthResponse, erro
 	addMemoryPoolHealthCheck(addCheck)
 	addOverridesHealthCheck(addCheck)
 	addUpstreamOverrideHealthCheck(addCheck)
-	addDatasetHealthCheck(dbPath, addCheck)
 	addRequeryHealthCheck(dbPath, addCheck)
 	addUpstreamHealthCheck(m, addCheck)
 
@@ -123,7 +122,6 @@ func addNamespaceSummaryCheck(dbPath string, addCheck func(runtimeHealthCheck)) 
 		runtimeNamespaceRequery,
 		runtimeNamespaceAdguard,
 		runtimeNamespaceDiversion,
-		runtimeStateNamespaceGeneratedDataset,
 	}
 	counts := make(map[string]int, len(namespaces))
 	for _, namespace := range namespaces {
@@ -229,29 +227,6 @@ func addUpstreamOverrideHealthCheck(addCheck func(runtimeHealthCheck)) {
 			},
 		})
 	}
-}
-
-func addDatasetHealthCheck(dbPath string, addCheck func(runtimeHealthCheck)) {
-	datasets, err := ListGeneratedDatasetsFromPath(dbPath)
-	if err != nil {
-		addCheck(runtimeHealthCheck{Name: "generated_datasets", Status: "error", Message: err.Error()})
-		return
-	}
-	exportable := 0
-	for _, dataset := range datasets {
-		if strings.TrimSpace(dataset.ExportPath) != "" {
-			exportable++
-		}
-	}
-	addCheck(runtimeHealthCheck{
-		Name:    "generated_datasets",
-		Status:  "ok",
-		Message: "generated datasets are stored in sqlite",
-		Details: map[string]any{
-			"datasets":   len(datasets),
-			"exportable": exportable,
-		},
-	})
 }
 
 func addRequeryHealthCheck(dbPath string, addCheck func(runtimeHealthCheck)) {

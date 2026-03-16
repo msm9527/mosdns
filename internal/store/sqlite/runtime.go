@@ -273,23 +273,6 @@ func baseMigrations() []Migration {
 			`,
 		},
 		{
-			ID: "0007_generated_dataset",
-			Up: `
-				CREATE TABLE IF NOT EXISTS generated_dataset (
-					dataset_key TEXT PRIMARY KEY,
-					output_path TEXT NOT NULL,
-					format TEXT NOT NULL,
-					content TEXT NOT NULL,
-					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
-					last_exported_at_unix_ms INTEGER NOT NULL DEFAULT 0,
-					last_export_status TEXT NOT NULL DEFAULT '',
-					last_export_error TEXT NOT NULL DEFAULT ''
-				);
-				CREATE INDEX IF NOT EXISTS idx_generated_dataset_output_path
-				ON generated_dataset(output_path, updated_at_unix_ms DESC);
-			`,
-		},
-		{
 			ID: "0008_audit_state",
 			Up: `
 				CREATE TABLE IF NOT EXISTS audit_state (
@@ -340,19 +323,6 @@ func baseMigrations() []Migration {
 				ON diversion_rule_source(config_key, updated_at_unix_ms DESC);
 				CREATE INDEX IF NOT EXISTS idx_diversion_rule_source_enabled
 				ON diversion_rule_source(enabled, updated_at_unix_ms DESC);
-			`,
-		},
-		{
-			ID: "0012_generated_dataset_integrity",
-			Up: `
-				ALTER TABLE generated_dataset ADD COLUMN version INTEGER NOT NULL DEFAULT 1;
-				ALTER TABLE generated_dataset ADD COLUMN content_sha256 TEXT NOT NULL DEFAULT '';
-				ALTER TABLE generated_dataset ADD COLUMN last_verified_at_unix_ms INTEGER NOT NULL DEFAULT 0;
-				ALTER TABLE generated_dataset ADD COLUMN last_verified_status TEXT NOT NULL DEFAULT '';
-				ALTER TABLE generated_dataset ADD COLUMN last_verified_error TEXT NOT NULL DEFAULT '';
-				ALTER TABLE generated_dataset ADD COLUMN last_file_sha256 TEXT NOT NULL DEFAULT '';
-				CREATE INDEX IF NOT EXISTS idx_generated_dataset_sha
-				ON generated_dataset(content_sha256, updated_at_unix_ms DESC);
 			`,
 		},
 		{
@@ -443,6 +413,12 @@ func baseMigrations() []Migration {
 				ON domain_pool_variant(pool_tag, score DESC, total_count DESC, domain ASC, variant_key ASC);
 				CREATE INDEX IF NOT EXISTS idx_domain_pool_variant_seen
 				ON domain_pool_variant(pool_tag, last_seen_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0016_drop_generated_dataset",
+			Up: `
+				DROP TABLE IF EXISTS generated_dataset;
 			`,
 		},
 	}

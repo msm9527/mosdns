@@ -14,7 +14,8 @@
 | `cname` | `matcher` | `plugin/matcher/cname/cname_matcher.go` |
 | `debug_print` | `executable` | `plugin/executable/debug_print/print.go` |
 | `domain_mapper` | `data_provider` | `plugin/data_provider/domain_mapper/domain_mapper.go` |
-| `domain_output` | `executable` | `plugin/executable/domain_output/domain_output.go` |
+| `domain_memory_pool` | `executable` | `plugin/executable/domain_memory_pool/domain_memory_pool.go` |
+| `domain_stats_pool` | `executable` | `plugin/executable/domain_stats_pool/domain_stats_pool.go` |
 | `domain_set_light` | `data_provider` | `plugin/data_provider/domain_set_light/domain_set_light.go` |
 | `domain_set` | `data_provider` | `plugin/data_provider/domain_set/domain_set.go` |
 | `drop_resp` | `executable` | `plugin/executable/drop_resp/drop_resp.go` |

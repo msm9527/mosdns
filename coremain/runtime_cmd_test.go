@@ -3,7 +3,6 @@ package coremain
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -31,11 +30,6 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	})
 
 	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-
-	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
 	if err := RecordSystemEvent("control.test", "info", "hello", map[string]any{"ok": true}); err != nil {
 		t.Fatalf("RecordSystemEvent: %v", err)
 	}
@@ -65,33 +59,6 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	}
 	if health.StorageEngine != "sqlite" || len(health.Checks) == 0 {
 		t.Fatalf("unexpected health: %+v", health)
-	}
-
-	datasetsJSON, err := runtimeDatasetsJSON(dbPath)
-	if err != nil {
-		t.Fatalf("runtimeDatasetsJSON: %v", err)
-	}
-	var datasets []GeneratedDatasetEntry
-	if err := json.Unmarshal(datasetsJSON, &datasets); err != nil {
-		t.Fatalf("decode datasets: %v", err)
-	}
-	if len(datasets) != 1 || datasets[0].Key != target {
-		t.Fatalf("unexpected datasets: %+v", datasets)
-	}
-	if datasets[0].Version != 1 || datasets[0].ContentSHA256 == "" {
-		t.Fatalf("expected dataset integrity metadata: %+v", datasets)
-	}
-
-	verifyJSON, err := runtimeDatasetsVerifyJSON(dbPath)
-	if err != nil {
-		t.Fatalf("runtimeDatasetsVerifyJSON: %v", err)
-	}
-	var verifySummary GeneratedDatasetVerifySummary
-	if err := json.Unmarshal(verifyJSON, &verifySummary); err != nil {
-		t.Fatalf("decode verify summary: %v", err)
-	}
-	if verifySummary.Checked != 1 || verifySummary.Missing != 1 {
-		t.Fatalf("unexpected verify summary before export: %+v", verifySummary)
 	}
 
 	eventsJSON, err := runtimeEventsJSON(dbPath, 20)
@@ -172,97 +139,6 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	if len(checkpoints) != 1 || checkpoints[0].RunID != "run-1" {
 		t.Fatalf("unexpected checkpoints: %+v", checkpoints)
 	}
-
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Fatalf("expected target file to be absent before export, err=%v", err)
-	}
-	exported, err := ExportGeneratedDatasetsToFiles(dbPath)
-	if err != nil {
-		t.Fatalf("ExportGeneratedDatasetsToFiles: %v", err)
-	}
-	if exported != 1 {
-		t.Fatalf("unexpected exported count: %d", exported)
-	}
-	raw, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read exported file: %v", err)
-	}
-	if string(raw) != "full:example.com\n" {
-		t.Fatalf("unexpected exported content: %q", string(raw))
-	}
-}
-
-func TestParseExportedFilesOutput(t *testing.T) {
-	n, err := parseExportedFilesOutput("exported_files=3\n")
-	if err != nil {
-		t.Fatalf("parseExportedFilesOutput() error = %v", err)
-	}
-	if n != 3 {
-		t.Fatalf("unexpected parsed value: %d", n)
-	}
-	if _, err := parseExportedFilesOutput("bad"); err == nil {
-		t.Fatal("expected parse error")
-	}
-}
-
-func TestRuntimeCmdDatasetsExportOutput(t *testing.T) {
-	oldBaseDir := MainConfigBaseDir
-	MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		MainConfigBaseDir = oldBaseDir
-	})
-
-	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
-
-	cmd := newControlCmd()
-	buf := new(strings.Builder)
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"-d", MainConfigBaseDir, "datasets", "export"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("cmd.Execute() error = %v", err)
-	}
-	exported, err := parseExportedFilesOutput(buf.String())
-	if err != nil {
-		t.Fatalf("parseExportedFilesOutput() error = %v", err)
-	}
-	if exported != 1 {
-		t.Fatalf("unexpected exported count: %d output=%q", exported, buf.String())
-	}
-}
-
-func TestRuntimeCmdDatasetsVerifyOutput(t *testing.T) {
-	oldBaseDir := MainConfigBaseDir
-	MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		MainConfigBaseDir = oldBaseDir
-	})
-
-	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
-
-	cmd := newControlCmd()
-	buf := new(strings.Builder)
-	cmd.SetOut(buf)
-	cmd.SetErr(buf)
-	cmd.SetArgs([]string{"-d", MainConfigBaseDir, "datasets", "verify"})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("cmd.Execute() error = %v", err)
-	}
-	var summary GeneratedDatasetVerifySummary
-	if err := json.Unmarshal([]byte(buf.String()), &summary); err != nil {
-		t.Fatalf("decode verify output: %v output=%q", err, buf.String())
-	}
-	if summary.Checked != 1 || summary.Missing != 1 {
-		t.Fatalf("unexpected verify output: %+v", summary)
-	}
 }
 
 func TestRuntimeCmdHealthOutput(t *testing.T) {
@@ -271,12 +147,6 @@ func TestRuntimeCmdHealthOutput(t *testing.T) {
 	t.Cleanup(func() {
 		MainConfigBaseDir = oldBaseDir
 	})
-
-	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
 
 	cmd := newControlCmd()
 	buf := new(strings.Builder)

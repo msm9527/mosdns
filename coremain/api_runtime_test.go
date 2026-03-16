@@ -4,8 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -33,11 +31,6 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	t.Cleanup(func() {
 		MainConfigBaseDir = oldBaseDir
 	})
-
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetEntryToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
 
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": fakeUpstreamHealthProvider{}}))
@@ -71,11 +64,6 @@ func TestHandleRuntimeHealth(t *testing.T) {
 	t.Cleanup(func() {
 		MainConfigBaseDir = oldBaseDir
 	})
-
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetEntryToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
 
 	router := chi.NewRouter()
 	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": fakeUpstreamHealthProvider{}}))
@@ -117,67 +105,6 @@ func TestHandleControlUpstreamHealth(t *testing.T) {
 	}
 	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].UpstreamTag != "u1" {
 		t.Fatalf("unexpected upstream health payload: %+v", resp)
-	}
-}
-
-func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
-	oldBaseDir := MainConfigBaseDir
-	MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		MainConfigBaseDir = oldBaseDir
-	})
-
-	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetEntryToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n", target); err != nil {
-		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
-	}
-
-	router := chi.NewRouter()
-	RegisterRuntimeAPI(router, nil)
-
-	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/datasets", nil)
-	w := httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("unexpected dataset status: %d body=%s", w.Code, w.Body.String())
-	}
-	var datasets []GeneratedDatasetEntry
-	if err := json.Unmarshal(w.Body.Bytes(), &datasets); err != nil {
-		t.Fatalf("decode datasets: %v", err)
-	}
-	if len(datasets) != 1 || datasets[0].Key != target {
-		t.Fatalf("unexpected datasets: %+v", datasets)
-	}
-	if datasets[0].Version != 1 || datasets[0].ContentSHA256 == "" {
-		t.Fatalf("expected dataset integrity metadata: %+v", datasets)
-	}
-
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/control/datasets/verify", nil)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("unexpected verify status: %d body=%s", w.Code, w.Body.String())
-	}
-	var verifySummary GeneratedDatasetVerifySummary
-	if err := json.Unmarshal(w.Body.Bytes(), &verifySummary); err != nil {
-		t.Fatalf("decode verify summary: %v", err)
-	}
-	if verifySummary.Checked != 1 || verifySummary.Missing != 1 {
-		t.Fatalf("unexpected verify summary: %+v", verifySummary)
-	}
-
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/control/datasets/export", nil)
-	w = httptest.NewRecorder()
-	router.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("unexpected export status: %d body=%s", w.Code, w.Body.String())
-	}
-	raw, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatalf("read exported file: %v", err)
-	}
-	if string(raw) != "full:example.com\n" {
-		t.Fatalf("unexpected exported content: %q", string(raw))
 	}
 }
 
