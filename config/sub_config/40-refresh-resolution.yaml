@@ -1,0 +1,83 @@
+# 刷新链：基础解析动作
+#
+# 这是 requery 刷新专用的辅助链路。
+# 它与主链结构基本对应，但会尽量避免主链的一些缓存/记忆副作用，
+# 以便刷新任务得到更可控的结果。
+
+version: v2
+
+policies:
+  - name: sequence_local_refresh
+    type: sequence
+    args:
+      - exec: $domestic
+      - exec: cname_remover
+
+  - name: sequence_local_exit_refresh
+    type: sequence
+    args:
+      - exec: $domestic
+      - exec: cname_remover
+      - exec: exit
+
+  - name: sequence_google_refresh
+    type: sequence
+    args:
+      - exec: $foreign
+      - exec: cname_remover
+
+  - name: sequence_google_node_refresh
+    type: sequence
+    args:
+      - exec: ecs 2408:8888::8
+      - exec: $foreignecs
+      - exec: cname_remover
+
+  - name: sequence_local_fake_refresh
+    type: sequence
+    args:
+      - matches: fast_mark 10
+        exec: $sequence_local_refresh
+      - matches: '!fast_mark 10'
+        exec: $cnfake
+      - exec: ttl 5
+      - exec: exit
+
+  - name: sequence_local_fake_exit_refresh
+    type: sequence
+    args:
+      - matches: fast_mark 10
+        exec: exit
+      - exec: $cnfake
+      - exec: ttl 5
+      - exec: exit
+
+  - name: sequence_local_divert_refresh
+    type: sequence
+    args:
+      - matches: switch 'cn_answer_mode:realip'
+        exec: $sequence_local_exit_refresh
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_refresh
+
+  - name: sequence_fakeip_refresh
+    type: sequence
+    args:
+      - matches: fast_mark 9
+        exec:
+          - $sequence_google_refresh
+          - exit
+      - exec: $nocnfake
+      - exec: exit
+
+  - name: sequence_fakeip_addlist_refresh
+    type: sequence
+    args:
+      - matches: fast_mark 9
+        exec:
+          - $sequence_google_refresh
+          - exit
+      - exec: $nocnfake
+      - matches: '!fast_mark 12'
+        exec: $my_fakeiplist
+      - exec: exit

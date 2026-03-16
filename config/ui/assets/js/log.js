@@ -164,7 +164,6 @@ document.addEventListener('DOMContentLoaded', () => {
         listMgmtRewriteHint: document.getElementById('list-mgmt-rewrite-hint'),
 
         featureSwitchesModule: document.getElementById('feature-switches-module'),
-        coreModeSwitchGroup: document.getElementById('core-mode-switch-group'),
         secondarySwitchesContainer: document.getElementById('secondary-switches-container'),
         systemInfoContainer: document.getElementById('system-info-container'),
     };
@@ -174,7 +173,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // 轻量级请求器 + /metrics 简易缓存，减少同一时段的重复请求
     let __metricsInflight = null; let __metricsStamp = 0;
-    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (memoryEntries, retentionDays, maxDiskSizeMB) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memory_entries: parseInt(memoryEntries, 10), retention_days: parseInt(retentionDays, 10), max_disk_size_mb: parseInt(maxDiskSizeMB, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/api/v1/control/switches/core_mode', { signal }).then(response => response?.value || 'secure'), getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }), getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
+    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (memoryEntries, retentionDays, maxDiskSizeMB) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memory_entries: parseInt(memoryEntries, 10), retention_days: parseInt(retentionDays, 10), max_disk_size_mb: parseInt(maxDiskSizeMB, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }), getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
 
     const requeryApi = {
         getSummary: (signal) => api.fetch(`/api/v1/control/requery/summary`, { signal }),
@@ -207,18 +206,6 @@ document.addEventListener('DOMContentLoaded', () => {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
         }),
-    };
-
-    const coreApi = {
-        getMode: async () => {
-            try {
-                const response = await api.fetch('/api/v1/control/switches/core_mode');
-                return response?.value || 'secure';
-            } catch (e) {
-                console.error("无法获取核心模式状态:", e);
-                return 'secure';
-            }
-        }
     };
 
     const ui = {
@@ -800,13 +787,6 @@ document.addEventListener('DOMContentLoaded', () => {
         profiles: window.MOSDNS_SWITCH_PROFILES || [],
 
         init() {
-            elements.coreModeSwitchGroup.addEventListener('click', e => {
-                const btn = e.target.closest('button');
-                if (btn && !btn.classList.contains('active')) {
-                    this.handleCoreSwitch(btn);
-                }
-            });
-
             elements.secondarySwitchesContainer.addEventListener('change', e => {
                 const input = e.target.closest('input[type="checkbox"]');
                 if (input) {
@@ -831,13 +811,7 @@ document.addEventListener('DOMContentLoaded', () => {
         },
 
         render() {
-            const coreStatus = state.featureSwitches['core_mode'];
-            elements.coreModeSwitchGroup.querySelectorAll('button').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.mode === coreStatus);
-                btn.disabled = coreStatus === 'error';
-            });
-
-            const modeProfiles = this.profiles.filter(p => p.modes && p.tag !== 'core_mode');
+            const modeProfiles = this.profiles.filter(p => p.modes);
             const secondaryProfiles = this.profiles.filter(p => !p.modes);
             let html = '';
             modeProfiles.forEach(profile => {
@@ -913,29 +887,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 checkbox.addEventListener('change', () => this.handleSecondarySwitch(checkbox));
             });
             bindInfoIconTooltips();
-        },
-
-        async handleCoreSwitch(button) {
-            const tag = 'core_mode';
-            const valueToPost = button.dataset.mode;
-            ui.setLoading(button, true);
-            button.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-
-            try {
-                const result = await api.fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
-                state.featureSwitches[tag] = result.value;
-                this.render();
-                ui.showToast('核心模式已切换，即将开始快速预热缓存...', 'success');
-                await requeryManager.handleTrigger(null, 'quick_prewarm', true);
-
-            } catch (error) {
-                ui.showToast('切换核心模式失败!', 'error');
-                this.render();
-            } finally {
-                ui.setLoading(button, false);
-                button.parentElement.querySelectorAll('button').forEach(b => b.disabled = false);
-                this.render();
-            }
         },
 
         async handleSecondarySwitch(checkbox) {

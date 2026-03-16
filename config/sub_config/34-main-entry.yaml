@@ -1,0 +1,152 @@
+# 主入口序列
+#
+# 这一层只定义最上游入口：
+# - 统一前置检查
+# - 默认主入口 / requery 主入口
+# - 面向 stash / clash.meta / sing-box 的对外适配入口
+#
+# 更细的解析动作放在后续文件中，避免入口文件过长。
+
+version: v2
+
+policies:
+  # 所有主链路共享的前置检查：
+  # - 屏蔽特殊 query type
+  # - 屏蔽 AAAA
+  # - 统一打 fast_mark
+  # - 按主缓存开关选择全局缓存
+  - name: sequence_common_precheck
+    type: sequence
+    args:
+      - matches:
+          - qtype 6 12 65
+          - switch 'block_query_type:on'
+        exec: reject 0
+      - matches:
+          - qtype 28
+          - switch 'block_ipv6:on'
+        exec: reject 0
+      - exec: $unified_matcher1
+      - matches:
+          - fast_mark 1
+          - switch 'block_response:on'
+        exec: reject 3
+      - matches:
+          - fast_mark 2
+          - qtype 1
+          - switch 'block_response:on'
+        exec: reject 0
+      - matches:
+          - fast_mark 3
+          - qtype 28
+          - switch 'block_response:on'
+        exec: reject 0
+      - matches:
+          - fast_mark 5
+          - switch 'ad_block:on'
+        exec: reject 3
+      - matches: fast_mark 6
+        exec:
+          - $domestic
+          - exit
+      - matches:
+          - '!fast_mark 48'
+          - switch 'client_proxy_mode:whitelist'
+          - '!client_ip $client_ip'
+        exec: fast_mark 39
+      - matches:
+          - '!fast_mark 48'
+          - switch 'client_proxy_mode:blacklist'
+          - client_ip $client_ip
+        exec: fast_mark 39
+      - matches: fast_mark 39
+        exec:
+          - $sequence_local
+          - tag_setter 指定客户端直连
+          - exit
+      - matches:
+          - switch 'prefer_ipv4:on'
+          - switch 'prefer_ipv6:off'
+        exec: prefer_ipv4
+      - matches:
+          - switch 'prefer_ipv4:off'
+          - switch 'prefer_ipv6:on'
+        exec: prefer_ipv6
+      - matches: switch 'main_cache:on'
+        exec: $cache_all_noleak
+
+  # 默认 53 入口。
+  - name: sequence_6666
+    type: sequence
+    args:
+      - exec: $sequence_common_precheck
+      - exec: $top_domains
+      - exec: $rewrite
+      - matches: qtype 1
+        exec: $sequence_ipv4
+      - matches: qtype 28
+        exec: $sequence_ipv6
+      - matches: '!qtype 1 28'
+        exec: $sequence_other
+
+  # 供 requery 使用的主入口。
+  - name: sequence_requery
+    type: sequence
+    args:
+      - exec: $sequence_common_precheck
+      - exec: $rewrite
+      - matches: qtype 1
+        exec: $sequence_ipv4
+      - matches: qtype 28
+        exec: $sequence_ipv6
+      - matches: '!qtype 1 28'
+        exec: $sequence_other
+
+  # stash 对外模式。
+  - name: sequence_for_stash
+    type: sequence
+    args:
+      - exec: try $sequence_6666
+      - matches: resp_ip 30.0.0.0/8 2400::1/64
+        exec:
+          - $sequence_local
+          - tag_setter stash国内
+          - exit
+      - matches: resp_ip 28.0.0.0/8 f2b0::/18
+        exec:
+          - tag_setter stash国外
+          - exit
+      - exec: tag_setter stash国内
+
+  # clash.meta 对外模式。
+  - name: sequence_for_clashmi
+    type: sequence
+    args:
+      - exec: try $sequence_6666
+      - matches: resp_ip 28.0.0.0/8 f2b0::/18
+        exec:
+          - fast_mark 26
+          - tag_setter clashmi国外
+          - exit
+      - matches: '!resp_ip 0.0.0.0/0 2000::/3'
+        exec: exit
+      - matches: '!fast_mark 26'
+        exec:
+          - $sequence_local_fake
+          - tag_setter clashmi国内
+          - exit
+
+  # sing-box 对外模式。
+  - name: sequence_for_singbox
+    type: sequence
+    args:
+      - exec: try $sequence_6666
+      - matches: resp_ip 30.0.0.0/8 2400::1/64
+        exec:
+          - tag_setter sing-box国内
+          - exit
+      - matches: resp_ip 28.0.0.0/8 f2b0::/18
+        exec:
+          - tag_setter sing-box国外
+          - exit
+      - exec: tag_setter sing-box国内

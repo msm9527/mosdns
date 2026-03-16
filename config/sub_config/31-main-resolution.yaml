@@ -1,0 +1,99 @@
+# 主解析辅助链
+#
+# 这一层负责把“国内 / 国外 / fakeip”这些基础动作封装成可复用 sequence，
+# 供后面的 IPv4 / IPv6 主路由复用。
+
+version: v2
+
+policies:
+  # 国外普通链路。
+  - name: sequence_google_in
+    type: sequence
+    args:
+      - matches: switch 'branch_cache:on'
+        exec: $cache_google
+      - exec: $foreign
+      - exec: cname_remover
+
+  # 国外带 ECS 链路。
+  - name: sequence_google_node
+    type: sequence
+    args:
+      - exec: ecs 2408:8888::8
+      - exec: $cache_google_node
+      - exec: $foreignecs
+      - exec: cname_remover
+
+  # 国内真实解析链路。
+  - name: sequence_local
+    type: sequence
+    args:
+      - matches: switch 'branch_cache:on'
+        exec: $cache_cn
+      - exec: $domestic
+      - exec: cname_remover
+
+  # 国内 fakeip 链路。
+  - name: sequence_local_fake
+    type: sequence
+    args:
+      - matches: switch 'branch_cache:on'
+        exec: $cache_cnmihomo
+      - matches: fast_mark 10
+        exec: $sequence_local
+      - matches: '!fast_mark 10'
+        exec: $cnfake
+      - exec: ttl 5
+
+  # 国内 fakeip 后立即退出的版本。
+  - name: sequence_local_fake_exit
+    type: sequence
+    args:
+      - matches: fast_mark 10
+        exec: exit
+      - matches: switch 'branch_cache:on'
+        exec: $cache_cnmihomo
+      - exec: $cnfake
+      - exec: ttl 5
+
+  # 根据 cn_answer_mode 在 realip/fakeip 间切换。
+  - name: sequence_local_divert
+    type: sequence
+    args:
+      - matches: switch 'cn_answer_mode:realip'
+        exec: $sequence_local
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake
+
+  # 国外普通解析链路。
+  - name: sequence_google
+    type: sequence
+    args:
+      - matches: switch 'branch_cache:on'
+        exec: $cache_google
+      - exec: $foreign
+      - exec: cname_remover
+
+  # 直接进入 fakeip 池。
+  - name: sequence_fakeip
+    type: sequence
+    args:
+      - matches: fast_mark 9
+        exec:
+          - $sequence_google
+          - exit
+      - exec: $nocnfake
+      - exec: exit
+
+  # 进入 fakeip 池并按需补记忆列表。
+  - name: sequence_fakeip_addlist
+    type: sequence
+    args:
+      - matches: fast_mark 9
+        exec:
+          - $sequence_google
+          - exit
+      - exec: $nocnfake
+      - matches: '!fast_mark 12'
+        exec: $my_fakeiplist
+      - exec: exit

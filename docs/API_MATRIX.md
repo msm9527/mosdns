@@ -254,7 +254,6 @@
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/control/clientname` | `stable` | 获取客户端别名配置 |
 | `PUT` | `/api/v1/control/clientname` | `stable` | 更新客户端别名配置 |
-| `GET` | `/api/v1/control/switches/core_mode` | `stable` | 当前核心模式 |
 | `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
 
 说明：

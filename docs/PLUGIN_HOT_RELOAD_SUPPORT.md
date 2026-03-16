@@ -30,7 +30,7 @@
 ## 范围说明
 
 - “默认配置”指 `config/config.yaml` 及其 `include` 的 `config/sub_config/*.yaml`
-- `config/examples/*.yaml` 只算示例，不会被默认启动流程加载
+- 当前仓库不再保留 `config/examples/` 示例目录；热重载说明只针对默认主配置与实际加载链路。
 - 某些插件虽然不实现 `ControlConfigReloader`，但有自己的运行时 API，例如：
   - `switch`：通过 `/api/v1/control/switches/*` 即时修改状态
   - `requery`：通过 `/api/v1/control/requery/*` 即时触发、取消、改调度
@@ -58,7 +58,7 @@
 | `rewrite` | 是 | `plugin/executable/rewrite/rewrite.go` | `config/sub_config/rule_set.yaml` | 重写规则和上游 DNS 地址支持热重载 |
 | `sd_set_light` | 是 | `plugin/data_provider/sd_set_light/sd_set_light.go` | `config/sub_config/rule_set.yaml` | 规则源配置文件和 `socks5` 覆盖支持热重载 |
 | `si_set` | 是 | `plugin/data_provider/si_set/si_set.go` | `config/sub_config/rule_set.yaml` | 规则源配置文件和 `socks5` 覆盖支持热重载 |
-| `forward` | 否 | `plugin/executable/forward/forward.go` | `config/examples/forward_2.yaml` | 代码支持热重载，但当前默认配置没有启用，只在示例配置里出现 |
+| `forward` | 否 | `plugin/executable/forward/forward.go` | 无 | 代码支持热重载，但当前默认配置没有启用，仓库也不再附带示例配置 |
 
 ## 默认配置中使用但不支持 `ControlConfigReloader` 的插件
 

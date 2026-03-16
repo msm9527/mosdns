@@ -1,0 +1,38 @@
+# 运行态控制面定义
+#
+# 这个文件负责把“仍需要插件实例承载的控制面对象”注册出来：
+# - requery: 刷新任务配置与状态
+# - switches: 所有功能开关
+#
+# base_dir=state 表示这些运行态对象对外仍然使用 state/* 这套路径键。
+# 目前默认只有 requery 会落入 db/control.db。
+# 功能开关的长期真源已经迁到 custom_config/switches.yaml。
+# 客户端别名的长期真源已经迁到 custom_config/clientname.yaml。
+
+version: v2
+
+control:
+  # 所有控制面对象的逻辑根目录。
+  # 注意：这是运行态键空间，不是数据库目录。
+  base_dir: state
+
+  # requery 插件的运行态配置与任务状态。
+  requery:
+    - name: requery
+      file: webinfo/requeryconfig.json
+
+  # 这里只声明“有哪些开关需要注册成插件实例”。
+  # 实际取值不再来自 state_file，也不落库；
+  # 真正的持久化文件固定为 custom_config/switches.yaml。
+  switches:
+    - name: block_response
+    - name: client_proxy_mode
+    - name: branch_cache
+    - name: main_cache
+    - name: block_query_type
+    - name: block_ipv6
+    - name: ad_block
+    - name: cn_answer_mode
+    - name: prefer_ipv4
+    - name: prefer_ipv6
+    - name: udp_fast_path

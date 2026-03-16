@@ -1,0 +1,270 @@
+# 数据源与规则提供者
+#
+# 这一层只放“提供数据”的插件，不承担主流程编排：
+# - adguard 规则
+# - 动态生成/记忆类 domain_output
+# - 本地文件规则集
+# - SRS / JSON 远程规则源
+# - 统一命中标记器 unified_matcher1
+#
+# 主解析链会通过 fast_mark 和这些 provider 的 tag 来做后续分流。
+
+version: v2
+
+policies:
+  # 广告规则目录。
+  - name: adguard
+    type: adguard_rule
+    args:
+      dir: adguard/
+      socks5: 127.0.0.1:7891
+
+  # 热门域名统计。
+  # 注意：
+  # - `gen/top_domains.txt` 现在主要作为 generated dataset 的逻辑导出路径
+  # - 运行态真源在 control.db 的 generated_dataset 表
+  # - 只有显式执行 datasets export 时才需要真正落回文件
+  - name: top_domains
+    type: domain_output
+    args:
+      file_stat: gen/top_domains.txt
+      enable_flags: true
+      max_entries: 200000
+      dump_interval: 36000
+
+  # 记忆直连域名。
+  # `file_stat` / `file_rule` 仍保留为稳定键名与导出目标，
+  # 但运行过程中不再依赖自动写入 `gen/*.txt` 才能生效。
+  - name: my_realiplist
+    type: domain_output
+    args:
+      file_stat: gen/realiplist.txt
+      file_rule: gen/realiprule.txt
+      max_entries: 80000
+      dump_interval: 36005
+      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_realiprule
+
+  # 记忆代理域名。
+  - name: my_fakeiplist
+    type: domain_output
+    args:
+      file_stat: gen/fakeiplist.txt
+      file_rule: gen/fakeiprule.txt
+      max_entries: 80000
+      dump_interval: 36010
+      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_fakeiprule
+
+  # 记忆无 IPv6 域名。
+  - name: my_nov6list
+    type: domain_output
+    args:
+      file_stat: gen/nov6list.txt
+      file_rule: gen/nov6rule.txt
+      max_entries: 120000
+      dump_interval: 36040
+      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nov6rule
+
+  # 记忆无 IPv4 域名。
+  - name: my_nov4list
+    type: domain_output
+    args:
+      file_stat: gen/nov4list.txt
+      file_rule: gen/nov4rule.txt
+      max_entries: 80000
+      dump_interval: 36030
+      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nov4rule
+
+  # 节点模式下的无 IPv6 记忆域名。
+  - name: my_nodenov6list
+    type: domain_output
+    args:
+      file_stat: gen/nodenov6list.txt
+      file_rule: gen/nodenov6rule.txt
+      max_entries: 50000
+      dump_interval: 36060
+      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nodenov6rule
+
+  # 节点模式下的无 IPv4 记忆域名。
+  - name: my_nodenov4list
+    type: domain_output
+    args:
+      file_stat: gen/nodenov4list.txt
+      file_rule: gen/nodenov4rule.txt
+      max_entries: 50000
+      dump_interval: 36080
+      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nodenov4rule
+
+  # 强制直连 IP 段。
+  - name: direct_ip
+    type: ip_set
+    args:
+      files:
+        - rule/direct_ip.txt
+
+  # 响应重写规则。
+  - name: rewrite
+    type: rewrite
+    args:
+      files:
+        - rule/rewrite.txt
+      dns: 127.0.0.1:2222
+
+  # 订阅补充：代理补充规则。
+  - name: cusnocn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/cusnocn.json
+
+  # 订阅补充：直连补充规则。
+  - name: cuscn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/cuscn.json
+
+  # 记忆类规则文件。
+  # 这些 provider 在启动时会优先从 generated_dataset 恢复，
+  # 只有显式导出后才会重新依赖对应的 `gen/*.txt` 文件。
+  - name: my_realiprule
+    type: domain_set_light
+    args:
+      files:
+        - gen/realiprule.txt
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      files:
+        - gen/fakeiprule.txt
+  - name: my_nov6rule
+    type: domain_set_light
+    args:
+      files:
+        - gen/nov6rule.txt
+  - name: my_nov4rule
+    type: domain_set_light
+    args:
+      files:
+        - gen/nov4rule.txt
+
+  # 节点模式记忆规则文件。
+  - name: my_nodenov6rule
+    type: domain_set
+    args:
+      files:
+        - gen/nodenov6rule.txt
+  - name: my_nodenov4rule
+    type: domain_set
+    args:
+      files:
+        - gen/nodenov4rule.txt
+
+  # 规则源：国内域名集、国内 IP 集、国外域名集。
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/geositecn.json
+  - name: geoip_cn
+    type: si_set
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/geoipcn.json
+  - name: geosite_no_cn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/geositenocn.json
+
+  # 客户端 IP 白黑名单。
+  - name: client_ip
+    type: ip_set
+    args:
+      files:
+        - rule/client_ip.txt
+
+  # 静态规则集。
+  - name: whitelist
+    type: domain_set_light
+    args:
+      files:
+        - rule/whitelist.txt
+  - name: cnfakeipfilter
+    type: domain_set_light
+    args:
+      files:
+        - rule/cnfakeipfilter.txt
+  - name: blocklist
+    type: domain_set_light
+    args:
+      files:
+        - rule/blocklist.txt
+  - name: realiplist
+    type: domain_set_light
+    args:
+      files:
+        - rule/realiplist.txt
+  - name: greylist
+    type: domain_set_light
+    args:
+      files:
+        - rule/greylist.txt
+  - name: ddnslist
+    type: domain_set_light
+    args:
+      files:
+        - rule/ddnslist.txt
+
+  # 统一命中标记器。
+  # 所有基础规则先在这里收敛为 fast_mark，后续 sequence 再按 fast_mark 走分支。
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: blocklist
+          mark: 1
+          output_tag: 黑名单
+        - tag: my_nov4rule
+          mark: 2
+          output_tag: 记忆无V4
+        - tag: my_nov6rule
+          mark: 3
+          output_tag: 记忆无V6
+        - tag: adguard
+          mark: 5
+          output_tag: 广告屏蔽
+        - tag: ddnslist
+          mark: 6
+          output_tag: DDNS域名
+        - tag: greylist
+          mark: 7
+          output_tag: 灰名单
+        - tag: whitelist
+          mark: 8
+          output_tag: 白名单
+        - tag: realiplist
+          mark: 9
+          output_tag: '!CN fakeip filter'
+        - tag: cnfakeipfilter
+          mark: 10
+          output_tag: CN fakeip filter
+        - tag: my_realiprule
+          mark: 11
+          output_tag: 记忆直连
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+        - tag: cuscn
+          mark: 13
+          output_tag: 订阅直连补充
+        - tag: geosite_no_cn
+          mark: 14
+          output_tag: 订阅代理
+        - tag: cusnocn
+          mark: 15
+          output_tag: 订阅代理补充
+        - tag: geosite_cn
+          mark: 16
+          output_tag: 订阅直连

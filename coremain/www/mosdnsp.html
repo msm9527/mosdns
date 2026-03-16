@@ -991,7 +991,6 @@
         let autoRefreshTimer = null; 
         let isRefreshing = false; 
         let currentTheme = 'light';
-        let coreMode = 'secure';
         let isMgmtTabInitialized = { config: false, list: false };
 
         let currentModalData = { type: null, rawEntries: [], filteredEntries: [], totalCount: 0, loadTime: 0 };
@@ -1050,10 +1049,10 @@
         };
         
         const cacheConfig = {
-            'cache_all': { default: 'cache_all', modeB: 'cache_all_noleak', title: '全部缓存', titleModeB: '全部缓存 (安全模式)' },
-            'cache_cn': { default: 'cache_cn', modeB: 'cache_cn', title: '国内缓存' },
-            'cache_google': { default: 'cache_google', modeB: 'cache_google_node', title: '国外缓存', titleModeB: '国外缓存 (安全模式)', tooltip: '兼容模式无数据属正常现象，此缓存仅在列表外域名（解析过1次即自动生成规则成为列表内域名）国内dns无ipv4解析结果时才会生效或命中。' },
-            'cache_node': { default: 'cache_node', modeB: 'cache_node', title: '节点缓存' }
+            'cache_all': { tag: 'cache_all_noleak', title: '全部缓存' },
+            'cache_cn': { tag: 'cache_cn', title: '国内缓存' },
+            'cache_google': { tag: 'cache_google_node', title: '国外缓存', tooltip: '该缓存用于当前无泄漏主线路径下的国外查询结果。' },
+            'cache_node': { tag: 'cache_node', title: '节点缓存' }
         };
         const cacheOrder = ['cache_all', 'cache_cn', 'cache_google', 'cache_node']; 
         let visibleCards = JSON.parse(localStorage.getItem('visibleMosdnsCards')) || cacheOrder;
@@ -1194,7 +1193,7 @@
                 });
                 const cachePromise = Promise.all(cacheOrder.map(async key => {
                     const config = cacheConfig[key];
-                    const effectiveTag = coreMode === 'secure' ? config.modeB : config.default;
+                    const effectiveTag = config.tag;
                     try {
                         const response = await fetch(`/api/v1/cache/${effectiveTag}/stats`);
                         if (!response.ok) throw new Error(`HTTP ${response.status}`);
@@ -1249,7 +1248,6 @@
         }
         
         async function refreshData(forceRebuild = false, updateCharts = false) {
-            await updateCoreModeStatus();
             const data = await fetchData();
             if (data && data.error) { getById('main-content').innerHTML = `<div class="error-message"><i class="fas fa-exclamation-triangle"></i><p>无法连接到 MosDNS API。</p><small>${data.error}</small></div>`; if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; getById('auto-refresh-toggle').checked = false; localStorage.setItem('autoRefresh', 'false'); } return; }
             if (!data) return;
@@ -1259,7 +1257,7 @@
             cacheOrder.forEach(key => {
                 let card = D.querySelector(`.card[data-tag="${key}"]`);
                 const config = cacheConfig[key];
-                let title = coreMode === 'secure' ? (config.titleModeB || config.title) : config.title;
+                let title = config.title;
                 const shouldBeVisible = visibleCards.includes(key);
 
                 let titleHTML = `<span>${title}</span>`;
@@ -1339,13 +1337,6 @@
             getById('error-modal').classList.add('visible');
         }
         function hideErrorModal() { getById('error-modal').classList.remove('visible'); }
-        async function updateCoreModeStatus() {
-            try {
-                const response = await fetch('/api/v1/control/switches/core_mode');
-                if (response.ok) { const payload = await response.json(); coreMode = payload?.value || 'secure'; }
-            } catch (e) { console.error("无法获取核心模式状态:", e); }
-        }
-        
         async function postApi(path, payload, method = 'POST') {
             const response = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `请求失败，状态码: ${response.status}`); }
@@ -1391,7 +1382,6 @@
             container.innerHTML = '<div id="loading-spinner" style="display: block; margin: 2rem auto;"></div>';
             isMgmtTabInitialized.config = false;
             try {
-                await updateCoreModeStatus();
                 const response = await fetch('/api/v1/control/switches');
                 if (!response.ok) throw new Error(`HTTP ${response.status}`);
                 const list = await response.json();
@@ -1477,26 +1467,10 @@
                     if (!res.ok) throw new Error(await res.text());
                     return res.json();
                 });
-                if (tag === 'core_mode') {
-                    coreMode = result.value;
-                    try {
-                        const requests = ruleListPaths.map(tag => fetch(`/api/v1/memory/${tag}/flush`, { method: 'POST' }));
-                        await Promise.all(requests.map(async p => {
-                            const res = await p;
-                            if (!res.ok) throw new Error(`清空规则失败于: ${res.url} (${res.status})`);
-                        }));
-                        showToast('核心模式切换成功，已自动清空分流规则。');
-                    } catch(flushError) {
-                        console.error("自动清空分流规则失败:", flushError);
-                        showToast(`核心模式已切换，但自动清空分流规则失败。`, 'error');
-                    }
-                } else {
-                    showToast(`“${switchProfiles.find(p => p.tag === tag)?.name || tag}” 已切换。`);
-                }
-
+                showToast(`“${switchProfiles.find(p => p.tag === tag)?.name || tag}” 已切换。`);
                 await refreshData(true, true);
             } catch (error) {
-                showToast(`切换核心模式失败！`, 'error');
+                showToast(`切换开关失败！`, 'error');
                 showErrorModal(error.message);
             } finally {
                 await initializeSwitchManagementTab();
@@ -1930,10 +1904,10 @@
             };
             getById('save-rules-btn').addEventListener('click', () => { if (confirm('确定保存所有分流规则吗?')) { saveAllRulesAndNotify(); } });
             createApiAction('flush-rules-btn', ruleListPaths, '【危险操作】确定清空所有分流规则吗?', '分流规则已清空。');
-            getById('flush-cache-btn').addEventListener('click', async () => { if (!confirm('确定清空全部缓存吗? 此操作将根据当前核心运行模式清空对应的缓存。')) { return; } const cacheToFlush = coreMode === 'secure' ? 'cache_all_noleak' : 'cache_all'; const path = `/api/v1/cache/${cacheToFlush}/flush`; try { const response = await fetch(path, { method: 'POST' }); if (!response.ok) { const errorText = await response.text(); throw new Error(`清空缓存失败于 ${path}: ${errorText || response.statusText}`); } showToast('全部缓存已清空，正在刷新数据...', 'success'); await refreshData(false, true); } catch (e) { showToast('清空缓存操作失败！', 'error'); showErrorModal(e.message); } });
+            getById('flush-cache-btn').addEventListener('click', async () => { if (!confirm('确定清空当前主缓存吗?')) { return; } const path = '/api/v1/cache/cache_all_noleak/flush'; try { const response = await fetch(path, { method: 'POST' }); if (!response.ok) { const errorText = await response.text(); throw new Error(`清空缓存失败于 ${path}: ${errorText || response.statusText}`); } showToast('主缓存已清空，正在刷新数据...', 'success'); await refreshData(false, true); } catch (e) { showToast('清空缓存操作失败！', 'error'); showErrorModal(e.message); } });
             getById('restart-mosdns-btn').onclick = async () => { if (confirm('【危险操作】此操作将首先保存所有分流规则，然后重启 MosDNS。确定要继续吗?')) { const saveSuccess = await saveAllRulesAndNotify(); if (saveSuccess) { showToast('规则已保存，正在发送重启命令...', 'success'); try { const response = await fetch('/api/v1/system/restart', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ delay_ms: 500 }) }); if (!response.ok) { const errorText = await response.text(); throw new Error(errorText || `重启命令请求失败，状态码: ${response.status}`); } showToast('MosDNS 正在重启，页面即将刷新...'); setTimeout(() => location.reload(), 2000); } catch (e) { showToast('重启命令发送失败', 'error'); showErrorModal(e.message); } } else { showToast('由于规则保存失败，重启操作已取消。', 'error'); } } };getById('dns-log-page-btn').onclick = () => { const url = `http://${window.location.hostname}:${window.location.port}/log`; window.open(url, '_blank'); };
             
-            const showEndpoints = { '请求排行': 'top_domains','fakeip 域名': 'my_fakeiplist', 'realip 域名': 'my_realiplist', '无 V4 域名': 'my_nov4list', '无 V6 域名': 'my_nov6list', '全部缓存（兼容）': 'cache_all', '全部缓存（安全）': 'cache_all_noleak','国内缓存': 'cache_cn', '国外缓存（兼容）': 'cache_google', '国外缓存（安全）': 'cache_google_node','节点缓存': 'cache_node' };
+            const showEndpoints = { '请求排行': 'top_domains','fakeip 域名': 'my_fakeiplist', 'realip 域名': 'my_realiplist', '无 V4 域名': 'my_nov4list', '无 V6 域名': 'my_nov6list', '主缓存': 'cache_all_noleak','国内缓存': 'cache_cn', '国外缓存': 'cache_google_node','节点缓存': 'cache_node' };
             const dvContainer = getById('data-view-buttons'); dvContainer.innerHTML = ''; 
             Object.entries(showEndpoints).forEach(([name, path]) => { const btn = createElement('button', 'btn'); btn.textContent = name; btn.onclick = () => { if (path.startsWith('cache_')) { displayCacheDataInModal(`/api/v1/cache/${path}/entries`, name); } else { displayDataInModal(`/api/v1/memory/${path}/entries`, name); } }; dvContainer.appendChild(btn); });
             

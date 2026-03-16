@@ -1,15 +1,6 @@
 (function () {
   const profiles = [
     {
-      tag: 'core_mode',
-      name: '核心运行模式',
-      tip: '切换后会触发一次刷新任务。compat=兼容模式，secure=安全模式。',
-      modes: {
-        compat: { name: '兼容模式', icon: 'fa-globe-americas' },
-        secure: { name: '安全模式', icon: 'fa-shield-alt' },
-      },
-    },
-    {
       tag: 'block_response',
       name: '结果屏蔽',
       desc: '拦截黑名单和无结果请求',
@@ -106,7 +97,6 @@
   const icons = {
     block_response: 'fa-ban',
     client_proxy_mode: 'fa-user-cog',
-    core_mode: 'fa-globe-americas',
     branch_cache: 'fa-history',
     block_query_type: 'fa-ban',
     block_ipv6: 'fa-ban',

@@ -597,7 +597,7 @@
 
 ```json
 [
-  { "name": "core_mode", "value": "secure" },
+  { "name": "branch_cache", "value": "on" },
   { "name": "client_proxy_mode", "value": "all" }
 ]
 ```
@@ -612,7 +612,6 @@
 
 当前具名开关包括：
 
-- `core_mode`
 - `client_proxy_mode`
 - `block_response`
 - `block_query_type`
@@ -629,7 +628,7 @@
 
 ```json
 [
-  { "name": "core_mode", "value": "secure" },
+  { "name": "branch_cache", "value": "on" },
   { "name": "client_proxy_mode", "value": "all" }
 ]
 ```
@@ -1196,6 +1195,7 @@
 
 - 旧的 `/plugins/clientname` 已移除
 - 旧的 `/plugins/reverse_lookup` 已移除
+- `clientname` 现在直接读写 `config/custom_config/clientname.yaml`
 
 ## 5. 当前前端重点依赖的接口
 

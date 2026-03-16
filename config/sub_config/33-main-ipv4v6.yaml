@@ -1,0 +1,185 @@
+# 主路由：IPv4 / IPv6 核心分流
+#
+# 这一层是真正决定 A / AAAA 请求最终去向的核心逻辑：
+# - 已命中规则时直接走既定链路
+# - 未命中时接入 32-main-not-in-list.yaml 的补判逻辑
+# - 节点模式用 sbnodefallback 和 sequence_sbnode 处理
+
+version: v2
+
+policies:
+  # IPv4：规则命中的快速分流。
+  - name: sequence_ipv4_known_domain
+    type: sequence
+    args:
+      - matches: fast_mark 7
+        exec: $sequence_fakeip
+      - matches: fast_mark 8
+        exec: $sequence_local
+      - matches:
+          - fast_mark 8
+          - rcode 0 3
+          - '!resp_ip 0.0.0.0/0'
+        exec: $my_nov4list
+      - matches:
+          - fast_mark 8
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit
+      - matches: fast_mark 8
+        exec: exit
+      - matches: fast_mark 11
+        exec: $sequence_local_divert
+      - matches: fast_mark 11
+        exec: exit
+      - matches: fast_mark 12
+        exec: $sequence_fakeip
+      - matches: fast_mark 13
+        exec: $sequence_local
+      - matches:
+          - fast_mark 14
+          - '!fast_mark 13'
+        exec: $sequence_fakeip_addlist
+      - matches: fast_mark 15
+        exec: $sequence_fakeip_addlist
+      - matches: fast_mark 16
+        exec: $sequence_local
+
+  - name: sequence_ipv4_realip_finalize
+    type: sequence
+    args:
+      - matches: '!fast_mark 11'
+        exec: $my_realiplist
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit
+      - exec: exit
+
+  - name: sequence_ipv4
+    type: sequence
+    args:
+      - exec: $sequence_ipv4_known_domain
+      - matches: resp_ip $direct_ip
+        exec: fast_mark 18
+      - matches: fast_mark 18
+        exec: $sequence_ipv4_realip_finalize
+      - matches:
+          - resp_ip 0.0.0.0/0
+          - '!resp_ip 0.0.0.0 127.0.0.1 127.0.0.2 127.0.0.3'
+        exec: fast_mark 19
+      - matches: fast_mark 19
+        exec: $sequence_ipv4_realip_finalize
+      - exec: $sequence_not_in_list_noleak_v4
+
+  # IPv6：规则命中的快速分流。
+  - name: sequence_ipv6_known_domain
+    type: sequence
+    args:
+      - matches: fast_mark 7
+        exec: $sequence_fakeip
+      - matches: fast_mark 8
+        exec: $sequence_local
+      - matches:
+          - fast_mark 8
+          - rcode 0 3
+          - '!resp_ip 2000::/3'
+        exec: $my_nov6list
+      - matches:
+          - fast_mark 8
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit
+      - matches: fast_mark 8
+        exec: exit
+      - matches: fast_mark 11
+        exec: $sequence_local_divert
+      - matches: fast_mark 11
+        exec: exit
+      - matches: fast_mark 12
+        exec: $sequence_fakeip
+      - matches: fast_mark 13
+        exec: $sequence_local
+      - matches:
+          - fast_mark 14
+          - '!fast_mark 13'
+        exec: $sequence_fakeip_addlist
+      - matches: fast_mark 15
+        exec: $sequence_fakeip_addlist
+      - matches: fast_mark 16
+        exec: $sequence_local
+
+  - name: sequence_ipv6_realip_finalize
+    type: sequence
+    args:
+      - matches: '!fast_mark 11'
+        exec: $my_realiplist
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit
+      - exec: exit
+
+  - name: sequence_ipv6
+    type: sequence
+    args:
+      - exec: $sequence_ipv6_known_domain
+      - matches: resp_ip $direct_ip
+        exec: fast_mark 18
+      - matches: fast_mark 18
+        exec: $sequence_ipv6_realip_finalize
+      - matches:
+          - rcode 0 3
+          - '!resp_ip 2000::/3'
+          - '!resp_ip ::1 ::2 ::3'
+        exec: fast_mark 20
+      - matches: fast_mark 20
+        exec: $my_nov6list
+      - matches:
+          - resp_ip 2000::/3
+          - '!resp_ip ::1 ::2 ::3'
+        exec: fast_mark 21
+      - matches: fast_mark 20
+        exec:
+          - drop_resp
+          - reject 0
+      - matches: fast_mark 20
+        exec: exit
+      - matches:
+          - fast_mark 21
+          - '!fast_mark 17'
+        exec: $sequence_ipv6_realip_finalize
+      - exec: $sequence_not_in_list_noleak_v6
+
+  # 节点模式的回退器：
+  # - 优先走国外带 ECS 的链路
+  # - 失败后退到本地链路
+  - name: sbnodefallback
+    type: fallback
+    args:
+      primary: sequence_google_node
+      secondary: sequence_local
+      threshold: 5
+      always_standby: false
+
+  # 给 sing-box / 节点探测用的专用入口。
+  - name: sequence_sbnode
+    type: sequence
+    args:
+      - matches:
+          - qtype 1
+          - qname $my_nodenov4rule
+        exec: reject 0
+      - matches:
+          - qtype 28
+          - qname $my_nodenov6rule
+        exec: reject 0
+      - exec: $cache_node
+      - exec: sleep 1000
+      - exec: $sbnodefallback
+      - matches:
+          - qtype 1
+          - rcode 0 2 3 5
+          - '!resp_ip 0.0.0.0/0'
+          - '!cname keyword:.'
+        exec: $my_nodenov4list
+      - matches:
+          - qtype 28
+          - rcode 0 2 3 5
+          - '!resp_ip 2000::/3'
+          - '!cname keyword:.'
+        exec: $my_nodenov6list

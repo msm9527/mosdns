@@ -1,0 +1,144 @@
+# 主路由：未命中列表后的补判逻辑
+#
+# 当域名没有被 whitelist / blocklist / geosite 等规则直接判定时，
+# 会进入这里做“根据返回 IP 再次判断”的二次分流。
+#
+# 这部分逻辑决定：
+# - 是不是直连 IP
+# - 是不是需要补记忆名单
+# - 在当前唯一的无泄漏回退链里怎样继续分流
+
+version: v2
+
+policies:
+  - name: sequence_not_in_list_direct_finalize
+    type: sequence
+    args:
+      - exec: $my_realiplist
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake
+      - exec: exit
+
+  - name: sequence_not_in_list_cn_finalize
+    type: sequence
+    args:
+      - exec: $my_realiplist
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake
+
+  - name: sequence_not_in_list_ipmatch
+    type: sequence
+    args:
+      - matches: resp_ip $direct_ip
+        exec: fast_mark 24
+      - matches: fast_mark 24
+        exec: $sequence_not_in_list_direct_finalize
+      - matches: '!resp_ip $geoip_cn'
+        exec: fast_mark 25
+      - matches: fast_mark 25
+        exec: $sequence_fakeip_addlist
+      - matches: '!fast_mark 25'
+        exec: $sequence_not_in_list_cn_finalize
+
+  - name: sequence_not_in_list_leak_v4
+    type: sequence
+    args:
+      - exec: $sequence_local
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: fast_mark 22
+      - matches: resp_ip 127.0.0.1 0.0.0.0
+        exec: fast_mark 22
+      - matches: fast_mark 22
+        exec: $sequence_google
+      - matches:
+          - rcode 0 3
+          - '!resp_ip 0.0.0.0/0'
+        exec: $my_nov4list
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: exit
+      - matches: resp_ip 127.0.0.1 0.0.0.0
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch
+
+  - name: sequence_not_in_list_leak_v6
+    type: sequence
+    args:
+      - exec: $sequence_local
+      - matches:
+          - rcode 0 3
+          - '!resp_ip 2000::/3'
+          - '!resp_ip ::1'
+        exec: $my_nov6list
+      - matches:
+          - rcode 0 2 3 5
+          - '!resp_ip 2000::/3'
+          - '!resp_ip ::1'
+        exec: fast_mark 23
+      - matches: fast_mark 23
+        exec:
+          - drop_resp
+          - reject 0
+      - matches: fast_mark 23
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch
+
+  - name: sequence_not_in_list_noleak_v4
+    type: sequence
+    args:
+      - exec: $sequence_google_node
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: $sequence_google
+      - matches: rcode 3
+        exec:
+          - $my_nov4list
+          - exit
+      - matches: rcode 2 5
+        exec: $sequence_local
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: fast_mark 27
+      - matches:
+          - rcode 0 3
+          - fast_mark 27
+        exec: $my_nov4list
+      - matches: rcode 2 3 5
+        exec: exit
+      - matches: fast_mark 27
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch
+
+  - name: sequence_not_in_list_noleak_v6
+    type: sequence
+    args:
+      - exec: $sequence_google_node
+      - matches: '!resp_ip 2000::/3'
+        exec: $sequence_google
+      - matches: rcode 3
+        exec:
+          - $my_nov6list
+          - exit
+      - matches: rcode 2 5
+        exec: $sequence_local
+      - matches: '!resp_ip 2000::/3'
+        exec: fast_mark 28
+      - matches:
+          - rcode 0 3
+          - fast_mark 28
+        exec: $my_nov6list
+      - matches: rcode 2 3 5
+        exec: exit
+      - matches: fast_mark 28
+        exec:
+          - drop_resp
+          - reject 0
+      - matches: fast_mark 28
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch
+
+  # 非 A / AAAA 查询的兜底分流。
+  - name: sequence_other
+    type: sequence
+    args:
+      - matches: fast_mark 16
+        exec: $sequence_local
+      - matches: '!fast_mark 16'
+        exec: $sequence_google
