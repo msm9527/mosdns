@@ -2,7 +2,7 @@
 #
 # 这一层只放“提供数据”的插件，不承担主流程编排：
 # - adguard 规则
-# - 动态生成/记忆类 domain_output
+# - 动态生成/记忆类 domain_memory_pool / domain_stats_pool
 # - 本地文件规则集
 # - SRS / JSON 远程规则源
 # - 统一命中标记器 unified_matcher1
@@ -21,68 +21,46 @@ policies:
 
   # 热门域名统计。
   # 说明：
-  # - 统计结果只保存在 control.db 的 generated_dataset 表中
-  # - 不再自动写入 gen/top_domains.txt 这类文件
-  # - `persist_interval` 控制刷盘周期（秒）
-  # - `max_entries` 控制最多保留多少个域名统计项，超出后新项会被丢弃
+  # - 统计累计写入 db/control.db 的 domain_pool_* 表
+  # - 长期策略在 config/custom_config/memory_pools.yaml 中维护
+  # - 这里只保留插件拓扑，不再重复写 max_entries / persist_interval 这类参数
   - name: top_domains
-    type: domain_output
-    args:
-      enable_flags: true
-      max_entries: 200000
-      persist_interval: 36000
+    type: domain_stats_pool
+    args: {}
 
   # 记忆直连域名。
   # 说明：
-  # - domain_output 会把统计与生成规则都写入 control.db
-  # - `publish_to` 直接指向下游 provider tag，运行时通过内部插件调用热更新
-  # - 不再通过 loopback HTTP 调 `/api/v1/lists/...`
+  # - 运行态累计、候选规则与脏状态写入 db/control.db 的 domain_pool_* 表
+  # - 策略参数统一在 config/custom_config/memory_pools.yaml 中维护
+  # - 下游 provider 通过 generated_from 直接订阅源插件，不走 loopback HTTP
   - name: my_realiplist
-    type: domain_output
-    args:
-      publish_to: my_realiprule
-      max_entries: 80000
-      persist_interval: 36005
+    type: domain_memory_pool
+    args: {}
 
   # 记忆代理域名。
   - name: my_fakeiplist
-    type: domain_output
-    args:
-      publish_to: my_fakeiprule
-      max_entries: 80000
-      persist_interval: 36010
+    type: domain_memory_pool
+    args: {}
 
   # 记忆无 IPv6 域名。
   - name: my_nov6list
-    type: domain_output
-    args:
-      publish_to: my_nov6rule
-      max_entries: 120000
-      persist_interval: 36040
+    type: domain_memory_pool
+    args: {}
 
   # 记忆无 IPv4 域名。
   - name: my_nov4list
-    type: domain_output
-    args:
-      publish_to: my_nov4rule
-      max_entries: 80000
-      persist_interval: 36030
+    type: domain_memory_pool
+    args: {}
 
   # 节点模式下的无 IPv6 记忆域名。
   - name: my_nodenov6list
-    type: domain_output
-    args:
-      publish_to: my_nodenov6rule
-      max_entries: 50000
-      persist_interval: 36060
+    type: domain_memory_pool
+    args: {}
 
   # 节点模式下的无 IPv4 记忆域名。
   - name: my_nodenov4list
-    type: domain_output
-    args:
-      publish_to: my_nodenov4rule
-      max_entries: 50000
-      persist_interval: 36080
+    type: domain_memory_pool
+    args: {}
 
   # 强制直连 IP 段。
   - name: direct_ip
@@ -115,8 +93,8 @@ policies:
 
   # 记忆类规则 provider。
   # 说明：
-  # - `generated_from` 表示直接从对应的 domain_output 规则数据集读取
-  # - 热更新时也直接回写数据库，不再走 `gen/*.txt`
+  # - `generated_from` 表示直接订阅对应 memory pool 插件的规则导出接口
+  # - 不再把 generated_dataset 当成主读取路径
   - name: my_realiprule
     type: domain_set_light
     args:

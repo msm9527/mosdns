@@ -63,13 +63,15 @@ type DomainSet struct {
 	mixM   *domain.MixMatcher[struct{}]
 	otherM []domain.Matcher[struct{}]
 
-	ruleFile      string
-	generatedFrom string
-	rules         []string
+	ruleFile          string
+	generatedFrom     string
+	generatedExporter data_provider.RuleExporter
+	rules             []string
 
 	// 新增：订阅者列表
-	subscribers []func()
-	fileStates  map[string]watchedFileState
+	subscribers            []func()
+	fileStates             map[string]watchedFileState
+	generatedSubscriptions map[string]struct{}
 }
 
 var _ coremain.ControlConfigReloader = (*DomainSet)(nil)
@@ -105,20 +107,22 @@ func (d *DomainSet) notifySubscribers() {
 
 // initAndLoadRules is a new internal function for loading rules within this plugin.
 // It populates the matcher and returns the list of rule strings.
-func (d *DomainSet) initAndLoadRules(exps, files []string, generatedFrom string) ([]string, error) {
+func (d *DomainSet) initAndLoadRules(exps, files []string, generatedFrom string) ([]string, data_provider.RuleExporter, error) {
 	allRules := make([]string, 0, len(exps)+len(files)*100)
 
 	// Load from expressions
 	if err := LoadExps(exps, d.mixM); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	allRules = append(allRules, exps...)
 
+	var exporter data_provider.RuleExporter
 	if generatedFrom != "" {
-		rules, err := d.loadGeneratedRuntimeRules(generatedFrom)
+		resolvedExporter, rules, err := d.loadGeneratedRules(generatedFrom)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		exporter = resolvedExporter
 		allRules = append(allRules, rules...)
 	}
 
@@ -127,12 +131,12 @@ func (d *DomainSet) initAndLoadRules(exps, files []string, generatedFrom string)
 		// Use a new internal loading function for files
 		rules, err := d.loadFileInternal(f)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load file %d %s: %w", i, f, err)
+			return nil, nil, fmt.Errorf("failed to load file %d %s: %w", i, f, err)
 		}
 		allRules = append(allRules, rules...)
 	}
 
-	return allRules, nil
+	return allRules, exporter, nil
 }
 
 // loadFileInternal is the new internal version of LoadFile.
@@ -210,14 +214,15 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		baseArgs = cloneArgs(rawArgs)
 	}
 	ds := &DomainSet{
-		bp:          bp,
-		pluginTag:   bp.Tag(),
-		baseArgs:    baseArgs,
-		curArgs:     cloneArgs(cfg),
-		mixM:        domain.NewDomainMixMatcher(),
-		otherM:      make([]domain.Matcher[struct{}], 0, len(cfg.Sets)),
-		subscribers: make([]func(), 0), // 初始化订阅者列表
-		fileStates:  make(map[string]watchedFileState),
+		bp:                     bp,
+		pluginTag:              bp.Tag(),
+		baseArgs:               baseArgs,
+		curArgs:                cloneArgs(cfg),
+		mixM:                   domain.NewDomainMixMatcher(),
+		otherM:                 make([]domain.Matcher[struct{}], 0, len(cfg.Sets)),
+		subscribers:            make([]func(), 0), // 初始化订阅者列表
+		fileStates:             make(map[string]watchedFileState),
+		generatedSubscriptions: make(map[string]struct{}),
 	}
 
 	if len(cfg.Files) > 0 {
@@ -226,10 +231,11 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	ds.generatedFrom = strings.TrimSpace(cfg.GeneratedFrom)
 
 	// Use the new internal loading function to avoid changing public API.
-	loadedRules, err := ds.initAndLoadRules(cfg.Exps, cfg.Files, cfg.GeneratedFrom)
+	loadedRules, exporter, err := ds.initAndLoadRules(cfg.Exps, cfg.Files, cfg.GeneratedFrom)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
+	ds.generatedExporter = exporter
 	ds.rules = loadedRules
 	ds.updateWatchedFilesLocked(cfg.Files)
 	coremain.ManualGC()
@@ -242,6 +248,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		ds.otherM = append(ds.otherM, provider.GetDomainMatcher())
 	}
 
+	ds.subscribeGeneratedSource(cfg.GeneratedFrom, exporter)
 	ds.startFileWatcher()
 	return ds, nil
 }
@@ -287,8 +294,8 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 	}
 
 	tmpMatcher := domain.NewDomainMixMatcher()
-	tmp := &DomainSet{mixM: tmpMatcher}
-	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
+	tmp := &DomainSet{bp: d.bp, mixM: tmpMatcher}
+	loadedRules, exporter, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
 	if err != nil {
 		return fmt.Errorf("failed to load rules: %w", err)
 	}
@@ -313,10 +320,12 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 	d.otherM = otherM
 	d.ruleFile = ruleFile
 	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
+	d.generatedExporter = exporter
 	d.rules = loadedRules
 	d.updateWatchedFilesLocked(effective.Files)
 	d.mu.Unlock()
 
+	d.subscribeGeneratedSource(effective.GeneratedFrom, exporter)
 	d.notifySubscribers()
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -349,13 +358,11 @@ func (d *DomainSet) pollWatchedFiles() error {
 	d.mu.RUnlock()
 
 	changed := false
-	newStates := make(map[string]watchedFileState, len(files))
-	for _, file := range files {
-		state, err := statWatchedFile(file)
-		if err != nil {
-			return err
-		}
-		newStates[file] = state
+	newStates, err := collectWatchedFileStates(files)
+	if err != nil {
+		return err
+	}
+	for file, state := range newStates {
 		if prev, ok := prevStates[file]; !ok || prev != state {
 			changed = true
 		}
@@ -375,8 +382,8 @@ func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) er
 	d.mu.RUnlock()
 
 	tmpMatcher := domain.NewDomainMixMatcher()
-	tmp := &DomainSet{mixM: tmpMatcher}
-	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
+	tmp := &DomainSet{bp: d.bp, mixM: tmpMatcher}
+	loadedRules, exporter, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
 	if err != nil {
 		return fmt.Errorf("failed to reload rules from files: %w", err)
 	}
@@ -400,10 +407,12 @@ func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) er
 	d.otherM = otherM
 	d.ruleFile = ruleFile
 	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
+	d.generatedExporter = exporter
 	d.rules = loadedRules
 	d.fileStates = fileStates
 	d.mu.Unlock()
 
+	d.subscribeGeneratedSource(effective.GeneratedFrom, exporter)
 	d.notifySubscribers()
 	return nil
 }
@@ -463,7 +472,11 @@ func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int,
 	d.mu.RLock()
 	ruleFile := d.ruleFile
 	generatedFrom := d.generatedFrom
+	generatedExporter := d.generatedExporter
 	d.mu.RUnlock()
+	if generatedFrom != "" && generatedExporter != nil {
+		return 0, fmt.Errorf("list %s is generated by %s and is read-only", d.pluginTag, generatedFrom)
+	}
 	if generatedFrom == "" && (ruleFile == "" || !strings.EqualFold(filepath.Ext(ruleFile), ".txt")) {
 		return 0, fmt.Errorf("no txt file configured, cannot replace")
 	}

@@ -75,13 +75,15 @@ type DomainSetLight struct {
 	// mixM   *domain.MixMatcher[struct{}]
 	// otherM []domain.Matcher[struct{}]
 
-	ruleFile      string
-	generatedFrom string
-	rules         []string // 仅维护字符串列表，内存占用极低
+	ruleFile          string
+	generatedFrom     string
+	generatedExporter data_provider.RuleExporter
+	rules             []string // 仅维护字符串列表，内存占用极低
 
 	// 新增：订阅者列表
-	subscribers []func()
-	fileStates  map[string]watchedFileState
+	subscribers            []func()
+	fileStates             map[string]watchedFileState
+	generatedSubscriptions map[string]struct{}
 }
 
 var _ coremain.ControlConfigReloader = (*DomainSetLight)(nil)
@@ -116,17 +118,19 @@ func (d *DomainSetLight) notifySubscribers() {
 }
 
 // initAndLoadRules 加载规则到字符串切片
-func (d *DomainSetLight) initAndLoadRules(exps, files []string, generatedFrom string) ([]string, error) {
+func (d *DomainSetLight) initAndLoadRules(exps, files []string, generatedFrom string) ([]string, data_provider.RuleExporter, error) {
 	allRules := make([]string, 0, len(exps)+len(files)*100)
 
 	// Load from expressions
 	allRules = append(allRules, exps...)
 
+	var exporter data_provider.RuleExporter
 	if generatedFrom != "" {
-		rules, err := d.loadGeneratedRuntimeRules(generatedFrom)
+		resolvedExporter, rules, err := d.loadGeneratedRules(generatedFrom)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
+		exporter = resolvedExporter
 		allRules = append(allRules, rules...)
 	}
 
@@ -134,12 +138,12 @@ func (d *DomainSetLight) initAndLoadRules(exps, files []string, generatedFrom st
 	for i, f := range files {
 		rules, err := d.loadFileInternal(f)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load file %d %s: %w", i, f, err)
+			return nil, nil, fmt.Errorf("failed to load file %d %s: %w", i, f, err)
 		}
 		allRules = append(allRules, rules...)
 	}
 
-	return allRules, nil
+	return allRules, exporter, nil
 }
 
 // loadFileInternal 读取文件内容并解析为规则字符串
@@ -215,12 +219,13 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		baseArgs = cloneArgs(rawArgs)
 	}
 	ds := &DomainSetLight{
-		bp:          bp,
-		pluginTag:   bp.Tag(),
-		baseArgs:    baseArgs,
-		curArgs:     cloneArgs(cfg),
-		subscribers: make([]func(), 0),
-		fileStates:  make(map[string]watchedFileState),
+		bp:                     bp,
+		pluginTag:              bp.Tag(),
+		baseArgs:               baseArgs,
+		curArgs:                cloneArgs(cfg),
+		subscribers:            make([]func(), 0),
+		fileStates:             make(map[string]watchedFileState),
+		generatedSubscriptions: make(map[string]struct{}),
 	}
 
 	if len(cfg.Files) > 0 {
@@ -229,16 +234,18 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	ds.generatedFrom = strings.TrimSpace(cfg.GeneratedFrom)
 
 	// 使用新的加载逻辑
-	loadedRules, err := ds.initAndLoadRules(cfg.Exps, cfg.Files, cfg.GeneratedFrom)
+	loadedRules, exporter, err := ds.initAndLoadRules(cfg.Exps, cfg.Files, cfg.GeneratedFrom)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
+	ds.generatedExporter = exporter
 	ds.rules = loadedRules
 	ds.updateWatchedFilesLocked(cfg.Files)
 
 	// [注意] 这里故意忽略了 cfg.Sets 的处理
 	// 因为本插件不负责匹配，不需要持有其他插件的引用
 
+	ds.subscribeGeneratedSource(cfg.GeneratedFrom, exporter)
 	ds.startFileWatcher()
 	return ds, nil
 }
@@ -270,8 +277,8 @@ func (d *DomainSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _
 		return err
 	}
 
-	tmp := &DomainSetLight{}
-	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
+	tmp := &DomainSetLight{bp: d.bp}
+	loadedRules, exporter, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
 	if err != nil {
 		return fmt.Errorf("failed to load rules: %w", err)
 	}
@@ -285,10 +292,12 @@ func (d *DomainSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _
 	d.curArgs = cloneArgs(effective)
 	d.ruleFile = ruleFile
 	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
+	d.generatedExporter = exporter
 	d.rules = loadedRules
 	d.updateWatchedFilesLocked(effective.Files)
 	d.mu.Unlock()
 
+	d.subscribeGeneratedSource(effective.GeneratedFrom, exporter)
 	d.notifySubscribers()
 	go func() {
 		time.Sleep(1 * time.Second)
@@ -321,13 +330,11 @@ func (d *DomainSetLight) pollWatchedFiles() error {
 	d.mu.RUnlock()
 
 	changed := false
-	newStates := make(map[string]watchedFileState, len(files))
-	for _, file := range files {
-		state, err := statWatchedFile(file)
-		if err != nil {
-			return err
-		}
-		newStates[file] = state
+	newStates, err := collectWatchedFileStates(files)
+	if err != nil {
+		return err
+	}
+	for file, state := range newStates {
 		if prev, ok := prevStates[file]; !ok || prev != state {
 			changed = true
 		}
@@ -346,8 +353,8 @@ func (d *DomainSetLight) reloadCurrentArgs(fileStates map[string]watchedFileStat
 	effective := cloneArgs(d.curArgs)
 	d.mu.RUnlock()
 
-	tmp := &DomainSetLight{}
-	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
+	tmp := &DomainSetLight{bp: d.bp}
+	loadedRules, exporter, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
 	if err != nil {
 		return fmt.Errorf("failed to reload rules from files: %w", err)
 	}
@@ -360,10 +367,12 @@ func (d *DomainSetLight) reloadCurrentArgs(fileStates map[string]watchedFileStat
 	d.mu.Lock()
 	d.ruleFile = ruleFile
 	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
+	d.generatedExporter = exporter
 	d.rules = loadedRules
 	d.fileStates = fileStates
 	d.mu.Unlock()
 
+	d.subscribeGeneratedSource(effective.GeneratedFrom, exporter)
 	d.notifySubscribers()
 	return nil
 }
@@ -431,6 +440,9 @@ func (d *DomainSetLight) ListEntries(query string, offset, limit int) ([]coremai
 }
 
 func (d *DomainSetLight) ReplaceListRuntime(ctx context.Context, values []string) (int, error) {
+	if d.generatedFrom != "" && d.generatedExporter != nil {
+		return 0, fmt.Errorf("list %s is generated by %s and is read-only", d.pluginTag, d.generatedFrom)
+	}
 	if d.generatedFrom == "" && (d.ruleFile == "" || !strings.EqualFold(filepath.Ext(d.ruleFile), ".txt")) {
 		return 0, fmt.Errorf("no txt file configured, cannot post")
 	}

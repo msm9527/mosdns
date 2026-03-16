@@ -99,6 +99,21 @@ func cloneDomainPoolPolicyMap(src map[string]DomainPoolPolicy) map[string]Domain
 	return dst
 }
 
+func DefaultDomainPoolPolicy(tag string) DomainPoolPolicy {
+	return defaultDomainPoolPolicy(tag)
+}
+
+func ResolveDomainPoolPolicy(tag string, values map[string]DomainPoolPolicy) (DomainPoolPolicy, error) {
+	policy, ok := values[strings.TrimSpace(tag)]
+	if !ok {
+		policy = defaultDomainPoolPolicy(tag)
+	}
+	if err := validateDomainPoolPolicy(tag, &policy); err != nil {
+		return DomainPoolPolicy{}, err
+	}
+	return policy, nil
+}
+
 func orderedDomainPoolPolicyKeys(values map[string]DomainPoolPolicy) []string {
 	seen := make(map[string]struct{}, len(values))
 	keys := make([]string, 0, len(values))
