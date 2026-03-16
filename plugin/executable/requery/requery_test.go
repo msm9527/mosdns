@@ -20,6 +20,10 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func newTestRequeryStore(dir string) (string, string) {
+	return "state/requery", filepath.Join(dir, "control.db")
+}
+
 func TestRequeryAPI_GetConfigAndStatus(t *testing.T) {
 	t.Parallel()
 
@@ -228,14 +232,15 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 	defer httpSrv.Close()
 
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 	source := filepath.Join(dir, "top.txt")
 	if err := os.WriteFile(source, []byte("0000000002 2026-03-06 example.com qmask=1 score=2 promoted=1\n"), 0644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
 
 	p := &Requery{
-		filePath:   cfgFile,
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 		config: &Config{
 			DomainProcessing: DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
@@ -387,10 +392,11 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
 	persist := &Requery{
-		filePath: cfgFile,
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
 		config: &Config{
 			Workflow: WorkflowSettings{
 				Mode:              "hybrid",
@@ -427,7 +433,7 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 		t.Fatalf("persistFullRebuildTask: %v", err)
 	}
 
-	reloaded := &Requery{filePath: cfgFile}
+	reloaded := &Requery{runtimeKey: runtimeKey, dbPath: dbPath}
 	if err := reloaded.loadConfig(); err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -487,9 +493,9 @@ func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
-	p := &Requery{filePath: cfgFile}
+	p := &Requery{runtimeKey: runtimeKey, dbPath: dbPath}
 	if err := p.loadConfig(); err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -499,8 +505,8 @@ func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 	if p.status.TaskState != "idle" {
 		t.Fatalf("unexpected status after init: %+v", p.status)
 	}
-	if _, err := os.Stat(cfgFile); !os.IsNotExist(err) {
-		t.Fatalf("expected config file to stay absent, got err=%v", err)
+	if _, err := os.Stat(filepath.Join(dir, "state", "requeryconfig.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected pseudo config file to stay absent, got err=%v", err)
 	}
 	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), &persistedConfig{}); err != nil || !ok {
 		t.Fatalf("expected runtime config in DB, ok=%v err=%v", ok, err)
@@ -518,9 +524,10 @@ func TestBeginTaskExecutionRollsBackOnPersistFailure(t *testing.T) {
 	})
 
 	p := &Requery{
-		filePath: filepath.Join(coremain.MainConfigBaseDir, "state", "requery.json"),
-		config:   newDefaultConfig(),
-		status:   Status{TaskState: "idle"},
+		runtimeKey: "state/requery",
+		dbPath:     filepath.Join(coremain.MainConfigBaseDir, "control.db"),
+		config:     newDefaultConfig(),
+		status:     Status{TaskState: "idle"},
 	}
 	if err := p.saveStateUnlocked(); err != nil {
 		t.Fatalf("seed runtime state: %v", err)
@@ -535,7 +542,7 @@ func TestBeginTaskExecutionRollsBackOnPersistFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin lock tx: %v", err)
 	}
-	if _, err := tx.Exec(`UPDATE requery_state SET payload_json = payload_json WHERE file_path = ? AND state_kind = ?`, filepath.Clean(p.filePath), "state"); err != nil {
+	if _, err := tx.Exec(`UPDATE requery_state SET payload_json = payload_json WHERE file_path = ? AND state_kind = ?`, p.normalizedRuntimeKey(), "state"); err != nil {
 		_ = tx.Rollback()
 		t.Fatalf("lock requery state row: %v", err)
 	}

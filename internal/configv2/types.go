@@ -81,7 +81,7 @@ type WebInfoConfig struct {
 
 type RequeryConfig struct {
 	Name string `yaml:"name,omitempty"`
-	File string `yaml:"file,omitempty"`
+	Key  string `yaml:"key,omitempty"`
 }
 
 type SwitchConfig struct {

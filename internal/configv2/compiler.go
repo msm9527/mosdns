@@ -242,18 +242,18 @@ func compileControl(runtime ControlConfig) ([]PluginConfig, error) {
 	}
 
 	for _, item := range runtime.Requery {
-		file := resolveRuntimePath(runtime.BaseDir, item.File)
-		if strings.TrimSpace(file) == "" {
-			return nil, errors.New("control requery file is required")
+		key := resolveRuntimePath(runtime.BaseDir, item.Key)
+		if strings.TrimSpace(key) == "" {
+			return nil, errors.New("control requery key is required")
 		}
 		tag := strings.TrimSpace(item.Name)
 		if tag == "" {
-			tag = defaultRuntimeTag("requery", file)
+			tag = defaultRuntimeTag("requery", key)
 		}
 		plugins = append(plugins, PluginConfig{
 			Tag:  tag,
 			Type: "requery",
-			Args: map[string]any{"file": file},
+			Args: map[string]any{"key": key},
 		})
 	}
 

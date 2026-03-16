@@ -157,7 +157,10 @@
 
 ## 7. 关键配置项
 
-## 7.1 `requeryconfig.json`
+## 7.1 `requery` 运行态配置
+
+这份配置现在不再以 `requeryconfig.json` 真实文件形式落盘。
+`requery` 插件会使用逻辑运行态键持久化到 `control.db`，例如默认键 `state/requery`。
 
 示例：
 

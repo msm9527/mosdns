@@ -82,8 +82,8 @@ func TestRuntimeStateStore_StructuredWebinfoState(t *testing.T) {
 
 func TestRuntimeStateStore_StructuredRequeryState(t *testing.T) {
 	dbPath := filepath.Join(t.TempDir(), runtimeStateDBFilename)
-	configKey := filepath.Join(t.TempDir(), "webinfo", "requeryconfig.json") + ":config"
-	stateKey := filepath.Join(t.TempDir(), "webinfo", "requeryconfig.state.json") + ":state"
+	configKey := "state/requery:config"
+	stateKey := "state/requery:state"
 
 	if err := SaveRuntimeStateJSONToPath(dbPath, runtimeNamespaceRequery, configKey, map[string]any{
 		"workflow": map[string]any{"mode": "hybrid"},

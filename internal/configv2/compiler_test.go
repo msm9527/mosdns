@@ -44,7 +44,7 @@ func TestCompileDeclarativeWithoutLegacy(t *testing.T) {
 			BaseDir: "config",
 			Requery: []RequeryConfig{{
 				Name: "requery_main",
-				File: "webinfo/requeryconfig.json",
+				Key:  "runtime/requery_main",
 			}},
 			Switches: []SwitchConfig{{
 				Name: "branch_cache",
@@ -76,7 +76,7 @@ func TestCompileDeclarativeWithoutLegacy(t *testing.T) {
 		t.Fatalf("unexpected runtime plugin types: %+v", compiled.Plugins)
 	}
 	requeryArgs, ok := compiled.Plugins[2].Args.(map[string]any)
-	if !ok || requeryArgs["file"] != "config/webinfo/requeryconfig.json" {
+	if !ok || requeryArgs["key"] != "config/runtime/requery_main" {
 		t.Fatalf("unexpected requery args: %#v", compiled.Plugins[2].Args)
 	}
 	switchArgs, ok := compiled.Plugins[3].Args.(map[string]any)

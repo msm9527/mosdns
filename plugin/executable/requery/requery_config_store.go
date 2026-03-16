@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"path/filepath"
+	"strings"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
@@ -282,15 +283,34 @@ func (p *Requery) saveStateUnlocked() error {
 }
 
 func (p *Requery) runtimeConfigKey() string {
-	return filepath.Clean(p.filePath) + ":config"
+	key := p.normalizedRuntimeKey()
+	if key == "" {
+		return ""
+	}
+	return key + ":config"
 }
 
 func (p *Requery) runtimeDBPath() string {
-	return coremain.RuntimeStateDBPathForPath(p.filePath)
+	if strings.TrimSpace(p.dbPath) != "" {
+		return filepath.Clean(strings.TrimSpace(p.dbPath))
+	}
+	return coremain.RuntimeStateDBPath()
 }
 
 func (p *Requery) runtimeStateKey() string {
-	return filepath.Clean(p.filePath) + ":state"
+	key := p.normalizedRuntimeKey()
+	if key == "" {
+		return ""
+	}
+	return key + ":state"
+}
+
+func (p *Requery) normalizedRuntimeKey() string {
+	key := strings.TrimSpace(p.runtimeKey)
+	if key == "" {
+		return ""
+	}
+	return filepath.Clean(key)
 }
 
 func (p *Requery) loadPersistedConfigUnlocked() (Config, bool, error) {
@@ -308,7 +328,7 @@ func (p *Requery) loadPersistedConfigUnlocked() (Config, bool, error) {
 		return Config{}, false, fmt.Errorf("failed to load runtime requery config: %w", err)
 	}
 
-	log.Printf("[requery] runtime config %s not found, initializing with default config.", p.filePath)
+	log.Printf("[requery] runtime config %s not found, initializing with default config.", p.normalizedRuntimeKey())
 	cfg := newDefaultConfig()
 	return Config{
 		DomainProcessing:  cfg.DomainProcessing,

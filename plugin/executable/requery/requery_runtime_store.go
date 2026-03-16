@@ -3,7 +3,6 @@ package requery
 import (
 	"encoding/json"
 	"fmt"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -18,7 +17,7 @@ func generateRunID() string {
 }
 
 func (p *Requery) runtimeJobKey(mode, trigger string) string {
-	return filepath.Clean(p.filePath) + "::" + strings.ToLower(mode) + "::" + strings.ToLower(trigger)
+	return p.normalizedRuntimeKey() + "::" + strings.ToLower(mode) + "::" + strings.ToLower(trigger)
 }
 
 func (p *Requery) syncRuntimeJobsLocked() error {

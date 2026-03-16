@@ -76,7 +76,7 @@ control:
   base_dir: config
   requery:
     - name: requery_main
-      file: webinfo/requeryconfig.json
+      key: runtime/requery_main
   switches:
     - name: branch_cache
 listeners:

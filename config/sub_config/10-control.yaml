@@ -17,9 +17,11 @@ control:
   base_dir: state
 
   # requery 插件的运行态配置与任务状态。
+  # - key 是逻辑运行态键，不会在磁盘创建 webinfo/requeryconfig.json 这类文件。
+  # - 当前会被持久化到 control.db 的 requery 命名空间中。
   requery:
     - name: requery
-      file: webinfo/requeryconfig.json
+      key: requery
 
   # 这里只声明“有哪些开关需要注册成插件实例”。
   # 实际取值不再来自 state_file，也不落库；

@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -13,12 +12,13 @@ import (
 
 func TestSaveConfigUnlockedSyncsRuntimeJobs(t *testing.T) {
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
 	p := &Requery{
-		filePath: cfgFile,
-		config:   newDefaultConfig(),
-		status:   Status{TaskState: "idle"},
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
+		config:     newDefaultConfig(),
+		status:     Status{TaskState: "idle"},
 	}
 	p.config.Scheduler.Enabled = true
 	p.config.Scheduler.IntervalMinutes = 30
@@ -38,12 +38,13 @@ func TestSaveConfigUnlockedSyncsRuntimeJobs(t *testing.T) {
 
 func TestRequeryAPIListsRunsAndCheckpoints(t *testing.T) {
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
 	p := &Requery{
-		filePath: cfgFile,
-		config:   newDefaultConfig(),
-		status:   Status{TaskState: "idle"},
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
+		config:     newDefaultConfig(),
+		status:     Status{TaskState: "idle"},
 	}
 	if err := p.saveConfigUnlocked(); err != nil {
 		t.Fatalf("saveConfigUnlocked: %v", err)
@@ -99,11 +100,12 @@ func TestRequeryAPIListsRunsAndCheckpoints(t *testing.T) {
 
 func TestPersistRunSnapshotWithIDKeepsFinalStateAfterActiveRunCleared(t *testing.T) {
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
 	p := &Requery{
-		filePath: cfgFile,
-		config:   newDefaultConfig(),
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
+		config:     newDefaultConfig(),
 		status: Status{
 			TaskState:        "idle",
 			TaskMode:         "quick_prewarm",

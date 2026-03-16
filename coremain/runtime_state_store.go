@@ -35,6 +35,10 @@ func defaultRuntimeStateDBPath() string {
 	return runtimeStateDBPathForBaseDir(MainConfigBaseDir)
 }
 
+func RuntimeStateDBPath() string {
+	return defaultRuntimeStateDBPath()
+}
+
 func setRuntimeStateDBPath(path string) {
 	runtimeStateDBPathOverride = strings.TrimSpace(path)
 }
@@ -174,7 +178,7 @@ func (s *runtimeStateStore) listStructuredWebinfoState() ([]RuntimeStateEntry, e
 }
 
 func (s *runtimeStateStore) getStructuredRequeryState(key string, dst any) (bool, error) {
-	filePath, stateKind, err := parseRequeryStateKey(key)
+	configKey, stateKind, err := parseRequeryStateKey(key)
 	if err != nil {
 		return false, err
 	}
@@ -182,7 +186,7 @@ func (s *runtimeStateStore) getStructuredRequeryState(key string, dst any) (bool
 		SELECT payload_json
 		FROM requery_state
 		WHERE file_path = ? AND state_kind = ?
-	`, filePath, stateKind)
+	`, configKey, stateKind)
 	return scanStructuredJSONRow(row, runtimeNamespaceRequery, key, dst)
 }
 
@@ -203,7 +207,7 @@ func (s *runtimeStateStore) listStructuredAuditState() ([]RuntimeStateEntry, err
 }
 
 func (s *runtimeStateStore) putStructuredRequeryState(key string, value any) error {
-	filePath, stateKind, err := parseRequeryStateKey(key)
+	configKey, stateKind, err := parseRequeryStateKey(key)
 	if err != nil {
 		return err
 	}
@@ -217,18 +221,18 @@ func (s *runtimeStateStore) putStructuredRequeryState(key string, value any) err
 		ON CONFLICT(file_path, state_kind) DO UPDATE SET
 			payload_json = excluded.payload_json,
 			updated_at_unix_ms = excluded.updated_at_unix_ms
-	`, filePath, stateKind, string(data)); err != nil {
+	`, configKey, stateKind, string(data)); err != nil {
 		return fmt.Errorf("save requery_state %s: %w", key, err)
 	}
 	return nil
 }
 
 func (s *runtimeStateStore) removeStructuredRequeryState(key string) error {
-	filePath, stateKind, err := parseRequeryStateKey(key)
+	configKey, stateKind, err := parseRequeryStateKey(key)
 	if err != nil {
 		return err
 	}
-	if _, err := s.db.DB().Exec(`DELETE FROM requery_state WHERE file_path = ? AND state_kind = ?`, filePath, stateKind); err != nil {
+	if _, err := s.db.DB().Exec(`DELETE FROM requery_state WHERE file_path = ? AND state_kind = ?`, configKey, stateKind); err != nil {
 		return fmt.Errorf("delete requery_state %s: %w", key, err)
 	}
 	return nil
@@ -247,16 +251,16 @@ func (s *runtimeStateStore) listStructuredRequeryState() ([]RuntimeStateEntry, e
 
 	entries := make([]RuntimeStateEntry, 0)
 	for rows.Next() {
-		var filePath string
+		var configKey string
 		var stateKind string
 		var payloadJSON string
 		var updatedAt int64
-		if err := rows.Scan(&filePath, &stateKind, &payloadJSON, &updatedAt); err != nil {
+		if err := rows.Scan(&configKey, &stateKind, &payloadJSON, &updatedAt); err != nil {
 			return nil, fmt.Errorf("scan requery_state: %w", err)
 		}
 		entries = append(entries, RuntimeStateEntry{
 			Namespace:       runtimeNamespaceRequery,
-			Key:             composeRequeryStateKey(filePath, stateKind),
+			Key:             composeRequeryStateKey(configKey, stateKind),
 			Value:           json.RawMessage(payloadJSON),
 			UpdatedAtUnixMS: updatedAt,
 		})
@@ -353,16 +357,16 @@ func parseRequeryStateKey(key string) (string, string, error) {
 	if idx <= 0 || idx == len(key)-1 {
 		return "", "", fmt.Errorf("invalid requery runtime key %q", key)
 	}
-	filePath := key[:idx]
+	configKey := key[:idx]
 	stateKind := key[idx+1:]
 	if stateKind != "config" && stateKind != "state" {
 		return "", "", fmt.Errorf("unsupported requery runtime kind %q", stateKind)
 	}
-	return filePath, stateKind, nil
+	return configKey, stateKind, nil
 }
 
-func composeRequeryStateKey(filePath, stateKind string) string {
-	return filePath + ":" + stateKind
+func composeRequeryStateKey(configKey, stateKind string) string {
+	return configKey + ":" + stateKind
 }
 
 func (s *runtimeStateStore) getStructuredAdguardState(key string, dst any) (bool, error) {

@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -46,24 +45,20 @@ func init() {
 
 // Args is the plugin's configuration arguments from the main YAML config.
 type Args struct {
-	File string `yaml:"file"` // Path to the requeryconfig.json file
+	Key string `yaml:"key"` // Logical runtime key stored in control.db
 }
 
 // newRequery is the plugin's initialization function.
 func newRequery(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
-	if cfg.File == "" {
-		return nil, errors.New("requery: 'file' for config json must be specified")
-	}
-
-	dir := filepath.Dir(cfg.File)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("requery: failed to create directory %s: %w", dir, err)
+	if strings.TrimSpace(cfg.Key) == "" {
+		return nil, errors.New("requery: 'key' must be specified")
 	}
 
 	p := &Requery{
 		m:          bp.M(),
-		filePath:   cfg.File,
+		runtimeKey: cfg.Key,
+		dbPath:     coremain.RuntimeStateDBPath(),
 		scheduler:  cron.New(),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		queue:      make(refreshJobHeap, 0),
@@ -73,7 +68,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	heap.Init(&p.queue)
 
 	if err := p.loadConfig(); err != nil {
-		return nil, fmt.Errorf("requery: failed to load initial config from %s: %w", p.filePath, err)
+		return nil, fmt.Errorf("requery: failed to load initial config for %s: %w", p.runtimeKey, err)
 	}
 
 	p.prepareRecoveryOnStartup()
@@ -91,7 +86,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 
 	bp.M().GetAPIRouter().Mount("/api/v1/control/requery", p.api())
 
-	log.Printf("[requery] plugin instance created for config file: %s", p.filePath)
+	log.Printf("[requery] plugin instance created for runtime key: %s", p.runtimeKey)
 	return p, nil
 }
 
@@ -103,7 +98,8 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 type Requery struct {
 	mu                  sync.RWMutex
 	m                   *coremain.Mosdns
-	filePath            string
+	runtimeKey          string
+	dbPath              string
 	config              *Config
 	status              Status
 	fullTask            *FullRebuildTask
@@ -120,7 +116,7 @@ type Requery struct {
 	resumeOnce          sync.Once
 }
 
-// Config maps directly to the requeryconfig.json file structure.
+// Config is the persisted requery runtime config stored in control.db.
 type Config struct {
 	DomainProcessing  DomainProcessing  `json:"domain_processing"`
 	URLActions        URLActions        `json:"url_actions"`
