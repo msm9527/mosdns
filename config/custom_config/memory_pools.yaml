@@ -1,0 +1,133 @@
+# 用户自定义域名记忆池/统计池策略
+#
+# 这个文件是运行态域名池的长期策略真源。
+# - key 必须是池插件 tag，例如 top_domains / my_realiplist。
+# - 前端或 API 修改应直接写这个文件，并触发对应插件热重载。
+# - 你也可以手工修改这个文件，然后重启 mosdns 生效。
+# - SQLite 只保存运行态累计、任务态和快照，不保存这类长期策略。
+#
+# 字段说明：
+# - kind: memory / stats。memory 表示会产生规则候选；stats 表示只做排行统计。
+# - publish_to: 目标 provider tag，只做拓扑描述；实际消费关系由 generated_from 建立。
+# - requery_tag: 需要把脏域名推给哪个 requery 插件。
+# - promote_after: memory 池里某个域名至少出现多少次后才进入规则候选。
+# - track_qtype: 是否区分 A/AAAA 观察结果。
+# - track_flags: 是否区分 AD/CD/DO 这类查询标志位变体。
+# - max_domains: 该池最多保留多少个裸域名。
+# - max_variants_per_domain: 每个裸域名最多保留多少个 qtype/flags 变体。
+# - eviction_policy: 超出容量时如何淘汰；当前支持 lru / lfu。
+# - stale_after_minutes: 进入 stale 判定的分钟数。
+# - refresh_cooldown_minutes: 触发 requery 后的冷却时间。
+# - flush_interval_ms: 运行态批量刷入 SQLite 的周期。
+# - publish_debounce_ms: 规则/快照发布防抖周期；0 表示不额外延迟。
+# - prune_interval_sec: 后台清理过期项与执行容量淘汰的周期。
+
+top_domains:
+  kind: stats
+  promote_after: 0
+  track_qtype: false
+  track_flags: true
+  max_domains: 200000
+  max_variants_per_domain: 8
+  eviction_policy: lfu
+  stale_after_minutes: 0
+  refresh_cooldown_minutes: 0
+  flush_interval_ms: 30000
+  publish_debounce_ms: 0
+  prune_interval_sec: 600
+
+my_realiplist:
+  kind: memory
+  publish_to: my_realiprule
+  requery_tag: requery
+  promote_after: 2
+  track_qtype: true
+  track_flags: false
+  max_domains: 80000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  stale_after_minutes: 360
+  refresh_cooldown_minutes: 120
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600
+
+my_fakeiplist:
+  kind: memory
+  publish_to: my_fakeiprule
+  requery_tag: requery
+  promote_after: 2
+  track_qtype: true
+  track_flags: false
+  max_domains: 80000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  stale_after_minutes: 240
+  refresh_cooldown_minutes: 120
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600
+
+my_nov6list:
+  kind: memory
+  publish_to: my_nov6rule
+  requery_tag: requery
+  promote_after: 2
+  track_qtype: true
+  track_flags: false
+  max_domains: 120000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  stale_after_minutes: 180
+  refresh_cooldown_minutes: 120
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600
+
+my_nov4list:
+  kind: memory
+  publish_to: my_nov4rule
+  requery_tag: requery
+  promote_after: 2
+  track_qtype: true
+  track_flags: false
+  max_domains: 80000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  stale_after_minutes: 180
+  refresh_cooldown_minutes: 120
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600
+
+my_nodenov6list:
+  kind: memory
+  publish_to: my_nodenov6rule
+  requery_tag: requery
+  promote_after: 2
+  track_qtype: true
+  track_flags: false
+  max_domains: 50000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  stale_after_minutes: 180
+  refresh_cooldown_minutes: 120
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600
+
+my_nodenov4list:
+  kind: memory
+  publish_to: my_nodenov4rule
+  requery_tag: requery
+  promote_after: 2
+  track_qtype: true
+  track_flags: false
+  max_domains: 50000
+  max_variants_per_domain: 4
+  eviction_policy: lru
+  stale_after_minutes: 180
+  refresh_cooldown_minutes: 120
+  flush_interval_ms: 30000
+  publish_debounce_ms: 5000
+  prune_interval_sec: 600

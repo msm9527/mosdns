@@ -368,6 +368,83 @@ func baseMigrations() []Migration {
 				DROP TABLE IF EXISTS switch_state;
 			`,
 		},
+		{
+			ID: "0015_domain_pool_state",
+			Up: `
+				CREATE TABLE IF NOT EXISTS domain_pool_meta (
+					pool_tag TEXT PRIMARY KEY,
+					pool_kind TEXT NOT NULL,
+					memory_id TEXT NOT NULL DEFAULT '',
+					policy_json TEXT NOT NULL DEFAULT '{}',
+					domain_count INTEGER NOT NULL DEFAULT 0,
+					variant_count INTEGER NOT NULL DEFAULT 0,
+					dirty_domain_count INTEGER NOT NULL DEFAULT 0,
+					promoted_domain_count INTEGER NOT NULL DEFAULT 0,
+					published_domain_count INTEGER NOT NULL DEFAULT 0,
+					total_observations INTEGER NOT NULL DEFAULT 0,
+					dropped_observations INTEGER NOT NULL DEFAULT 0,
+					dropped_by_buffer INTEGER NOT NULL DEFAULT 0,
+					dropped_by_cap INTEGER NOT NULL DEFAULT 0,
+					evicted_domains INTEGER NOT NULL DEFAULT 0,
+					evicted_variants INTEGER NOT NULL DEFAULT 0,
+					last_ingested_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_flush_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_publish_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_prune_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
+				);
+				CREATE TABLE IF NOT EXISTS domain_pool_domain (
+					pool_tag TEXT NOT NULL,
+					domain TEXT NOT NULL,
+					total_count INTEGER NOT NULL DEFAULT 0,
+					score INTEGER NOT NULL DEFAULT 0,
+					qtype_mask INTEGER NOT NULL DEFAULT 0,
+					flags_mask INTEGER NOT NULL DEFAULT 0,
+					variant_count INTEGER NOT NULL DEFAULT 0,
+					dirty_variant_count INTEGER NOT NULL DEFAULT 0,
+					promoted INTEGER NOT NULL DEFAULT 0,
+					last_source TEXT NOT NULL DEFAULT '',
+					last_seen_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_dirty_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_verified_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					cooldown_until_unix_ms INTEGER NOT NULL DEFAULT 0,
+					dirty_reason TEXT NOT NULL DEFAULT '',
+					refresh_state TEXT NOT NULL DEFAULT '',
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (pool_tag, domain),
+					FOREIGN KEY (pool_tag) REFERENCES domain_pool_meta(pool_tag) ON DELETE CASCADE
+				);
+				CREATE TABLE IF NOT EXISTS domain_pool_variant (
+					pool_tag TEXT NOT NULL,
+					domain TEXT NOT NULL,
+					variant_key TEXT NOT NULL,
+					total_count INTEGER NOT NULL DEFAULT 0,
+					score INTEGER NOT NULL DEFAULT 0,
+					qtype_mask INTEGER NOT NULL DEFAULT 0,
+					flags_mask INTEGER NOT NULL DEFAULT 0,
+					promoted INTEGER NOT NULL DEFAULT 0,
+					last_source TEXT NOT NULL DEFAULT '',
+					last_seen_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_dirty_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_verified_at_unix_ms INTEGER NOT NULL DEFAULT 0,
+					cooldown_until_unix_ms INTEGER NOT NULL DEFAULT 0,
+					dirty_reason TEXT NOT NULL DEFAULT '',
+					refresh_state TEXT NOT NULL DEFAULT '',
+					conflict_count INTEGER NOT NULL DEFAULT 0,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (pool_tag, domain, variant_key),
+					FOREIGN KEY (pool_tag, domain) REFERENCES domain_pool_domain(pool_tag, domain) ON DELETE CASCADE
+				);
+				CREATE INDEX IF NOT EXISTS idx_domain_pool_domain_score
+				ON domain_pool_domain(pool_tag, score DESC, total_count DESC, domain ASC);
+				CREATE INDEX IF NOT EXISTS idx_domain_pool_domain_seen
+				ON domain_pool_domain(pool_tag, last_seen_at_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_domain_pool_variant_score
+				ON domain_pool_variant(pool_tag, score DESC, total_count DESC, domain ASC, variant_key ASC);
+				CREATE INDEX IF NOT EXISTS idx_domain_pool_variant_seen
+				ON domain_pool_variant(pool_tag, last_seen_at_unix_ms DESC);
+			`,
+		},
 	}
 }
 
