@@ -13,9 +13,9 @@ const overridesFilename = "config_overrides.json"
 
 // ReplacementRule defines a single replacement rule.
 type ReplacementRule struct {
-	Original string `json:"original"`
-	New      string `json:"new"`
-	Comment  string `json:"comment"`
+	Original string `json:"original" yaml:"original"`
+	New      string `json:"new" yaml:"new"`
+	Comment  string `json:"comment" yaml:"comment"`
 
 	// appliedCount is an in-memory counter for successful replacements.
 	// It is not exported to JSON file, but used for API response.
@@ -24,12 +24,12 @@ type ReplacementRule struct {
 
 // GlobalOverrides defines the structure of the config_overrides.json file.
 type GlobalOverrides struct {
-	// Original fields (Kept for backward compatibility and specific logic)
-	Socks5 string `json:"socks5,omitempty"`
-	ECS    string `json:"ecs,omitempty"`
+	// User-facing global override fields.
+	Socks5 string `json:"socks5,omitempty" yaml:"socks5,omitempty"`
+	ECS    string `json:"ecs,omitempty" yaml:"ecs,omitempty"`
 
 	// New generic replacements
-	Replacements []*ReplacementRule `json:"replacements,omitempty"`
+	Replacements []*ReplacementRule `json:"replacements,omitempty" yaml:"replacements,omitempty"`
 
 	// lookupMap is used for fast lookup during application.
 	// Key is the "Original" string.

@@ -937,10 +937,7 @@ func (c *AuditCollector) configureStorages() error {
 
 	var newSQLite *SQLiteAuditStorage
 	if settings.StorageEngine == "sqlite" || settings.DualWrite {
-		sqlitePath := settings.SQLitePath
-		if sqlitePath == "" {
-			sqlitePath = defaultAuditSQLitePath(configBaseDir)
-		}
+		sqlitePath := resolveAuditSQLitePath(configBaseDir, settings.SQLitePath)
 		newSQLite = newSQLiteAuditStorage(sqlitePath, settings.MaxDBSizeMB)
 		if err := newSQLite.Open(); err != nil {
 			if newNDJSON != nil {

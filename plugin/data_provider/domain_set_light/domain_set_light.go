@@ -137,12 +137,12 @@ func (d *DomainSetLight) loadFileInternal(f string) ([]string, error) {
 	if f == "" {
 		return nil, nil
 	}
-	b, err := os.ReadFile(f)
+	b, source, err := readDomainRulesSource(f)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, nil
 	}
 
 	// 1. 尝试作为 SRS 解析
@@ -168,7 +168,7 @@ func (d *DomainSetLight) loadFileInternal(f string) ([]string, error) {
 	}
 
 	if len(rules) > 0 {
-		fmt.Printf("[%s] loaded %d rules from text file: %s (last rule: %s)\n", PluginType, len(rules), f, lastTxt)
+		fmt.Printf("[%s] loaded %d rules from %s: %s (last rule: %s)\n", PluginType, len(rules), source, f, lastTxt)
 	}
 	return rules, scanner.Err()
 }
@@ -400,8 +400,23 @@ func (d *DomainSetLight) ReplaceListRuntime(ctx context.Context, values []string
 	d.rules = append([]string(nil), values...)
 	d.mu.Unlock()
 
-	if err := writeRulesToFile(d.ruleFile, values); err != nil {
-		return 0, err
+	if coremain.IsGeneratedDatasetOutputPath(d.ruleFile) {
+		content := strings.Join(values, "\n")
+		if content != "" {
+			content += "\n"
+		}
+		if err := coremain.SaveGeneratedDatasetToPath(
+			coremain.RuntimeStateDBPathForPath(d.ruleFile),
+			filepath.Clean(d.ruleFile),
+			coremain.GeneratedDatasetFormatDomainOutputRule,
+			content,
+		); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := writeRulesToFile(d.ruleFile, values); err != nil {
+			return 0, err
+		}
 	}
 
 	d.notifySubscribers()
@@ -423,6 +438,32 @@ func writeRulesToFile(path string, rules []string) error {
 		}
 	}
 	return writer.Flush()
+}
+
+func readDomainRulesSource(path string) ([]byte, string, error) {
+	if dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(path); err != nil {
+		return nil, "", err
+	} else if ok && isGeneratedRuleDatasetFormat(dataset.Format) {
+		return []byte(dataset.Content), "generated dataset", nil
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, "text file", nil
+		}
+		return nil, "", err
+	}
+	return b, "text file", nil
+}
+
+func isGeneratedRuleDatasetFormat(format string) bool {
+	switch format {
+	case coremain.GeneratedDatasetFormatDomainOutputRule, coremain.GeneratedDatasetFormatDomainOutputGeneratedRule:
+		return true
+	default:
+		return false
+	}
 }
 
 // --- SRS 解析函数 (修改为适配 ruleAdder 接口) ---

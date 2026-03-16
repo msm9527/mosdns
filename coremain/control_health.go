@@ -105,6 +105,7 @@ func runtimeHealthReport(dbPath string, m *Mosdns) (*runtimeHealthResponse, erro
 	}
 
 	addNamespaceSummaryCheck(dbPath, addCheck)
+	addSwitchesHealthCheck(addCheck)
 	addOverridesHealthCheck(addCheck)
 	addUpstreamOverrideHealthCheck(addCheck)
 	addDatasetHealthCheck(dbPath, addCheck)
@@ -117,9 +118,6 @@ func runtimeHealthReport(dbPath string, m *Mosdns) (*runtimeHealthResponse, erro
 
 func addNamespaceSummaryCheck(dbPath string, addCheck func(runtimeHealthCheck)) {
 	namespaces := []string{
-		runtimeStateNamespaceOverrides,
-		runtimeStateNamespaceUpstreams,
-		runtimeNamespaceSwitch,
 		runtimeNamespaceWebinfo,
 		runtimeNamespaceRequery,
 		runtimeNamespaceAdguard,
@@ -143,8 +141,25 @@ func addNamespaceSummaryCheck(dbPath string, addCheck func(runtimeHealthCheck)) 
 	addCheck(runtimeHealthCheck{Name: "namespace_summary", Status: "ok", Details: map[string]any{"counts": counts}})
 }
 
+func addSwitchesHealthCheck(addCheck func(runtimeHealthCheck)) {
+	switches, ok, err := loadSwitchesFromCustomConfig()
+	if err != nil {
+		addCheck(runtimeHealthCheck{Name: "control_switches", Status: "error", Message: err.Error()})
+		return
+	}
+	addCheck(runtimeHealthCheck{
+		Name:   "control_switches",
+		Status: "ok",
+		Details: map[string]any{
+			"present": ok,
+			"count":   len(switches),
+			"path":    switchesConfigPath(),
+		},
+	})
+}
+
 func addOverridesHealthCheck(addCheck func(runtimeHealthCheck)) {
-	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err != nil {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err != nil {
 		addCheck(runtimeHealthCheck{Name: "control_overrides", Status: "error", Message: err.Error()})
 		return
 	} else {
@@ -158,13 +173,14 @@ func addOverridesHealthCheck(addCheck func(runtimeHealthCheck)) {
 			Details: map[string]any{
 				"present": ok,
 				"count":   count,
+				"path":    globalOverridesConfigPath(),
 			},
 		})
 	}
 }
 
 func addUpstreamOverrideHealthCheck(addCheck func(runtimeHealthCheck)) {
-	if upstreams, ok, err := loadUpstreamOverridesFromRuntimeStore(); err != nil {
+	if upstreams, ok, err := loadUpstreamOverridesFromCustomConfig(); err != nil {
 		addCheck(runtimeHealthCheck{Name: "control_upstreams", Status: "error", Message: err.Error()})
 		return
 	} else {
@@ -179,6 +195,7 @@ func addUpstreamOverrideHealthCheck(addCheck func(runtimeHealthCheck)) {
 				"present": ok,
 				"groups":  len(upstreams),
 				"items":   total,
+				"path":    upstreamOverridesConfigPath(),
 			},
 		})
 	}
@@ -196,8 +213,7 @@ func addDatasetHealthCheck(dbPath string, addCheck func(runtimeHealthCheck)) {
 		status = "warn"
 		message = "generated dataset files have mismatches"
 	} else if verify.Missing > 0 {
-		status = "warn"
-		message = "some generated dataset files are missing"
+		message = "generated datasets are stored in sqlite; some optional export files are missing"
 	}
 	addCheck(runtimeHealthCheck{
 		Name:    "generated_datasets",

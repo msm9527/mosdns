@@ -10,6 +10,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/switch/switchmeta"
 )
 
@@ -17,9 +18,14 @@ func TestCoreSwitchesAPI_GetAll(t *testing.T) {
 	resetSwitchTestRegistry()
 
 	dir := t.TempDir()
-	def := switchmeta.MustLookup("core_mode")
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+	def := switchmeta.MustLookup("branch_cache")
 	sw := &Switch{
-		store: getStateStore(filepath.Join(dir, "switches.json")),
+		store: getStateStore(),
 		def:   def,
 	}
 	if err := sw.load(); err != nil {
@@ -48,15 +54,15 @@ func TestCoreSwitchesAPI_GetAll(t *testing.T) {
 
 	found := false
 	for _, item := range items {
-		if item.Name == "core_mode" {
+		if item.Name == "branch_cache" {
 			found = true
-			if item.Value != "secure" {
-				t.Fatalf("unexpected core_mode value: %s", item.Value)
+			if item.Value != "on" {
+				t.Fatalf("unexpected branch_cache value: %s", item.Value)
 			}
 		}
 	}
 	if !found {
-		t.Fatalf("core_mode not found in response")
+		t.Fatalf("branch_cache not found in response")
 	}
 }
 
@@ -64,9 +70,14 @@ func TestCoreSwitchesAPI_Update(t *testing.T) {
 	resetSwitchTestRegistry()
 
 	dir := t.TempDir()
-	def := switchmeta.MustLookup("core_mode")
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+	def := switchmeta.MustLookup("branch_cache")
 	sw := &Switch{
-		store: getStateStore(filepath.Join(dir, "switches.json")),
+		store: getStateStore(),
 		def:   def,
 	}
 	if err := sw.load(); err != nil {
@@ -74,8 +85,8 @@ func TestCoreSwitchesAPI_Update(t *testing.T) {
 	}
 	globalRegistry.instances[def.Name] = sw
 
-	body := bytes.NewBufferString(`{"value":"compat"}`)
-	req := httptest.NewRequest(http.MethodPut, "/core_mode", body)
+	body := bytes.NewBufferString(`{"value":"off"}`)
+	req := httptest.NewRequest(http.MethodPut, "/branch_cache", body)
 	req.Header.Set("Content-Type", "application/json")
 	w := httptest.NewRecorder()
 	coreSwitchesAPI().ServeHTTP(w, req)
@@ -88,14 +99,19 @@ func TestCoreSwitchesAPI_Update(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &item); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	if item.Name != "core_mode" || item.Value != "compat" {
+	if item.Name != "branch_cache" || item.Value != "off" {
 		t.Fatalf("unexpected response: %+v", item)
 	}
-	if got := sw.GetValue(); got != "compat" {
+	if got := sw.GetValue(); got != "off" {
 		t.Fatalf("switch value not updated: %s", got)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "switches.json")); !os.IsNotExist(err) {
-		t.Fatalf("expected no switch state file, got err=%v", err)
+	path := filepath.Join(dir, "custom_config", "switches.yaml")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected switches yaml to exist: %v", err)
+	}
+	if !bytes.Contains(raw, []byte("branch_cache: \"off\"")) {
+		t.Fatalf("expected branch_cache to persist in switches yaml, got: %s", string(raw))
 	}
 }
 

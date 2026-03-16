@@ -206,10 +206,10 @@ func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 // downloadWithFallback 尝试使用配置的 Socks5 下载，失败则直连
 func downloadWithFallback(url string) ([]byte, error) {
 	var proxyAddr string
-	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
 		proxyAddr = strings.TrimSpace(overrides.Socks5)
 	} else if err != nil {
-		mlog.L().Warn("failed to load runtime overrides for config download, falling back to direct", zap.Error(err))
+		mlog.L().Warn("failed to load custom overrides for config download, falling back to direct", zap.Error(err))
 	}
 
 	if proxyAddr != "" {

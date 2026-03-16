@@ -31,7 +31,7 @@ type Args struct {
 type WebInfo struct {
 	mu       sync.RWMutex
 	filePath string
-	// Replaced 'any' with 'interface{}' for backward compatibility.
+	// data stores arbitrary JSON/YAML-compatible payloads.
 	data interface{}
 }
 

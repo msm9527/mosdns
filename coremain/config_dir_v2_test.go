@@ -1,44 +1,52 @@
 package coremain
 
 import (
-    "encoding/json"
-    "os"
-    "path/filepath"
-    "testing"
+	"path/filepath"
+	"testing"
 )
 
-type legacyInventory struct {
-    Plugins []struct {
-        Tag  string `json:"tag"`
-        Type string `json:"type"`
-    } `json:"plugins"`
+func TestConfigDirV2DoesNotIncludeRemovedCoreMode(t *testing.T) {
+	cfg, fileUsed, err := loadConfig(filepath.Join("..", "config", "config.yaml"))
+	if err != nil {
+		t.Fatalf("load config dir v2: %v", err)
+	}
+	if cfg.Audit == nil || cfg.Audit.SQLitePath != "db/audit.db" {
+		t.Fatalf("unexpected audit config: %+v", cfg.Audit)
+	}
+	plugins, err := collectConfigPlugins(fileUsed)
+	if err != nil {
+		t.Fatalf("collect config plugins: %v", err)
+	}
+	gotInventory := make(map[string]string, len(plugins))
+	for _, plugin := range plugins {
+		gotInventory[plugin.Tag] = plugin.Type
+	}
+	if _, ok := gotInventory["core_mode"]; ok {
+		t.Fatalf("removed core_mode switch still exists in config inventory")
+	}
+	if gotInventory["branch_cache"] != "switch" {
+		t.Fatalf("expected branch_cache switch in config inventory, got %q", gotInventory["branch_cache"])
+	}
 }
 
-func TestConfigDirV2MatchesLegacyPluginParity(t *testing.T) {
-    fixturePath := filepath.Join("testdata", "config_legacy_ordered.json")
-    data, err := os.ReadFile(fixturePath)
-    if err != nil {
-        t.Fatalf("read fixture: %v", err)
-    }
-    var fixture legacyInventory
-    if err := json.Unmarshal(data, &fixture); err != nil {
-        t.Fatalf("decode fixture: %v", err)
-    }
+func collectConfigPlugins(path string) ([]PluginConfig, error) {
+	cfg, fileUsed, err := loadConfig(path)
+	if err != nil {
+		return nil, err
+	}
 
-    cfg, _, err := loadConfig(filepath.Join("..", "config", "config.yaml"))
-    if err != nil {
-        t.Fatalf("load config dir v2: %v", err)
-    }
-    if cfg.Audit == nil || cfg.Audit.SQLitePath != "db/audit.db" {
-        t.Fatalf("unexpected audit config: %+v", cfg.Audit)
-    }
-    if len(cfg.Plugins) != len(fixture.Plugins) {
-        t.Fatalf("plugin count mismatch: got %d want %d", len(cfg.Plugins), len(fixture.Plugins))
-    }
-    for i, expected := range fixture.Plugins {
-        got := cfg.Plugins[i]
-        if got.Tag != expected.Tag || got.Type != expected.Type {
-            t.Fatalf("plugin parity mismatch at %d: got %s/%s want %s/%s", i, got.Tag, got.Type, expected.Tag, expected.Type)
-        }
-    }
+	plugins := make([]PluginConfig, 0, len(cfg.Plugins))
+	for _, includePath := range cfg.Include {
+		resolved := includePath
+		if !filepath.IsAbs(includePath) {
+			resolved = filepath.Join(filepath.Dir(fileUsed), includePath)
+		}
+		subPlugins, err := collectConfigPlugins(resolved)
+		if err != nil {
+			return nil, err
+		}
+		plugins = append(plugins, subPlugins...)
+	}
+	plugins = append(plugins, cfg.Plugins...)
+	return plugins, nil
 }

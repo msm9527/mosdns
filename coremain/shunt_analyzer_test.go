@@ -10,13 +10,12 @@ import (
 
 func TestShuntAnalyzerExplain(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "switches.json"), `{
-  "block_response": "on",
-  "block_query_type": "on",
-  "block_ipv6": "off",
-  "ad_block": "off",
-  "core_mode": "secure"
-}`)
+	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
+block_response: "on"
+block_query_type: "on"
+block_ipv6: "off"
+ad_block: "off"
+`)
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
@@ -80,7 +79,7 @@ plugins:
 
 func TestShuntAnalyzerConflicts(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "switches.json"), `{}`)
+	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
@@ -124,7 +123,7 @@ plugins:
 
 func TestRuntimeShuntConflictsCmd(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "switches.json"), `{}`)
+	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
@@ -174,13 +173,12 @@ plugins:
 
 func TestRuntimeShuntExplainCmdTable(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "switches.json"), `{
-  "block_response": "on",
-  "block_query_type": "on",
-  "block_ipv6": "off",
-  "ad_block": "off",
-  "core_mode": "secure"
-}`)
+	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
+block_response: "on"
+block_query_type: "on"
+block_ipv6: "off"
+ad_block: "off"
+`)
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `

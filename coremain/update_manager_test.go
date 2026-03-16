@@ -44,15 +44,15 @@ func TestPreferredReleaseTagUsesCanonicalTag(t *testing.T) {
 	}
 }
 
-func TestGetHttpClientForUpdatePrefersRuntimeOverrides(t *testing.T) {
+func TestGetHttpClientForUpdatePrefersCustomConfig(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()
 	t.Cleanup(func() {
 		MainConfigBaseDir = oldBaseDir
 	})
 
-	if err := saveGlobalOverridesToRuntimeStore(&GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
-		t.Fatalf("saveGlobalOverridesToRuntimeStore: %v", err)
+	if err := saveGlobalOverridesToCustomConfig(&GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
+		t.Fatalf("saveGlobalOverridesToCustomConfig: %v", err)
 	}
 
 	m := &UpdateManager{httpClient: &http.Client{}}
@@ -61,7 +61,7 @@ func TestGetHttpClientForUpdatePrefersRuntimeOverrides(t *testing.T) {
 		t.Fatalf("getHttpClientForUpdate() error = %v", err)
 	}
 	if !isProxy {
-		t.Fatal("expected proxy client from runtime overrides")
+		t.Fatal("expected proxy client from custom config")
 	}
 	if client == nil || client.Transport == nil {
 		t.Fatalf("unexpected proxy client: %#v", client)

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
 
 func TestPollWatchedFilesReloadsRules(t *testing.T) {
@@ -15,9 +17,9 @@ func TestPollWatchedFilesReloadsRules(t *testing.T) {
 	}
 
 	ds := &DomainSetLight{
-		curArgs:      &Args{Files: []string{ruleFile}},
-		subscribers:  make([]func(), 0, 1),
-		fileStates:   make(map[string]watchedFileState),
+		curArgs:     &Args{Files: []string{ruleFile}},
+		subscribers: make([]func(), 0, 1),
+		fileStates:  make(map[string]watchedFileState),
 	}
 	initialRules, err := (&DomainSetLight{}).initAndLoadRules(nil, []string{ruleFile})
 	if err != nil {
@@ -55,5 +57,46 @@ func TestPollWatchedFilesReloadsRules(t *testing.T) {
 	}
 	if len(rules) != 1 || rules[0] != "domain:new.example" {
 		t.Fatalf("unexpected rules after reload: %#v", rules)
+	}
+}
+
+func TestLoadGeneratedDatasetWhenFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	ruleFile := filepath.Join(dir, "gen", "nov4rule.txt")
+	dbPath := coremain.RuntimeStateDBPathForPath(ruleFile)
+
+	if err := coremain.SaveGeneratedDatasetToPath(dbPath, ruleFile, coremain.GeneratedDatasetFormatDomainOutputRule, "full:runtime.example\n"); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	}
+
+	ds := &DomainSetLight{}
+	rules, err := ds.loadFileInternal(ruleFile)
+	if err != nil {
+		t.Fatalf("loadFileInternal: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != "full:runtime.example" {
+		t.Fatalf("unexpected rules from generated dataset: %#v", rules)
+	}
+}
+
+func TestReplaceListRuntimePersistsGeneratedDataset(t *testing.T) {
+	dir := t.TempDir()
+	ruleFile := filepath.Join(dir, "gen", "nov6rule.txt")
+	ds := &DomainSetLight{ruleFile: ruleFile}
+
+	replaced, err := ds.ReplaceListRuntime(nil, []string{"full:example.com"})
+	if err != nil {
+		t.Fatalf("ReplaceListRuntime: %v", err)
+	}
+	if replaced != 1 {
+		t.Fatalf("unexpected replaced count: %d", replaced)
+	}
+
+	dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(ruleFile)
+	if err != nil {
+		t.Fatalf("LoadGeneratedDatasetForOutputPath: %v", err)
+	}
+	if !ok || dataset.Content != "full:example.com\n" {
+		t.Fatalf("unexpected generated dataset: ok=%v dataset=%+v", ok, dataset)
 	}
 }

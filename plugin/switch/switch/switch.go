@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,7 +18,6 @@ import (
 )
 
 const PluginType = "switch"
-const runtimeStateNamespaceSwitch = "switch"
 
 // globalRegistry a thread-safe registry for all switch instances.
 var globalRegistry = struct {
@@ -35,9 +33,6 @@ type Args struct {
 	// Name is a unique identifier for this switch instance.
 	// It's used in match clauses, e.g., `switch "my_switch:on"`.
 	Name string `yaml:"name"`
-
-	// StateFilePath is the path to the file that persists the switch's state.
-	StateFilePath string `yaml:"state_file_path"`
 }
 
 // Switch represents a single, named switch instance.
@@ -64,16 +59,13 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if cfg.Name == "" {
 		return nil, fmt.Errorf("plugin '%s' requires a non-empty 'name'", PluginType)
 	}
-	if cfg.StateFilePath == "" {
-		return nil, fmt.Errorf("plugin '%s' (name: %s) requires a 'state_file_path'", PluginType, cfg.Name)
-	}
 	def, ok := switchmeta.Lookup(cfg.Name)
 	if !ok {
 		return nil, fmt.Errorf("unknown switch name: %s", cfg.Name)
 	}
 
 	sw := &Switch{
-		store: getStateStore(cfg.StateFilePath),
+		store: getStateStore(),
 		def:   def,
 	}
 	if err := sw.load(); err != nil {
@@ -175,51 +167,41 @@ func (s *Switch) load() error {
 }
 
 type stateStore struct {
-	path string
-	mu   sync.Mutex
+	mu sync.Mutex
 }
 
-var stateStores struct {
-	sync.Mutex
-	byPath map[string]*stateStore
-}
+var sharedStateStore = &stateStore{}
 
-func getStateStore(path string) *stateStore {
-	stateStores.Lock()
-	defer stateStores.Unlock()
-
-	if stateStores.byPath == nil {
-		stateStores.byPath = make(map[string]*stateStore)
-	}
-	if store := stateStores.byPath[path]; store != nil {
-		return store
-	}
-	store := &stateStore{path: path}
-	stateStores.byPath[path] = store
-	return store
+func getStateStore() *stateStore {
+	return sharedStateStore
 }
 
 func (s *stateStore) Ensure(def switchmeta.Definition) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	values, err := s.read()
+	values, exists, err := s.read()
 	if err != nil {
 		return "", err
 	}
-	if current, ok := values[def.Name]; ok {
-		return def.NormalizeValue(current)
+	current, ok := values[def.Name]
+	if !ok {
+		current = def.DefaultValue
+		values[def.Name] = current
 	}
-
-	values[def.Name] = def.DefaultValue
-	return def.DefaultValue, s.write(values)
+	if !exists {
+		if err := s.write(values); err != nil {
+			return "", err
+		}
+	}
+	return current, nil
 }
 
 func (s *stateStore) Set(def switchmeta.Definition, value string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	values, err := s.read()
+	values, _, err := s.read()
 	if err != nil {
 		return err
 	}
@@ -227,38 +209,16 @@ func (s *stateStore) Set(def switchmeta.Definition, value string) error {
 	return s.write(values)
 }
 
-func (s *stateStore) read() (map[string]string, error) {
-	runtimeKey := s.runtimeStateKey()
-	if runtimeKey != "" {
-		dbPath := coremain.RuntimeStateDBPathForPath(s.path)
-		values := make(map[string]string)
-		ok, err := coremain.LoadRuntimeStateJSONFromPath(dbPath, runtimeStateNamespaceSwitch, runtimeKey, &values)
-		if err == nil && ok {
-			return values, nil
-		}
-		if err != nil {
-			return nil, err
-		}
+func (s *stateStore) read() (map[string]string, bool, error) {
+	values, ok, err := coremain.LoadSwitchesFromCustomConfig()
+	if err != nil {
+		return nil, false, err
 	}
-	return make(map[string]string), nil
+	return values, ok, nil
 }
 
 func (s *stateStore) write(values map[string]string) error {
-	runtimeKey := s.runtimeStateKey()
-	if runtimeKey != "" {
-		dbPath := coremain.RuntimeStateDBPathForPath(s.path)
-		if err := coremain.SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceSwitch, runtimeKey, values); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *stateStore) runtimeStateKey() string {
-	if strings.TrimSpace(s.path) == "" {
-		return ""
-	}
-	return filepath.Clean(s.path)
+	return coremain.SaveSwitchesToCustomConfig(values)
 }
 
 func parseIncomingValue(r *http.Request, def switchmeta.Definition) (string, error) {
@@ -344,7 +304,7 @@ func handleUpdateSwitch(w http.ResponseWriter, r *http.Request) {
 		writeSwitchErrorJSON(w, http.StatusInternalServerError, "SWITCH_UPDATE_FAILED", "failed to update switch store: "+err.Error())
 		return
 	}
-	_ = coremain.RecordSystemEventToPath(coremain.RuntimeStateDBPathForPath(sw.store.path), "control.switches", "info", "updated switch value", map[string]any{
+	_ = coremain.RecordSystemEvent("control.switches", "info", "updated switch value", map[string]any{
 		"name":  def.Name,
 		"value": value,
 	})

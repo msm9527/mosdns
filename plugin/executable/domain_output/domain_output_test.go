@@ -12,7 +12,22 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
+
+func mustLoadGeneratedDatasetContent(t *testing.T, path string) string {
+	t.Helper()
+
+	dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(path)
+	if err != nil {
+		t.Fatalf("LoadGeneratedDatasetForOutputPath(%q): %v", path, err)
+	}
+	if !ok {
+		t.Fatalf("expected generated dataset for %q", path)
+	}
+	return dataset.Content
+}
 
 func TestDomainOutputPromoteAfterThreshold(t *testing.T) {
 	t.Parallel()
@@ -33,23 +48,17 @@ func TestDomainOutputPromoteAfterThreshold(t *testing.T) {
 	d.processRecord(&logItem{name: "example.com.", qtype: 1, source: "live"})
 	d.performWrite(WriteModeSave)
 
-	raw, err := os.ReadFile(filepath.Join(dir, "realip.rule"))
-	if err != nil {
-		t.Fatalf("read rule file: %v", err)
-	}
-	if strings.TrimSpace(string(raw)) != "" {
-		t.Fatalf("expected no promoted rules after first observation, got %q", string(raw))
+	raw := mustLoadGeneratedDatasetContent(t, filepath.Join(dir, "realip.rule"))
+	if strings.TrimSpace(raw) != "" {
+		t.Fatalf("expected no promoted rules after first observation, got %q", raw)
 	}
 
 	d.processRecord(&logItem{name: "example.com.", qtype: 1, source: "live"})
 	d.performWrite(WriteModeSave)
 
-	raw, err = os.ReadFile(filepath.Join(dir, "realip.rule"))
-	if err != nil {
-		t.Fatalf("read rule file: %v", err)
-	}
-	if !strings.Contains(string(raw), "full:example.com") {
-		t.Fatalf("expected promoted rule after threshold, got %q", string(raw))
+	raw = mustLoadGeneratedDatasetContent(t, filepath.Join(dir, "realip.rule"))
+	if !strings.Contains(raw, "full:example.com") {
+		t.Fatalf("expected promoted rule after threshold, got %q", raw)
 	}
 }
 
@@ -75,11 +84,7 @@ func TestDomainOutputNov4RequiresAQueries(t *testing.T) {
 	d.processRecord(&logItem{name: "ipv4-miss.example.", qtype: 1, source: "live"})
 	d.performWrite(WriteModeSave)
 
-	raw, err := os.ReadFile(filepath.Join(dir, "nov4.rule"))
-	if err != nil {
-		t.Fatalf("read rule file: %v", err)
-	}
-	output := string(raw)
+	output := mustLoadGeneratedDatasetContent(t, filepath.Join(dir, "nov4.rule"))
 	if strings.Contains(output, "full:ipv6-only.example") {
 		t.Fatalf("unexpected AAAA-only promotion in nov4 rules: %q", output)
 	}
@@ -130,10 +135,6 @@ func TestDomainOutputLoadFromRuntimeDatasetWhenFileMissing(t *testing.T) {
 	})
 	d.processRecord(&logItem{name: "runtime.example.", qtype: 1, source: "live"})
 	d.performWrite(WriteModeSave)
-
-	if err := os.Remove(statPath); err != nil {
-		t.Fatalf("remove stat file: %v", err)
-	}
 
 	reloaded := newDomainOutput(&Args{
 		FileStat: statPath,
@@ -256,20 +257,26 @@ func TestDomainOutputPeriodicSkipWhenNotDirty(t *testing.T) {
 	d.processRecord(&logItem{name: "skip.example.", qtype: 1, source: "live"})
 	d.performWrite(WriteModePeriodic)
 
-	st, err := os.Stat(statPath)
+	first, ok, err := coremain.LoadGeneratedDatasetForOutputPath(statPath)
 	if err != nil {
-		t.Fatalf("stat first write: %v", err)
+		t.Fatalf("LoadGeneratedDatasetForOutputPath first: %v", err)
 	}
-	firstMod := st.ModTime()
+	if !ok {
+		t.Fatal("expected generated dataset after first periodic write")
+	}
+	firstUpdated := first.Content
 	time.Sleep(1100 * time.Millisecond)
 
 	d.performWrite(WriteModePeriodic)
-	st2, err := os.Stat(statPath)
+	second, ok, err := coremain.LoadGeneratedDatasetForOutputPath(statPath)
 	if err != nil {
-		t.Fatalf("stat second write: %v", err)
+		t.Fatalf("LoadGeneratedDatasetForOutputPath second: %v", err)
 	}
-	if !st2.ModTime().Equal(firstMod) {
-		t.Fatalf("expected periodic clean write to be skipped, mod time changed: %v -> %v", firstMod, st2.ModTime())
+	if !ok {
+		t.Fatal("expected generated dataset after second periodic check")
+	}
+	if second.Content != firstUpdated {
+		t.Fatalf("expected periodic clean write to be skipped, content changed: %q -> %q", firstUpdated, second.Content)
 	}
 }
 

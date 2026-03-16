@@ -85,8 +85,7 @@ type RequeryConfig struct {
 }
 
 type SwitchConfig struct {
-	Name      string `yaml:"name,omitempty"`
-	StateFile string `yaml:"state_file,omitempty"`
+	Name string `yaml:"name,omitempty"`
 }
 
 type StorageConfig struct {

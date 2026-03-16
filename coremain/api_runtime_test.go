@@ -34,9 +34,6 @@ func TestHandleRuntimeSummary(t *testing.T) {
 		MainConfigBaseDir = oldBaseDir
 	})
 
-	if err := SaveRuntimeStateJSON("switch", "switches.json", map[string]string{"core_mode": "compat"}); err != nil {
-		t.Fatalf("SaveRuntimeStateJSON: %v", err)
-	}
 	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), filepath.Join(MainConfigBaseDir, "gen", "realip.rule"), "domain_output_rule", "full:example.com\n"); err != nil {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
@@ -219,13 +216,13 @@ func TestRuntimeAliasesForOverridesAndUpstreams(t *testing.T) {
 		MainConfigBaseDir = oldBaseDir
 	})
 
-	if err := saveGlobalOverridesToRuntimeStore(&GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
-		t.Fatalf("saveGlobalOverridesToRuntimeStore: %v", err)
+	if err := saveGlobalOverridesToCustomConfig(&GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
+		t.Fatalf("saveGlobalOverridesToCustomConfig: %v", err)
 	}
-	if err := saveUpstreamOverridesToRuntimeStore(GlobalUpstreamOverrides{
+	if err := saveUpstreamOverridesToCustomConfig(GlobalUpstreamOverrides{
 		"test": {{Tag: "u1", Protocol: "udp", Addr: "8.8.8.8"}},
 	}); err != nil {
-		t.Fatalf("saveUpstreamOverridesToRuntimeStore: %v", err)
+		t.Fatalf("saveUpstreamOverridesToCustomConfig: %v", err)
 	}
 
 	router := chi.NewRouter()

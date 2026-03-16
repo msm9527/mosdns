@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -157,5 +158,29 @@ func TestAuditCollectorUsesSQLiteForStatsAndFirstPageLogs(t *testing.T) {
 	}
 	if resp.Logs[0].QueryName != "two.example" || resp.Logs[1].QueryName != "one.example" {
 		t.Fatalf("unexpected logs order: %#v", resp.Logs)
+	}
+}
+
+func TestAuditCollectorResolvesRelativeSQLitePathAgainstConfigBaseDir(t *testing.T) {
+	dir := t.TempDir()
+	relativePath := filepath.Join("db", "audit.db")
+	c := NewAuditCollector(AuditSettings{
+		MemoryEntries: 2,
+		RetentionDays: 7,
+		MaxDiskSizeMB: 32,
+		StorageEngine: "sqlite",
+		SQLitePath:    relativePath,
+	}, dir)
+
+	if c.sqliteStorage == nil {
+		t.Fatal("expected sqlite storage to be configured")
+	}
+
+	wantPath := filepath.Join(dir, relativePath)
+	if got := c.sqliteStorage.Path(); got != wantPath {
+		t.Fatalf("unexpected sqlite path: got %q want %q", got, wantPath)
+	}
+	if _, err := os.Stat(wantPath); err != nil {
+		t.Fatalf("expected sqlite audit db to exist under config dir: %v", err)
 	}
 }

@@ -273,20 +273,6 @@ func baseMigrations() []Migration {
 			`,
 		},
 		{
-			ID: "0006_switch_state",
-			Up: `
-				CREATE TABLE IF NOT EXISTS switch_state (
-					file_path TEXT NOT NULL,
-					switch_name TEXT NOT NULL,
-					value TEXT NOT NULL,
-					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
-					PRIMARY KEY (file_path, switch_name)
-				);
-				CREATE INDEX IF NOT EXISTS idx_switch_state_file_path
-				ON switch_state(file_path, updated_at_unix_ms DESC);
-			`,
-		},
-		{
 			ID: "0007_generated_dataset",
 			Up: `
 				CREATE TABLE IF NOT EXISTS generated_dataset (
@@ -304,18 +290,6 @@ func baseMigrations() []Migration {
 			`,
 		},
 		{
-			ID: "0008_global_override_state",
-			Up: `
-				CREATE TABLE IF NOT EXISTS global_override_state (
-					scope_key TEXT PRIMARY KEY,
-					socks5 TEXT NOT NULL DEFAULT '',
-					ecs TEXT NOT NULL DEFAULT '',
-					replacements_json TEXT NOT NULL DEFAULT '[]',
-					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
-				);
-			`,
-		},
-		{
 			ID: "0008_audit_state",
 			Up: `
 				CREATE TABLE IF NOT EXISTS audit_state (
@@ -323,24 +297,6 @@ func baseMigrations() []Migration {
 					payload_json TEXT NOT NULL,
 					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
 				);
-			`,
-		},
-		{
-			ID: "0009_upstream_override_item",
-			Up: `
-				CREATE TABLE IF NOT EXISTS upstream_override_item (
-					plugin_tag TEXT NOT NULL,
-					upstream_tag TEXT NOT NULL,
-					enabled INTEGER NOT NULL DEFAULT 0,
-					protocol TEXT NOT NULL DEFAULT '',
-					payload_json TEXT NOT NULL,
-					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
-					PRIMARY KEY (plugin_tag, upstream_tag)
-				);
-				CREATE INDEX IF NOT EXISTS idx_upstream_override_item_plugin
-				ON upstream_override_item(plugin_tag, updated_at_unix_ms DESC);
-				CREATE INDEX IF NOT EXISTS idx_upstream_override_item_protocol
-				ON upstream_override_item(protocol, updated_at_unix_ms DESC);
 			`,
 		},
 		{
@@ -397,6 +353,19 @@ func baseMigrations() []Migration {
 				ALTER TABLE generated_dataset ADD COLUMN last_file_sha256 TEXT NOT NULL DEFAULT '';
 				CREATE INDEX IF NOT EXISTS idx_generated_dataset_sha
 				ON generated_dataset(content_sha256, updated_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0013_drop_legacy_control_config_tables",
+			Up: `
+				DROP TABLE IF EXISTS global_override_state;
+				DROP TABLE IF EXISTS upstream_override_item;
+			`,
+		},
+		{
+			ID: "0014_drop_switch_state",
+			Up: `
+				DROP TABLE IF EXISTS switch_state;
 			`,
 		},
 	}

@@ -83,16 +83,16 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	// This maintains the original logic for API fallbacks.
 	DiscoverAndCacheSettings(cfg)
 
-	// Step 2: Load overrides from runtime store.
-	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err == nil && ok {
+	// Step 2: Load user-editable overrides from custom_config.
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
 		m.setGlobalOverrides(overrides)
-		mlog.L().Info("loaded global overrides from runtime store",
-			zap.String("path", defaultRuntimeStateDBPath()),
+		mlog.L().Info("loaded global overrides from custom config",
+			zap.String("path", globalOverridesConfigPath()),
 			zap.String("socks5", overrides.Socks5),
 			zap.String("ecs", overrides.ECS),
 			zap.Int("replacements", len(overrides.Replacements)))
 	} else if err != nil {
-		mlog.L().Warn("failed to load global overrides from runtime store", zap.Error(err))
+		mlog.L().Warn("failed to load global overrides from custom config", zap.Error(err))
 	}
 	// <<< END OF MODIFICATIONS >>>
 

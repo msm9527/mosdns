@@ -9,12 +9,11 @@ import (
 )
 
 const (
-	runtimeNamespaceSwitch    = "switch"
-	runtimeNamespaceWebinfo   = "webinfo"
-	runtimeNamespaceRequery   = "requery"
+	runtimeNamespaceWebinfo    = "webinfo"
+	runtimeNamespaceRequery    = "requery"
 	runtimeStateNamespaceAudit = "audit"
-	runtimeNamespaceAdguard   = "adguard_rule"
-	runtimeNamespaceDiversion = "diversion_rule"
+	runtimeNamespaceAdguard    = "adguard_rule"
+	runtimeNamespaceDiversion  = "diversion_rule"
 )
 
 type runtimeNamespaceSummary struct {
@@ -61,10 +60,7 @@ func handleRuntimeSummary(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		dbPath := defaultRuntimeStateDBPath()
 		namespaces := []string{
-			runtimeStateNamespaceOverrides,
-			runtimeStateNamespaceUpstreams,
 			runtimeStateNamespaceAudit,
-			runtimeNamespaceSwitch,
 			runtimeNamespaceWebinfo,
 			runtimeNamespaceRequery,
 			runtimeNamespaceAdguard,

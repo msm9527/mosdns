@@ -51,7 +51,7 @@ plugins:
 func TestLoadPureDeclarativeConfigV2(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.v2.yaml")
-raw := `
+	raw := `
 version: v2
 api:
   http: "127.0.0.1:9099"
@@ -74,15 +74,11 @@ policies:
       - exec: $domestic
 control:
   base_dir: config
-  webinfo:
-    - name: webinfo_client
-      file: webinfo/clientname.json
   requery:
     - name: requery_main
       file: webinfo/requeryconfig.json
   switches:
-    - name: core_mode
-      state_file: switches.json
+    - name: branch_cache
 listeners:
   - name: udp_all
     protocol: udp
@@ -107,10 +103,14 @@ listeners:
 	if len(cfg.Include) != 1 || cfg.Include[0] != "sub_config/cache.yaml" {
 		t.Fatalf("unexpected include: %+v", cfg.Include)
 	}
-	if len(cfg.Plugins) != 6 {
+	if len(cfg.Plugins) != 5 {
 		t.Fatalf("unexpected plugins: %+v", cfg.Plugins)
 	}
-	if cfg.Plugins[0].Tag != "domestic" || cfg.Plugins[1].Tag != "sequence_main" || cfg.Plugins[2].Tag != "webinfo_client" || cfg.Plugins[3].Tag != "requery_main" || cfg.Plugins[4].Tag != "core_mode" || cfg.Plugins[5].Tag != "udp_all" {
+	if cfg.Plugins[0].Tag != "domestic" || cfg.Plugins[1].Tag != "sequence_main" || cfg.Plugins[2].Tag != "requery_main" || cfg.Plugins[3].Tag != "branch_cache" || cfg.Plugins[4].Tag != "udp_all" {
 		t.Fatalf("unexpected plugin order: %+v", cfg.Plugins)
+	}
+	switchArgs, ok := cfg.Plugins[3].Args.(map[string]any)
+	if !ok || switchArgs["name"] != "branch_cache" {
+		t.Fatalf("unexpected switch args: %#v", cfg.Plugins[3].Args)
 	}
 }

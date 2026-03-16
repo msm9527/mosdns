@@ -715,33 +715,6 @@ func (d *domainOutput) isStale(lastDate string) bool {
 }
 
 func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bool, bool) {
-	writeFile := func(filePath, content string) bool {
-		if filePath == "" {
-			return true
-		}
-		if err := os.MkdirAll(filepath.Dir(filePath), 0755); err != nil {
-			return false
-		}
-		tmpFile := filePath + ".tmp"
-		f, err := os.OpenFile(tmpFile, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
-		if err != nil {
-			return false
-		}
-		writer := bufio.NewWriter(f)
-		_, writeErr := writer.WriteString(content)
-		flushErr := writer.Flush()
-		closeErr := f.Close()
-		if writeErr != nil || flushErr != nil || closeErr != nil {
-			_ = os.Remove(tmpFile)
-			return false
-		}
-		if err := os.Rename(tmpFile, filePath); err != nil {
-			_ = os.Remove(tmpFile)
-			return false
-		}
-		return true
-	}
-
 	rulesHash := hashRules(snapshot.rules)
 	rulesChanged := !d.hasRulesHash || d.lastRulesHash != rulesHash
 	if mode == WriteModeFlush {
@@ -761,18 +734,6 @@ func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bo
 	genRuleContent := d.renderGeneratedRuleContent(snapshot)
 
 	ok := d.saveGeneratedDatasets(statContent, ruleContent, genRuleContent)
-	ok = writeFile(d.fileStat, statContent) && ok
-
-	needRuleWrite := mode != WriteModePeriodic || rulesChanged
-	if needRuleWrite {
-		if !writeFile(d.fileRule, ruleContent) {
-			ok = false
-		}
-
-		if !writeFile(d.genRule, genRuleContent) {
-			ok = false
-		}
-	}
 
 	if ok {
 		d.lastRulesHash = rulesHash
@@ -932,9 +893,9 @@ func (d *domainOutput) saveGeneratedDatasets(statContent, ruleContent, genRuleCo
 		format string
 		body   string
 	}{
-		{path: d.fileStat, format: "domain_output_stat", body: statContent},
-		{path: d.fileRule, format: "domain_output_rule", body: ruleContent},
-		{path: d.genRule, format: "domain_output_generated_rule", body: genRuleContent},
+		{path: d.fileStat, format: coremain.GeneratedDatasetFormatDomainOutputStat, body: statContent},
+		{path: d.fileRule, format: coremain.GeneratedDatasetFormatDomainOutputRule, body: ruleContent},
+		{path: d.genRule, format: coremain.GeneratedDatasetFormatDomainOutputGeneratedRule, body: genRuleContent},
 	} {
 		if strings.TrimSpace(dataset.path) == "" {
 			continue

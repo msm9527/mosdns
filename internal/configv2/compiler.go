@@ -110,6 +110,12 @@ func Compile(cfg *Config) (*CompiledConfig, error) {
 		return nil, errors.New("config v2 did not produce any includes or plugins")
 	}
 
+	orderedPlugins, err := orderPlugins(compiled.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	compiled.Plugins = orderedPlugins
+
 	return compiled, nil
 }
 
@@ -256,16 +262,11 @@ func compileControl(runtime ControlConfig) ([]PluginConfig, error) {
 		if name == "" {
 			return nil, errors.New("control switch name is required")
 		}
-		stateFile := resolveRuntimePath(runtime.BaseDir, item.StateFile)
-		if strings.TrimSpace(stateFile) == "" {
-			return nil, fmt.Errorf("control switch %s state_file is required", name)
-		}
 		plugins = append(plugins, PluginConfig{
 			Tag:  name,
 			Type: "switch",
 			Args: map[string]any{
-				"name":            name,
-				"state_file_path": stateFile,
+				"name": name,
 			},
 		})
 	}

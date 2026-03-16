@@ -10,11 +10,6 @@ import (
 	"go.uber.org/zap"
 )
 
-const (
-	runtimeStateNamespaceOverrides = "overrides"
-	runtimeStateKeyGlobalOverrides = "global"
-)
-
 // RegisterOverridesAPI registers the global overrides APIs.
 func RegisterOverridesAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/overrides", func(r chi.Router) {
@@ -74,27 +69,27 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 
-	loadedFromRuntime := false
-	// Logic: Runtime memory -> File -> Discovery fallback
+	loadedFromFile := false
+	// Logic: Runtime memory -> custom_config file -> Discovery fallback
 	if m != nil {
 		if current := m.GetGlobalOverrides(); current != nil {
 			resp.Socks5 = current.Socks5
 			resp.ECS = current.ECS
 			populateReplacements(current, true)
-			loadedFromRuntime = true
+			loadedFromFile = true
 		}
 	}
-	if !loadedFromRuntime {
-		if runtimeObj, ok, err := loadGlobalOverridesFromRuntimeStore(); err == nil && ok {
-			resp.Socks5 = runtimeObj.Socks5
-			resp.ECS = runtimeObj.ECS
-			populateReplacements(runtimeObj, false)
-			loadedFromRuntime = true
+	if !loadedFromFile {
+		if fileObj, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+			resp.Socks5 = fileObj.Socks5
+			resp.ECS = fileObj.ECS
+			populateReplacements(fileObj, false)
+			loadedFromFile = true
 		} else if err != nil {
-			mlog.L().Warn("failed to load overrides from runtime store", zap.Error(err))
+			mlog.L().Warn("failed to load overrides from custom config", zap.Error(err))
 		}
 	}
-	if !loadedFromRuntime {
+	if !loadedFromFile {
 		resp.Socks5 = discoveredSocks5
 		resp.ECS = discoveredECS
 	}
@@ -117,11 +112,10 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		return
 	}
 
-	if err := saveGlobalOverridesToRuntimeStore(&payload); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "WRITE_RUNTIME_STORE_FAILED", "Failed to save runtime state: "+err.Error())
+	if err := saveGlobalOverridesToCustomConfig(&payload); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WRITE_CUSTOM_CONFIG_FAILED", "Failed to save custom config: "+err.Error())
 		return
 	}
-
 	mlog.L().Info("global overrides saved via API",
 		zap.String("socks5", payload.Socks5),
 		zap.String("ecs", payload.ECS),
@@ -144,33 +138,9 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		"socks5":       payload.Socks5,
 		"ecs":          payload.ECS,
 		"replacements": len(payload.Replacements),
+		"path":         globalOverridesConfigPath(),
 	})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": message,
 	})
-}
-
-func loadGlobalOverridesFromRuntimeStore() (*GlobalOverrides, bool, error) {
-	store, err := getRuntimeStateStore()
-	if err != nil {
-		return nil, false, err
-	}
-	var payload GlobalOverrides
-	ok, err := store.get(runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, &payload)
-	if err != nil {
-		return nil, false, err
-	}
-	if ok {
-		payload.Prepare()
-		return &payload, true, nil
-	}
-	return nil, false, nil
-}
-
-func saveGlobalOverridesToRuntimeStore(payload *GlobalOverrides) error {
-	store, err := getRuntimeStateStore()
-	if err != nil {
-		return err
-	}
-	return store.put(runtimeStateNamespaceOverrides, runtimeStateKeyGlobalOverrides, payload)
 }

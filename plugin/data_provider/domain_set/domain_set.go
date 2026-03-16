@@ -131,12 +131,12 @@ func (d *DomainSet) loadFileInternal(f string) ([]string, error) {
 	if f == "" {
 		return nil, nil
 	}
-	b, err := os.ReadFile(f)
+	b, source, err := readDomainRulesSource(f)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
 		return nil, err
+	}
+	if len(b) == 0 {
+		return nil, nil
 	}
 
 	if ok, count, last := tryLoadSRS(b, d.mixM); ok {
@@ -161,7 +161,7 @@ func (d *DomainSet) loadFileInternal(f string) ([]string, error) {
 
 	after := d.mixM.Len()
 	if after > before {
-		fmt.Printf("[domain_set] loaded %d rules from text file: %s (last rule: %s)\n", after-before, f, lastTxt)
+		fmt.Printf("[domain_set] loaded %d rules from %s: %s (last rule: %s)\n", after-before, source, f, lastTxt)
 	}
 	return rules, scanner.Err()
 }
@@ -439,8 +439,23 @@ func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int,
 	d.rules = tmpRules
 	d.mu.Unlock()
 
-	if err := writeRulesToFile(ruleFile, tmpRules); err != nil {
-		return 0, err
+	if coremain.IsGeneratedDatasetOutputPath(ruleFile) {
+		content := strings.Join(tmpRules, "\n")
+		if content != "" {
+			content += "\n"
+		}
+		if err := coremain.SaveGeneratedDatasetToPath(
+			coremain.RuntimeStateDBPathForPath(ruleFile),
+			filepath.Clean(ruleFile),
+			coremain.GeneratedDatasetFormatDomainOutputRule,
+			content,
+		); err != nil {
+			return 0, err
+		}
+	} else {
+		if err := writeRulesToFile(ruleFile, tmpRules); err != nil {
+			return 0, err
+		}
 	}
 
 	d.notifySubscribers()
@@ -463,7 +478,7 @@ func writeRulesToFile(path string, rules []string) error {
 	return writer.Flush()
 }
 
-// --- Public loading functions (UNCHANGED to maintain compatibility) ---
+// Public loading helpers shared by file and expression based rule sources.
 
 func LoadExpsAndFiles(exps, fs []string, m *domain.MixMatcher[struct{}]) error {
 	if err := LoadExps(exps, m); err != nil {
@@ -494,12 +509,12 @@ func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 	if f == "" {
 		return nil
 	}
-	b, err := os.ReadFile(f)
+	b, source, err := readDomainRulesSource(f)
 	if err != nil {
-		if os.IsNotExist(err) {
-			return nil
-		}
 		return err
+	}
+	if len(b) == 0 {
+		return nil
 	}
 
 	if ok, count, last := tryLoadSRS(b, m); ok {
@@ -521,9 +536,35 @@ func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 
 	after := m.Len()
 	if after > before {
-		fmt.Printf("[domain_set] loaded %d rules from text file: %s (last rule: %s)\n", after-before, f, lastTxt)
+		fmt.Printf("[domain_set] loaded %d rules from %s: %s (last rule: %s)\n", after-before, source, f, lastTxt)
 	}
 	return scanner.Err()
+}
+
+func readDomainRulesSource(path string) ([]byte, string, error) {
+	if dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(path); err != nil {
+		return nil, "", err
+	} else if ok && isGeneratedRuleDatasetFormat(dataset.Format) {
+		return []byte(dataset.Content), "generated dataset", nil
+	}
+
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, "text file", nil
+		}
+		return nil, "", err
+	}
+	return b, "text file", nil
+}
+
+func isGeneratedRuleDatasetFormat(format string) bool {
+	switch format {
+	case coremain.GeneratedDatasetFormatDomainOutputRule, coremain.GeneratedDatasetFormatDomainOutputGeneratedRule:
+		return true
+	default:
+		return false
+	}
 }
 
 // --- SRS parsing functions (mostly unchanged) ---

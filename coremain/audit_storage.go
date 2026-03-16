@@ -34,6 +34,17 @@ func defaultAuditSQLitePath(configBaseDir string) string {
 	return filepath.Join(baseDir, auditLogsDirname, auditSQLiteFilename)
 }
 
+func resolveAuditSQLitePath(configBaseDir, configured string) string {
+	configured = strings.TrimSpace(configured)
+	if configured == "" {
+		return defaultAuditSQLitePath(configBaseDir)
+	}
+	if filepath.IsAbs(configured) || configBaseDir == "" {
+		return configured
+	}
+	return filepath.Join(configBaseDir, configured)
+}
+
 func wrapExactSet(values []string) string {
 	if len(values) == 0 {
 		return ""

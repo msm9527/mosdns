@@ -119,7 +119,7 @@ func saveAuditSettings(configBaseDir string, settings AuditSettings) error {
 }
 
 func loadAuditSettingsFromRuntimeStore(configBaseDir string) (AuditSettings, bool, error) {
-	store, err := getRuntimeStateStoreByPath(filepath.Join(configBaseDir, runtimeStateDBFilename))
+	store, err := getRuntimeStateStoreByPath(runtimeStateDBPathForBaseDir(configBaseDir))
 	if err != nil {
 		return AuditSettings{}, false, err
 	}
@@ -132,7 +132,7 @@ func loadAuditSettingsFromRuntimeStore(configBaseDir string) (AuditSettings, boo
 }
 
 func saveAuditSettingsToRuntimeStore(configBaseDir string, settings AuditSettings) error {
-	store, err := getRuntimeStateStoreByPath(filepath.Join(configBaseDir, runtimeStateDBFilename))
+	store, err := getRuntimeStateStoreByPath(runtimeStateDBPathForBaseDir(configBaseDir))
 	if err != nil {
 		return err
 	}

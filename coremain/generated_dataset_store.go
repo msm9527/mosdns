@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 type GeneratedDataset struct {
@@ -16,6 +17,12 @@ type GeneratedDataset struct {
 }
 
 const runtimeStateNamespaceGeneratedDataset = "generated_dataset"
+
+const (
+	GeneratedDatasetFormatDomainOutputStat          = "domain_output_stat"
+	GeneratedDatasetFormatDomainOutputRule          = "domain_output_rule"
+	GeneratedDatasetFormatDomainOutputGeneratedRule = "domain_output_generated_rule"
+)
 
 type GeneratedDatasetEntry struct {
 	Key                  string `json:"key"`
@@ -48,6 +55,19 @@ func LoadGeneratedDatasetFromPath(path, key string) (*GeneratedDataset, bool, er
 		}, true, nil
 	}
 	return nil, false, nil
+}
+
+func LoadGeneratedDatasetForOutputPath(outputPath string) (*GeneratedDataset, bool, error) {
+	dbPath := RuntimeStateDBPathForPath(outputPath)
+	return LoadGeneratedDatasetFromPath(dbPath, filepath.Clean(outputPath))
+}
+
+func IsGeneratedDatasetOutputPath(path string) bool {
+	cleanPath := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	if cleanPath == "" || cleanPath == "." {
+		return false
+	}
+	return cleanPath == "gen" || strings.HasPrefix(cleanPath, "gen/") || strings.Contains(cleanPath, "/gen/")
 }
 
 func SaveGeneratedDatasetToPath(path, key, format, content string) error {

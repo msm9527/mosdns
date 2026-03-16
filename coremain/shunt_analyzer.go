@@ -232,21 +232,11 @@ func (a *shuntAnalyzer) Conflicts() []shuntConflictEntry {
 }
 
 func (a *shuntAnalyzer) loadSwitches() error {
-	switchFile := filepath.Join(a.baseDir, "rule", "switches.json")
-	data, err := os.ReadFile(switchFile)
-	switch {
-	case err == nil:
-	case os.IsNotExist(err):
-		return nil
-	default:
-		return fmt.Errorf("read switches file: %w", err)
+	values, _, err := loadSwitchesFromCustomConfigForBaseDir(a.baseDir)
+	if err != nil {
+		return fmt.Errorf("load switches config: %w", err)
 	}
-	if len(bytes.TrimSpace(data)) == 0 {
-		return nil
-	}
-	if err := json.Unmarshal(data, &a.switches); err != nil {
-		return fmt.Errorf("decode switches file: %w", err)
-	}
+	a.switches = values
 	return nil
 }
 
@@ -452,10 +442,6 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 	blockQueryType := switches["block_query_type"] != "off"
 	blockIPv6 := switches["block_ipv6"] == "on"
 	adBlock := switches["ad_block"] == "on"
-	coreMode := strings.TrimSpace(switches["core_mode"])
-	if coreMode == "" {
-		coreMode = "secure"
-	}
 	outputTagByMark := make(map[uint8]string)
 	tagByMark := make(map[uint8]string)
 	for _, rule := range rules {
@@ -539,15 +525,15 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 	path = append(path, shuntDecisionStep{
 		Order:       len(path) + 1,
 		Stage:       "sequence_fallback",
-		Action:      "not_in_list_" + coreMode + "_" + strings.ToLower(qtype),
-		Reason:      "未命中 known-domain 优先级，进入列表外解析逻辑",
+		Action:      "not_in_list_noleak_" + strings.ToLower(qtype),
+		Reason:      "未命中 known-domain 优先级，进入当前无泄漏列表外解析逻辑",
 		Matched:     true,
 		DecisionHit: true,
 	})
 	return shuntDecision{
 		Stage:  "sequence_fallback",
-		Action: "not_in_list_" + coreMode + "_" + strings.ToLower(qtype),
-		Reason: "未命中 known-domain 优先级，进入列表外解析逻辑",
+		Action: "not_in_list_noleak_" + strings.ToLower(qtype),
+		Reason: "未命中 known-domain 优先级，进入当前无泄漏列表外解析逻辑",
 	}, path
 }
 

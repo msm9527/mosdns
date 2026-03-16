@@ -170,18 +170,18 @@ func NewUpdateManager() *UpdateManager {
 // It returns the client and a boolean indicating if a proxy was configured.
 func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy bool, err error) {
 	if MainConfigBaseDir == "" {
-		m.logWarn("MainConfigBaseDir is not set, cannot load runtime overrides, using direct connection", nil)
+		m.logWarn("MainConfigBaseDir is not set, cannot load custom overrides, using direct connection", nil)
 		return m.httpClient, false, nil
 	}
 
-	if overrides, ok, err := loadGlobalOverridesFromRuntimeStore(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
 		if strings.TrimSpace(overrides.Socks5) != "" {
-			m.logger().Info("using socks5 proxy for update from runtime store", zap.String("proxy", overrides.Socks5))
+			m.logger().Info("using socks5 proxy for update from custom config", zap.String("proxy", overrides.Socks5))
 			return m.newSocks5Client(overrides.Socks5)
 		}
 		return m.httpClient, false, nil
 	} else if err != nil {
-		m.logWarn("failed to load runtime overrides, falling back to direct connection", err)
+		m.logWarn("failed to load custom overrides, falling back to direct connection", err)
 	}
 	return m.httpClient, false, nil
 }

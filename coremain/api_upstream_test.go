@@ -56,12 +56,12 @@ func TestHandleSetUpstreamConfig_NoDeadlockWhenOverridesNil(t *testing.T) {
 		t.Fatalf("unexpected status code: got %d, body=%s", w.Code, w.Body.String())
 	}
 
-	cfg, ok, err := loadUpstreamOverridesFromRuntimeStore()
+	cfg, ok, err := loadUpstreamOverridesFromCustomConfig()
 	if err != nil {
-		t.Fatalf("loadUpstreamOverridesFromRuntimeStore: %v", err)
+		t.Fatalf("loadUpstreamOverridesFromCustomConfig: %v", err)
 	}
 	if !ok || len(cfg["test_plugin"]) != 1 {
-		t.Fatalf("expected upstream overrides in runtime store, got %+v", cfg)
+		t.Fatalf("expected upstream overrides in custom config, got %+v", cfg)
 	}
 }
 
@@ -176,13 +176,13 @@ func TestHandleReplaceUpstreamConfigWithMosdns_SaveAndApply(t *testing.T) {
 		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 
-	cfg, ok, err := loadUpstreamOverridesFromRuntimeStore()
+	cfg, ok, err := loadUpstreamOverridesFromCustomConfig()
 	if err != nil {
-		t.Fatalf("loadUpstreamOverridesFromRuntimeStore: %v", err)
+		t.Fatalf("loadUpstreamOverridesFromCustomConfig: %v", err)
 	}
 	items, found := cfg["test_plugin"]
 	if !ok || !found || len(items) != 1 || items[0].Tag != "u1" {
-		t.Fatalf("unexpected runtime store content: %+v", cfg)
+		t.Fatalf("unexpected custom config content: %+v", cfg)
 	}
 }
 
