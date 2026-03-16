@@ -1,6 +1,0 @@
-{
-  "memory_entries": 100000,
-  "retention_days": 30,
-  "max_disk_size_mb": 10,
-  "capacity": 100000
-}
