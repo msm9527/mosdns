@@ -131,6 +131,52 @@ func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T)
 	}
 }
 
+func TestCollectRuntimeCandidatesUsesMemoryPoolPolicies(t *testing.T) {
+	t.Parallel()
+
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	otherPolicy := coremain.DefaultDomainPoolPolicy("other_list")
+	otherPolicy.RequeryTag = "other-requery"
+	if err := coremain.SaveMemoryPoolPoliciesToCustomConfig(map[string]coremain.DomainPoolPolicy{
+		"my_realiplist": coremain.DefaultDomainPoolPolicy("my_realiplist"),
+		"other_list":    otherPolicy,
+	}); err != nil {
+		t.Fatalf("SaveMemoryPoolPoliciesToCustomConfig: %v", err)
+	}
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "policy.example", QTypeMask: qtypeMaskA, Weight: 9000, Reason: "stale"},
+			},
+		},
+		"other_list": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "ignored.example", QTypeMask: qtypeMaskAAAA, Weight: 9500, Reason: "stale"},
+			},
+		},
+	})
+
+	p := &Requery{
+		m:         m,
+		pluginTag: "requery",
+		config:    &Config{},
+	}
+
+	got, err := p.collectRuntimeCandidates(taskProfile{Mode: "quick_rebuild", Limit: 10})
+	if err != nil {
+		t.Fatalf("collectRuntimeCandidates: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "policy.example" {
+		t.Fatalf("unexpected runtime candidates from memory_pools policy: %#v", got)
+	}
+}
+
 func TestMergeAndFilterDomainsMergesRuntimeCandidatesForFullMode(t *testing.T) {
 	t.Parallel()
 

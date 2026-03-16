@@ -70,14 +70,6 @@ var runtimeCacheProfiles = []runtimeCacheProfile{
 	{Key: "cache_cnmihomo", Name: "国内域名fakeip", Tag: "cache_cnmihomo"},
 }
 
-var runtimeDomainProfiles = []runtimeDomainProfile{
-	{Key: "fakeip", Name: "FakeIP 域名", Tag: "my_fakeiplist"},
-	{Key: "realip", Name: "RealIP 域名", Tag: "my_realiplist"},
-	{Key: "nov4", Name: "无 V4 域名", Tag: "my_nov4list"},
-	{Key: "nov6", Name: "无 V6 域名", Tag: "my_nov6list"},
-	{Key: "total", Name: "请求排行", Tag: "top_domains"},
-}
-
 func RegisterRuntimeStatsAPI(router *chi.Mux, m *Mosdns) {
 	router.Get("/api/v1/cache/stats", handleAggregatedCacheStats(m))
 	router.Get("/api/v1/data/domain_stats", handleAggregatedDomainStats(m))
@@ -113,8 +105,14 @@ func handleAggregatedCacheStats(m *Mosdns) http.HandlerFunc {
 
 func handleAggregatedDomainStats(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items := make([]DomainStatsSnapshot, 0, len(runtimeDomainProfiles))
-		for _, profile := range runtimeDomainProfiles {
+		profiles, err := loadRuntimeDomainProfiles()
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "domain_stats_profiles_failed", err.Error())
+			return
+		}
+
+		items := make([]DomainStatsSnapshot, 0, len(profiles))
+		for _, profile := range profiles {
 			item := DomainStatsSnapshot{
 				Key:  profile.Key,
 				Name: profile.Name,

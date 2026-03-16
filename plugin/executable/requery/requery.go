@@ -57,6 +57,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 
 	p := &Requery{
 		m:          bp.M(),
+		pluginTag:  bp.Tag(),
 		runtimeKey: cfg.Key,
 		dbPath:     coremain.RuntimeStateDBPath(),
 		scheduler:  cron.New(),
@@ -98,6 +99,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 type Requery struct {
 	mu                  sync.RWMutex
 	m                   *coremain.Mosdns
+	pluginTag           string
 	runtimeKey          string
 	dbPath              string
 	config              *Config
@@ -451,7 +453,10 @@ func (p *Requery) mergeAndFilterDomains(ctx context.Context, profile taskProfile
 }
 
 func (p *Requery) buildTaskCandidatePlan(ctx context.Context, profile taskProfile) (taskCandidatePlan, error) {
-	runtimeDomains := p.collectRuntimeCandidates(profile)
+	runtimeDomains, err := p.collectRuntimeCandidates(profile)
+	if err != nil {
+		return taskCandidatePlan{}, err
+	}
 	if profile.Mode != "full_rebuild" {
 		if len(runtimeDomains) > 0 {
 			return taskCandidatePlan{Primary: applyCandidateLimit(runtimeDomains, profile.Limit)}, nil
@@ -581,9 +586,9 @@ func (p *Requery) scanDomainsFromSourceFiles(ctx context.Context, limit int) ([]
 	return domains, nil
 }
 
-func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidate {
+func (p *Requery) collectRuntimeCandidates(profile taskProfile) ([]domainCandidate, error) {
 	if p.m == nil {
-		return nil
+		return nil, nil
 	}
 
 	req := coremain.DomainRefreshCandidateRequest{
@@ -604,9 +609,10 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidat
 		req.IncludeHot = true
 	}
 
-	p.mu.RLock()
-	tags := p.actionTagsLocked(p.config.URLActions.SaveRules, "save")
-	p.mu.RUnlock()
+	tags, err := p.memoryTargetTags()
+	if err != nil {
+		return nil, err
+	}
 
 	candidateSet := make(map[string]domainCandidate)
 	for _, tag := range tags {
@@ -632,7 +638,7 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidat
 	}
 
 	if len(candidateSet) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	domains := make([]domainCandidate, 0, len(candidateSet))
@@ -645,7 +651,7 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidat
 		}
 		return domains[i].Weight > domains[j].Weight
 	})
-	return applyCandidateLimit(domains, req.Limit)
+	return applyCandidateLimit(domains, req.Limit), nil
 }
 
 func mergeDomainCandidates(primary []domainCandidate, secondary []domainCandidate) []domainCandidate {
@@ -1354,10 +1360,11 @@ func pluginActionFromURL(raw string) (tag string, action string, ok bool) {
 	}
 }
 
-func (p *Requery) collectMemoryStats(saveURLs []string) []memoryStatView {
-	p.mu.RLock()
-	tags := p.actionTagsLocked(saveURLs, "save")
-	p.mu.RUnlock()
+func (p *Requery) collectMemoryStats() ([]memoryStatView, error) {
+	tags, err := p.memoryTargetTags()
+	if err != nil {
+		return nil, err
+	}
 
 	views := make([]memoryStatView, 0, len(tags))
 	for _, tag := range tags {
@@ -1391,7 +1398,7 @@ func (p *Requery) collectMemoryStats(saveURLs []string) []memoryStatView {
 	sort.Slice(views, func(i, j int) bool {
 		return views[i].Name < views[j].Name
 	})
-	return views
+	return views, nil
 }
 
 func minInt(a, b int) int {
@@ -1547,7 +1554,11 @@ func (p *Requery) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	status := p.snapshotStatusLocked()
 	p.mu.RUnlock()
 
-	memoryStats := p.collectMemoryStats(cfg.URLActions.SaveRules)
+	memoryStats, err := p.collectMemoryStats()
+	if err != nil {
+		p.jsonError(w, "Failed to resolve memory pool targets", http.StatusInternalServerError)
+		return
+	}
 	status.MemoryStats = memoryStats
 	recentRuns, err := p.listRuntimeRuns(10)
 	if err != nil {

@@ -106,6 +106,7 @@ func runtimeHealthReport(dbPath string, m *Mosdns) (*runtimeHealthResponse, erro
 
 	addNamespaceSummaryCheck(dbPath, addCheck)
 	addSwitchesHealthCheck(addCheck)
+	addMemoryPoolHealthCheck(addCheck)
 	addOverridesHealthCheck(addCheck)
 	addUpstreamOverrideHealthCheck(addCheck)
 	addDatasetHealthCheck(dbPath, addCheck)
@@ -154,6 +155,35 @@ func addSwitchesHealthCheck(addCheck func(runtimeHealthCheck)) {
 			"present": ok,
 			"count":   len(switches),
 			"path":    switchesConfigPath(),
+		},
+	})
+}
+
+func addMemoryPoolHealthCheck(addCheck func(runtimeHealthCheck)) {
+	policies, ok, err := LoadMemoryPoolPoliciesFromCustomConfig()
+	if err != nil {
+		addCheck(runtimeHealthCheck{Name: "memory_pools", Status: "error", Message: err.Error()})
+		return
+	}
+	memoryCount := 0
+	statsCount := 0
+	for _, policy := range policies {
+		switch policy.Kind {
+		case DomainPoolKindMemory:
+			memoryCount++
+		case DomainPoolKindStats:
+			statsCount++
+		}
+	}
+	addCheck(runtimeHealthCheck{
+		Name:   "memory_pools",
+		Status: "ok",
+		Details: map[string]any{
+			"present": ok,
+			"count":   len(policies),
+			"memory":  memoryCount,
+			"stats":   statsCount,
+			"path":    MemoryPoolsConfigPath(),
 		},
 	})
 }
