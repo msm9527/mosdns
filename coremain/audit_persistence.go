@@ -17,6 +17,7 @@ import (
 )
 
 const auditDiskCleanupInterval = time.Minute
+const runtimeStateKeyAuditConfig = "settings"
 
 type auditLogFileInfo struct {
 	path string
@@ -83,22 +84,25 @@ func normalizeAuditSettings(settings AuditSettings) AuditSettings {
 	return settings
 }
 
-func loadAuditSettings(configBaseDir string) AuditSettings {
-	settings := AuditSettings{
+func defaultAuditSettings() AuditSettings {
+	return AuditSettings{
 		MemoryEntries: defaultAuditMemoryEntries,
 		RetentionDays: defaultAuditRetentionDays,
 		MaxDiskSizeMB: defaultAuditMaxDiskSizeMB,
 		MaxDBSizeMB:   defaultAuditMaxDBSizeMB,
 		StorageEngine: defaultAuditStorageEngine,
 	}
-	settingsPath := filepath.Join(configBaseDir, auditSettingsFilename)
-	data, err := os.ReadFile(settingsPath)
-	if err != nil {
-		return settings
+}
+
+func loadAuditSettings(configBaseDir string, base *AuditSettings) AuditSettings {
+	settings := defaultAuditSettings()
+	if base != nil {
+		settings = *base
 	}
-	if err := json.Unmarshal(data, &settings); err != nil {
-		mlog.L().Warn("failed to parse audit settings, using defaults", zap.String("path", settingsPath), zap.Error(err))
-		return normalizeAuditSettings(settings)
+	if runtimeSettings, ok, err := loadAuditSettingsFromRuntimeStore(configBaseDir); err == nil && ok {
+		settings = runtimeSettings
+	} else if err != nil {
+		mlog.L().Warn("failed to load audit settings from runtime store", zap.Error(err))
 	}
 	settings = normalizeAuditSettings(settings)
 	mlog.L().Info("loaded audit log settings",
@@ -111,13 +115,28 @@ func loadAuditSettings(configBaseDir string) AuditSettings {
 }
 
 func saveAuditSettings(configBaseDir string, settings AuditSettings) error {
-	settings = normalizeAuditSettings(settings)
-	data, err := json.MarshalIndent(settings, "", "  ")
+	return saveAuditSettingsToRuntimeStore(configBaseDir, settings)
+}
+
+func loadAuditSettingsFromRuntimeStore(configBaseDir string) (AuditSettings, bool, error) {
+	store, err := getRuntimeStateStoreByPath(filepath.Join(configBaseDir, runtimeStateDBFilename))
+	if err != nil {
+		return AuditSettings{}, false, err
+	}
+	var settings AuditSettings
+	ok, err := store.get(runtimeStateNamespaceAudit, runtimeStateKeyAuditConfig, &settings)
+	if err != nil {
+		return AuditSettings{}, false, err
+	}
+	return settings, ok, nil
+}
+
+func saveAuditSettingsToRuntimeStore(configBaseDir string, settings AuditSettings) error {
+	store, err := getRuntimeStateStoreByPath(filepath.Join(configBaseDir, runtimeStateDBFilename))
 	if err != nil {
 		return err
 	}
-	settingsPath := filepath.Join(configBaseDir, auditSettingsFilename)
-	return os.WriteFile(settingsPath, data, 0o644)
+	return store.put(runtimeStateNamespaceAudit, runtimeStateKeyAuditConfig, normalizeAuditSettings(settings))
 }
 
 func (s *NdjsonAuditStorage) WriteBatch(logs []AuditLog) error {

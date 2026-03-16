@@ -73,6 +73,10 @@ func compileConfigV2(raw []byte) (*Config, error) {
 		API: APIConfig{
 			HTTP: compiled.API.HTTP,
 		},
+		ControlDBPath: strings.TrimSpace(cfgV2.Storage.ControlDB),
+	}
+	if audit := compileAuditSettings(cfgV2.Audit); audit != nil {
+		cfg.Audit = audit
 	}
 	cfg.Plugins = make([]PluginConfig, 0, len(compiled.Plugins))
 	for _, plugin := range compiled.Plugins {
@@ -83,4 +87,18 @@ func compileConfigV2(raw []byte) (*Config, error) {
 		})
 	}
 	return cfg, nil
+}
+
+func compileAuditSettings(a configv2.AuditConfig) *AuditSettings {
+	if a == (configv2.AuditConfig{}) {
+		return nil
+	}
+	return &AuditSettings{
+		MemoryEntries: a.MemoryEntries,
+		RetentionDays: a.RetentionDays,
+		MaxDiskSizeMB: a.MaxDiskSizeMB,
+		MaxDBSizeMB:   a.MaxDBSizeMB,
+		StorageEngine: a.StorageEngine,
+		SQLitePath:    a.SQLitePath,
+	}
 }

@@ -6,8 +6,6 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -58,9 +56,12 @@ func TestHandleSetUpstreamConfig_NoDeadlockWhenOverridesNil(t *testing.T) {
 		t.Fatalf("unexpected status code: got %d, body=%s", w.Code, w.Body.String())
 	}
 
-	path := filepath.Join(MainConfigBaseDir, upstreamOverridesFilename)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("expected upstream overrides file to be written: %v", err)
+	cfg, ok, err := loadUpstreamOverridesFromRuntimeStore()
+	if err != nil {
+		t.Fatalf("loadUpstreamOverridesFromRuntimeStore: %v", err)
+	}
+	if !ok || len(cfg["test_plugin"]) != 1 {
+		t.Fatalf("expected upstream overrides in runtime store, got %+v", cfg)
 	}
 }
 
@@ -175,13 +176,13 @@ func TestHandleReplaceUpstreamConfigWithMosdns_SaveAndApply(t *testing.T) {
 		t.Fatalf("unexpected body: %s", w.Body.String())
 	}
 
-	path := filepath.Join(MainConfigBaseDir, upstreamOverridesFilename)
-	data, err := os.ReadFile(path)
+	cfg, ok, err := loadUpstreamOverridesFromRuntimeStore()
 	if err != nil {
-		t.Fatalf("read upstream overrides file failed: %v", err)
+		t.Fatalf("loadUpstreamOverridesFromRuntimeStore: %v", err)
 	}
-	if !strings.Contains(string(data), "test_plugin") || !strings.Contains(string(data), "u1") {
-		t.Fatalf("unexpected file content: %s", string(data))
+	items, found := cfg["test_plugin"]
+	if !ok || !found || len(items) != 1 || items[0].Tag != "u1" {
+		t.Fatalf("unexpected runtime store content: %+v", cfg)
 	}
 }
 

@@ -51,10 +51,13 @@ plugins:
 func TestLoadPureDeclarativeConfigV2(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.v2.yaml")
-	raw := `
+raw := `
 version: v2
 api:
   http: "127.0.0.1:9099"
+audit:
+  sqlite_path: db/audit.db
+  memory_entries: 2000
 rule_providers:
   - name: cache
     type: include
@@ -97,6 +100,9 @@ listeners:
 	}
 	if cfg.API.HTTP != "127.0.0.1:9099" {
 		t.Fatalf("unexpected api http %q", cfg.API.HTTP)
+	}
+	if cfg.Audit == nil || cfg.Audit.SQLitePath != "db/audit.db" || cfg.Audit.MemoryEntries != 2000 {
+		t.Fatalf("unexpected audit settings: %+v", cfg.Audit)
 	}
 	if len(cfg.Include) != 1 || cfg.Include[0] != "sub_config/cache.yaml" {
 		t.Fatalf("unexpected include: %+v", cfg.Include)

@@ -1,12 +1,9 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/go-chi/chi/v5"
@@ -98,27 +95,8 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 	if !loadedFromRuntime {
-		// Not in memory, try file.
-		overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-		data, err := os.ReadFile(overridesPath)
-		var fileObj GlobalOverrides
-		fileLoaded := false
-
-		if err == nil && json.Unmarshal(data, &fileObj) == nil {
-			resp.Socks5 = fileObj.Socks5
-			resp.ECS = fileObj.ECS
-			populateReplacements(&fileObj, false)
-			fileLoaded = true
-		}
-
-		// Fallback for Socks5/ECS if file didn't exist or parsing failed (or fields empty? - preserving original logic)
-		// Original logic: "falling back to discovered settings" if Parse failed or File not exist.
-		// If file loaded but values are empty, we might keep them empty?
-		// Let's stick to strict fallback: if file not loaded, use discovered.
-		if !fileLoaded {
-			resp.Socks5 = discoveredSocks5
-			resp.ECS = discoveredECS
-		}
+		resp.Socks5 = discoveredSocks5
+		resp.ECS = discoveredECS
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -139,21 +117,8 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		return
 	}
 
-	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-
-	// We only save original/new/comment for replacements (via json tags in struct)
-	updatedData, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "MARSHAL_SETTINGS_FAILED", "Failed to marshal settings: "+err.Error())
-		return
-	}
-
 	if err := saveGlobalOverridesToRuntimeStore(&payload); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "WRITE_RUNTIME_STORE_FAILED", "Failed to save runtime state: "+err.Error())
-		return
-	}
-	if err := os.WriteFile(overridesPath, updatedData, 0644); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "WRITE_SETTINGS_FILE_FAILED", "Failed to write settings file: "+err.Error())
 		return
 	}
 

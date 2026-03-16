@@ -8,6 +8,7 @@ type Config struct {
 	Version       string           `yaml:"version"`
 	Log           mlog.LogConfig   `yaml:"log,omitempty"`
 	API           APIConfig        `yaml:"api,omitempty"`
+	Audit         AuditConfig      `yaml:"audit,omitempty"`
 	Server        ServerConfig     `yaml:"server,omitempty"`
 	Listeners     []ListenerConfig `yaml:"listeners,omitempty"`
 	Upstreams     []UpstreamGroup  `yaml:"upstreams,omitempty"`
@@ -21,6 +22,15 @@ type Config struct {
 
 type APIConfig struct {
 	HTTP string `yaml:"http,omitempty"`
+}
+
+type AuditConfig struct {
+	MemoryEntries int    `yaml:"memory_entries,omitempty"`
+	RetentionDays int    `yaml:"retention_days,omitempty"`
+	MaxDiskSizeMB int    `yaml:"max_disk_size_mb,omitempty"`
+	MaxDBSizeMB   int    `yaml:"max_db_size_mb,omitempty"`
+	StorageEngine string `yaml:"storage_engine,omitempty"`
+	SQLitePath    string `yaml:"sqlite_path,omitempty"`
 }
 
 type ServerConfig struct {

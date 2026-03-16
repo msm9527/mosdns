@@ -170,7 +170,7 @@ func NewUpdateManager() *UpdateManager {
 // It returns the client and a boolean indicating if a proxy was configured.
 func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy bool, err error) {
 	if MainConfigBaseDir == "" {
-		m.logWarn("MainConfigBaseDir is not set, cannot find overrides file, using direct connection", nil)
+		m.logWarn("MainConfigBaseDir is not set, cannot load runtime overrides, using direct connection", nil)
 		return m.httpClient, false, nil
 	}
 
@@ -181,33 +181,8 @@ func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy b
 		}
 		return m.httpClient, false, nil
 	} else if err != nil {
-		m.logWarn("failed to load runtime overrides, falling back to overrides file", err)
+		m.logWarn("failed to load runtime overrides, falling back to direct connection", err)
 	}
-
-	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-	data, err := os.ReadFile(overridesPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File not found is normal, just use the default direct client.
-			return m.httpClient, false, nil
-		}
-		// Other read errors are problematic but we fall back to direct connection.
-		m.logWarn("failed to read config_overrides.json, falling back to direct connection", err)
-		return m.httpClient, false, nil
-	}
-
-	var overrides GlobalOverrides
-	if err := json.Unmarshal(data, &overrides); err != nil {
-		m.logWarn("failed to parse config_overrides.json, falling back to direct connection", err)
-		return m.httpClient, false, nil
-	}
-
-	if overrides.Socks5 != "" {
-		m.logger().Info("using socks5 proxy for update", zap.String("proxy", overrides.Socks5))
-		return m.newSocks5Client(overrides.Socks5)
-	}
-
-	// No socks5 config found in the file, use direct connection.
 	return m.httpClient, false, nil
 }
 

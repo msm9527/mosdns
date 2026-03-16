@@ -316,6 +316,16 @@ func baseMigrations() []Migration {
 			`,
 		},
 		{
+			ID: "0008_audit_state",
+			Up: `
+				CREATE TABLE IF NOT EXISTS audit_state (
+					setting_key TEXT PRIMARY KEY,
+					payload_json TEXT NOT NULL,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
+				);
+			`,
+		},
+		{
 			ID: "0009_upstream_override_item",
 			Up: `
 				CREATE TABLE IF NOT EXISTS upstream_override_item (

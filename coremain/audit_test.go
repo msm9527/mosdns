@@ -2,7 +2,6 @@ package coremain
 
 import (
 	"os"
-	"path/filepath"
 	"testing"
 	"time"
 )
@@ -52,12 +51,12 @@ func TestAuditCollectorSetSettingsPreservesRecentLogs(t *testing.T) {
 		t.Fatalf("unexpected remaining logs: %#v", got)
 	}
 
-	data, err := os.ReadFile(filepath.Join(dir, auditSettingsFilename))
+	settings, ok, err := loadAuditSettingsFromRuntimeStore(dir)
 	if err != nil {
-		t.Fatalf("read saved settings: %v", err)
+		t.Fatalf("loadAuditSettingsFromRuntimeStore: %v", err)
 	}
-	if len(data) == 0 {
-		t.Fatal("expected saved settings file to be non-empty")
+	if !ok || settings.MemoryEntries != 2 || settings.RetentionDays != 14 {
+		t.Fatalf("unexpected saved settings: %+v ok=%v", settings, ok)
 	}
 }
 

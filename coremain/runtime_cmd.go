@@ -36,11 +36,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "summary",
 		Short: "Print control namespace summary as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeSummaryJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			data, err := runtimeSummaryJSON(dbPath)
 			if err != nil {
 				return err
 			}
@@ -55,11 +55,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "health",
 		Short: "Run control health/self-check as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeHealthJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			data, err := runtimeHealthJSON(dbPath)
 			if err != nil {
 				return err
 			}
@@ -78,11 +78,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "list",
 		Short: "List generated datasets as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeDatasetsJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			data, err := runtimeDatasetsJSON(dbPath)
 			if err != nil {
 				return err
 			}
@@ -95,11 +95,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "export",
 		Short: "Export generated datasets from SQLite back to files.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			exported, err := ExportGeneratedDatasetsToFiles(filepath.Join(baseDir, runtimeStateDBFilename))
+			exported, err := ExportGeneratedDatasetsToFiles(dbPath)
 			if err != nil {
 				return err
 			}
@@ -112,11 +112,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "verify",
 		Short: "Verify generated datasets against exported files.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeDatasetsVerifyJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			data, err := runtimeDatasetsVerifyJSON(dbPath)
 			if err != nil {
 				return err
 			}
@@ -132,11 +132,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "events",
 		Short: "List recent control system events as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeEventsJSON(filepath.Join(baseDir, runtimeStateDBFilename), ctx.limit)
+			data, err := runtimeEventsJSON(dbPath, ctx.limit)
 			if err != nil {
 				return err
 			}
@@ -156,11 +156,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "jobs",
 		Short: "List requery job definitions as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeRequeryJobsJSON(filepath.Join(baseDir, runtimeStateDBFilename))
+			data, err := runtimeRequeryJobsJSON(dbPath)
 			if err != nil {
 				return err
 			}
@@ -173,11 +173,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "runs",
 		Short: "List recent requery runs as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeRequeryRunsJSON(filepath.Join(baseDir, runtimeStateDBFilename), ctx.limit)
+			data, err := runtimeRequeryRunsJSON(dbPath, ctx.limit)
 			if err != nil {
 				return err
 			}
@@ -191,11 +191,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "checkpoints",
 		Short: "List recent requery checkpoints as JSON.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeRequeryCheckpointsJSON(filepath.Join(baseDir, runtimeStateDBFilename), ctx.runID, ctx.limit)
+			data, err := runtimeRequeryCheckpointsJSON(dbPath, ctx.runID, ctx.limit)
 			if err != nil {
 				return err
 			}
@@ -210,11 +210,11 @@ func newControlCmd() *cobra.Command {
 		Use:   "prune",
 		Short: "Prune old requery run/checkpoint history.",
 		RunE: func(cmd *cobra.Command, args []string) error {
-			baseDir, err := resolveRuntimeCommandBaseDir(ctx.configPath, ctx.baseDir)
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
 			if err != nil {
 				return err
 			}
-			data, err := runtimeRequeryPruneJSON(filepath.Join(baseDir, runtimeStateDBFilename), requeryruntime.PruneOptions{
+			data, err := runtimeRequeryPruneJSON(dbPath, requeryruntime.PruneOptions{
 				KeepRuns:              ctx.keepRuns,
 				KeepCheckpointsPerRun: ctx.keepChecks,
 				MaxRunAgeDays:         ctx.ageDays,
@@ -263,10 +263,26 @@ func resolveRuntimeCommandBaseDir(configPath, baseDir string) (string, error) {
 	return wd, nil
 }
 
+func resolveRuntimeCommandDBPath(configPath, baseDir string) (string, error) {
+	if configPath != "" {
+		cfg, _, err := loadConfig(configPath)
+		if err != nil {
+			return "", err
+		}
+		return cfg.ControlDBPath, nil
+	}
+	baseDir, err := resolveRuntimeCommandBaseDir(configPath, baseDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, runtimeStateDBFilename), nil
+}
+
 func runtimeSummaryJSON(dbPath string) ([]byte, error) {
 	namespaces := []string{
 		runtimeStateNamespaceOverrides,
 		runtimeStateNamespaceUpstreams,
+		runtimeStateNamespaceAudit,
 		runtimeNamespaceSwitch,
 		runtimeNamespaceWebinfo,
 		runtimeNamespaceRequery,

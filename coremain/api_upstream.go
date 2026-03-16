@@ -1,11 +1,9 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -156,34 +154,10 @@ func loadUpstreamOverridesLocked() error {
 		upstreamOverrides = cfg
 		return nil
 	} else if err != nil {
-		mlog.L().Warn("[Debug UpstreamAPI] Runtime store load failed, falling back to file", zap.Error(err))
+		mlog.L().Warn("[Debug UpstreamAPI] Runtime store load failed", zap.Error(err))
 	}
-
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			mlog.L().Info("[Debug UpstreamAPI] File not found, creating new map", zap.String("path", path))
-			upstreamOverrides = make(GlobalUpstreamOverrides)
-			return nil
-		}
-		mlog.L().Error("[Debug UpstreamAPI] Failed to read file", zap.Error(err))
-		return err
-	}
-
-	var cfg GlobalUpstreamOverrides
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		mlog.L().Error("[Debug UpstreamAPI] JSON parse error", zap.Error(err))
-		return err
-	}
-
-	// Count items for debug
-	count := 0
-	for _, v := range cfg {
-		count += len(v)
-	}
-	mlog.L().Info("[Debug UpstreamAPI] Loaded success", zap.Int("groups", len(cfg)), zap.Int("total_items", count))
-
-	upstreamOverrides = cfg
+	mlog.L().Info("[Debug UpstreamAPI] Runtime store empty, creating new map", zap.String("path", path))
+	upstreamOverrides = make(GlobalUpstreamOverrides)
 	return nil
 }
 
@@ -195,41 +169,17 @@ func saveUpstreamOverrides() error {
 }
 
 func saveUpstreamOverridesLocked() error {
-	dir, path := getUpstreamOverridesPath()
-
-	// 确保配置目录存在
-	if dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			mlog.L().Error("[Debug UpstreamAPI] Failed to mkdir", zap.String("dir", dir), zap.Error(err))
-			return err
-		}
-	}
-
-	absPath, _ := filepath.Abs(path)
-
-	data, err := json.MarshalIndent(upstreamOverrides, "", "  ")
-	if err != nil {
-		mlog.L().Error("[Debug UpstreamAPI] JSON marshal failed", zap.Error(err))
-		return err
-	}
+	_, path := getUpstreamOverridesPath()
 
 	if err := saveUpstreamOverridesToRuntimeStore(upstreamOverrides); err != nil {
 		mlog.L().Error("[Debug UpstreamAPI] Runtime store save failed", zap.Error(err))
 		return err
 	}
 
-	mlog.L().Info("[Debug UpstreamAPI] Writing to file",
+	mlog.L().Info("[Debug UpstreamAPI] Saved upstream overrides to runtime store",
 		zap.String("path", path),
-		zap.String("abs_path", absPath),
-		zap.Int("bytes", len(data)))
-
-	err = os.WriteFile(path, data, 0644)
-	if err != nil {
-		mlog.L().Error("[Debug UpstreamAPI] WriteFile FAILED", zap.Error(err))
-	} else {
-		mlog.L().Info("[Debug UpstreamAPI] WriteFile SUCCESS")
-	}
-	return err
+	)
+	return nil
 }
 
 func loadUpstreamOverridesFromRuntimeStore() (GlobalUpstreamOverrides, bool, error) {

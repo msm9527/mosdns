@@ -12,6 +12,7 @@ const (
 	runtimeNamespaceSwitch    = "switch"
 	runtimeNamespaceWebinfo   = "webinfo"
 	runtimeNamespaceRequery   = "requery"
+	runtimeStateNamespaceAudit = "audit"
 	runtimeNamespaceAdguard   = "adguard_rule"
 	runtimeNamespaceDiversion = "diversion_rule"
 )
@@ -62,6 +63,7 @@ func handleRuntimeSummary(m *Mosdns) http.HandlerFunc {
 		namespaces := []string{
 			runtimeStateNamespaceOverrides,
 			runtimeStateNamespaceUpstreams,
+			runtimeStateNamespaceAudit,
 			runtimeNamespaceSwitch,
 			runtimeNamespaceWebinfo,
 			runtimeNamespaceRequery,

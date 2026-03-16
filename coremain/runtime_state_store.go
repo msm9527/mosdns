@@ -30,12 +30,21 @@ var globalRuntimeStateStore struct {
 	paths map[string]*runtimesqlite.RuntimeDB
 }
 
+var runtimeStateDBPathOverride string
+
 func defaultRuntimeStateDBPath() string {
+	if strings.TrimSpace(runtimeStateDBPathOverride) != "" {
+		return runtimeStateDBPathOverride
+	}
 	baseDir := MainConfigBaseDir
 	if baseDir == "" {
 		baseDir = "."
 	}
 	return filepath.Join(baseDir, runtimeStateDBFilename)
+}
+
+func setRuntimeStateDBPath(path string) {
+	runtimeStateDBPathOverride = strings.TrimSpace(path)
 }
 
 func RuntimeStateDBPathForPath(referencePath string) string {
@@ -86,6 +95,8 @@ func (s *runtimeStateStore) get(namespace, key string, dst any) (bool, error) {
 		return s.getStructuredRequeryState(key, dst)
 	case runtimeStateNamespaceOverrides:
 		return s.getStructuredGlobalOverrides(key, dst)
+	case runtimeStateNamespaceAudit:
+		return s.getStructuredAuditState(key, dst)
 	case runtimeStateNamespaceUpstreams:
 		return s.getStructuredUpstreamOverrides(key, dst)
 	case runtimeNamespaceAdguard:
@@ -106,6 +117,8 @@ func (s *runtimeStateStore) put(namespace, key string, value any) error {
 		return s.putStructuredRequeryState(key, value)
 	case runtimeStateNamespaceOverrides:
 		return s.putStructuredGlobalOverrides(key, value)
+	case runtimeStateNamespaceAudit:
+		return s.putStructuredAuditState(key, value)
 	case runtimeStateNamespaceUpstreams:
 		return s.putStructuredUpstreamOverrides(key, value)
 	case runtimeNamespaceAdguard:
@@ -126,6 +139,8 @@ func (s *runtimeStateStore) remove(namespace, key string) error {
 		return s.removeStructuredRequeryState(key)
 	case runtimeStateNamespaceOverrides:
 		return s.removeStructuredGlobalOverrides(key)
+	case runtimeStateNamespaceAudit:
+		return s.removeStructuredAuditState(key)
 	case runtimeStateNamespaceUpstreams:
 		return s.removeStructuredUpstreamOverrides(key)
 	case runtimeNamespaceAdguard:
@@ -148,6 +163,9 @@ func (s *runtimeStateStore) list(namespace string) ([]RuntimeStateEntry, error) 
 	}
 	if namespace == runtimeStateNamespaceOverrides {
 		return s.listStructuredGlobalOverrides()
+	}
+	if namespace == runtimeStateNamespaceAudit {
+		return s.listStructuredAuditState()
 	}
 	if namespace == runtimeStateNamespaceUpstreams {
 		return s.listStructuredUpstreamOverrides()
@@ -191,6 +209,22 @@ func (s *runtimeStateStore) getStructuredRequeryState(key string, dst any) (bool
 		WHERE file_path = ? AND state_kind = ?
 	`, filePath, stateKind)
 	return scanStructuredJSONRow(row, runtimeNamespaceRequery, key, dst)
+}
+
+func (s *runtimeStateStore) getStructuredAuditState(key string, dst any) (bool, error) {
+	return getStructuredJSONStateByKey(s.db.DB(), "audit_state", "setting_key", key, dst)
+}
+
+func (s *runtimeStateStore) putStructuredAuditState(key string, value any) error {
+	return putStructuredJSONStateByKey(s.db.DB(), "audit_state", "setting_key", key, value)
+}
+
+func (s *runtimeStateStore) removeStructuredAuditState(key string) error {
+	return removeStructuredJSONStateByKey(s.db.DB(), "audit_state", "setting_key", key)
+}
+
+func (s *runtimeStateStore) listStructuredAuditState() ([]RuntimeStateEntry, error) {
+	return listStructuredJSONStateByKey(s.db.DB(), "audit_state", "setting_key", runtimeStateNamespaceAudit)
 }
 
 func (s *runtimeStateStore) putStructuredRequeryState(key string, value any) error {

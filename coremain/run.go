@@ -29,6 +29,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 )
 
@@ -149,9 +150,10 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 		}
 	}
 	mlog.L().Info("main config base directory set", zap.String("path", MainConfigBaseDir))
+	setRuntimeStateDBPath(cfg.ControlDBPath)
 
 	// <<< ADDED: Explicitly initialize the audit collector with the correct base path.
-	InitializeAuditCollector(MainConfigBaseDir)
+	InitializeAuditCollector(MainConfigBaseDir, cfg.Audit)
 	// <<< END ADDED SECTION
 
 	mlog.L().Info("main config loaded", zap.String("file", fileUsed))
@@ -180,6 +182,7 @@ func loadConfig(filePath string) (*Config, string, error) {
 	}
 
 	cfg.baseDir = resolveBaseDir(fileUsed)
+	cfg.ControlDBPath = resolveRuntimeStateDBPathForConfig(cfg.baseDir, cfg.ControlDBPath)
 	return cfg, fileUsed, nil
 }
 
@@ -194,4 +197,14 @@ func resolveBaseDir(fileUsed string) string {
 		return wd
 	}
 	return ""
+}
+
+func resolveRuntimeStateDBPathForConfig(baseDir, configured string) string {
+	if strings.TrimSpace(configured) == "" {
+		return filepath.Join(baseDir, runtimeStateDBFilename)
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(baseDir, configured)
 }

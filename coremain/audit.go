@@ -209,8 +209,8 @@ var GlobalAuditCollector = NewAuditCollector(AuditSettings{
 	StorageEngine: defaultAuditStorageEngine,
 }, "")
 
-func InitializeAuditCollector(configBaseDir string) {
-	settings := loadAuditSettings(configBaseDir)
+func InitializeAuditCollector(configBaseDir string, base *AuditSettings) {
+	settings := loadAuditSettings(configBaseDir, base)
 	GlobalAuditCollector = NewAuditCollector(settings, configBaseDir)
 	if err := GlobalAuditCollector.restoreFromDisk(); err != nil {
 		mlog.L().Warn("failed to restore audit logs from disk", zap.Error(err))

@@ -2,8 +2,6 @@ package coremain
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 	"testing"
 )
 
@@ -70,27 +68,22 @@ func TestGetHttpClientForUpdatePrefersRuntimeOverrides(t *testing.T) {
 	}
 }
 
-func TestGetHttpClientForUpdateFallsBackToFile(t *testing.T) {
+func TestGetHttpClientForUpdateFallsBackToDirect(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()
 	t.Cleanup(func() {
 		MainConfigBaseDir = oldBaseDir
 	})
 
-	file := filepath.Join(MainConfigBaseDir, overridesFilename)
-	if err := os.WriteFile(file, []byte(`{"socks5":"127.0.0.1:1080"}`), 0o644); err != nil {
-		t.Fatalf("write overrides file: %v", err)
-	}
-
 	m := &UpdateManager{httpClient: &http.Client{}}
 	client, isProxy, err := m.getHttpClientForUpdate()
 	if err != nil {
 		t.Fatalf("getHttpClientForUpdate() error = %v", err)
 	}
-	if !isProxy {
-		t.Fatal("expected proxy client from overrides file")
+	if isProxy {
+		t.Fatal("expected direct client without runtime overrides")
 	}
-	if client == nil || client.Transport == nil {
+	if client == nil || client != m.httpClient {
 		t.Fatalf("unexpected proxy client: %#v", client)
 	}
 }

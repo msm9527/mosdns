@@ -28,6 +28,8 @@ type Config struct {
 	Include []string       `yaml:"include"`
 	Plugins []PluginConfig `yaml:"plugins"`
 	API     APIConfig      `yaml:"api"`
+	Audit   *AuditSettings `yaml:"-"`
+	ControlDBPath string   `yaml:"-"`
 	baseDir string         `yaml:"-"`
 }
 
