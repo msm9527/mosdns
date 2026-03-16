@@ -11,6 +11,22 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
+type fakeUpstreamHealthProvider struct{}
+
+func (fakeUpstreamHealthProvider) SnapshotUpstreamHealth() []UpstreamHealthSnapshot {
+	return []UpstreamHealthSnapshot{{
+		PluginTag:           "fake",
+		PluginType:          "forward",
+		UpstreamTag:         "u1",
+		Address:             "udp://1.1.1.1:53",
+		Score:               123,
+		AverageLatencyMs:    12.3,
+		Inflight:            1,
+		ConsecutiveFailures: 0,
+		Healthy:             true,
+	}}
+}
+
 func TestHandleRuntimeSummary(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()
@@ -26,7 +42,7 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	RegisterRuntimeAPI(router, nil)
+	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": fakeUpstreamHealthProvider{}}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/summary", nil)
 	w := httptest.NewRecorder()
@@ -46,6 +62,9 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	if len(resp.Namespaces) == 0 {
 		t.Fatalf("expected namespace summary, got %+v", resp)
 	}
+	if resp.Upstreams.Total != 1 || len(resp.Upstreams.Items) != 1 {
+		t.Fatalf("expected upstream summary in response, got %+v", resp.Upstreams)
+	}
 }
 
 func TestHandleRuntimeHealth(t *testing.T) {
@@ -61,7 +80,7 @@ func TestHandleRuntimeHealth(t *testing.T) {
 	}
 
 	router := chi.NewRouter()
-	RegisterRuntimeAPI(router, nil)
+	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": fakeUpstreamHealthProvider{}}))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/health", nil)
 	w := httptest.NewRecorder()
@@ -77,6 +96,29 @@ func TestHandleRuntimeHealth(t *testing.T) {
 	}
 	if resp.StorageEngine != "sqlite" || len(resp.Checks) == 0 {
 		t.Fatalf("unexpected health payload: %+v", resp)
+	}
+	if len(resp.SuggestedActions) == 0 {
+		t.Fatalf("expected suggested actions, got %+v", resp)
+	}
+}
+
+func TestHandleControlUpstreamHealth(t *testing.T) {
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": fakeUpstreamHealthProvider{}}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/upstreams/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	var resp upstreamHealthOverview
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode upstream health: %v", err)
+	}
+	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].UpstreamTag != "u1" {
+		t.Fatalf("unexpected upstream health payload: %+v", resp)
 	}
 }
 

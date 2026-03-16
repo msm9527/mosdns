@@ -72,8 +72,8 @@ func getUpstreamOverridesPath() (dir string, path string) {
 // RegisterUpstreamAPI 注册路由
 func RegisterUpstreamAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/upstream", func(r chi.Router) {
-		r.Get("/tags", handleGetAliAPITags)
-		r.Get("/config", handleGetUpstreamConfig)
+		r.Get("/tags", handleGetControlUpstreamTags(m))
+		r.Get("/config", handleGetControlUpstreamConfig(m))
 		r.Put("/config", func(w http.ResponseWriter, r *http.Request) {
 			handleReplaceUpstreamConfigWithMosdns(w, r, m)
 		})
@@ -378,8 +378,29 @@ func handleGetAliAPITags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tags)
 }
 
+func handleGetControlUpstreamTags(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tags := collectRuntimeUpstreamTags(m)
+		if len(tags) == 0 {
+			handleGetAliAPITags(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, tags)
+	}
+}
+
 // handleGetUpstreamConfig 获取当前所有配置
 func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
+	handleGetUpstreamConfigResponse(w, nil)
+}
+
+func handleGetControlUpstreamConfig(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		handleGetUpstreamConfigResponse(w, m)
+	}
+}
+
+func handleGetUpstreamConfigResponse(w http.ResponseWriter, m *Mosdns) {
 	if err := ensureUpstreamOverridesLoaded(); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
 		return
@@ -394,10 +415,7 @@ func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamOverridesLock.RUnlock()
 
-	if safeData == nil {
-		safeData = make(GlobalUpstreamOverrides)
-	}
-	writeJSON(w, http.StatusOK, safeData)
+	writeJSON(w, http.StatusOK, mergeRuntimeAndOverrideUpstreams(collectRuntimeUpstreamConfigs(m), safeData))
 }
 
 func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {

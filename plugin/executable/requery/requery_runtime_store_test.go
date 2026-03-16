@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 )
@@ -93,5 +94,40 @@ func TestRequeryAPIListsRunsAndCheckpoints(t *testing.T) {
 	}
 	if len(checkpoints) != 1 || checkpoints[0].RunID != "run-1" {
 		t.Fatalf("unexpected checkpoints payload: %+v", checkpoints)
+	}
+}
+
+func TestPersistRunSnapshotWithIDKeepsFinalStateAfterActiveRunCleared(t *testing.T) {
+	dir := t.TempDir()
+	cfgFile := filepath.Join(dir, "requery.json")
+
+	p := &Requery{
+		filePath: cfgFile,
+		config:   newDefaultConfig(),
+		status: Status{
+			TaskState:        "idle",
+			TaskMode:         "quick_prewarm",
+			LastRunStartTime: time.Now().UTC().Add(-time.Second),
+		},
+		activeTriggerSource: "manual",
+	}
+	if err := p.saveConfigUnlocked(); err != nil {
+		t.Fatalf("saveConfigUnlocked: %v", err)
+	}
+
+	endedAt := time.Now().UTC()
+	if err := p.persistRunSnapshotWithID("run-finish", "idle", endedAt); err != nil {
+		t.Fatalf("persistRunSnapshotWithID: %v", err)
+	}
+
+	runs, err := requeryruntime.ListRuns(p.runtimeDBPath(), p.runtimeConfigKey(), 5)
+	if err != nil {
+		t.Fatalf("ListRuns: %v", err)
+	}
+	if len(runs) != 1 {
+		t.Fatalf("unexpected runs: %+v", runs)
+	}
+	if runs[0].RunID != "run-finish" || runs[0].State != "idle" || runs[0].EndedAtUnixMS == 0 {
+		t.Fatalf("unexpected final run snapshot: %+v", runs[0])
 	}
 }

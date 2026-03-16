@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -92,6 +93,9 @@ func TestCoreSwitchesAPI_Update(t *testing.T) {
 	}
 	if got := sw.GetValue(); got != "compat" {
 		t.Fatalf("switch value not updated: %s", got)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "switches.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected no switch state file, got err=%v", err)
 	}
 }
 

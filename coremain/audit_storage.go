@@ -7,7 +7,7 @@ import (
 )
 
 const (
-	defaultAuditStorageEngine = "ndjson"
+	defaultAuditStorageEngine = "sqlite"
 	defaultAuditMaxDBSizeMB   = 10
 	maxAuditMaxDBSizeMB       = 10240
 	auditSQLiteFilename       = "audit.db"

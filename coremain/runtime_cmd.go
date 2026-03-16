@@ -309,7 +309,7 @@ func runtimeDatasetsVerifyJSON(dbPath string) ([]byte, error) {
 }
 
 func runtimeHealthJSON(dbPath string) ([]byte, error) {
-	resp, err := runtimeHealthReport(dbPath)
+	resp, err := runtimeHealthReport(dbPath, nil)
 	if err != nil {
 		return nil, err
 	}

@@ -2,6 +2,7 @@ package requery
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/miekg/dns"
+	_ "modernc.org/sqlite"
 )
 
 func TestRequeryAPI_GetConfigAndStatus(t *testing.T) {
@@ -481,69 +483,80 @@ func TestApplyConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfigMigratesLegacyStateToSidecar(t *testing.T) {
+func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
 	cfgFile := filepath.Join(dir, "requery.json")
-	legacy := map[string]any{
-		"workflow": map[string]any{
-			"mode":                "hybrid",
-			"flush_mode":          "none",
-			"save_before_refresh": true,
-			"save_after_refresh":  true,
-		},
-		"execution_settings": map[string]any{
-			"queries_per_second": 100,
-			"date_range_days":    30,
-			"query_mode":         "observed",
-		},
-		"status": map[string]any{
-			"task_state": "failed",
-			"task_mode":  "full_rebuild",
-		},
-		"full_rebuild_task": map[string]any{
-			"task_id":    "legacy-task",
-			"mode":       "full_rebuild",
-			"stage":      "tail",
-			"total":      2,
-			"completed":  1,
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-		},
-	}
-	data, err := json.MarshalIndent(legacy, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal legacy config: %v", err)
-	}
-	if err := os.WriteFile(cfgFile, data, 0644); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
 
 	p := &Requery{filePath: cfgFile}
 	if err := p.loadConfig(); err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if p.fullTask == nil || p.fullTask.TaskID != "legacy-task" {
-		t.Fatalf("unexpected migrated task: %#v", p.fullTask)
+	if p.fullTask != nil {
+		t.Fatalf("unexpected task after init: %#v", p.fullTask)
 	}
-	if p.status.TaskState != "failed" {
-		t.Fatalf("unexpected migrated status: %+v", p.status)
+	if p.status.TaskState != "idle" {
+		t.Fatalf("unexpected status after init: %+v", p.status)
+	}
+	if _, err := os.Stat(cfgFile); !os.IsNotExist(err) {
+		t.Fatalf("expected config file to stay absent, got err=%v", err)
+	}
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), &persistedConfig{}); err != nil || !ok {
+		t.Fatalf("expected runtime config in DB, ok=%v err=%v", ok, err)
+	}
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeStateKey(), &persistedState{}); err != nil || !ok {
+		t.Fatalf("expected runtime state in DB, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestBeginTaskExecutionRollsBackOnPersistFailure(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	p := &Requery{
+		filePath: filepath.Join(coremain.MainConfigBaseDir, "state", "requery.json"),
+		config:   newDefaultConfig(),
+		status:   Status{TaskState: "idle"},
+	}
+	if err := p.saveStateUnlocked(); err != nil {
+		t.Fatalf("seed runtime state: %v", err)
 	}
 
-	cfgBytes, err := os.ReadFile(cfgFile)
+	lockDB, err := sql.Open("sqlite", p.runtimeDBPath())
 	if err != nil {
-		t.Fatalf("read migrated config: %v", err)
+		t.Fatalf("open lock db: %v", err)
 	}
-	if strings.Contains(string(cfgBytes), "\"full_rebuild_task\"") || strings.Contains(string(cfgBytes), "\"status\"") {
-		t.Fatalf("expected migrated config to exclude runtime state, got %s", string(cfgBytes))
+	defer lockDB.Close()
+	tx, err := lockDB.Begin()
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
 	}
+	if _, err := tx.Exec(`UPDATE requery_state SET payload_json = payload_json WHERE file_path = ? AND state_kind = ?`, filepath.Clean(p.filePath), "state"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("lock requery state row: %v", err)
+	}
+	defer tx.Rollback()
 
-	stateBytes, err := os.ReadFile(stateFilePath(cfgFile))
-	if err != nil {
-		t.Fatalf("read state file: %v", err)
+	p.taskCtx, p.taskCancel = context.WithCancel(context.Background())
+	p.activeTriggerSource = "manual"
+	if ok := p.beginTaskExecution(taskProfile{Mode: "quick_prewarm"}, nil); ok {
+		t.Fatal("expected beginTaskExecution to fail while sqlite row is locked")
 	}
-	if !strings.Contains(string(stateBytes), "\"full_rebuild_task\"") || !strings.Contains(string(stateBytes), "\"task_state\": \"failed\"") {
-		t.Fatalf("unexpected state file content: %s", string(stateBytes))
+	if p.status.TaskState != "idle" {
+		t.Fatalf("expected task state to roll back to idle, got %q", p.status.TaskState)
+	}
+	if p.activeRunID != "" || p.status.ActiveRunID != "" {
+		t.Fatalf("expected active run id to be cleared, got %q / %q", p.activeRunID, p.status.ActiveRunID)
+	}
+	if p.taskCtx != nil || p.taskCancel != nil {
+		t.Fatal("expected task context to be cleared after failed start")
+	}
+	if p.lastError == "" {
+		t.Fatal("expected lastError to capture persist failure")
 	}
 }
 

@@ -3,7 +3,9 @@ package coremain
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
+	"sort"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -24,8 +26,12 @@ func RegisterMiscAPI(router *chi.Mux, m *Mosdns) {
 
 func handleGetClientname(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		controller, ok := m.GetPlugin("clientname").(JSONStoreController)
-		if !ok || controller == nil {
+		controller, err := resolveJSONStoreController(m, "clientname")
+		if err != nil {
+			writeAPIError(w, http.StatusConflict, "clientname_ambiguous", err.Error())
+			return
+		}
+		if controller == nil {
 			writeAPIError(w, http.StatusNotFound, "clientname_not_found", "clientname controller not found")
 			return
 		}
@@ -35,8 +41,12 @@ func handleGetClientname(m *Mosdns) http.HandlerFunc {
 
 func handlePutClientname(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		controller, ok := m.GetPlugin("clientname").(JSONStoreController)
-		if !ok || controller == nil {
+		controller, err := resolveJSONStoreController(m, "clientname")
+		if err != nil {
+			writeAPIError(w, http.StatusConflict, "clientname_ambiguous", err.Error())
+			return
+		}
+		if controller == nil {
 			writeAPIError(w, http.StatusNotFound, "clientname_not_found", "clientname controller not found")
 			return
 		}
@@ -53,6 +63,35 @@ func handlePutClientname(m *Mosdns) http.HandlerFunc {
 		}
 		writeJSON(w, http.StatusOK, controller.SnapshotJSONValue())
 	}
+}
+
+func resolveJSONStoreController(m *Mosdns, preferredTag string) (JSONStoreController, error) {
+	if m == nil {
+		return nil, nil
+	}
+	if preferredTag != "" {
+		controller, ok := m.GetPlugin(preferredTag).(JSONStoreController)
+		if ok && controller != nil {
+			return controller, nil
+		}
+	}
+	tags := make([]string, 0, len(m.plugins))
+	for tag, plugin := range m.plugins {
+		controller, ok := plugin.(JSONStoreController)
+		if !ok || controller == nil {
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	if len(tags) == 0 {
+		return nil, nil
+	}
+	sort.Strings(tags)
+	if len(tags) > 1 {
+		return nil, fmt.Errorf("multiple clientname controllers found: %s", strings.Join(tags, ", "))
+	}
+	controller, _ := m.GetPlugin(tags[0]).(JSONStoreController)
+	return controller, nil
 }
 
 func handleReverseLookup(m *Mosdns) http.HandlerFunc {

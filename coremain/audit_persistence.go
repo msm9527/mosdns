@@ -77,6 +77,8 @@ func normalizeAuditSettings(settings AuditSettings) AuditSettings {
 	if settings.StorageEngine == "" {
 		settings.StorageEngine = defaultAuditStorageEngine
 	}
+	settings.StorageEngine = defaultAuditStorageEngine
+	settings.DualWrite = false
 	settings.Capacity = settings.MemoryEntries
 	return settings
 }

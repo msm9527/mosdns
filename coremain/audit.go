@@ -194,8 +194,6 @@ type AuditCollector struct {
 	ndjsonStorage      *NdjsonAuditStorage
 	sqliteStorage      *SQLiteAuditStorage
 
-	// Lazy Sync Control
-	lastSyncTime    time.Time
 	lastDiskCleanup time.Time
 
 	// Global Statistics for monitoring without mutex pressure
@@ -407,10 +405,12 @@ func (c *AuditCollector) appendLogLocked(log AuditLog) {
 	if len(c.logs) < c.capacity {
 		c.logs = append(c.logs, log)
 	} else {
+		c.removeLogStatsLocked(c.logs[c.head])
 		c.logs[c.head] = log
 		c.head = (c.head + 1) % c.capacity
 	}
 
+	c.addLogStatsLocked(log)
 	if c.slowestQueries.Len() < slowestQueriesCapacity {
 		heap.Push(&c.slowestQueries, log)
 	} else if log.DurationMs > c.slowestQueries[0].DurationMs {
@@ -419,33 +419,30 @@ func (c *AuditCollector) appendLogLocked(log AuditLog) {
 	}
 }
 
-// syncStatsLocked updates statistical maps when API requests are made.
-func (c *AuditCollector) syncStatsLocked() {
-	if c.capacity == 0 || len(c.logs) == 0 {
-		return
+func (c *AuditCollector) addLogStatsLocked(log AuditLog) {
+	c.domainCounts[log.QueryName]++
+	c.clientCounts[log.ClientIP]++
+	c.domainSetCounts[log.DomainSet]++
+	c.totalQueryCount++
+	c.totalQueryDuration += log.DurationMs
+}
+
+func (c *AuditCollector) removeLogStatsLocked(log AuditLog) {
+	decrementCountMap(c.domainCounts, log.QueryName)
+	decrementCountMap(c.clientCounts, log.ClientIP)
+	decrementCountMap(c.domainSetCounts, log.DomainSet)
+	if c.totalQueryCount > 0 {
+		c.totalQueryCount--
 	}
-
-	now := time.Now()
-	// Throttle synchronization to avoid UI-triggered CPU spikes
-	if now.Sub(c.lastSyncTime) < time.Second {
-		return
+	c.totalQueryDuration -= log.DurationMs
+	if c.totalQueryDuration < 0 {
+		c.totalQueryDuration = 0
 	}
+}
 
-	// Pre-size maps to reduce re-allocation overhead during heavy processing
-	c.domainCounts = make(map[string]int, 1024)
-	c.clientCounts = make(map[string]int, 64)
-	c.domainSetCounts = make(map[string]int, 16)
-	c.totalQueryCount = uint64(len(c.logs))
-	c.totalQueryDuration = 0.0
-
-	for _, l := range c.logs {
-		c.domainCounts[l.QueryName]++
-		c.clientCounts[l.ClientIP]++
-		c.domainSetCounts[l.DomainSet]++
-		c.totalQueryDuration += l.DurationMs
-	}
-
-	c.lastSyncTime = now
+func (c *AuditCollector) syncGlobalTotalsLocked() {
+	c.totalQueryCountGlobal.Store(c.totalQueryCount)
+	c.totalQueryDurationGlobal.Store(durationMicrosFromMilliseconds(c.totalQueryDuration))
 }
 
 func (c *AuditCollector) Collect(qCtx *query_context.Context) {
@@ -499,8 +496,8 @@ func (c *AuditCollector) rebuildDerivedLocked() {
 	c.domainSetCounts = make(map[string]int)
 	c.totalQueryCount = 0
 	c.totalQueryDuration = 0.0
-	c.lastSyncTime = time.Time{}
 	for _, log := range c.snapshotChronologicalLocked() {
+		c.addLogStatsLocked(log)
 		if c.slowestQueries.Len() < slowestQueriesCapacity {
 			heap.Push(&c.slowestQueries, log)
 		} else if log.DurationMs > c.slowestQueries[0].DurationMs {
@@ -508,7 +505,7 @@ func (c *AuditCollector) rebuildDerivedLocked() {
 			heap.Fix(&c.slowestQueries, 0)
 		}
 	}
-	c.syncStatsLocked()
+	c.syncGlobalTotalsLocked()
 }
 
 func (c *AuditCollector) GetLogs() []AuditLog {
@@ -531,6 +528,7 @@ func (c *AuditCollector) ClearLogs(clearDisk bool) {
 	c.domainSetCounts = make(map[string]int)
 	c.totalQueryCount = 0
 	c.totalQueryDuration = 0.0
+	c.syncGlobalTotalsLocked()
 	c.mu.Unlock()
 
 	if clearDisk {
@@ -617,21 +615,21 @@ func (c *AuditCollector) getLogsSnapshot() []AuditLog {
 }
 
 func (c *AuditCollector) CalculateV2Stats() V2StatsResponse {
-	c.mu.Lock()
-	c.syncStatsLocked()
-	c.mu.Unlock()
-
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-
-	avgDuration := 0.0
-	if c.totalQueryCount > 0 {
-		avgDuration = c.totalQueryDuration / float64(c.totalQueryCount)
+	if storage := c.readSQLiteStorage(); storage != nil {
+		stats, err := storage.QueryStats()
+		if err == nil {
+			return stats
+		}
+		mlog.L().Warn("failed to query audit stats from sqlite, falling back to in-memory counters", zap.Error(err))
 	}
-
+	totalQueries := c.totalQueryCountGlobal.Load()
+	totalDurationMicros := c.totalQueryDurationGlobal.Load()
+	if totalQueries == 0 {
+		return V2StatsResponse{}
+	}
 	return V2StatsResponse{
-		TotalQueries:      c.totalQueryCount,
-		AverageDurationMs: avgDuration,
+		TotalQueries:      totalQueries,
+		AverageDurationMs: float64(totalDurationMicros) / float64(totalQueries) / 1000.0,
 	}
 }
 
@@ -694,10 +692,13 @@ const (
 )
 
 func (c *AuditCollector) CalculateRank(rankType RankType, limit int) []V2RankItem {
-	c.mu.Lock()
-	c.syncStatsLocked()
-	c.mu.Unlock()
-
+	if storage := c.readSQLiteStorage(); storage != nil {
+		rank, err := storage.QueryRank(rankType, limit)
+		if err == nil {
+			return rank
+		}
+		mlog.L().Warn("failed to query audit rank from sqlite, falling back to in-memory counters", zap.String("rank_type", string(rankType)), zap.Error(err))
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -714,6 +715,13 @@ func (c *AuditCollector) CalculateRank(rankType RankType, limit int) []V2RankIte
 }
 
 func (c *AuditCollector) GetSlowestQueries(limit int) []AuditLog {
+	if storage := c.readSQLiteStorage(); storage != nil {
+		logs, err := storage.QuerySlowest(limit)
+		if err == nil {
+			return logs
+		}
+		mlog.L().Warn("failed to query slowest audit logs from sqlite, falling back to in-memory heap", zap.Error(err))
+	}
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
@@ -905,9 +913,26 @@ func (c *AuditCollector) configureStorages() error {
 	oldSQLite := c.sqliteStorage
 	c.mu.RUnlock()
 
-	newNDJSON := newNdjsonAuditStorage(logDir)
-	if err := newNDJSON.Open(); err != nil {
-		return fmt.Errorf("open ndjson audit storage: %w", err)
+	if configBaseDir == "" && settings.SQLitePath == "" {
+		c.mu.Lock()
+		c.ndjsonStorage = nil
+		c.sqliteStorage = nil
+		c.mu.Unlock()
+		if oldNDJSON != nil {
+			_ = oldNDJSON.Close()
+		}
+		if oldSQLite != nil {
+			_ = oldSQLite.Close()
+		}
+		return nil
+	}
+
+	var newNDJSON *NdjsonAuditStorage
+	if settings.StorageEngine != "sqlite" || settings.DualWrite {
+		newNDJSON = newNdjsonAuditStorage(logDir)
+		if err := newNDJSON.Open(); err != nil {
+			return fmt.Errorf("open ndjson audit storage: %w", err)
+		}
 	}
 
 	var newSQLite *SQLiteAuditStorage
@@ -918,7 +943,9 @@ func (c *AuditCollector) configureStorages() error {
 		}
 		newSQLite = newSQLiteAuditStorage(sqlitePath, settings.MaxDBSizeMB)
 		if err := newSQLite.Open(); err != nil {
-			_ = newNDJSON.Close()
+			if newNDJSON != nil {
+				_ = newNDJSON.Close()
+			}
 			return fmt.Errorf("open sqlite audit storage: %w", err)
 		}
 	}
@@ -986,13 +1013,34 @@ func (c *AuditCollector) shouldUseSQLiteReads(params V2GetLogsParams) bool {
 	c.mu.RLock()
 	sqliteEnabled := c.sqliteStorage != nil && (c.settings.StorageEngine == "sqlite" || c.settings.DualWrite)
 	c.mu.RUnlock()
-	if !sqliteEnabled {
-		return false
+	return sqliteEnabled
+}
+
+func (c *AuditCollector) readSQLiteStorage() *SQLiteAuditStorage {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if c.sqliteStorage == nil {
+		return nil
 	}
-	if params.Page > 1 {
-		return true
+	if c.settings.StorageEngine != "sqlite" && !c.settings.DualWrite {
+		return nil
 	}
-	return params.Domain != "" || params.AnswerIP != "" || params.AnswerCNAME != "" || params.ClientIP != "" || params.Q != ""
+	return c.sqliteStorage
+}
+
+func decrementCountMap(counter map[string]int, key string) {
+	if counter[key] <= 1 {
+		delete(counter, key)
+		return
+	}
+	counter[key]--
+}
+
+func durationMicrosFromMilliseconds(durationMs float64) uint64 {
+	if durationMs <= 0 {
+		return 0
+	}
+	return uint64(durationMs * 1000)
 }
 
 func (c *AuditCollector) appendBatchToDisk(logs []AuditLog) error {

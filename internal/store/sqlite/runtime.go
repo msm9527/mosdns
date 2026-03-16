@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 
 	_ "modernc.org/sqlite"
 )
@@ -19,18 +20,39 @@ type RuntimeDB struct {
 	path string
 }
 
+type sharedRuntimeDB struct {
+	db   *RuntimeDB
+	refs int
+}
+
+var sharedRuntimeDBs struct {
+	mu    sync.Mutex
+	paths map[string]*sharedRuntimeDB
+}
+
 func Open(path string, extraMigrations []Migration) (*RuntimeDB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("sqlite path is required")
 	}
+	path = filepath.Clean(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create sqlite directory: %w", err)
+	}
+
+	if db, ok := retainSharedRuntimeDB(path); ok {
+		if err := ensureSchema(db.DB(), append(baseMigrations(), extraMigrations...)); err != nil {
+			_ = db.Close()
+			return nil, err
+		}
+		return db, nil
 	}
 
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite db: %w", err)
 	}
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	if err := applyPragmas(db); err != nil {
 		_ = db.Close()
@@ -41,7 +63,8 @@ func Open(path string, extraMigrations []Migration) (*RuntimeDB, error) {
 		return nil, err
 	}
 
-	return &RuntimeDB{db: db, path: path}, nil
+	runtimeDB := &RuntimeDB{db: db, path: path}
+	return storeSharedRuntimeDB(runtimeDB), nil
 }
 
 func (r *RuntimeDB) DB() *sql.DB {
@@ -56,7 +79,7 @@ func (r *RuntimeDB) Close() error {
 	if r == nil || r.db == nil {
 		return nil
 	}
-	return r.db.Close()
+	return releaseSharedRuntimeDB(r)
 }
 
 func (r *RuntimeDB) FileSizeBytes() (int64, error) {
@@ -68,6 +91,17 @@ func (r *RuntimeDB) FileSizeBytes() (int64, error) {
 		return 0, err
 	}
 	return info.Size(), nil
+}
+
+func (r *RuntimeDB) QuickCheck() (string, error) {
+	if r == nil || r.db == nil {
+		return "", fmt.Errorf("sqlite db is not open")
+	}
+	var result string
+	if err := r.db.QueryRow(`PRAGMA quick_check;`).Scan(&result); err != nil {
+		return "", fmt.Errorf("run sqlite quick_check: %w", err)
+	}
+	return result, nil
 }
 
 func applyPragmas(db *sql.DB) error {
@@ -356,4 +390,51 @@ func baseMigrations() []Migration {
 			`,
 		},
 	}
+}
+
+func retainSharedRuntimeDB(path string) (*RuntimeDB, bool) {
+	sharedRuntimeDBs.mu.Lock()
+	defer sharedRuntimeDBs.mu.Unlock()
+
+	if sharedRuntimeDBs.paths == nil {
+		sharedRuntimeDBs.paths = make(map[string]*sharedRuntimeDB)
+	}
+	entry := sharedRuntimeDBs.paths[path]
+	if entry == nil || entry.db == nil {
+		return nil, false
+	}
+	entry.refs++
+	return entry.db, true
+}
+
+func storeSharedRuntimeDB(db *RuntimeDB) *RuntimeDB {
+	sharedRuntimeDBs.mu.Lock()
+	defer sharedRuntimeDBs.mu.Unlock()
+
+	if sharedRuntimeDBs.paths == nil {
+		sharedRuntimeDBs.paths = make(map[string]*sharedRuntimeDB)
+	}
+	if entry := sharedRuntimeDBs.paths[db.path]; entry != nil && entry.db != nil {
+		entry.refs++
+		_ = db.db.Close()
+		return entry.db
+	}
+	sharedRuntimeDBs.paths[db.path] = &sharedRuntimeDB{db: db, refs: 1}
+	return db
+}
+
+func releaseSharedRuntimeDB(runtimeDB *RuntimeDB) error {
+	sharedRuntimeDBs.mu.Lock()
+	defer sharedRuntimeDBs.mu.Unlock()
+
+	entry := sharedRuntimeDBs.paths[runtimeDB.path]
+	if entry == nil || entry.db != runtimeDB {
+		return runtimeDB.db.Close()
+	}
+	entry.refs--
+	if entry.refs > 0 {
+		return nil
+	}
+	delete(sharedRuntimeDBs.paths, runtimeDB.path)
+	return runtimeDB.db.Close()
 }

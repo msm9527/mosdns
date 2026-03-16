@@ -84,8 +84,12 @@ func (p *Requery) runtimeJobDefinitionLocked(mode, trigger string) map[string]an
 }
 
 func (p *Requery) persistRunSnapshot(state string, endedAt time.Time) error {
+	return p.persistRunSnapshotWithID("", state, endedAt)
+}
+
+func (p *Requery) persistRunSnapshotWithID(runID, state string, endedAt time.Time) error {
 	p.mu.RLock()
-	run := p.activeRunRecordLocked(state, endedAt)
+	run := p.activeRunRecordLocked(runID, state, endedAt)
 	p.mu.RUnlock()
 	if run == nil {
 		return nil
@@ -93,8 +97,11 @@ func (p *Requery) persistRunSnapshot(state string, endedAt time.Time) error {
 	return requeryruntime.SaveRun(p.runtimeDBPath(), *run)
 }
 
-func (p *Requery) activeRunRecordLocked(state string, endedAt time.Time) *requeryruntime.Run {
-	runID := strings.TrimSpace(p.activeRunID)
+func (p *Requery) activeRunRecordLocked(runID, state string, endedAt time.Time) *requeryruntime.Run {
+	runID = strings.TrimSpace(runID)
+	if runID == "" {
+		runID = strings.TrimSpace(p.activeRunID)
+	}
 	if runID == "" && p.fullTask != nil {
 		runID = strings.TrimSpace(p.fullTask.TaskID)
 	}

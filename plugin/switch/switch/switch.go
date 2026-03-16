@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -241,27 +240,7 @@ func (s *stateStore) read() (map[string]string, error) {
 			return nil, err
 		}
 	}
-
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o755); err != nil {
-		return nil, err
-	}
-
-	data, err := os.ReadFile(s.path)
-	switch {
-	case err == nil:
-		if len(strings.TrimSpace(string(data))) == 0 {
-			return make(map[string]string), nil
-		}
-		values := make(map[string]string)
-		if err := json.Unmarshal(data, &values); err != nil {
-			return nil, fmt.Errorf("invalid switch store %s: %w", s.path, err)
-		}
-		return values, nil
-	case os.IsNotExist(err):
-		return make(map[string]string), nil
-	default:
-		return nil, err
-	}
+	return make(map[string]string), nil
 }
 
 func (s *stateStore) write(values map[string]string) error {
@@ -272,11 +251,7 @@ func (s *stateStore) write(values map[string]string) error {
 			return err
 		}
 	}
-	data, err := json.MarshalIndent(values, "", "  ")
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(s.path, append(data, '\n'), 0o644)
+	return nil
 }
 
 func (s *stateStore) runtimeStateKey() string {

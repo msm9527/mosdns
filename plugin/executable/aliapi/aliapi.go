@@ -449,6 +449,63 @@ func (f *AliAPI) Close() error {
 	return nil
 }
 
+func (f *AliAPI) SnapshotUpstreamHealth() []coremain.UpstreamHealthSnapshot {
+	_, us := f.snapshotRuntime()
+	now := time.Now()
+	items := make([]coremain.UpstreamHealthSnapshot, 0, len(us))
+	for _, u := range us {
+		items = append(items, coremain.UpstreamHealthSnapshot{
+			PluginTag:           f.pluginTag,
+			PluginType:          PluginType,
+			UpstreamTag:         u.cfg.Tag,
+			Address:             u.cfg.Addr,
+			Score:               u.healthScore(now),
+			AverageLatencyMs:    float64(u.ewmaLatencyUs.Load()) / 1000.0,
+			Inflight:            int64(u.mInflightValue.Load()),
+			ConsecutiveFailures: u.consecutiveFailures.Load(),
+			Healthy:             !u.isCircuitOpen(now),
+			UnhealthyUntilMs:    coremain.UnhealthyUntilUnixMilli(u.circuitOpenUntil.Load()),
+		})
+	}
+	return items
+}
+
+func (f *AliAPI) SnapshotControlUpstreams() (string, []coremain.UpstreamOverrideConfig) {
+	args, _ := f.snapshotRuntime()
+	items := make([]coremain.UpstreamOverrideConfig, 0, len(args.Upstreams))
+	for _, upstream := range args.Upstreams {
+		protocol := coremain.UpstreamProtocolFromAddr(upstream.Addr)
+		item := coremain.UpstreamOverrideConfig{
+			Tag:                  upstream.Tag,
+			Enabled:              true,
+			Protocol:             protocol,
+			Addr:                 upstream.Addr,
+			DialAddr:             upstream.DialAddr,
+			IdleTimeout:          upstream.IdleTimeout,
+			UpstreamQueryTimeout: upstream.UpstreamQueryTimeout,
+			EnablePipeline:       upstream.EnablePipeline,
+			EnableHTTP3:          upstream.EnableHTTP3,
+			InsecureSkipVerify:   upstream.InsecureSkipVerify,
+			Socks5:               upstream.Socks5,
+			SoMark:               upstream.SoMark,
+			BindToDevice:         upstream.BindToDevice,
+			Bootstrap:            upstream.Bootstrap,
+			BootstrapVer:         upstream.BootstrapVer,
+		}
+		if upstream.Type == "aliapi" {
+			item.Protocol = "aliapi"
+			item.AccountID = args.AccountID
+			item.AccessKeyID = args.AccessKeyID
+			item.AccessKeySecret = args.AccessKeySecret
+			item.ServerAddr = args.ServerAddr
+			item.EcsClientIP = args.EcsClientIP
+			item.EcsClientMask = args.EcsClientMask
+		}
+		items = append(items, item)
+	}
+	return f.pluginTag, items
+}
+
 func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runtimeArgs *Args, us []*upstreamWrapper) (*dns.Msg, error) {
 	if len(us) == 0 {
 		return nil, errors.New("no upstream to exchange")
@@ -581,7 +638,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		go func(uqid uint32, question dns.Question, currentUpstream *upstreamWrapper) {
 			defer pool.ReleaseBuf(qc)
 
-			upstreamCtx, upstreamCancel := context.WithTimeout(context.Background(), upstreamTimeout)
+			upstreamCtx, upstreamCancel := context.WithTimeout(ctx, upstreamTimeout)
 			defer upstreamCancel()
 
 			var r *dns.Msg
@@ -1080,6 +1137,8 @@ type upstreamWrapper struct {
 	metricsTag          string
 	consecutiveFailures atomic.Uint32
 	circuitOpenUntil    atomic.Int64
+	mInflightValue      atomic.Int64
+	ewmaLatencyUs       atomic.Int64
 
 	mQueryTotal       prometheus.Counter
 	mErrorTotal       prometheus.Counter
@@ -1217,20 +1276,50 @@ func (w *upstreamWrapper) isCircuitOpen(now time.Time) bool {
 func (w *upstreamWrapper) ExchangeContext(ctx context.Context, req []byte) (*[]byte, error) {
 	w.mQueryTotal.Inc()
 	w.mInflight.Inc()
+	w.mInflightValue.Add(1)
 
 	start := time.Now()
 
 	resp, err := w.u.ExchangeContext(ctx, req) // Call the wrapped upstream's method
 
+	w.mInflightValue.Add(-1)
 	w.mInflight.Dec() // Always decrement inflight after the exchange completes
 
 	if err != nil {
 		w.mErrorTotal.Inc()
 	} else {
-		w.mResponseLatency.Observe(float64(time.Since(start).Milliseconds()))
+		latency := time.Since(start)
+		w.mResponseLatency.Observe(float64(latency.Milliseconds()))
+		w.recordLatency(latency)
 	}
 
 	return resp, err
+}
+
+func (w *upstreamWrapper) healthScore(now time.Time) int64 {
+	score := w.ewmaLatencyUs.Load()
+	if score <= 0 {
+		score = int64(50 * time.Millisecond / time.Microsecond)
+	}
+	score += w.mInflightValue.Load() * int64(15*time.Millisecond/time.Microsecond)
+	score += int64(w.consecutiveFailures.Load()) * int64(200*time.Millisecond/time.Microsecond)
+	if w.isCircuitOpen(now) {
+		score += int64(5 * time.Second / time.Microsecond)
+	}
+	return score
+}
+
+func (w *upstreamWrapper) recordLatency(latency time.Duration) {
+	current := latency.Microseconds()
+	if current <= 0 {
+		current = 1
+	}
+	previous := w.ewmaLatencyUs.Load()
+	if previous <= 0 {
+		w.ewmaLatencyUs.Store(current)
+		return
+	}
+	w.ewmaLatencyUs.Store((previous*7 + current*3) / 10)
 }
 
 func (w *upstreamWrapper) Close() error {

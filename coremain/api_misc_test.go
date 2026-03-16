@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -15,8 +16,25 @@ type mockReverseLookupController struct {
 	err    error
 }
 
+type mockJSONStoreController struct {
+	value any
+	err   error
+}
+
 func (m *mockReverseLookupController) LookupIPString(_ string) (string, error) {
 	return m.result, m.err
+}
+
+func (m *mockJSONStoreController) SnapshotJSONValue() any {
+	return m.value
+}
+
+func (m *mockJSONStoreController) ReplaceJSONValue(_ context.Context, value any) error {
+	if m.err != nil {
+		return m.err
+	}
+	m.value = value
+	return nil
 }
 
 func TestMiscAPI_ReverseLookup(t *testing.T) {
@@ -54,5 +72,36 @@ func TestMiscAPI_ReverseLookupError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+}
+
+func TestClientnameAPI_FallsBackToSingleJSONStoreController(t *testing.T) {
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"webinfo_client": &mockJSONStoreController{value: map[string]any{"client_name": "e2e"}},
+	})
+	router := chi.NewRouter()
+	router.Get("/api/v1/control/clientname", handleGetClientname(m))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/clientname", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestClientnameAPI_RejectsAmbiguousJSONStoreControllers(t *testing.T) {
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"webinfo_client": &mockJSONStoreController{value: map[string]any{"client_name": "a"}},
+		"other_client":   &mockJSONStoreController{value: map[string]any{"client_name": "b"}},
+	})
+	router := chi.NewRouter()
+	router.Get("/api/v1/control/clientname", handleGetClientname(m))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/clientname", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
 	}
 }

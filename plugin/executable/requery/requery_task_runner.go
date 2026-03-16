@@ -13,6 +13,9 @@ func (p *Requery) beginTaskExecution(profile taskProfile, recovery *FullRebuildT
 	var runID string
 	startedAt := time.Now().UTC()
 	p.mu.Lock()
+	prevStatus := p.status
+	prevRunID := p.activeRunID
+	prevTriggerSource := p.activeTriggerSource
 
 	if p.status.TaskState == "running" {
 		p.mu.Unlock()
@@ -43,6 +46,16 @@ func (p *Requery) beginTaskExecution(profile taskProfile, recovery *FullRebuildT
 	p.status.Progress.Total = 0
 	p.lastError = ""
 	if err := p.saveStateUnlocked(); err != nil {
+		if p.taskCancel != nil {
+			p.taskCancel()
+		}
+		p.status = prevStatus
+		p.activeRunID = prevRunID
+		p.activeTriggerSource = prevTriggerSource
+		p.status.ActiveRunID = prevRunID
+		p.taskCtx = nil
+		p.taskCancel = nil
+		p.lastError = fmt.Sprintf("failed to persist task start state: %v", err)
 		p.mu.Unlock()
 		log.Printf("[requery] WARN: failed to persist task start state: %v", err)
 		return false
@@ -91,7 +104,7 @@ func (p *Requery) finishTaskExecution() {
 	p.mu.Unlock()
 
 	if activeRunID != "" {
-		if err := p.persistRunSnapshot(finalState, endedAt); err != nil {
+		if err := p.persistRunSnapshotWithID(activeRunID, finalState, endedAt); err != nil {
 			log.Printf("[requery] WARN: failed to persist run snapshot on finish: %v", err)
 		}
 	}

@@ -100,4 +100,31 @@ func TestSQLiteAuditStorageWriteLoadAndQuery(t *testing.T) {
 	if resp.Pagination.TotalItems != 1 || resp.Logs[0].QueryName != "one.example" {
 		t.Fatalf("unexpected exact answer query result: %#v", resp)
 	}
+
+	stats, err := storage.QueryStats()
+	if err != nil {
+		t.Fatalf("query stats: %v", err)
+	}
+	if stats.TotalQueries != 2 {
+		t.Fatalf("stats total queries = %d", stats.TotalQueries)
+	}
+	if diff := stats.AverageDurationMs - 1.8; diff < -0.0001 || diff > 0.0001 {
+		t.Fatalf("stats average duration = %.2f", stats.AverageDurationMs)
+	}
+
+	rank, err := storage.QueryRank(RankByDomain, 2)
+	if err != nil {
+		t.Fatalf("query rank: %v", err)
+	}
+	if len(rank) != 2 || rank[0].Key != "one.example" || rank[1].Key != "two.example" {
+		t.Fatalf("unexpected rank result: %#v", rank)
+	}
+
+	slowest, err := storage.QuerySlowest(1)
+	if err != nil {
+		t.Fatalf("query slowest: %v", err)
+	}
+	if len(slowest) != 1 || slowest[0].QueryName != "two.example" {
+		t.Fatalf("unexpected slowest result: %#v", slowest)
+	}
 }

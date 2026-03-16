@@ -79,6 +79,13 @@ func (s *SQLiteAuditStorage) Open() error {
 				);
 			`,
 		},
+		{
+			ID: "0102_audit_query_indexes",
+			Up: `
+				CREATE INDEX IF NOT EXISTS idx_audit_log_duration_time ON audit_log(duration_ms DESC, query_time_unix_ms DESC);
+				CREATE INDEX IF NOT EXISTS idx_audit_log_trace_time ON audit_log(trace_id, query_time_unix_ms DESC);
+			`,
+		},
 	})
 	if err != nil {
 		return err
@@ -282,6 +289,92 @@ func (s *SQLiteAuditStorage) QueryLogs(params V2GetLogsParams) (V2PaginatedLogsR
 	}, nil
 }
 
+func (s *SQLiteAuditStorage) QueryStats() (V2StatsResponse, error) {
+	if s.runtimeDB == nil {
+		return V2StatsResponse{}, nil
+	}
+	var (
+		total uint64
+		avg   float64
+	)
+	if err := s.runtimeDB.DB().QueryRow(`
+		SELECT COUNT(*), COALESCE(AVG(duration_ms), 0)
+		FROM audit_log
+	`).Scan(&total, &avg); err != nil {
+		return V2StatsResponse{}, fmt.Errorf("query sqlite audit stats: %w", err)
+	}
+	return V2StatsResponse{
+		TotalQueries:      total,
+		AverageDurationMs: avg,
+	}, nil
+}
+
+func (s *SQLiteAuditStorage) QueryRank(rankType RankType, limit int) ([]V2RankItem, error) {
+	if s.runtimeDB == nil || limit <= 0 {
+		return []V2RankItem{}, nil
+	}
+	column, err := auditRankColumn(rankType)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := s.runtimeDB.DB().Query(`
+		SELECT `+column+`, COUNT(*)
+		FROM audit_log
+		GROUP BY `+column+`
+		ORDER BY COUNT(*) DESC, `+column+` ASC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query sqlite audit rank: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]V2RankItem, 0, limit)
+	for rows.Next() {
+		var item V2RankItem
+		if err := rows.Scan(&item.Key, &item.Count); err != nil {
+			return nil, fmt.Errorf("scan sqlite audit rank row: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite audit rank rows: %w", err)
+	}
+	return items, nil
+}
+
+func (s *SQLiteAuditStorage) QuerySlowest(limit int) ([]AuditLog, error) {
+	if s.runtimeDB == nil || limit <= 0 {
+		return []AuditLog{}, nil
+	}
+	rows, err := s.runtimeDB.DB().Query(`
+		SELECT
+			query_time_unix_ms, client_ip, query_type, query_name, query_class, duration_ms,
+			trace_id, response_code, response_flags_aa, response_flags_tc, response_flags_ra,
+			answers_json, domain_set
+		FROM audit_log
+		ORDER BY duration_ms DESC, query_time_unix_ms DESC, id DESC
+		LIMIT ?
+	`, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query sqlite slowest audit logs: %w", err)
+	}
+	defer rows.Close()
+
+	logs := make([]AuditLog, 0, limit)
+	for rows.Next() {
+		log, err := scanAuditLogRow(rows)
+		if err != nil {
+			return nil, err
+		}
+		logs = append(logs, log)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite slowest audit logs: %w", err)
+	}
+	return logs, nil
+}
+
 func (s *SQLiteAuditStorage) EnforceRetention(settings AuditSettings) error {
 	if s.runtimeDB == nil {
 		return nil
@@ -391,4 +484,17 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func auditRankColumn(rankType RankType) (string, error) {
+	switch rankType {
+	case RankByDomain:
+		return "query_name", nil
+	case RankByClient:
+		return "client_ip", nil
+	case RankByDomainSet:
+		return "domain_set", nil
+	default:
+		return "", fmt.Errorf("unsupported audit rank type: %s", rankType)
+	}
 }

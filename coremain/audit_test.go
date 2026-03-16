@@ -97,6 +97,7 @@ func TestAuditCollectorEnforceDiskRetentionByDays(t *testing.T) {
 		MemoryEntries: 10,
 		RetentionDays: 2,
 		MaxDiskSizeMB: 32,
+		StorageEngine: "sqlite",
 	}
 	c := NewAuditCollector(settings, dir)
 	now := time.Now()
@@ -111,14 +112,51 @@ func TestAuditCollectorEnforceDiskRetentionByDays(t *testing.T) {
 		t.Fatalf("enforce retention: %v", err)
 	}
 
-	files, err := c.listAuditLogFiles()
+	resp, err := c.sqliteStorage.QueryLogs(V2GetLogsParams{Page: 1, Limit: 10})
 	if err != nil {
-		t.Fatalf("list audit files: %v", err)
+		t.Fatalf("query sqlite logs: %v", err)
 	}
-	if len(files) != 1 {
-		t.Fatalf("expected only one retained audit file, got %d", len(files))
+	if len(resp.Logs) != 1 {
+		t.Fatalf("expected one retained audit log, got %d", len(resp.Logs))
 	}
-	if filepath.Base(files[0].path) != "audit-"+now.Format("2006-01-02")+".ndjson" {
-		t.Fatalf("unexpected retained file: %s", filepath.Base(files[0].path))
+	if resp.Logs[0].QueryName != "new.example" {
+		t.Fatalf("unexpected retained log: %+v", resp.Logs[0])
+	}
+	if _, err := os.Stat(defaultAuditSQLitePath(dir)); err != nil {
+		t.Fatalf("expected sqlite audit db to exist: %v", err)
+	}
+}
+
+func TestAuditCollectorUsesSQLiteForStatsAndFirstPageLogs(t *testing.T) {
+	dir := t.TempDir()
+	c := NewAuditCollector(AuditSettings{
+		MemoryEntries: 2,
+		RetentionDays: 7,
+		MaxDiskSizeMB: 32,
+		StorageEngine: "sqlite",
+	}, dir)
+
+	now := time.Now()
+	logs := []AuditLog{
+		testAuditLog("one.example", now.Add(-2*time.Minute)),
+		testAuditLog("two.example", now.Add(-time.Minute)),
+	}
+	logs[0].DurationMs = 2
+	logs[1].DurationMs = 4
+	if err := c.appendBatchToDisk(logs); err != nil {
+		t.Fatalf("append batch to disk: %v", err)
+	}
+
+	stats := c.CalculateV2Stats()
+	if stats.TotalQueries != 2 || stats.AverageDurationMs != 3 {
+		t.Fatalf("unexpected stats: %#v", stats)
+	}
+
+	resp := c.GetV2Logs(V2GetLogsParams{Page: 1, Limit: 10})
+	if resp.Pagination.TotalItems != 2 || len(resp.Logs) != 2 {
+		t.Fatalf("unexpected logs response: %#v", resp)
+	}
+	if resp.Logs[0].QueryName != "two.example" || resp.Logs[1].QueryName != "one.example" {
+		t.Fatalf("unexpected logs order: %#v", resp.Logs)
 	}
 }

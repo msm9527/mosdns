@@ -21,6 +21,7 @@ package fastforward
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
@@ -34,6 +35,11 @@ type upstreamWrapper struct {
 	idx             int
 	u               upstream.Upstream
 	cfg             UpstreamConfig
+	consecutiveErrs atomic.Uint32
+	inflightCount   atomic.Int64
+	ewmaLatencyUs   atomic.Int64
+	unhealthyUntil  atomic.Int64
+
 	queryTotal      prometheus.Counter
 	errTotal        prometheus.Counter
 	thread          prometheus.Gauge
@@ -123,15 +129,75 @@ func (uw *upstreamWrapper) ExchangeContext(ctx context.Context, m []byte) (*[]by
 
 	start := time.Now()
 	uw.thread.Inc()
+	uw.inflightCount.Add(1)
 	r, err := uw.u.ExchangeContext(ctx, m)
+	latency := time.Since(start)
+	uw.inflightCount.Add(-1)
 	uw.thread.Dec()
 
 	if err != nil {
 		uw.errTotal.Inc()
+		uw.recordFailure(time.Now())
 	} else {
-		uw.responseLatency.Observe(float64(time.Since(start).Milliseconds()))
+		uw.responseLatency.Observe(float64(latency.Milliseconds()))
+		uw.recordSuccess(latency)
 	}
 	return r, err
+}
+
+func (uw *upstreamWrapper) recordDecodeFailure(now time.Time) {
+	uw.recordFailure(now)
+}
+
+func (uw *upstreamWrapper) recordFailure(now time.Time) {
+	failures := uw.consecutiveErrs.Add(1)
+	if failures < healthFailureThreshold {
+		return
+	}
+	penalty := healthFailureBackoffBase
+	for step := uint32(healthFailureThreshold); step < failures && penalty < healthFailureBackoffMax; step++ {
+		penalty *= 2
+		if penalty >= healthFailureBackoffMax {
+			penalty = healthFailureBackoffMax
+			break
+		}
+	}
+	uw.unhealthyUntil.Store(now.Add(penalty).UnixNano())
+}
+
+func (uw *upstreamWrapper) recordSuccess(latency time.Duration) {
+	uw.consecutiveErrs.Store(0)
+	uw.unhealthyUntil.Store(0)
+
+	current := latency.Microseconds()
+	if current <= 0 {
+		current = 1
+	}
+	previous := uw.ewmaLatencyUs.Load()
+	if previous <= 0 {
+		uw.ewmaLatencyUs.Store(current)
+		return
+	}
+	weighted := (previous*healthLatencyWeightOld + current*healthLatencyWeightNew) /
+		(healthLatencyWeightOld + healthLatencyWeightNew)
+	uw.ewmaLatencyUs.Store(weighted)
+}
+
+func (uw *upstreamWrapper) isUnhealthy(now time.Time) bool {
+	return now.UnixNano() < uw.unhealthyUntil.Load()
+}
+
+func (uw *upstreamWrapper) healthScore(now time.Time) int64 {
+	score := uw.ewmaLatencyUs.Load()
+	if score <= 0 {
+		score = defaultHealthLatencyUs
+	}
+	score += uw.inflightCount.Load() * inflightPenaltyUs
+	score += int64(uw.consecutiveErrs.Load()) * failurePenaltyUs
+	if uw.isUnhealthy(now) {
+		score += unhealthyPenaltyUs
+	}
+	return score
 }
 
 func (uw *upstreamWrapper) Close() error {

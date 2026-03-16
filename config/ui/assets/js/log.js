@@ -400,9 +400,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const requeryManager = {
         init() {
             const debouncedUpdate = debounce(this.handleUpdateSchedulerConfig.bind(this), 1500);
-            elements.requeryPrewarmBtn.addEventListener('click', (e) => this.handleTrigger(e, 'quick_prewarm'));
-            elements.requeryQuickTriggerBtn.addEventListener('click', (e) => this.handleTrigger(e, 'quick_rebuild'));
-            elements.requeryTriggerBtn.addEventListener('click', (e) => this.handleTrigger(e, 'full_rebuild'));
+            [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach((button) => {
+                button.addEventListener('click', (e) => this.handleTrigger(e));
+            });
             elements.requeryCancelBtn.addEventListener('click', this.handleCancel.bind(this));
             elements.requeryModeSelect.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
             elements.requerySchedulerToggle.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
@@ -668,27 +668,39 @@ document.addEventListener('DOMContentLoaded', () => {
         },
 
         async handleTrigger(e, mode = 'full_rebuild', silent = false) {
-            const modeLabel = this.modeLabel(mode);
-            const limit = mode === 'quick_prewarm'
+            const resolvedMode = e?.currentTarget?.dataset?.mode || mode;
+            const targetButton = e?.currentTarget || this.buttonForMode(resolvedMode);
+            const modeLabel = this.modeLabel(resolvedMode);
+            const limit = resolvedMode === 'quick_prewarm'
                 ? parseInt(elements.requeryPrewarmLimitInput.value, 10) || 0
-                : (mode === 'quick_rebuild' ? parseInt(elements.requeryQuickLimitInput.value, 10) || 0 : 0);
-            const hint = mode === 'quick_prewarm'
+                : (resolvedMode === 'quick_rebuild' ? parseInt(elements.requeryQuickLimitInput.value, 10) || 0 : 0);
+            const hint = resolvedMode === 'quick_prewarm'
                 ? '这会通过常规解析链快速预热缓存，不会重写分流规则。'
-                : (mode === 'quick_rebuild'
+                : (resolvedMode === 'quick_rebuild'
                     ? '这会只处理热点域名，优先提升速度。'
                     : '这会执行完整重建，适合规则整体重算。');
             const confirmed = silent ? true : confirm(`确定要开始${modeLabel}吗？\n${hint}`);
             if (confirmed) {
-                const btn = e ? e.currentTarget : elements.requeryTriggerBtn;
-                ui.setLoading(btn, true);
+                ui.setLoading(targetButton, true);
                 try {
-                    const result = await requeryApi.trigger(mode, limit);
+                    const result = await requeryApi.trigger(resolvedMode, limit);
                     ui.showToast(result.message || `${modeLabel}已开始`, 'success');
                     await this.updateStatus();
                 } catch (error) {
                 } finally {
-                    ui.setLoading(btn, false);
+                    ui.setLoading(targetButton, false);
                 }
+            }
+        },
+
+        buttonForMode(mode) {
+            switch (mode) {
+                case 'quick_prewarm':
+                    return elements.requeryPrewarmBtn;
+                case 'quick_rebuild':
+                    return elements.requeryQuickTriggerBtn;
+                default:
+                    return elements.requeryTriggerBtn;
             }
         },
 
@@ -3495,6 +3507,7 @@ renderReplacementsTable() {
             serverConfig: {},
             draftConfig: {},
             metrics: {},
+            health: {},
             dirty: false,
             filters: { group: '', keyword: '' }
         },
@@ -3609,7 +3622,8 @@ renderReplacementsTable() {
                 const shouldLoadConfig = forceConfig || !this.state.dirty;
                 const reqs = [
                     api.fetch('/api/v1/control/upstreams/tags'),
-                    api.getMetrics()
+                    api.getMetrics(),
+                    api.fetch('/api/v1/control/upstreams/health')
                 ];
                 if (shouldLoadConfig) {
                     reqs.push(api.fetch('/api/v1/control/upstreams'));
@@ -3617,10 +3631,12 @@ renderReplacementsTable() {
                 const result = await Promise.all(reqs);
                 const tagsRes = result[0];
                 const metricsRaw = result[1];
-                const configRes = shouldLoadConfig ? result[2] : null;
+                const healthRaw = result[2];
+                const configRes = shouldLoadConfig ? result[3] : null;
 
                 this.state.tags = Array.isArray(tagsRes) ? tagsRes : [];
                 this.parseMetrics(metricsRaw);
+                this.parseHealth(healthRaw);
                 if (shouldLoadConfig) {
                     this.state.serverConfig = this.normalizeConfig(configRes);
                     this.state.draftConfig = this.cloneConfig(this.state.serverConfig);
@@ -3635,25 +3651,38 @@ renderReplacementsTable() {
         },
 
         parseMetrics(rawText) {
-            const parse = (prefix) => {
-                const regex = new RegExp(`${prefix}\\{[^}]*metrics_tag="([^"]+)"[^}]*tag="([^"]+)"[^}]*\\} ([0-9.eE+-]+)`, 'g');
+            const prefixes = ['mosdns_aliapi_', 'mosdns_forward_'];
+            const parse = (metric) => {
                 const map = {};
-                let match;
-                while ((match = regex.exec(rawText)) !== null) {
-                    const group = match[1];
-                    const name = match[2];
-                    const val = parseFloat(match[3]);
-                    map[`${group}|${name}`] = val;
-                }
+                prefixes.forEach((prefix) => {
+                    const regex = new RegExp(`${prefix}${metric}\\{[^}]*metrics_tag="([^"]+)"[^}]*tag="([^"]+)"[^}]*\\} ([0-9.eE+-]+)`, 'g');
+                    let match;
+                    while ((match = regex.exec(rawText)) !== null) {
+                        const group = match[1];
+                        const name = match[2];
+                        const val = parseFloat(match[3]);
+                        map[`${group}|${name}`] = val;
+                    }
+                });
                 return map;
             };
             this.state.metrics = {
-                latSum: parse('mosdns_aliapi_response_latency_millisecond_sum'),
-                latCount: parse('mosdns_aliapi_response_latency_millisecond_count'),
-                queryTotal: parse('mosdns_aliapi_query_total'),
-                errorTotal: parse('mosdns_aliapi_error_total'),
-                winnerTotal: parse('mosdns_aliapi_upstream_winner_total')
+                latSum: parse('response_latency_millisecond_sum'),
+                latCount: parse('response_latency_millisecond_count'),
+                queryTotal: parse('query_total'),
+                errorTotal: parse('error_total'),
+                winnerTotal: parse('upstream_winner_total')
             };
+        },
+
+        parseHealth(raw) {
+            const map = {};
+            const items = Array.isArray(raw?.items) ? raw.items : [];
+            items.forEach((item) => {
+                const key = `${item.plugin_tag || ''}|${item.upstream_tag || ''}`;
+                if (key !== '|') map[key] = item;
+            });
+            this.state.health = map;
         },
 
         syncGroupFilters() {
@@ -3691,17 +3720,24 @@ renderReplacementsTable() {
             return u.addr || '-';
         },
 
-        getStats(key) {
+        getStats(group, tag, enabled) {
+            const key = `${group}|${tag}`;
             const m = this.state.metrics;
+            const health = this.state.health[key] || null;
             const q = m.queryTotal[key] || 0;
             const e = m.errorTotal[key] || 0;
             const w = m.winnerTotal[key] || 0;
             const lSum = m.latSum[key] || 0;
             const lCount = m.latCount[key] || 0;
-            const avg = lCount > 0 ? (lSum / lCount).toFixed(2) + ' ms' : '0 ms';
+            const avgFromMetrics = lCount > 0 ? (lSum / lCount).toFixed(2) + ' ms' : '0 ms';
+            const avgFromHealth = health && typeof health.average_latency_ms === 'number' && health.average_latency_ms > 0
+                ? `${health.average_latency_ms.toFixed(2)} ms`
+                : avgFromMetrics;
             const rate = q > 0 ? ((e / q) * 100).toFixed(2) + '%' : '0.00%';
             const winRate = q > 0 ? ((w / q) * 100).toFixed(2) + '%' : '0.00%';
-            return { avgLat: avg, query: q, rate: rate, winRate: winRate };
+            const healthText = !enabled ? '已禁用' : (health ? (health.healthy ? (health.consecutive_failures > 0 || health.inflight > 0 ? '降级' : '健康') : '退避中') : '未知');
+            const healthColor = !enabled ? 'var(--color-text-secondary)' : (health ? (health.healthy ? ((health.consecutive_failures > 0 || health.inflight > 0) ? 'var(--color-warning)' : 'var(--color-success)') : 'var(--color-danger)') : 'var(--color-text-secondary)');
+            return { avgLat: avgFromHealth, query: q, rate: rate, winRate: winRate, healthText, healthColor, inflight: health?.inflight || 0, score: health?.score || 0 };
         },
 
         renderTable() {
@@ -3743,8 +3779,7 @@ renderReplacementsTable() {
             });
 
             rows.forEach(({ u, group, originalIndex }) => {
-                const key = `${group}|${u.tag}`;
-                const stats = u.enabled ? this.getStats(key) : { avgLat: '-', query: '-', rate: '-', winRate: '-' };
+                const stats = u.enabled ? this.getStats(group, u.tag, true) : this.getStats(group, u.tag, false);
                 const endpoint = this.composeEndpoint(u);
                 const tr = document.createElement('tr');
                 tr.dataset.group = group;
@@ -3760,6 +3795,7 @@ renderReplacementsTable() {
                                         <span class="card-title">${u.tag || '-'}</span>
                                         <small style="color:var(--color-text-secondary); margin-top:4px;">${group} · ${u.protocol || '-'}</small>
                                         <small style="color:var(--color-text-secondary); margin-top:4px;">${endpoint}</small>
+                                        <small style="margin-top:4px; color:${stats.healthColor};">${stats.healthText} · inflight ${stats.inflight} · score ${stats.score}</small>
                                     </div>
                                     <label class="switch">
                                         <input type="checkbox" class="upstream-enable-toggle" ${u.enabled ? 'checked' : ''}>
@@ -3790,7 +3826,7 @@ renderReplacementsTable() {
                         <td>${group}</td>
                         <td>${u.tag || '-'}</td>
                         <td>${u.protocol || '-'}</td>
-                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${endpoint}">${endpoint}</td>
+                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${endpoint}">${endpoint}<div style="font-size:0.75rem; color:${stats.healthColor}; margin-top:4px;">${stats.healthText} · inflight ${stats.inflight} · score ${stats.score}</div></td>
                         <td class="text-center">${stats.avgLat}</td>
                         <td class="text-center">${stats.query}</td>
                         <td class="text-center">${stats.winRate}</td>
