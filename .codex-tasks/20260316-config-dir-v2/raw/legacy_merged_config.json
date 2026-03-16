@@ -1,0 +1,2609 @@
+{
+  "log": {
+    "level": "warn",
+    "file": "/tmp/mosdns.log"
+  },
+  "api": {
+    "http": "0.0.0.0:9099"
+  },
+  "plugins": [
+    {
+      "tag": "sequence_common_precheck",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": [
+            "qtype 6 12 65",
+            "switch 'block_query_type:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "qtype 28",
+            "switch 'block_ipv6:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "exec": "$unified_matcher1"
+        },
+        {
+          "matches": [
+            "fast_mark 1",
+            "switch 'block_response:on'"
+          ],
+          "exec": "reject 3"
+        },
+        {
+          "matches": [
+            "fast_mark 2",
+            "qtype 1",
+            "switch 'block_response:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "fast_mark 3",
+            "qtype 28",
+            "switch 'block_response:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "fast_mark 5",
+            "switch 'ad_block:on'"
+          ],
+          "exec": "reject 3"
+        },
+        {
+          "matches": "fast_mark 6",
+          "exec": [
+            "$domestic",
+            "exit"
+          ]
+        },
+        {
+          "matches": [
+            "!fast_mark 48",
+            "switch 'client_proxy_mode:whitelist'",
+            "!client_ip $client_ip"
+          ],
+          "exec": "fast_mark 39"
+        },
+        {
+          "matches": [
+            "!fast_mark 48",
+            "switch 'client_proxy_mode:blacklist'",
+            "client_ip $client_ip"
+          ],
+          "exec": "fast_mark 39"
+        },
+        {
+          "matches": "fast_mark 39",
+          "exec": [
+            "$sequence_local",
+            "tag_setter 指定客户端直连",
+            "exit"
+          ]
+        },
+        {
+          "matches": [
+            "switch 'prefer_ipv4:on'",
+            "switch 'prefer_ipv6:off'"
+          ],
+          "exec": "prefer_ipv4"
+        },
+        {
+          "matches": [
+            "switch 'prefer_ipv4:off'",
+            "switch 'prefer_ipv6:on'"
+          ],
+          "exec": "prefer_ipv6"
+        },
+        {
+          "matches": [
+            "switch 'core_mode:compat'",
+            "switch 'main_cache:on'"
+          ],
+          "exec": "$cache_all"
+        },
+        {
+          "matches": [
+            "switch 'core_mode:secure'",
+            "switch 'main_cache:on'"
+          ],
+          "exec": "$cache_all_noleak"
+        }
+      ],
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "sequence_6666",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_common_precheck"
+        },
+        {
+          "exec": "$top_domains"
+        },
+        {
+          "exec": "$rewrite"
+        },
+        {
+          "matches": "qtype 1",
+          "exec": "$sequence_ipv4"
+        },
+        {
+          "matches": "qtype 28",
+          "exec": "$sequence_ipv6"
+        },
+        {
+          "matches": "!qtype 1 28",
+          "exec": "$sequence_other"
+        }
+      ],
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "udp_all",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_6666",
+        "listen": ":53",
+        "enable_audit": true
+      },
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "tcp_all",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_6666",
+        "listen": ":53",
+        "enable_audit": true,
+        "idle_timeout": 720
+      },
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "sequence_requery",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_common_precheck"
+        },
+        {
+          "exec": "$rewrite"
+        },
+        {
+          "matches": "qtype 1",
+          "exec": "$sequence_ipv4"
+        },
+        {
+          "matches": "qtype 28",
+          "exec": "$sequence_ipv6"
+        },
+        {
+          "matches": "!qtype 1 28",
+          "exec": "$sequence_other"
+        }
+      ],
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "udp_requery",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_requery",
+        "listen": ":7766"
+      },
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "tcp_requery",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_requery",
+        "listen": ":7766"
+      },
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "sequence_for_stash",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "try $sequence_6666"
+        },
+        {
+          "matches": "resp_ip 30.0.0.0/8 2400::1/64",
+          "exec": [
+            "$sequence_local",
+            "tag_setter stash国内",
+            "exit"
+          ]
+        },
+        {
+          "matches": "resp_ip 28.0.0.0/8 f2b0::/18",
+          "exec": [
+            "tag_setter stash国外",
+            "exit"
+          ]
+        },
+        {
+          "exec": "tag_setter stash国内"
+        }
+      ],
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "sequence_for_clashmi",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "try $sequence_6666"
+        },
+        {
+          "matches": "resp_ip 28.0.0.0/8 f2b0::/18",
+          "exec": [
+            "fast_mark 26",
+            "tag_setter clashmi国外",
+            "exit"
+          ]
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0 2000::/3",
+          "exec": "exit"
+        },
+        {
+          "matches": "!fast_mark 26",
+          "exec": [
+            "$sequence_local_fake",
+            "tag_setter clashmi国内",
+            "exit"
+          ]
+        }
+      ],
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "udp_clashmi",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_for_clashmi",
+        "listen": ":7799",
+        "enable_audit": true
+      },
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "tcp_clashmi",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_for_clashmi",
+        "listen": ":7799",
+        "enable_audit": true
+      },
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "sequence_for_singbox",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "try $sequence_6666"
+        },
+        {
+          "matches": "resp_ip 30.0.0.0/8 2400::1/64",
+          "exec": [
+            "tag_setter sing-box国内",
+            "exit"
+          ]
+        },
+        {
+          "matches": "resp_ip 28.0.0.0/8 f2b0::/18",
+          "exec": [
+            "tag_setter sing-box国外",
+            "exit"
+          ]
+        },
+        {
+          "exec": "tag_setter sing-box国内"
+        }
+      ],
+      "_file": "config/config.yaml"
+    },
+    {
+      "tag": "adguard",
+      "type": "adguard_rule",
+      "args": {
+        "dir": "adguard/",
+        "socks5": "127.0.0.1:7891"
+      },
+      "_file": "config/sub_config/adguard.yaml"
+    },
+    {
+      "tag": "top_domains",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/top_domains.txt",
+        "enable_flags": true,
+        "max_entries": 200000,
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "my_realiplist",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/realiplist.txt",
+        "file_rule": "gen/realiprule.txt",
+        "max_entries": 80000,
+        "dump_interval": 36005,
+        "domain_set_url": "http://127.0.0.1:9099/api/v1/lists/my_realiprule"
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "my_fakeiplist",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/fakeiplist.txt",
+        "file_rule": "gen/fakeiprule.txt",
+        "max_entries": 80000,
+        "dump_interval": 36010,
+        "domain_set_url": "http://127.0.0.1:9099/api/v1/lists/my_fakeiprule"
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "my_nov6list",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/nov6list.txt",
+        "file_rule": "gen/nov6rule.txt",
+        "max_entries": 120000,
+        "dump_interval": 36040,
+        "domain_set_url": "http://127.0.0.1:9099/api/v1/lists/my_nov6rule"
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "my_nov4list",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/nov4list.txt",
+        "file_rule": "gen/nov4rule.txt",
+        "max_entries": 80000,
+        "dump_interval": 36030,
+        "domain_set_url": "http://127.0.0.1:9099/api/v1/lists/my_nov4rule"
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "my_nodenov6list",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/nodenov6list.txt",
+        "file_rule": "gen/nodenov6rule.txt",
+        "max_entries": 50000,
+        "dump_interval": 36060,
+        "domain_set_url": "http://127.0.0.1:9099/api/v1/lists/my_nodenov6rule"
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "my_nodenov4list",
+      "type": "domain_output",
+      "args": {
+        "file_stat": "gen/nodenov4list.txt",
+        "file_rule": "gen/nodenov4rule.txt",
+        "max_entries": 50000,
+        "dump_interval": 36080,
+        "domain_set_url": "http://127.0.0.1:9099/api/v1/lists/my_nodenov4rule"
+      },
+      "_file": "config/sub_config/domain_output.yaml"
+    },
+    {
+      "tag": "direct_ip",
+      "type": "ip_set",
+      "args": {
+        "files": [
+          "rule/direct_ip.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "rewrite",
+      "type": "rewrite",
+      "args": {
+        "files": [
+          "rule/rewrite.txt"
+        ],
+        "dns": "127.0.0.1:2222"
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "cusnocn",
+      "type": "sd_set_light",
+      "args": {
+        "socks5": "127.0.0.1:7891",
+        "local_config": "srs/cusnocn.json"
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "cuscn",
+      "type": "sd_set_light",
+      "args": {
+        "socks5": "127.0.0.1:7891",
+        "local_config": "srs/cuscn.json"
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "my_realiprule",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "gen/realiprule.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "my_fakeiprule",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "gen/fakeiprule.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "my_nov6rule",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "gen/nov6rule.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "my_nov4rule",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "gen/nov4rule.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "my_nodenov6rule",
+      "type": "domain_set",
+      "args": {
+        "files": [
+          "gen/nodenov6rule.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "my_nodenov4rule",
+      "type": "domain_set",
+      "args": {
+        "files": [
+          "gen/nodenov4rule.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "geosite_cn",
+      "type": "sd_set_light",
+      "args": {
+        "socks5": "127.0.0.1:7891",
+        "local_config": "srs/geositecn.json"
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "geoip_cn",
+      "type": "si_set",
+      "args": {
+        "socks5": "127.0.0.1:7891",
+        "local_config": "srs/geoipcn.json"
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "client_ip",
+      "type": "ip_set",
+      "args": {
+        "files": [
+          "rule/client_ip.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "geosite_no_cn",
+      "type": "sd_set_light",
+      "args": {
+        "socks5": "127.0.0.1:7891",
+        "local_config": "srs/geositenocn.json"
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "whitelist",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "rule/whitelist.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "cnfakeipfilter",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "rule/cnfakeipfilter.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "blocklist",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "rule/blocklist.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "realiplist",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "rule/realiplist.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "greylist",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "rule/greylist.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "ddnslist",
+      "type": "domain_set_light",
+      "args": {
+        "files": [
+          "rule/ddnslist.txt"
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "unified_matcher1",
+      "type": "domain_mapper",
+      "args": {
+        "default_mark": 17,
+        "default_tag": "未命中",
+        "rules": [
+          {
+            "tag": "blocklist",
+            "mark": 1,
+            "output_tag": "黑名单"
+          },
+          {
+            "tag": "my_nov4rule",
+            "mark": 2,
+            "output_tag": "记忆无V4"
+          },
+          {
+            "tag": "my_nov6rule",
+            "mark": 3,
+            "output_tag": "记忆无V6"
+          },
+          {
+            "tag": "adguard",
+            "mark": 5,
+            "output_tag": "广告屏蔽"
+          },
+          {
+            "tag": "ddnslist",
+            "mark": 6,
+            "output_tag": "DDNS域名"
+          },
+          {
+            "tag": "greylist",
+            "mark": 7,
+            "output_tag": "灰名单"
+          },
+          {
+            "tag": "whitelist",
+            "mark": 8,
+            "output_tag": "白名单"
+          },
+          {
+            "tag": "realiplist",
+            "mark": 9,
+            "output_tag": "!CN fakeip filter"
+          },
+          {
+            "tag": "cnfakeipfilter",
+            "mark": 10,
+            "output_tag": "CN fakeip filter"
+          },
+          {
+            "tag": "my_realiprule",
+            "mark": 11,
+            "output_tag": "记忆直连"
+          },
+          {
+            "tag": "my_fakeiprule",
+            "mark": 12,
+            "output_tag": "记忆代理"
+          },
+          {
+            "tag": "cuscn",
+            "mark": 13,
+            "output_tag": "订阅直连补充"
+          },
+          {
+            "tag": "geosite_no_cn",
+            "mark": 14,
+            "output_tag": "订阅代理"
+          },
+          {
+            "tag": "cusnocn",
+            "mark": 15,
+            "output_tag": "订阅代理补充"
+          },
+          {
+            "tag": "geosite_cn",
+            "mark": 16,
+            "output_tag": "订阅直连"
+          }
+        ]
+      },
+      "_file": "config/sub_config/rule_set.yaml"
+    },
+    {
+      "tag": "cache_all",
+      "type": "cache",
+      "args": {
+        "size": 800000,
+        "lazy_cache_ttl": 259200000,
+        "dump_file": "cache/cache_all.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "cache_all_noleak",
+      "type": "cache",
+      "args": {
+        "size": 800000,
+        "lazy_cache_ttl": 259200000,
+        "exclude_ip": null,
+        "dump_file": "cache/cache_all_noleak.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "cache_cn",
+      "type": "cache",
+      "args": {
+        "size": 500000,
+        "lazy_cache_ttl": 259200000,
+        "dump_file": "cache/cache_cn.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "cache_google",
+      "type": "cache",
+      "args": {
+        "size": 300000,
+        "lazy_cache_ttl": 259200000,
+        "dump_file": "cache/cache_google.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "cache_google_node",
+      "type": "cache",
+      "args": {
+        "size": 300000,
+        "lazy_cache_ttl": 259200000,
+        "enable_ecs": true,
+        "dump_file": "cache/cache_google_node.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "cache_node",
+      "type": "cache",
+      "args": {
+        "size": 300000,
+        "lazy_cache_ttl": 259200000,
+        "dump_file": "cache/cache_node.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "cache_cnmihomo",
+      "type": "cache",
+      "args": {
+        "size": 300000,
+        "lazy_cache_ttl": 259200000,
+        "dump_file": "cache/cache_cnmihomo.dump",
+        "dump_interval": 36000
+      },
+      "_file": "config/sub_config/cache.yaml"
+    },
+    {
+      "tag": "domestic",
+      "type": "aliapi",
+      "args": {
+        "concurrent": 3,
+        "upstreams": [
+          {
+            "addr": "223.5.5.5"
+          },
+          {
+            "addr": "223.6.6.6"
+          }
+        ]
+      },
+      "_file": "config/sub_config/forward_local.yaml"
+    },
+    {
+      "tag": "foreign",
+      "type": "aliapi",
+      "args": {
+        "concurrent": 2,
+        "upstreams": [
+          {
+            "addr": "https://1.1.1.1/dns-query",
+            "socks5": "127.0.0.1:7891"
+          },
+          {
+            "addr": "https://8.8.8.8/dns-query",
+            "socks5": "127.0.0.1:7891",
+            "upstream_query_timeout": 1000
+          }
+        ]
+      },
+      "_file": "config/sub_config/forward_nocn.yaml"
+    },
+    {
+      "tag": "sequence_google_in",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "switch 'branch_cache:on'",
+          "exec": "$cache_google"
+        },
+        {
+          "exec": "$foreign"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/forward_nocn.yaml"
+    },
+    {
+      "tag": "udp_google",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_google_in",
+        "listen": ":7733"
+      },
+      "_file": "config/sub_config/forward_nocn.yaml"
+    },
+    {
+      "tag": "tcp_google",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_google_in",
+        "listen": ":7733"
+      },
+      "_file": "config/sub_config/forward_nocn.yaml"
+    },
+    {
+      "tag": "foreignecs",
+      "type": "aliapi",
+      "args": {
+        "concurrent": 1,
+        "upstreams": [
+          {
+            "addr": "https://8.8.8.8/dns-query",
+            "socks5": "127.0.0.1:7891"
+          }
+        ]
+      },
+      "_file": "config/sub_config/forward_nocn_ecs.yaml"
+    },
+    {
+      "tag": "sequence_google_node",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "ecs 2408:8888::8"
+        },
+        {
+          "exec": "$cache_google_node"
+        },
+        {
+          "exec": "$foreignecs"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/forward_nocn_ecs.yaml"
+    },
+    {
+      "tag": "udp_google_ecs",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_google_node",
+        "listen": ":7744"
+      },
+      "_file": "config/sub_config/forward_nocn_ecs.yaml"
+    },
+    {
+      "tag": "tcp_google_ecs",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_google_node",
+        "listen": ":7744"
+      },
+      "_file": "config/sub_config/forward_nocn_ecs.yaml"
+    },
+    {
+      "tag": "nocnfake",
+      "type": "aliapi",
+      "args": {
+        "concurrent": 1,
+        "upstreams": [
+          {
+            "addr": "udp://127.0.0.1:6666"
+          }
+        ]
+      },
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "cnfake",
+      "type": "aliapi",
+      "args": {
+        "concurrent": 1,
+        "upstreams": [
+          {
+            "addr": "udp://127.0.0.1:1053"
+          }
+        ]
+      },
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_local",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "switch 'branch_cache:on'",
+          "exec": "$cache_cn"
+        },
+        {
+          "exec": "$domestic"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_local_fake",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "switch 'branch_cache:on'",
+          "exec": "$cache_cnmihomo"
+        },
+        {
+          "matches": "fast_mark 10",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": "!fast_mark 10",
+          "exec": "$cnfake"
+        },
+        {
+          "exec": "ttl 5"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_local_fake_exit",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 10",
+          "exec": "exit"
+        },
+        {
+          "matches": "switch 'branch_cache:on'",
+          "exec": "$cache_cnmihomo"
+        },
+        {
+          "exec": "$cnfake"
+        },
+        {
+          "exec": "ttl 5"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_local_divert",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "switch 'cn_answer_mode:realip'",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": "switch 'cn_answer_mode:fakeip'",
+          "exec": "$sequence_local_fake"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_google",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "switch 'branch_cache:on'",
+          "exec": "$cache_google"
+        },
+        {
+          "exec": "$foreign"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_fakeip",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 9",
+          "exec": [
+            "$sequence_google",
+            "exit"
+          ]
+        },
+        {
+          "exec": "$nocnfake"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "sequence_fakeip_addlist",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 9",
+          "exec": [
+            "$sequence_google",
+            "exit"
+          ]
+        },
+        {
+          "exec": "$nocnfake"
+        },
+        {
+          "matches": "!fast_mark 12",
+          "exec": "$my_fakeiplist"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "udp_local",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_local",
+        "listen": ":7722"
+      },
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "tcp_local",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_local",
+        "listen": ":7722"
+      },
+      "_file": "config/sub_config/forward_1.yaml"
+    },
+    {
+      "tag": "block_response",
+      "type": "switch",
+      "args": {
+        "name": "block_response",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "client_proxy_mode",
+      "type": "switch",
+      "args": {
+        "name": "client_proxy_mode",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "core_mode",
+      "type": "switch",
+      "args": {
+        "name": "core_mode",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "branch_cache",
+      "type": "switch",
+      "args": {
+        "name": "branch_cache",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "main_cache",
+      "type": "switch",
+      "args": {
+        "name": "main_cache",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "block_query_type",
+      "type": "switch",
+      "args": {
+        "name": "block_query_type",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "block_ipv6",
+      "type": "switch",
+      "args": {
+        "name": "block_ipv6",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "ad_block",
+      "type": "switch",
+      "args": {
+        "name": "ad_block",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "cn_answer_mode",
+      "type": "switch",
+      "args": {
+        "name": "cn_answer_mode",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "prefer_ipv4",
+      "type": "switch",
+      "args": {
+        "name": "prefer_ipv4",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "prefer_ipv6",
+      "type": "switch",
+      "args": {
+        "name": "prefer_ipv6",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "udp_fast_path",
+      "type": "switch",
+      "args": {
+        "name": "udp_fast_path",
+        "state_file_path": "rule/switches.json"
+      },
+      "_file": "config/sub_config/switch.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_direct_finalize",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": "switch 'cn_answer_mode:fakeip'",
+          "exec": "$sequence_local_fake"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_ipmatch.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_cn_finalize",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": "switch 'cn_answer_mode:fakeip'",
+          "exec": "$sequence_local_fake"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_ipmatch.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_ipmatch",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "resp_ip $direct_ip",
+          "exec": "fast_mark 24"
+        },
+        {
+          "matches": "fast_mark 24",
+          "exec": "$sequence_not_in_list_direct_finalize"
+        },
+        {
+          "matches": "!resp_ip $geoip_cn",
+          "exec": "fast_mark 25"
+        },
+        {
+          "matches": "fast_mark 25",
+          "exec": "$sequence_fakeip_addlist"
+        },
+        {
+          "matches": "!fast_mark 25",
+          "exec": "$sequence_not_in_list_cn_finalize"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_ipmatch.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_leak_v4",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "fast_mark 22"
+        },
+        {
+          "matches": "resp_ip 127.0.0.1 0.0.0.0",
+          "exec": "fast_mark 22"
+        },
+        {
+          "matches": "fast_mark 22",
+          "exec": "$sequence_google"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "!resp_ip 0.0.0.0/0"
+          ],
+          "exec": "$my_nov4list"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "exit"
+        },
+        {
+          "matches": "resp_ip 127.0.0.1 0.0.0.0",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_leak_v4.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_leak_v6",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "!resp_ip 2000::/3",
+            "!resp_ip ::1"
+          ],
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": [
+            "rcode 0 2 3 5",
+            "!resp_ip 2000::/3",
+            "!resp_ip ::1"
+          ],
+          "exec": "fast_mark 23"
+        },
+        {
+          "matches": "fast_mark 23",
+          "exec": [
+            "drop_resp",
+            "reject 0"
+          ]
+        },
+        {
+          "matches": "fast_mark 23",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_leak_v6.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_noleak_v4",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_google_node"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "$sequence_google"
+        },
+        {
+          "matches": "rcode 3",
+          "exec": [
+            "$my_nov4list",
+            "exit"
+          ]
+        },
+        {
+          "matches": "rcode 2 5",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "fast_mark 27"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "fast_mark 27"
+          ],
+          "exec": "$my_nov4list"
+        },
+        {
+          "matches": "rcode 2 3 5",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 27",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_noleak_v4.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_noleak_v6",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_google_node"
+        },
+        {
+          "matches": "!resp_ip 2000::/3",
+          "exec": "$sequence_google"
+        },
+        {
+          "matches": "rcode 3",
+          "exec": [
+            "$my_nov6list",
+            "exit"
+          ]
+        },
+        {
+          "matches": "rcode 2 5",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": "!resp_ip 2000::/3",
+          "exec": "fast_mark 28"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "fast_mark 28"
+          ],
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": "rcode 2 3 5",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 28",
+          "exec": [
+            "drop_resp",
+            "reject 0"
+          ]
+        },
+        {
+          "matches": "fast_mark 28",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch"
+        }
+      ],
+      "_file": "config/sub_config/not_in_list_noleak_v6.yaml"
+    },
+    {
+      "tag": "sequence_other",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 16",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": "!fast_mark 16",
+          "exec": "$sequence_google"
+        }
+      ],
+      "_file": "config/sub_config/process_ot.yaml"
+    },
+    {
+      "tag": "sequence_ipv4_known_domain",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 7",
+          "exec": "$sequence_fakeip"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "rcode 0 3",
+            "!resp_ip 0.0.0.0/0"
+          ],
+          "exec": "$my_nov4list"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_exit"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 11",
+          "exec": "$sequence_local_divert"
+        },
+        {
+          "matches": "fast_mark 11",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 12",
+          "exec": "$sequence_fakeip"
+        },
+        {
+          "matches": "fast_mark 13",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": [
+            "fast_mark 14",
+            "!fast_mark 13"
+          ],
+          "exec": "$sequence_fakeip_addlist"
+        },
+        {
+          "matches": "fast_mark 15",
+          "exec": "$sequence_fakeip_addlist"
+        },
+        {
+          "matches": "fast_mark 16",
+          "exec": "$sequence_local"
+        }
+      ],
+      "_file": "config/sub_config/process_v4.yaml"
+    },
+    {
+      "tag": "sequence_ipv4_realip_finalize",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "!fast_mark 11",
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": "switch 'cn_answer_mode:fakeip'",
+          "exec": "$sequence_local_fake_exit"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/process_v4.yaml"
+    },
+    {
+      "tag": "sequence_ipv4",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_ipv4_known_domain"
+        },
+        {
+          "matches": "resp_ip $direct_ip",
+          "exec": "fast_mark 18"
+        },
+        {
+          "matches": "fast_mark 18",
+          "exec": "$sequence_ipv4_realip_finalize"
+        },
+        {
+          "matches": [
+            "resp_ip 0.0.0.0/0",
+            "!resp_ip 0.0.0.0 127.0.0.1 127.0.0.2 127.0.0.3"
+          ],
+          "exec": "fast_mark 19"
+        },
+        {
+          "matches": "fast_mark 19",
+          "exec": "$sequence_ipv4_realip_finalize"
+        },
+        {
+          "matches": "switch 'core_mode:compat'",
+          "exec": "$sequence_not_in_list_leak_v4"
+        },
+        {
+          "matches": "switch 'core_mode:secure'",
+          "exec": "$sequence_not_in_list_noleak_v4"
+        }
+      ],
+      "_file": "config/sub_config/process_v4.yaml"
+    },
+    {
+      "tag": "sequence_ipv6_known_domain",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 7",
+          "exec": "$sequence_fakeip"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "rcode 0 3",
+            "!resp_ip 2000::/3"
+          ],
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_exit"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 11",
+          "exec": "$sequence_local_divert"
+        },
+        {
+          "matches": "fast_mark 11",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 12",
+          "exec": "$sequence_fakeip"
+        },
+        {
+          "matches": "fast_mark 13",
+          "exec": "$sequence_local"
+        },
+        {
+          "matches": [
+            "fast_mark 14",
+            "!fast_mark 13"
+          ],
+          "exec": "$sequence_fakeip_addlist"
+        },
+        {
+          "matches": "fast_mark 15",
+          "exec": "$sequence_fakeip_addlist"
+        },
+        {
+          "matches": "fast_mark 16",
+          "exec": "$sequence_local"
+        }
+      ],
+      "_file": "config/sub_config/process_v6.yaml"
+    },
+    {
+      "tag": "sequence_ipv6_realip_finalize",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "!fast_mark 11",
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": "switch 'cn_answer_mode:fakeip'",
+          "exec": "$sequence_local_fake_exit"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/process_v6.yaml"
+    },
+    {
+      "tag": "sequence_ipv6",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_ipv6_known_domain"
+        },
+        {
+          "matches": "resp_ip $direct_ip",
+          "exec": "fast_mark 18"
+        },
+        {
+          "matches": "fast_mark 18",
+          "exec": "$sequence_ipv6_realip_finalize"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "!resp_ip 2000::/3",
+            "!resp_ip ::1 ::2 ::3"
+          ],
+          "exec": "fast_mark 20"
+        },
+        {
+          "matches": "fast_mark 20",
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": [
+            "resp_ip 2000::/3",
+            "!resp_ip ::1 ::2 ::3"
+          ],
+          "exec": "fast_mark 21"
+        },
+        {
+          "matches": "fast_mark 20",
+          "exec": [
+            "drop_resp",
+            "reject 0"
+          ]
+        },
+        {
+          "matches": "fast_mark 20",
+          "exec": "exit"
+        },
+        {
+          "matches": [
+            "fast_mark 21",
+            "!fast_mark 17"
+          ],
+          "exec": "$sequence_ipv6_realip_finalize"
+        },
+        {
+          "matches": "switch 'core_mode:compat'",
+          "exec": "$sequence_not_in_list_leak_v6"
+        },
+        {
+          "matches": "switch 'core_mode:secure'",
+          "exec": "$sequence_not_in_list_noleak_v6"
+        }
+      ],
+      "_file": "config/sub_config/process_v6.yaml"
+    },
+    {
+      "tag": "sequence_local_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$domestic"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_local_exit_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$domestic"
+        },
+        {
+          "exec": "cname_remover"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_google_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$foreign"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_google_node_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "ecs 2408:8888::8"
+        },
+        {
+          "exec": "$foreignecs"
+        },
+        {
+          "exec": "cname_remover"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_local_fake_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 10",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": "!fast_mark 10",
+          "exec": "$cnfake"
+        },
+        {
+          "exec": "ttl 5"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_local_fake_exit_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 10",
+          "exec": "exit"
+        },
+        {
+          "exec": "$cnfake"
+        },
+        {
+          "exec": "ttl 5"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_local_divert_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "switch 'cn_answer_mode:realip'",
+          "exec": "$sequence_local_exit_refresh"
+        },
+        {
+          "matches": "switch 'cn_answer_mode:fakeip'",
+          "exec": "$sequence_local_fake_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_fakeip_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 9",
+          "exec": [
+            "$sequence_google_refresh",
+            "exit"
+          ]
+        },
+        {
+          "exec": "$nocnfake"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_fakeip_addlist_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 9",
+          "exec": [
+            "$sequence_google_refresh",
+            "exit"
+          ]
+        },
+        {
+          "exec": "$nocnfake"
+        },
+        {
+          "matches": "!fast_mark 12",
+          "exec": "$my_fakeiplist"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_direct_finalize_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": [
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_refresh"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_cn_finalize_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": [
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_ipmatch_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "resp_ip $direct_ip",
+          "exec": "fast_mark 24"
+        },
+        {
+          "matches": "fast_mark 24",
+          "exec": "$sequence_not_in_list_direct_finalize_refresh"
+        },
+        {
+          "matches": "!resp_ip $geoip_cn",
+          "exec": "fast_mark 25"
+        },
+        {
+          "matches": "fast_mark 25",
+          "exec": "$sequence_fakeip_addlist_refresh"
+        },
+        {
+          "matches": "!fast_mark 25",
+          "exec": "$sequence_not_in_list_cn_finalize_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_leak_v4_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "fast_mark 22"
+        },
+        {
+          "matches": "resp_ip 127.0.0.1 0.0.0.0",
+          "exec": "fast_mark 22"
+        },
+        {
+          "matches": "fast_mark 22",
+          "exec": "$sequence_google_refresh"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "!resp_ip 0.0.0.0/0"
+          ],
+          "exec": "$my_nov4list"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "exit"
+        },
+        {
+          "matches": "resp_ip 127.0.0.1 0.0.0.0",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_leak_v6_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "!resp_ip 2000::/3",
+            "!resp_ip ::1"
+          ],
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": [
+            "rcode 0 2 3 5",
+            "!resp_ip 2000::/3",
+            "!resp_ip ::1"
+          ],
+          "exec": "fast_mark 23"
+        },
+        {
+          "matches": "fast_mark 23",
+          "exec": [
+            "drop_resp",
+            "reject 0"
+          ]
+        },
+        {
+          "matches": "fast_mark 23",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_noleak_v4_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_google_node_refresh"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "$sequence_google_refresh"
+        },
+        {
+          "matches": "rcode 3",
+          "exec": [
+            "$my_nov4list",
+            "exit"
+          ]
+        },
+        {
+          "matches": "rcode 2 5",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": "!resp_ip 0.0.0.0/0",
+          "exec": "fast_mark 27"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "fast_mark 27"
+          ],
+          "exec": "$my_nov4list"
+        },
+        {
+          "matches": "rcode 2 3 5",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 27",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_not_in_list_noleak_v6_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_google_node_refresh"
+        },
+        {
+          "matches": "!resp_ip 2000::/3",
+          "exec": "$sequence_google_refresh"
+        },
+        {
+          "matches": "rcode 3",
+          "exec": [
+            "$my_nov6list",
+            "exit"
+          ]
+        },
+        {
+          "matches": "rcode 2 5",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": "!resp_ip 2000::/3",
+          "exec": "fast_mark 28"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "fast_mark 28"
+          ],
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": "rcode 2 3 5",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 28",
+          "exec": [
+            "drop_resp",
+            "reject 0"
+          ]
+        },
+        {
+          "matches": "fast_mark 28",
+          "exec": "exit"
+        },
+        {
+          "exec": "$sequence_not_in_list_ipmatch_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_ipv4_known_domain_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 7",
+          "exec": "$sequence_fakeip_refresh"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "rcode 0 3",
+            "!resp_ip 0.0.0.0/0"
+          ],
+          "exec": "$my_nov4list"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_exit_refresh"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 11",
+          "exec": "$sequence_local_divert_refresh"
+        },
+        {
+          "matches": "fast_mark 12",
+          "exec": "$sequence_fakeip_refresh"
+        },
+        {
+          "matches": "fast_mark 13",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": [
+            "fast_mark 14",
+            "!fast_mark 13"
+          ],
+          "exec": "$sequence_fakeip_addlist_refresh"
+        },
+        {
+          "matches": "fast_mark 15",
+          "exec": "$sequence_fakeip_addlist_refresh"
+        },
+        {
+          "matches": "fast_mark 16",
+          "exec": "$sequence_local_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_ipv4_realip_finalize_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "!fast_mark 11",
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": [
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_exit_refresh"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_ipv6_known_domain_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "fast_mark 7",
+          "exec": "$sequence_fakeip_refresh"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "rcode 0 3",
+            "!resp_ip 2000::/3"
+          ],
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": [
+            "fast_mark 8",
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_exit_refresh"
+        },
+        {
+          "matches": "fast_mark 8",
+          "exec": "exit"
+        },
+        {
+          "matches": "fast_mark 11",
+          "exec": "$sequence_local_divert_refresh"
+        },
+        {
+          "matches": "fast_mark 12",
+          "exec": "$sequence_fakeip_refresh"
+        },
+        {
+          "matches": "fast_mark 13",
+          "exec": "$sequence_local_refresh"
+        },
+        {
+          "matches": [
+            "fast_mark 14",
+            "!fast_mark 13"
+          ],
+          "exec": "$sequence_fakeip_addlist_refresh"
+        },
+        {
+          "matches": "fast_mark 15",
+          "exec": "$sequence_fakeip_addlist_refresh"
+        },
+        {
+          "matches": "fast_mark 16",
+          "exec": "$sequence_local_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_ipv6_realip_finalize_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": "!fast_mark 11",
+          "exec": "$my_realiplist"
+        },
+        {
+          "matches": [
+            "switch 'cn_answer_mode:fakeip'"
+          ],
+          "exec": "$sequence_local_fake_exit_refresh"
+        },
+        {
+          "exec": "exit"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_ipv4_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_ipv4_known_domain_refresh"
+        },
+        {
+          "matches": "resp_ip $direct_ip",
+          "exec": "fast_mark 18"
+        },
+        {
+          "matches": "fast_mark 18",
+          "exec": "$sequence_ipv4_realip_finalize_refresh"
+        },
+        {
+          "matches": [
+            "resp_ip 0.0.0.0/0",
+            "!resp_ip 0.0.0.0 127.0.0.1 127.0.0.2 127.0.0.3"
+          ],
+          "exec": "fast_mark 19"
+        },
+        {
+          "matches": "fast_mark 19",
+          "exec": "$sequence_ipv4_realip_finalize_refresh"
+        },
+        {
+          "matches": "switch 'core_mode:compat'",
+          "exec": "$sequence_not_in_list_leak_v4_refresh"
+        },
+        {
+          "matches": "switch 'core_mode:secure'",
+          "exec": "$sequence_not_in_list_noleak_v4_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_ipv6_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "exec": "$sequence_ipv6_known_domain_refresh"
+        },
+        {
+          "matches": "resp_ip $direct_ip",
+          "exec": "fast_mark 18"
+        },
+        {
+          "matches": "fast_mark 18",
+          "exec": "$sequence_ipv6_realip_finalize_refresh"
+        },
+        {
+          "matches": [
+            "rcode 0 3",
+            "!resp_ip 2000::/3",
+            "!resp_ip ::1 ::2 ::3"
+          ],
+          "exec": "fast_mark 20"
+        },
+        {
+          "matches": "fast_mark 20",
+          "exec": "$my_nov6list"
+        },
+        {
+          "matches": [
+            "resp_ip 2000::/3",
+            "!resp_ip ::1 ::2 ::3"
+          ],
+          "exec": "fast_mark 21"
+        },
+        {
+          "matches": "fast_mark 20",
+          "exec": [
+            "drop_resp",
+            "reject 0"
+          ]
+        },
+        {
+          "matches": "fast_mark 20",
+          "exec": "exit"
+        },
+        {
+          "matches": [
+            "fast_mark 21",
+            "!fast_mark 17"
+          ],
+          "exec": "$sequence_ipv6_realip_finalize_refresh"
+        },
+        {
+          "matches": "switch 'core_mode:compat'",
+          "exec": "$sequence_not_in_list_leak_v6_refresh"
+        },
+        {
+          "matches": "switch 'core_mode:secure'",
+          "exec": "$sequence_not_in_list_noleak_v6_refresh"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sequence_requery_refresh",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": [
+            "qtype 6 12 65",
+            "switch 'block_query_type:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "qtype 28",
+            "switch 'block_ipv6:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "exec": "$unified_matcher1"
+        },
+        {
+          "matches": [
+            "fast_mark 1",
+            "switch 'block_response:on'"
+          ],
+          "exec": "reject 3"
+        },
+        {
+          "matches": [
+            "fast_mark 2",
+            "qtype 1",
+            "switch 'block_response:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "fast_mark 3",
+            "qtype 28",
+            "switch 'block_response:on'"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "fast_mark 5",
+            "switch 'ad_block:on'"
+          ],
+          "exec": "reject 3"
+        },
+        {
+          "matches": "fast_mark 6",
+          "exec": [
+            "$domestic",
+            "exit"
+          ]
+        },
+        {
+          "matches": [
+            "!fast_mark 48",
+            "switch 'client_proxy_mode:whitelist'",
+            "!client_ip $client_ip"
+          ],
+          "exec": "fast_mark 39"
+        },
+        {
+          "matches": [
+            "!fast_mark 48",
+            "switch 'client_proxy_mode:blacklist'",
+            "client_ip $client_ip"
+          ],
+          "exec": "fast_mark 39"
+        },
+        {
+          "matches": "fast_mark 39",
+          "exec": [
+            "$sequence_local_refresh",
+            "tag_setter 指定客户端直连",
+            "exit"
+          ]
+        },
+        {
+          "matches": [
+            "switch 'prefer_ipv4:on'",
+            "switch 'prefer_ipv6:off'"
+          ],
+          "exec": "prefer_ipv4"
+        },
+        {
+          "matches": [
+            "switch 'prefer_ipv4:off'",
+            "switch 'prefer_ipv6:on'"
+          ],
+          "exec": "prefer_ipv6"
+        },
+        {
+          "exec": "$rewrite"
+        },
+        {
+          "matches": "qtype 1",
+          "exec": "$sequence_ipv4_refresh"
+        },
+        {
+          "matches": "qtype 28",
+          "exec": "$sequence_ipv6_refresh"
+        },
+        {
+          "matches": "!qtype 1 28",
+          "exec": "$sequence_other"
+        }
+      ],
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "udp_requery_refresh",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_requery_refresh",
+        "listen": ":7767"
+      },
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "tcp_requery_refresh",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_requery_refresh",
+        "listen": ":7767"
+      },
+      "_file": "config/sub_config/requery_refresh.yaml"
+    },
+    {
+      "tag": "sbnodefallback",
+      "type": "fallback",
+      "args": {
+        "primary": "sequence_google_node",
+        "secondary": "sequence_local",
+        "threshold": 5,
+        "always_standby": false
+      },
+      "_file": "config/sub_config/for_singbox.yaml"
+    },
+    {
+      "tag": "sequence_sbnode",
+      "type": "sequence",
+      "args": [
+        {
+          "matches": [
+            "qtype 1",
+            "qname $my_nodenov4rule"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "matches": [
+            "qtype 28",
+            "qname $my_nodenov6rule"
+          ],
+          "exec": "reject 0"
+        },
+        {
+          "exec": "$cache_node"
+        },
+        {
+          "exec": "sleep 1000"
+        },
+        {
+          "exec": "$sbnodefallback"
+        },
+        {
+          "matches": [
+            "qtype 1",
+            "rcode 0 2 3 5",
+            "!resp_ip 0.0.0.0/0",
+            "!cname keyword:."
+          ],
+          "exec": "$my_nodenov4list"
+        },
+        {
+          "matches": [
+            "qtype 28",
+            "rcode 0 2 3 5",
+            "!resp_ip 2000::/3",
+            "!cname keyword:."
+          ],
+          "exec": "$my_nodenov6list"
+        }
+      ],
+      "_file": "config/sub_config/for_singbox.yaml"
+    },
+    {
+      "tag": "sbnode_udp",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_sbnode",
+        "listen": ":9999"
+      },
+      "_file": "config/sub_config/for_singbox.yaml"
+    },
+    {
+      "tag": "sbnode_tcp",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_sbnode",
+        "listen": ":9999"
+      },
+      "_file": "config/sub_config/for_singbox.yaml"
+    },
+    {
+      "tag": "sb_udp",
+      "type": "udp_server",
+      "args": {
+        "entry": "sequence_local",
+        "listen": ":8888"
+      },
+      "_file": "config/sub_config/for_singbox.yaml"
+    },
+    {
+      "tag": "sb_tcp",
+      "type": "tcp_server",
+      "args": {
+        "entry": "sequence_local",
+        "listen": ":8888"
+      },
+      "_file": "config/sub_config/for_singbox.yaml"
+    },
+    {
+      "tag": "clientname",
+      "type": "webinfo",
+      "args": {
+        "file": "webinfo/clientname.json"
+      },
+      "_file": "config/sub_config/webinfo.yaml"
+    },
+    {
+      "tag": "requery",
+      "type": "requery",
+      "args": {
+        "file": "webinfo/requeryconfig.json"
+      },
+      "_file": "config/sub_config/requery.yaml"
+    }
+  ]
+}
