@@ -422,7 +422,7 @@ func (c *AuditCollector) appendLogLocked(log AuditLog) {
 func (c *AuditCollector) addLogStatsLocked(log AuditLog) {
 	c.domainCounts[log.QueryName]++
 	c.clientCounts[log.ClientIP]++
-	c.domainSetCounts[log.DomainSet]++
+	c.domainSetCounts[normalizeAuditDomainSet(log.DomainSet, log.QueryType)]++
 	c.totalQueryCount++
 	c.totalQueryDuration += log.DurationMs
 }
@@ -430,7 +430,7 @@ func (c *AuditCollector) addLogStatsLocked(log AuditLog) {
 func (c *AuditCollector) removeLogStatsLocked(log AuditLog) {
 	decrementCountMap(c.domainCounts, log.QueryName)
 	decrementCountMap(c.clientCounts, log.ClientIP)
-	decrementCountMap(c.domainSetCounts, log.DomainSet)
+	decrementCountMap(c.domainSetCounts, normalizeAuditDomainSet(log.DomainSet, log.QueryType))
 	if c.totalQueryCount > 0 {
 		c.totalQueryCount--
 	}

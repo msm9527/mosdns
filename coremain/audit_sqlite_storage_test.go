@@ -128,3 +128,83 @@ func TestSQLiteAuditStorageWriteLoadAndQuery(t *testing.T) {
 		t.Fatalf("unexpected slowest result: %#v", slowest)
 	}
 }
+
+func TestSQLiteAuditStorageQueryRankByDomainSetNormalizes(t *testing.T) {
+	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"), 16)
+	if err := storage.Open(); err != nil {
+		t.Fatalf("open sqlite storage: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	now := time.Now().Truncate(time.Millisecond)
+	logs := []AuditLog{
+		{
+			ClientIP:     "127.0.0.1",
+			QueryType:    "A",
+			QueryName:    "one.example",
+			QueryClass:   "IN",
+			QueryTime:    now.Add(-4 * time.Minute),
+			DurationMs:   1,
+			TraceID:      "trace-1",
+			ResponseCode: "NOERROR",
+			DomainSet:    "记忆代理|记忆无V6|订阅代理",
+		},
+		{
+			ClientIP:     "127.0.0.2",
+			QueryType:    "A",
+			QueryName:    "two.example",
+			QueryClass:   "IN",
+			QueryTime:    now.Add(-3 * time.Minute),
+			DurationMs:   1,
+			TraceID:      "trace-2",
+			ResponseCode: "NOERROR",
+			DomainSet:    "记忆代理|订阅代理",
+		},
+		{
+			ClientIP:     "127.0.0.3",
+			QueryType:    "AAAA",
+			QueryName:    "three.example",
+			QueryClass:   "IN",
+			QueryTime:    now.Add(-2 * time.Minute),
+			DurationMs:   1,
+			TraceID:      "trace-3",
+			ResponseCode: "NOERROR",
+			DomainSet:    "记忆无V6|记忆直连|订阅直连",
+		},
+		{
+			ClientIP:     "127.0.0.4",
+			QueryType:    "A",
+			QueryName:    "four.example",
+			QueryClass:   "IN",
+			QueryTime:    now.Add(-1 * time.Minute),
+			DurationMs:   1,
+			TraceID:      "trace-4",
+			ResponseCode: "NOERROR",
+			DomainSet:    "白名单|订阅代理",
+		},
+	}
+
+	if err := storage.WriteBatch(logs); err != nil {
+		t.Fatalf("write sqlite batch: %v", err)
+	}
+
+	rank, err := storage.QueryRank(RankByDomainSet, 10)
+	if err != nil {
+		t.Fatalf("query normalized domain_set rank: %v", err)
+	}
+
+	got := make(map[string]int, len(rank))
+	for _, item := range rank {
+		got[item.Key] = item.Count
+	}
+
+	if got["记忆代理"] != 2 {
+		t.Fatalf("记忆代理 count = %d, want 2", got["记忆代理"])
+	}
+	if got["记忆无V6"] != 1 {
+		t.Fatalf("记忆无V6 count = %d, want 1", got["记忆无V6"])
+	}
+	if got["白名单"] != 1 {
+		t.Fatalf("白名单 count = %d, want 1", got["白名单"])
+	}
+}

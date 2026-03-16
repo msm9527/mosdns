@@ -313,6 +313,9 @@ func (s *SQLiteAuditStorage) QueryRank(rankType RankType, limit int) ([]V2RankIt
 	if s.runtimeDB == nil || limit <= 0 {
 		return []V2RankItem{}, nil
 	}
+	if rankType == RankByDomainSet {
+		return s.queryNormalizedDomainSetRank(limit)
+	}
 	column, err := auditRankColumn(rankType)
 	if err != nil {
 		return nil, err
@@ -341,6 +344,35 @@ func (s *SQLiteAuditStorage) QueryRank(rankType RankType, limit int) ([]V2RankIt
 		return nil, fmt.Errorf("iterate sqlite audit rank rows: %w", err)
 	}
 	return items, nil
+}
+
+func (s *SQLiteAuditStorage) queryNormalizedDomainSetRank(limit int) ([]V2RankItem, error) {
+	rows, err := s.runtimeDB.DB().Query(`
+		SELECT domain_set, query_type, COUNT(*)
+		FROM audit_log
+		GROUP BY domain_set, query_type
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("query sqlite normalized audit rank: %w", err)
+	}
+	defer rows.Close()
+
+	counts := make(map[string]int)
+	for rows.Next() {
+		var (
+			rawDomainSet string
+			queryType    string
+			count        int
+		)
+		if err := rows.Scan(&rawDomainSet, &queryType, &count); err != nil {
+			return nil, fmt.Errorf("scan sqlite normalized audit rank row: %w", err)
+		}
+		counts[normalizeAuditDomainSet(rawDomainSet, queryType)] += count
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sqlite normalized audit rank rows: %w", err)
+	}
+	return buildSortedRankItems(counts, limit), nil
 }
 
 func (s *SQLiteAuditStorage) QuerySlowest(limit int) ([]AuditLog, error) {
