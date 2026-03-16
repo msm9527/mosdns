@@ -2,11 +2,6 @@ package domain_output
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
-	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -14,28 +9,91 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 )
 
-func mustLoadGeneratedDatasetContent(t *testing.T, path string) string {
-	t.Helper()
+type mockListController struct {
+	mu     sync.Mutex
+	values []string
+}
 
-	dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(path)
+func (m *mockListController) ListEntries(_ string, _, _ int) ([]coremain.ListEntry, int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	items := make([]coremain.ListEntry, 0, len(m.values))
+	for _, value := range m.values {
+		items = append(items, coremain.ListEntry{Value: value})
+	}
+	return items, len(items), nil
+}
+
+func (m *mockListController) ReplaceListRuntime(_ context.Context, values []string) (int, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.values = append([]string(nil), values...)
+	return len(values), nil
+}
+
+func (m *mockListController) snapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.values...)
+}
+
+type mockRefreshEnqueuer struct {
+	mu   sync.Mutex
+	jobs []coremain.DomainRefreshJob
+}
+
+func (m *mockRefreshEnqueuer) EnqueueDomainRefresh(_ context.Context, job coremain.DomainRefreshJob) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.jobs = append(m.jobs, job)
+	return true
+}
+
+func (m *mockRefreshEnqueuer) snapshot() []coremain.DomainRefreshJob {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]coremain.DomainRefreshJob(nil), m.jobs...)
+}
+
+func withRuntimeBaseDir(t *testing.T) string {
+	t.Helper()
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+	return coremain.MainConfigBaseDir
+}
+
+func mustLoadDatasetContent(t *testing.T, key string) string {
+	t.Helper()
+	dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(coremain.RuntimeStateDBPath(), key)
 	if err != nil {
-		t.Fatalf("LoadGeneratedDatasetForOutputPath(%q): %v", path, err)
+		t.Fatalf("LoadGeneratedDatasetFromPath(%q): %v", key, err)
 	}
 	if !ok {
-		t.Fatalf("expected generated dataset for %q", path)
+		t.Fatalf("expected generated dataset for %q", key)
 	}
 	return dataset.Content
 }
 
-func TestDomainOutputPromoteAfterThreshold(t *testing.T) {
-	t.Parallel()
+func newTestDomainOutput(t *testing.T, pluginTag string, plugins map[string]any, args *Args) *domainOutput {
+	t.Helper()
+	manager := coremain.NewTestMosdnsWithPlugins(plugins)
+	return newDomainOutput(pluginTag, manager, nil, args)
+}
 
-	dir := t.TempDir()
-	d := newDomainOutput(&Args{
-		FileStat: filepath.Join(dir, "realip.txt"),
-		FileRule: filepath.Join(dir, "realip.rule"),
+func TestDomainOutputPromoteAfterThreshold(t *testing.T) {
+	withRuntimeBaseDir(t)
+
+	list := &mockListController{}
+	d := newTestDomainOutput(t, "my_realiplist", map[string]any{
+		"my_realiprule": list,
+	}, &Args{
+		PublishTo: "my_realiprule",
 		Policy: &PolicyArgs{
 			Kind:         "realip",
 			PromoteAfter: 2,
@@ -46,29 +104,34 @@ func TestDomainOutputPromoteAfterThreshold(t *testing.T) {
 	})
 
 	d.processRecord(&logItem{name: "example.com.", qtype: 1, source: "live"})
-	d.performWrite(WriteModeSave)
-
-	raw := mustLoadGeneratedDatasetContent(t, filepath.Join(dir, "realip.rule"))
-	if strings.TrimSpace(raw) != "" {
-		t.Fatalf("expected no promoted rules after first observation, got %q", raw)
+	if err := d.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite first: %v", err)
+	}
+	if got := strings.TrimSpace(mustLoadDatasetContent(t, coremain.DomainOutputRuleDatasetKey("my_realiplist"))); got != "" {
+		t.Fatalf("expected empty rule dataset after first observation, got %q", got)
 	}
 
 	d.processRecord(&logItem{name: "example.com.", qtype: 1, source: "live"})
-	d.performWrite(WriteModeSave)
+	if err := d.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite second: %v", err)
+	}
 
-	raw = mustLoadGeneratedDatasetContent(t, filepath.Join(dir, "realip.rule"))
+	raw := mustLoadDatasetContent(t, coremain.DomainOutputRuleDatasetKey("my_realiplist"))
 	if !strings.Contains(raw, "full:example.com") {
 		t.Fatalf("expected promoted rule after threshold, got %q", raw)
+	}
+	if got := list.snapshot(); len(got) != 1 || got[0] != "full:example.com" {
+		t.Fatalf("unexpected published values: %#v", got)
 	}
 }
 
 func TestDomainOutputNov4RequiresAQueries(t *testing.T) {
-	t.Parallel()
+	withRuntimeBaseDir(t)
 
-	dir := t.TempDir()
-	d := newDomainOutput(&Args{
-		FileStat: filepath.Join(dir, "nov4.txt"),
-		FileRule: filepath.Join(dir, "nov4.rule"),
+	d := newTestDomainOutput(t, "my_nov4list", map[string]any{
+		"my_nov4rule": &mockListController{},
+	}, &Args{
+		PublishTo: "my_nov4rule",
 		Policy: &PolicyArgs{
 			Kind:         "nov4",
 			PromoteAfter: 2,
@@ -82,9 +145,11 @@ func TestDomainOutputNov4RequiresAQueries(t *testing.T) {
 	d.processRecord(&logItem{name: "ipv6-only.example.", qtype: 28, source: "live"})
 	d.processRecord(&logItem{name: "ipv4-miss.example.", qtype: 1, source: "live"})
 	d.processRecord(&logItem{name: "ipv4-miss.example.", qtype: 1, source: "live"})
-	d.performWrite(WriteModeSave)
+	if err := d.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite: %v", err)
+	}
 
-	output := mustLoadGeneratedDatasetContent(t, filepath.Join(dir, "nov4.rule"))
+	output := mustLoadDatasetContent(t, coremain.DomainOutputRuleDatasetKey("my_nov4list"))
 	if strings.Contains(output, "full:ipv6-only.example") {
 		t.Fatalf("unexpected AAAA-only promotion in nov4 rules: %q", output)
 	}
@@ -93,59 +158,28 @@ func TestDomainOutputNov4RequiresAQueries(t *testing.T) {
 	}
 }
 
-func TestDomainOutputLoadLegacyStatFile(t *testing.T) {
-	t.Parallel()
+func TestDomainOutputLoadFromRuntimeDataset(t *testing.T) {
+	withRuntimeBaseDir(t)
 
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "legacy.txt")
-	if err := os.WriteFile(statPath, []byte("0000000003 2026-03-01 legacy.example.com\n"), 0644); err != nil {
-		t.Fatalf("write legacy stat file: %v", err)
+	key := coremain.DomainOutputStatDatasetKey("my_realiplist")
+	body := "0000000001 2026-03-01 runtime.example qmask=1 score=1 promoted=1\n"
+	if err := coremain.SaveGeneratedDatasetToPath(
+		coremain.RuntimeStateDBPath(),
+		key,
+		coremain.GeneratedDatasetFormatDomainOutputStat,
+		body,
+	); err != nil {
+		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
-	d := newDomainOutput(&Args{FileStat: statPath})
-	d.loadFromFile()
+	d := newDomainOutput("my_realiplist", nil, nil, &Args{PublishTo: "my_realiprule"})
+	if err := d.loadFromDataset(); err != nil {
+		t.Fatalf("loadFromDataset: %v", err)
+	}
 
 	d.mu.Lock()
-	entry := d.stats["legacy.example.com"]
+	entry := d.stats["runtime.example"]
 	d.mu.Unlock()
-	if entry == nil || entry.Count != 3 {
-		t.Fatalf("expected legacy entry count 3, got %#v", entry)
-	}
-}
-
-func TestDomainOutputLoadFromRuntimeDatasetWhenFileMissing(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "realip.txt")
-	rulePath := filepath.Join(dir, "realip.rule")
-	genPath := filepath.Join(dir, "realip.gen")
-
-	d := newDomainOutput(&Args{
-		FileStat: statPath,
-		FileRule: rulePath,
-		GenRule:  genPath,
-		Pattern:  "full:DOMAIN",
-		Policy: &PolicyArgs{
-			Kind:         "realip",
-			PromoteAfter: 1,
-			PublishMode:  "all",
-			DecayDays:    30,
-		},
-	})
-	d.processRecord(&logItem{name: "runtime.example.", qtype: 1, source: "live"})
-	d.performWrite(WriteModeSave)
-
-	reloaded := newDomainOutput(&Args{
-		FileStat: statPath,
-		FileRule: rulePath,
-		GenRule:  genPath,
-	})
-	reloaded.loadFromFile()
-
-	reloaded.mu.Lock()
-	entry := reloaded.stats["runtime.example"]
-	reloaded.mu.Unlock()
 	if entry == nil || entry.Count != 1 {
 		t.Fatalf("expected runtime dataset entry count 1, got %#v", entry)
 	}
@@ -154,10 +188,7 @@ func TestDomainOutputLoadFromRuntimeDatasetWhenFileMissing(t *testing.T) {
 func TestDomainOutputMaxEntriesHardCap(t *testing.T) {
 	t.Parallel()
 
-	d := newDomainOutput(&Args{
-		MaxEntries: 1,
-	})
-
+	d := newDomainOutput("top_domains", nil, nil, &Args{MaxEntries: 1})
 	d.processRecord(&logItem{name: "first.example.", source: "live"})
 	d.processRecord(&logItem{name: "second.example.", source: "live"})
 
@@ -167,10 +198,10 @@ func TestDomainOutputMaxEntriesHardCap(t *testing.T) {
 		t.Fatalf("expected hard cap to keep 1 entry, got %d", len(d.stats))
 	}
 	if _, ok := d.stats["first.example"]; !ok {
-		t.Fatalf("expected first entry to remain after cap")
+		t.Fatal("expected first entry to remain after cap")
 	}
 	if _, ok := d.stats["second.example"]; ok {
-		t.Fatalf("unexpected second entry when cap reached")
+		t.Fatal("unexpected second entry when cap reached")
 	}
 	if got := atomic.LoadInt64(&d.droppedByCapCount); got != 1 {
 		t.Fatalf("droppedByCapCount = %d, want 1", got)
@@ -178,29 +209,15 @@ func TestDomainOutputMaxEntriesHardCap(t *testing.T) {
 }
 
 func TestDomainOutputNotifyDirtyAndVerify(t *testing.T) {
-	t.Parallel()
+	withRuntimeBaseDir(t)
 
-	dir := t.TempDir()
-	var (
-		mu     sync.Mutex
-		events []dirtyEvent
-	)
-	notifySrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
-		var event dirtyEvent
-		if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-			t.Fatalf("decode dirty event: %v", err)
-		}
-		mu.Lock()
-		events = append(events, event)
-		mu.Unlock()
-		w.WriteHeader(http.StatusAccepted)
-	}))
-	defer notifySrv.Close()
-
-	d := newDomainOutput(&Args{
-		FileStat: filepath.Join(dir, "realip.txt"),
-		FileRule: filepath.Join(dir, "realip.rule"),
+	list := &mockListController{}
+	requery := &mockRefreshEnqueuer{}
+	d := newTestDomainOutput(t, "my_realiplist", map[string]any{
+		"my_realiprule": list,
+		"requery":       requery,
+	}, &Args{
+		PublishTo: "my_realiprule",
 		Policy: &PolicyArgs{
 			Kind:                   "realip",
 			PromoteAfter:           1,
@@ -209,25 +226,23 @@ func TestDomainOutputNotifyDirtyAndVerify(t *testing.T) {
 			DecayDays:              30,
 			StaleAfterMinutes:      1,
 			RefreshCooldownMinutes: 1,
-			OnDirtyURL:             notifySrv.URL,
-			VerifyURL:              "http://verify.local/realip",
+			RequeryTag:             "requery",
 		},
 	})
 
 	d.processRecord(&logItem{name: "example.com.", qtype: 1, source: "live"})
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
 
-	mu.Lock()
-	if len(events) != 1 {
-		t.Fatalf("expected one dirty event, got %d", len(events))
+	jobs := requery.snapshot()
+	if len(jobs) != 1 {
+		t.Fatalf("expected one dirty refresh job, got %d", len(jobs))
 	}
-	if events[0].Domain != "example.com" || events[0].VerifyURL != "http://verify.local/realip" {
-		t.Fatalf("unexpected dirty event: %#v", events[0])
+	if jobs[0].Domain != "example.com" || jobs[0].VerifyTag != "my_realiplist" {
+		t.Fatalf("unexpected refresh job: %#v", jobs[0])
 	}
-	mu.Unlock()
 
 	if _, err := d.MarkDomainVerified(context.Background(), "example.com", ""); err != nil {
-		t.Fatalf("verify returned error: %v", err)
+		t.Fatalf("MarkDomainVerified: %v", err)
 	}
 
 	d.mu.Lock()
@@ -239,14 +254,10 @@ func TestDomainOutputNotifyDirtyAndVerify(t *testing.T) {
 }
 
 func TestDomainOutputPeriodicSkipWhenNotDirty(t *testing.T) {
-	t.Parallel()
+	withRuntimeBaseDir(t)
 
-	dir := t.TempDir()
-	statPath := filepath.Join(dir, "stats.txt")
-	rulePath := filepath.Join(dir, "rules.txt")
-	d := newDomainOutput(&Args{
-		FileStat: statPath,
-		FileRule: rulePath,
+	d := newDomainOutput("top_domains", nil, nil, &Args{
+		EnableFlags: false,
 		Policy: &PolicyArgs{
 			Kind:        "generic",
 			PublishMode: "all",
@@ -255,40 +266,26 @@ func TestDomainOutputPeriodicSkipWhenNotDirty(t *testing.T) {
 	})
 
 	d.processRecord(&logItem{name: "skip.example.", qtype: 1, source: "live"})
-	d.performWrite(WriteModePeriodic)
+	if err := d.performWrite(WriteModePeriodic); err != nil {
+		t.Fatalf("performWrite first: %v", err)
+	}
 
-	first, ok, err := coremain.LoadGeneratedDatasetForOutputPath(statPath)
-	if err != nil {
-		t.Fatalf("LoadGeneratedDatasetForOutputPath first: %v", err)
-	}
-	if !ok {
-		t.Fatal("expected generated dataset after first periodic write")
-	}
-	firstUpdated := first.Content
+	key := coremain.DomainOutputStatDatasetKey("top_domains")
+	first := mustLoadDatasetContent(t, key)
 	time.Sleep(1100 * time.Millisecond)
-
-	d.performWrite(WriteModePeriodic)
-	second, ok, err := coremain.LoadGeneratedDatasetForOutputPath(statPath)
-	if err != nil {
-		t.Fatalf("LoadGeneratedDatasetForOutputPath second: %v", err)
+	if err := d.performWrite(WriteModePeriodic); err != nil {
+		t.Fatalf("performWrite second: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected generated dataset after second periodic check")
-	}
-	if second.Content != firstUpdated {
-		t.Fatalf("expected periodic clean write to be skipped, content changed: %q -> %q", firstUpdated, second.Content)
+	second := mustLoadDatasetContent(t, key)
+	if second != first {
+		t.Fatalf("expected periodic clean write to be skipped, content changed: %q -> %q", first, second)
 	}
 }
 
-func TestDomainOutputInferPolicyDefaultsWithoutPolicyBlock(t *testing.T) {
+func TestNormalizePolicyDefaults(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Args{
-		FileStat:     "gen/realiplist.txt",
-		FileRule:     "gen/realiprule.txt",
-		DomainSetURL: "http://127.0.0.1:9099/api/v1/lists/my_realiprule",
-	}
-	p := normalizePolicy(cfg)
+	p := normalizePolicy("my_realiplist", &Args{PublishTo: "my_realiprule"})
 	if p.kind != "realip" {
 		t.Fatalf("kind = %q, want realip", p.kind)
 	}
@@ -298,49 +295,64 @@ func TestDomainOutputInferPolicyDefaultsWithoutPolicyBlock(t *testing.T) {
 	if p.decayDays != 21 {
 		t.Fatalf("decayDays = %d, want 21", p.decayDays)
 	}
-	if p.onDirtyURL != "http://127.0.0.1:9099/api/v1/control/requery/enqueue" {
-		t.Fatalf("onDirtyURL = %q", p.onDirtyURL)
-	}
-	if p.verifyURL != "http://127.0.0.1:9099/api/v1/memory/my_realiplist/verify" {
-		t.Fatalf("verifyURL = %q", p.verifyURL)
+	if p.requeryTag != "requery" {
+		t.Fatalf("requeryTag = %q, want requery", p.requeryTag)
 	}
 }
 
-func TestDomainOutputInferPolicyNodeNov4(t *testing.T) {
+func TestNormalizePolicyNodeNov4(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Args{
-		FileStat:     "gen/nodenov4list.txt",
-		FileRule:     "gen/nodenov4rule.txt",
-		DomainSetURL: "http://127.0.0.1:9099/api/v1/lists/my_nodenov4rule",
-	}
-	p := normalizePolicy(cfg)
+	p := normalizePolicy("my_nodenov4list", &Args{PublishTo: "my_nodenov4rule"})
 	if p.kind != "nov4" {
 		t.Fatalf("kind = %q, want nov4", p.kind)
 	}
 	if p.decayDays != 14 {
 		t.Fatalf("decayDays = %d, want 14", p.decayDays)
 	}
-	if p.verifyURL != "http://127.0.0.1:9099/api/v1/memory/my_nodenov4list/verify" {
-		t.Fatalf("verifyURL = %q", p.verifyURL)
-	}
 }
 
-func TestDomainOutputInferPolicyWithoutAPIBase(t *testing.T) {
+func TestNormalizePolicyWithoutPublishTarget(t *testing.T) {
 	t.Parallel()
 
-	cfg := &Args{
-		FileStat: "gen/nov4list.txt",
-		FileRule: "gen/nov4rule.txt",
-	}
-	p := normalizePolicy(cfg)
+	p := normalizePolicy("my_nov4list", &Args{})
 	if p.kind != "nov4" {
 		t.Fatalf("kind = %q, want nov4", p.kind)
 	}
-	if p.onDirtyURL != "" {
-		t.Fatalf("onDirtyURL = %q, want empty", p.onDirtyURL)
+	if p.requeryTag != "" {
+		t.Fatalf("requeryTag = %q, want empty", p.requeryTag)
 	}
-	if p.verifyURL != "" {
-		t.Fatalf("verifyURL = %q, want empty", p.verifyURL)
+}
+
+func TestDomainOutputGeneratedRulesRemainListCompatible(t *testing.T) {
+	withRuntimeBaseDir(t)
+
+	list := &mockListController{}
+	d := newTestDomainOutput(t, "my_fakeiplist", map[string]any{
+		"my_fakeiprule": list,
+	}, &Args{
+		PublishTo: "my_fakeiprule",
+		Policy: &PolicyArgs{
+			Kind:         "fakeip",
+			PromoteAfter: 1,
+			TrackQType:   true,
+			PublishMode:  "promoted_only",
+			DecayDays:    30,
+		},
+	})
+
+	d.processRecord(&logItem{name: "runtime.example.", qtype: 1, source: "live"})
+	if err := d.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite: %v", err)
+	}
+
+	m := domain.NewDomainMixMatcher()
+	for _, rule := range list.snapshot() {
+		if err := m.Add(rule, struct{}{}); err != nil {
+			t.Fatalf("matcher add %q: %v", rule, err)
+		}
+	}
+	if _, ok := m.Match("runtime.example."); !ok {
+		t.Fatal("expected published list values to remain domain_set compatible")
 	}
 }

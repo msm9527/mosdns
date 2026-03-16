@@ -202,28 +202,24 @@ func addUpstreamOverrideHealthCheck(addCheck func(runtimeHealthCheck)) {
 }
 
 func addDatasetHealthCheck(dbPath string, addCheck func(runtimeHealthCheck)) {
-	verify, err := VerifyGeneratedDatasetsOnFiles(dbPath)
+	datasets, err := ListGeneratedDatasetsFromPath(dbPath)
 	if err != nil {
 		addCheck(runtimeHealthCheck{Name: "generated_datasets", Status: "error", Message: err.Error()})
 		return
 	}
-	status := "ok"
-	message := ""
-	if verify.Mismatch > 0 {
-		status = "warn"
-		message = "generated dataset files have mismatches"
-	} else if verify.Missing > 0 {
-		message = "generated datasets are stored in sqlite; some optional export files are missing"
+	exportable := 0
+	for _, dataset := range datasets {
+		if strings.TrimSpace(dataset.ExportPath) != "" {
+			exportable++
+		}
 	}
 	addCheck(runtimeHealthCheck{
 		Name:    "generated_datasets",
-		Status:  status,
-		Message: message,
+		Status:  "ok",
+		Message: "generated datasets are stored in sqlite",
 		Details: map[string]any{
-			"checked":  verify.Checked,
-			"matched":  verify.Matched,
-			"missing":  verify.Missing,
-			"mismatch": verify.Mismatch,
+			"datasets":   len(datasets),
+			"exportable": exportable,
 		},
 	})
 }
@@ -299,10 +295,6 @@ func buildHealthSuggestedActions(checks []runtimeHealthCheck) []string {
 		case "sqlite_wal":
 			if check.Status == "warn" {
 				actions = append(actions, "执行 SQLite checkpoint 或检查是否存在长事务，缩小 control.db-wal。")
-			}
-		case "generated_datasets":
-			if check.Status == "warn" {
-				actions = append(actions, "运行 control datasets export/verify，修复缺失或不一致的导出文件。")
 			}
 		case "requery_runs":
 			if check.Status == "warn" {

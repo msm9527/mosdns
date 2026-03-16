@@ -293,26 +293,26 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 		verifyHit []string
 	)
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
 		switch r.URL.Path {
 		case "/save":
 			mu.Lock()
 			saveHits++
-			mu.Unlock()
-		case "/verify":
-			var payload map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode verify payload: %v", err)
-			}
-			mu.Lock()
-			verifyHit = append(verifyHit, payload["domain"])
 			mu.Unlock()
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer httpSrv.Close()
 
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockDomainVerifier{mark: func(domain string) {
+			mu.Lock()
+			defer mu.Unlock()
+			verifyHit = append(verifyHit, domain)
+		}},
+	})
+
 	p := &Requery{
+		m:          m,
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 		queueIndex: make(map[string]struct{}),
 		queueKick:  make(chan struct{}, 1),
@@ -339,7 +339,7 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 		MemoryID:  "realip",
 		QTypeMask: qtypeMaskA,
 		Reason:    "stale",
-		VerifyURL: httpSrv.URL + "/verify",
+		VerifyTag: "my_realiplist",
 	}); !ok {
 		t.Fatal("expected enqueue to succeed")
 	}
@@ -621,4 +621,15 @@ func (m mockRefreshCandidateProvider) SnapshotRefreshCandidates(req coremain.Dom
 		return append([]coremain.DomainRefreshCandidate(nil), m.candidates[:req.Limit]...)
 	}
 	return append([]coremain.DomainRefreshCandidate(nil), m.candidates...)
+}
+
+type mockDomainVerifier struct {
+	mark func(domain string)
+}
+
+func (m mockDomainVerifier) MarkDomainVerified(_ context.Context, domain, _ string) (int, error) {
+	if m.mark != nil {
+		m.mark(domain)
+	}
+	return 1, nil
 }

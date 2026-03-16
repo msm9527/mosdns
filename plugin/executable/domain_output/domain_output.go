@@ -1,20 +1,10 @@
 package domain_output
 
 import (
-	"bufio"
-	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"hash/fnv"
-	"io"
-	"net/http"
-	"net/url"
-	"os"
-	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,6 +13,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
+	"go.uber.org/zap"
 )
 
 const (
@@ -31,50 +22,11 @@ const (
 
 	qtypeMaskA    uint8 = 1 << 0
 	qtypeMaskAAAA uint8 = 1 << 1
-
-	defaultDirtyNotifyPath = "/api/v1/control/requery/enqueue"
 )
 
 func init() {
 	coremain.RegNewPluginFunc(PluginType, Init, func() any { return new(Args) })
 	sequence.MustRegExecQuickSetup(PluginType, QuickSetup)
-}
-
-type Args struct {
-	FileStat       string      `yaml:"file_stat"`
-	FileRule       string      `yaml:"file_rule"`
-	GenRule        string      `yaml:"gen_rule"`
-	Pattern        string      `yaml:"pattern"`
-	AppendedString string      `yaml:"appended_string"`
-	MaxEntries     int         `yaml:"max_entries"`
-	DumpInterval   int         `yaml:"dump_interval"`
-	DomainSetURL   string      `yaml:"domain_set_url"`
-	EnableFlags    bool        `yaml:"enable_flags"`
-	Policy         *PolicyArgs `yaml:"policy"`
-}
-
-type PolicyArgs struct {
-	Kind                   string `yaml:"kind"`
-	PromoteAfter           int    `yaml:"promote_after"`
-	DecayDays              int    `yaml:"decay_days"`
-	TrackQType             bool   `yaml:"track_qtype"`
-	PublishMode            string `yaml:"publish_mode"`
-	StaleAfterMinutes      int    `yaml:"stale_after_minutes"`
-	RefreshCooldownMinutes int    `yaml:"refresh_cooldown_minutes"`
-	OnDirtyURL             string `yaml:"on_dirty_url"`
-	VerifyURL              string `yaml:"verify_url"`
-}
-
-type writePolicy struct {
-	kind                   string
-	promoteAfter           int
-	decayDays              int
-	trackQType             bool
-	publishMode            string
-	staleAfterMinutes      int
-	refreshCooldownMinutes int
-	onDirtyURL             string
-	verifyURL              string
 }
 
 type statEntry struct {
@@ -103,14 +55,18 @@ type logItem struct {
 }
 
 type domainOutput struct {
-	fileStat       string
-	fileRule       string
-	genRule        string
-	pattern        string
-	appendedString string
+	pluginTag      string
+	publishTo      string
+	manager        *coremain.Mosdns
+	logger         *zap.Logger
+	dbPath         string
+	statDatasetKey string
+	ruleDatasetKey string
 	maxEntries     int
-	dumpInterval   time.Duration
+	persistEvery   time.Duration
+	enableFlags    bool
 	policy         writePolicy
+	memoryID       string
 
 	stats   map[string]*statEntry
 	mu      sync.Mutex
@@ -123,15 +79,11 @@ type domainOutput struct {
 	droppedByCapCount  int64
 	promotedCount      int64
 	publishedCount     int64
-	currentDate        atomic.Value
 	recordChan         chan *logItem
 	writeSignalChan    chan struct{}
 	stopChan           chan struct{}
 	workerDoneChan     chan struct{}
 
-	domainSetURL  string
-	enableFlags   bool
-	memoryID      string
 	dirtyPending  atomic.Bool
 	lastRulesHash uint64
 	hasRulesHash  bool
@@ -154,15 +106,6 @@ type writeSnapshot struct {
 	dirtyCount    int
 }
 
-type dirtyEvent struct {
-	Domain     string `json:"domain"`
-	MemoryID   string `json:"memory_id"`
-	QTypeMask  uint8  `json:"qtype_mask"`
-	Reason     string `json:"reason"`
-	VerifyURL  string `json:"verify_url,omitempty"`
-	ObservedAt string `json:"observed_at"`
-}
-
 type outputRankItem struct {
 	Domain         string
 	Count          int
@@ -180,207 +123,50 @@ type outputRankItem struct {
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
-	cfg := args.(*Args)
-	d := newDomainOutput(cfg)
-	d.loadFromFile()
-	go d.startWorker()
-	return d, nil
-}
-
-func QuickSetup(_ sequence.BQ, s string) (any, error) {
-	params := strings.Split(s, ",")
-	if len(params) < 6 || len(params) > 7 {
-		return nil, errors.New("invalid quick setup arguments: need 6 or 7 fields")
-	}
-	maxEntries, err := strconv.Atoi(params[4])
-	if err != nil {
+	d := newDomainOutput(bp.Tag(), bp.M(), bp.L(), args.(*Args))
+	if err := d.loadFromDataset(); err != nil {
 		return nil, err
 	}
-	dumpInterval, err := strconv.Atoi(params[5])
-	if err != nil || dumpInterval <= 0 {
-		dumpInterval = 60
-	}
-	args := &Args{
-		FileStat:     params[0],
-		FileRule:     params[1],
-		GenRule:      params[2],
-		Pattern:      params[3],
-		MaxEntries:   maxEntries,
-		DumpInterval: dumpInterval,
-		Policy:       &PolicyArgs{},
-	}
-	if len(params) == 7 {
-		args.DomainSetURL = params[6]
-	}
-	d := newDomainOutput(args)
-	d.loadFromFile()
 	go d.startWorker()
 	return d, nil
 }
 
-func newDomainOutput(cfg *Args) *domainOutput {
-	dumpInterval := cfg.DumpInterval
-	if dumpInterval <= 0 {
-		dumpInterval = 60
+func QuickSetup(_ sequence.BQ, _ string) (any, error) {
+	return nil, errors.New("domain_output quick setup is not supported in v2")
+}
+
+func newDomainOutput(pluginTag string, manager *coremain.Mosdns, logger *zap.Logger, cfg *Args) *domainOutput {
+	persistInterval := cfg.PersistInterval
+	if persistInterval <= 0 {
+		persistInterval = defaultPersistIntervalSeconds
 	}
-	policy := normalizePolicy(cfg)
+	policy := normalizePolicy(pluginTag, cfg)
+
 	d := &domainOutput{
-		fileStat:        cfg.FileStat,
-		fileRule:        cfg.FileRule,
-		genRule:         cfg.GenRule,
-		pattern:         cfg.Pattern,
-		appendedString:  cfg.AppendedString,
+		pluginTag:       strings.TrimSpace(pluginTag),
+		publishTo:       strings.TrimSpace(cfg.PublishTo),
+		manager:         manager,
+		logger:          logger,
+		dbPath:          coremain.RuntimeStateDBPath(),
+		statDatasetKey:  coremain.DomainOutputStatDatasetKey(pluginTag),
 		maxEntries:      cfg.MaxEntries,
-		dumpInterval:    time.Duration(dumpInterval) * time.Second,
+		persistEvery:    time.Duration(persistInterval) * time.Second,
+		enableFlags:     cfg.EnableFlags,
 		policy:          policy,
+		memoryID:        inferMemoryID(pluginTag, cfg),
 		stats:           make(map[string]*statEntry),
 		recordChan:      make(chan *logItem, RecordBufferLimit),
 		writeSignalChan: make(chan struct{}, 1),
 		stopChan:        make(chan struct{}),
 		workerDoneChan:  make(chan struct{}),
-		domainSetURL:    cfg.DomainSetURL,
-		enableFlags:     cfg.EnableFlags,
-		memoryID:        inferMemoryID(cfg),
 	}
-	d.currentDate.Store(time.Now().Format("2006-01-02"))
+	if d.publishTo != "" {
+		d.ruleDatasetKey = coremain.DomainOutputRuleDatasetKey(pluginTag)
+	}
 	return d
 }
 
-func normalizePolicy(cfg *Args) writePolicy {
-	apiBase := inferAPIBaseFromConfig(cfg)
-	kind := "generic"
-	promoteAfter := 1
-	decayDays := 30
-	publishMode := "all"
-	trackQType := false
-	staleAfterMinutes := 0
-	refreshCooldownMinutes := 120
-	onDirtyURL := ""
-	verifyURL := ""
-
-	infer := strings.ToLower(strings.Join([]string{cfg.FileStat, cfg.FileRule, cfg.GenRule, cfg.DomainSetURL}, " "))
-	switch {
-	case strings.Contains(infer, "realip"):
-		kind = "realip"
-		promoteAfter = 2
-		decayDays = 21
-		publishMode = "promoted_only"
-		trackQType = true
-		staleAfterMinutes = 360
-		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_realiplist/verify")
-	case strings.Contains(infer, "fakeip"):
-		kind = "fakeip"
-		promoteAfter = 2
-		decayDays = 21
-		publishMode = "promoted_only"
-		trackQType = true
-		staleAfterMinutes = 240
-		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_fakeiplist/verify")
-	case strings.Contains(infer, "nodenov4"):
-		kind = "nov4"
-		promoteAfter = 2
-		decayDays = 14
-		publishMode = "promoted_only"
-		trackQType = true
-		staleAfterMinutes = 180
-		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nodenov4list/verify")
-	case strings.Contains(infer, "nodenov6"):
-		kind = "nov6"
-		promoteAfter = 2
-		decayDays = 14
-		publishMode = "promoted_only"
-		trackQType = true
-		staleAfterMinutes = 180
-		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nodenov6list/verify")
-	case strings.Contains(infer, "nov4"):
-		kind = "nov4"
-		promoteAfter = 2
-		decayDays = 14
-		publishMode = "promoted_only"
-		trackQType = true
-		staleAfterMinutes = 180
-		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nov4list/verify")
-	case strings.Contains(infer, "nov6"):
-		kind = "nov6"
-		promoteAfter = 2
-		decayDays = 14
-		publishMode = "promoted_only"
-		trackQType = true
-		staleAfterMinutes = 180
-		onDirtyURL = buildAPIURL(apiBase, defaultDirtyNotifyPath)
-		verifyURL = buildAPIURL(apiBase, "/api/v1/memory/my_nov6list/verify")
-	}
-
-	if cfg.Policy != nil {
-		if cfg.Policy.Kind != "" {
-			kind = strings.ToLower(cfg.Policy.Kind)
-		}
-		if cfg.Policy.PromoteAfter > 0 {
-			promoteAfter = cfg.Policy.PromoteAfter
-		}
-		if cfg.Policy.DecayDays > 0 {
-			decayDays = cfg.Policy.DecayDays
-		}
-		if cfg.Policy.PublishMode != "" {
-			publishMode = strings.ToLower(cfg.Policy.PublishMode)
-		}
-		if cfg.Policy.TrackQType {
-			trackQType = true
-		}
-		if cfg.Policy.StaleAfterMinutes > 0 {
-			staleAfterMinutes = cfg.Policy.StaleAfterMinutes
-		}
-		if cfg.Policy.RefreshCooldownMinutes > 0 {
-			refreshCooldownMinutes = cfg.Policy.RefreshCooldownMinutes
-		}
-		if cfg.Policy.OnDirtyURL != "" {
-			onDirtyURL = cfg.Policy.OnDirtyURL
-		}
-		if cfg.Policy.VerifyURL != "" {
-			verifyURL = cfg.Policy.VerifyURL
-		}
-	}
-
-	if kind == "generic" && cfg.FileRule == "" && cfg.DomainSetURL == "" {
-		publishMode = "all"
-	}
-	return writePolicy{
-		kind:                   kind,
-		promoteAfter:           promoteAfter,
-		decayDays:              decayDays,
-		trackQType:             trackQType,
-		publishMode:            publishMode,
-		staleAfterMinutes:      staleAfterMinutes,
-		refreshCooldownMinutes: refreshCooldownMinutes,
-		onDirtyURL:             onDirtyURL,
-		verifyURL:              verifyURL,
-	}
-}
-
-func inferAPIBaseFromConfig(cfg *Args) string {
-	if cfg == nil || cfg.DomainSetURL == "" {
-		return ""
-	}
-	u, err := url.Parse(cfg.DomainSetURL)
-	if err != nil || u.Scheme == "" || u.Host == "" {
-		return ""
-	}
-	return u.Scheme + "://" + u.Host
-}
-
-func buildAPIURL(base, path string) string {
-	if base == "" || path == "" {
-		return ""
-	}
-	return strings.TrimRight(base, "/") + path
-}
-
-func (d *domainOutput) Exec(ctx context.Context, qCtx *query_context.Context) error {
+func (d *domainOutput) Exec(_ context.Context, qCtx *query_context.Context) error {
 	d.enqueueFromContext(qCtx, "live")
 	return nil
 }
@@ -389,7 +175,7 @@ func (d *domainOutput) GetFastExec() func(ctx context.Context, qCtx *query_conte
 	rChan := d.recordChan
 	enableFlags := d.enableFlags
 	trackQType := d.policy.trackQType
-	return func(ctx context.Context, qCtx *query_context.Context) error {
+	return func(_ context.Context, qCtx *query_context.Context) error {
 		q := qCtx.Q()
 		if q == nil || len(q.Question) == 0 {
 			return nil
@@ -444,7 +230,7 @@ func (d *domainOutput) enqueueFromContext(qCtx *query_context.Context, source st
 }
 
 func (d *domainOutput) startWorker() {
-	ticker := time.NewTicker(d.dumpInterval)
+	ticker := time.NewTicker(d.persistEvery)
 	defer ticker.Stop()
 	defer close(d.workerDoneChan)
 
@@ -453,9 +239,9 @@ func (d *domainOutput) startWorker() {
 		case item := <-d.recordChan:
 			d.processRecord(item)
 		case <-ticker.C:
-			d.performWrite(WriteModePeriodic)
+			d.runWrite(WriteModePeriodic)
 		case <-d.writeSignalChan:
-			d.performWrite(WriteModePeriodic)
+			d.runWrite(WriteModePeriodic)
 		case <-d.stopChan:
 			for {
 				select {
@@ -475,7 +261,7 @@ func (d *domainOutput) processRecord(item *logItem) {
 	now := time.Now().UTC()
 	nowDate := now.Format("2006-01-02")
 	nowStamp := now.Format(time.RFC3339)
-	var notify *dirtyEvent
+	var notify *coremain.DomainRefreshJob
 
 	d.mu.Lock()
 	entry, exists := d.stats[storageKey]
@@ -507,14 +293,14 @@ func (d *domainOutput) processRecord(item *logItem) {
 			if d.policy.refreshCooldownMinutes > 0 {
 				entry.CooldownUntil = now.Add(time.Duration(d.policy.refreshCooldownMinutes) * time.Minute).Format(time.RFC3339)
 			}
-			if d.policy.onDirtyURL != "" && entry.Promoted {
-				notify = &dirtyEvent{
+			if d.policy.requeryTag != "" && entry.Promoted {
+				notify = &coremain.DomainRefreshJob{
 					Domain:     strings.TrimSuffix(item.name, "."),
 					MemoryID:   d.memoryID,
 					QTypeMask:  entry.QTypeMask,
 					Reason:     reason,
-					VerifyURL:  d.policy.verifyURL,
-					ObservedAt: nowStamp,
+					VerifyTag:  d.pluginTag,
+					ObservedAt: now,
 				}
 			}
 		}
@@ -536,9 +322,8 @@ func (d *domainOutput) processRecord(item *logItem) {
 }
 
 func buildStorageKey(rawDomain string, item *logItem, enableFlags bool) string {
-	storageKey := rawDomain
 	if !enableFlags {
-		return storageKey
+		return rawDomain
 	}
 	flags := make([]string, 0, 3)
 	if item.ad {
@@ -551,7 +336,7 @@ func buildStorageKey(rawDomain string, item *logItem, enableFlags bool) string {
 		flags = append(flags, "DO")
 	}
 	if len(flags) == 0 {
-		return storageKey
+		return rawDomain
 	}
 	return rawDomain + "|" + strings.Join(flags, "|")
 }
@@ -567,25 +352,39 @@ func qtypeToMask(qtype uint16) uint8 {
 	}
 }
 
-func (d *domainOutput) performWrite(mode WriteMode) {
+func (d *domainOutput) runWrite(mode WriteMode) {
+	if err := d.performWrite(mode); err != nil {
+		d.logWriteFailure(mode, err)
+	}
+}
+
+func (d *domainOutput) performWrite(mode WriteMode) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
 
 	if mode == WriteModePeriodic && !d.dirtyPending.Load() {
-		return
+		return nil
 	}
 
-	d.currentDate.Store(time.Now().Format("2006-01-02"))
 	snapshot := d.buildSnapshot(mode)
-	writeOK, rulesChanged := d.writeSnapshot(snapshot, mode)
+	rulesHash := hashRules(snapshot.rules)
+	rulesChanged := mode == WriteModeFlush || !d.hasRulesHash || d.lastRulesHash != rulesHash
+
+	if err := d.saveGeneratedDatasets(snapshot); err != nil {
+		return err
+	}
 	if mode != WriteModeShutdown && rulesChanged {
-		d.pushToDomainSet(snapshot.rules)
+		if err := d.publishRules(snapshot.rules); err != nil {
+			return err
+		}
 	}
-	if writeOK {
-		d.dirtyPending.Store(false)
-	}
+
+	d.lastRulesHash = rulesHash
+	d.hasRulesHash = true
+	d.dirtyPending.Store(false)
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
 	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
+	return nil
 }
 
 func (d *domainOutput) buildSnapshot(mode WriteMode) writeSnapshot {
@@ -645,16 +444,16 @@ func (d *domainOutput) collectRules(items []outputRankItem) ([]string, int) {
 	if len(items) == 0 {
 		return nil, 0
 	}
-	type agg struct {
+	type aggregate struct {
 		count    int
 		lastDate string
 		promoted bool
 	}
-	aggregated := make(map[string]agg)
+
+	aggregated := make(map[string]aggregate, len(items))
 	promotedCount := 0
 	for _, entry := range items {
-		key := entry.Domain
-		domainOnly := strings.Split(key, "|")[0]
+		domainOnly := strings.Split(entry.Domain, "|")[0]
 		current := aggregated[domainOnly]
 		current.count += entry.Count
 		if entry.Date > current.lastDate {
@@ -687,10 +486,7 @@ func (d *domainOutput) shouldPromote(entry *statEntry) bool {
 	if d.policy.publishMode == "all" {
 		return true
 	}
-	if d.isStale(entry.LastDate) {
-		return false
-	}
-	if entry.Count < d.policy.promoteAfter {
+	if d.isStale(entry.LastDate) || entry.Count < d.policy.promoteAfter {
 		return false
 	}
 	switch d.policy.kind {
@@ -714,34 +510,6 @@ func (d *domainOutput) isStale(lastDate string) bool {
 	return time.Since(ts) > time.Duration(d.policy.decayDays)*24*time.Hour
 }
 
-func (d *domainOutput) writeSnapshot(snapshot writeSnapshot, mode WriteMode) (bool, bool) {
-	rulesHash := hashRules(snapshot.rules)
-	rulesChanged := !d.hasRulesHash || d.lastRulesHash != rulesHash
-	if mode == WriteModeFlush {
-		// flush 需要强制同步空规则到下游 domain_set
-		rulesChanged = true
-	}
-
-	sort.Slice(snapshot.items, func(i, j int) bool {
-		if snapshot.items[i].Count == snapshot.items[j].Count {
-			return snapshot.items[i].Domain < snapshot.items[j].Domain
-		}
-		return snapshot.items[i].Count > snapshot.items[j].Count
-	})
-
-	statContent := d.renderStatContent(snapshot)
-	ruleContent := d.renderRuleContent(snapshot)
-	genRuleContent := d.renderGeneratedRuleContent(snapshot)
-
-	ok := d.saveGeneratedDatasets(statContent, ruleContent, genRuleContent)
-
-	if ok {
-		d.lastRulesHash = rulesHash
-		d.hasRulesHash = true
-	}
-	return ok, rulesChanged
-}
-
 func hashRules(rules []string) uint64 {
 	h := fnv.New64a()
 	for _, domain := range rules {
@@ -751,273 +519,8 @@ func hashRules(rules []string) uint64 {
 	return h.Sum64()
 }
 
-func (d *domainOutput) loadFromFile() {
-	if d.fileStat == "" {
-		return
-	}
-	scanner, cleanup := d.openStatScanner()
-	if scanner == nil {
-		return
-	}
-	defer cleanup()
-	today := time.Now().Format("2006-01-02")
-
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 2 {
-			continue
-		}
-		count, _ := strconv.Atoi(fields[0])
-		lastDate := today
-		domain := ""
-		startExtras := 2
-		if len(fields) >= 3 && strings.Count(fields[1], "-") == 2 {
-			lastDate = fields[1]
-			domain = fields[2]
-			startExtras = 3
-		} else {
-			domain = fields[1]
-		}
-		entry := &statEntry{Count: count, Score: count, LastDate: lastDate}
-		for _, field := range fields[startExtras:] {
-			k, v, ok := strings.Cut(field, "=")
-			if !ok {
-				continue
-			}
-			switch k {
-			case "qmask":
-				if parsed, err := strconv.Atoi(v); err == nil {
-					entry.QTypeMask = uint8(parsed)
-				}
-			case "score":
-				if parsed, err := strconv.Atoi(v); err == nil {
-					entry.Score = parsed
-				}
-			case "promoted":
-				entry.Promoted = v == "1"
-			case "last_seen":
-				entry.LastSeenAt = restoreStatToken(v)
-			case "last_dirty":
-				entry.LastDirtyAt = restoreStatToken(v)
-			case "last_verified":
-				entry.LastVerifiedAt = restoreStatToken(v)
-			case "dirty_reason":
-				entry.DirtyReason = restoreStatToken(v)
-			case "refresh_state":
-				entry.RefreshState = restoreStatToken(v)
-			case "cooldown_until":
-				entry.CooldownUntil = restoreStatToken(v)
-			case "conflicts":
-				if parsed, err := strconv.Atoi(v); err == nil {
-					entry.ConflictCount = parsed
-				}
-			}
-		}
-		entry.Promoted = d.shouldPromote(entry)
-		if d.maxEntries > 0 && len(d.stats) >= d.maxEntries {
-			continue
-		}
-		d.stats[domain] = entry
-		atomic.AddInt64(&d.totalCount, int64(count))
-	}
-}
-
-func (d *domainOutput) renderStatContent(snapshot writeSnapshot) string {
-	var b strings.Builder
-	for _, item := range snapshot.items {
-		_, _ = fmt.Fprintf(
-			&b,
-			"%010d %s %s qmask=%d score=%d promoted=%d last_seen=%s last_dirty=%s last_verified=%s dirty_reason=%s refresh_state=%s cooldown_until=%s conflicts=%d\n",
-			item.Count,
-			item.Date,
-			item.Domain,
-			item.QMask,
-			item.Score,
-			boolToInt(item.Prom),
-			sanitizeStatToken(item.LastSeenAt),
-			sanitizeStatToken(item.LastDirtyAt),
-			sanitizeStatToken(item.LastVerifiedAt),
-			sanitizeStatToken(item.DirtyReason),
-			sanitizeStatToken(item.RefreshState),
-			sanitizeStatToken(item.CooldownUntil),
-			item.ConflictCount,
-		)
-	}
-	return b.String()
-}
-
-func (d *domainOutput) renderRuleContent(snapshot writeSnapshot) string {
-	var b strings.Builder
-	for _, domain := range snapshot.rules {
-		_, _ = fmt.Fprintf(&b, "full:%s\n", domain)
-	}
-	return b.String()
-}
-
-func (d *domainOutput) renderGeneratedRuleContent(snapshot writeSnapshot) string {
-	if d.pattern == "" {
-		return ""
-	}
-	var b strings.Builder
-	if d.appendedString != "" {
-		_, _ = fmt.Fprintln(&b, d.appendedString)
-	}
-	for _, domain := range snapshot.rules {
-		_, _ = fmt.Fprintln(&b, strings.ReplaceAll(d.pattern, "DOMAIN", domain))
-	}
-	return b.String()
-}
-
-func (d *domainOutput) runtimeDBPath() string {
-	for _, path := range []string{d.fileStat, d.fileRule, d.genRule} {
-		if strings.TrimSpace(path) != "" {
-			return coremain.RuntimeStateDBPathForPath(path)
-		}
-	}
-	return ""
-}
-
-func (d *domainOutput) saveGeneratedDatasets(statContent, ruleContent, genRuleContent string) bool {
-	dbPath := d.runtimeDBPath()
-	if dbPath == "" {
-		return true
-	}
-	for _, dataset := range []struct {
-		path   string
-		format string
-		body   string
-	}{
-		{path: d.fileStat, format: coremain.GeneratedDatasetFormatDomainOutputStat, body: statContent},
-		{path: d.fileRule, format: coremain.GeneratedDatasetFormatDomainOutputRule, body: ruleContent},
-		{path: d.genRule, format: coremain.GeneratedDatasetFormatDomainOutputGeneratedRule, body: genRuleContent},
-	} {
-		if strings.TrimSpace(dataset.path) == "" {
-			continue
-		}
-		if err := coremain.SaveGeneratedDatasetToPath(dbPath, filepath.Clean(dataset.path), dataset.format, dataset.body); err != nil {
-			return false
-		}
-	}
-	return true
-}
-
-func (d *domainOutput) openStatScanner() (*bufio.Scanner, func()) {
-	dbPath := d.runtimeDBPath()
-	if dbPath != "" {
-		if dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(dbPath, filepath.Clean(d.fileStat)); err == nil && ok {
-			reader := strings.NewReader(dataset.Content)
-			return bufio.NewScanner(reader), func() {}
-		}
-	}
-
-	f, err := os.Open(d.fileStat)
-	if err != nil {
-		return nil, func() {}
-	}
-	return bufio.NewScanner(f), func() {
-		_ = f.Close()
-	}
-}
-
-func (d *domainOutput) pushToDomainSet(rules []string) {
-	if d.domainSetURL == "" {
-		return
-	}
-	payload := struct {
-		Values []string `json:"values"`
-	}{Values: make([]string, len(rules))}
-	copy(payload.Values, rules)
-	body, _ := json.Marshal(payload)
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		method := http.MethodPost
-		if strings.Contains(d.domainSetURL, "/api/v1/lists/") {
-			method = http.MethodPut
-		}
-		req, err := http.NewRequestWithContext(ctx, method, d.domainSetURL, bytes.NewReader(body))
-		if err != nil {
-			return
-		}
-		req.Header.Set("Content-Type", "application/json")
-		resp, err := http.DefaultClient.Do(req)
-		if err != nil {
-			return
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-	}()
-}
-
-func (d *domainOutput) Close() error {
-	d.closeOnce.Do(func() {
-		close(d.stopChan)
-		<-d.workerDoneChan
-		d.performWrite(WriteModeShutdown)
-	})
-	return nil
-}
-
-func (d *domainOutput) PrepareForRestart() error {
-	return d.Close()
-}
-
-func restartSelf() {
-	time.Sleep(100 * time.Millisecond)
-	_ = coremain.ExecSelfRestart()
-}
-
-func boolToInt(v bool) int {
-	if v {
-		return 1
-	}
-	return 0
-}
-
-func sanitizeStatToken(v string) string {
-	if v == "" {
-		return "-"
-	}
-	return strings.ReplaceAll(v, " ", "_")
-}
-
-func restoreStatToken(v string) string {
-	if v == "-" {
-		return ""
-	}
-	return strings.ReplaceAll(v, "_", " ")
-}
-
-func inferMemoryID(cfg *Args) string {
-	infer := strings.ToLower(strings.Join([]string{cfg.FileStat, cfg.FileRule, cfg.GenRule, cfg.DomainSetURL}, " "))
-	switch {
-	case strings.Contains(infer, "realip"):
-		return "realip"
-	case strings.Contains(infer, "fakeip"):
-		return "fakeip"
-	case strings.Contains(infer, "nodenov4"):
-		return "nodenov4"
-	case strings.Contains(infer, "nodenov6"):
-		return "nodenov6"
-	case strings.Contains(infer, "nov4"):
-		return "nov4"
-	case strings.Contains(infer, "nov6"):
-		return "nov6"
-	case strings.Contains(infer, "top_domains"):
-		return "top"
-	default:
-		return "generic"
-	}
-}
-
 func (d *domainOutput) nextDirtyReason(entry *statEntry, now time.Time) string {
-	if !entry.Promoted || d.policy.onDirtyURL == "" {
+	if !entry.Promoted || d.policy.requeryTag == "" {
 		return ""
 	}
 	if entry.CooldownUntil != "" {
@@ -1032,38 +535,36 @@ func (d *domainOutput) nextDirtyReason(entry *statEntry, now time.Time) string {
 		return "observed"
 	}
 	if d.policy.staleAfterMinutes > 0 {
-		if ts, err := time.Parse(time.RFC3339, entry.LastDirtyAt); err == nil && now.Sub(ts) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
+		if ts, err := time.Parse(time.RFC3339, entry.LastDirtyAt); err == nil &&
+			now.Sub(ts) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
 			return "stale"
 		}
 	}
 	return ""
 }
 
-func (d *domainOutput) notifyDirty(event dirtyEvent) {
-	body, err := json.Marshal(event)
-	if err != nil {
-		return
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.policy.onDirtyURL, bytes.NewReader(body))
-	if err != nil {
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return
-	}
-	_, _ = io.Copy(io.Discard, resp.Body)
-	_ = resp.Body.Close()
+func (d *domainOutput) Close() error {
+	var closeErr error
+	d.closeOnce.Do(func() {
+		close(d.stopChan)
+		<-d.workerDoneChan
+		closeErr = d.performWrite(WriteModeShutdown)
+	})
+	return closeErr
 }
 
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
+func (d *domainOutput) PrepareForRestart() error {
+	return d.Close()
 }
 
-var _ sequence.Executable = (*domainOutput)(nil)
+func (d *domainOutput) logWriteFailure(mode WriteMode, err error) {
+	if d.logger == nil || err == nil {
+		return
+	}
+	d.logger.Warn(
+		"domain_output write failed",
+		zap.String("plugin", d.pluginTag),
+		zap.Int("mode", int(mode)),
+		zap.Error(err),
+	)
+}

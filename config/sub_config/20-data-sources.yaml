@@ -20,79 +20,69 @@ policies:
       socks5: 127.0.0.1:7891
 
   # 热门域名统计。
-  # 注意：
-  # - `gen/top_domains.txt` 现在主要作为 generated dataset 的逻辑导出路径
-  # - 运行态真源在 control.db 的 generated_dataset 表
-  # - 只有显式执行 datasets export 时才需要真正落回文件
+  # 说明：
+  # - 统计结果只保存在 control.db 的 generated_dataset 表中
+  # - 不再自动写入 gen/top_domains.txt 这类文件
+  # - `persist_interval` 控制刷盘周期（秒）
+  # - `max_entries` 控制最多保留多少个域名统计项，超出后新项会被丢弃
   - name: top_domains
     type: domain_output
     args:
-      file_stat: gen/top_domains.txt
       enable_flags: true
       max_entries: 200000
-      dump_interval: 36000
+      persist_interval: 36000
 
   # 记忆直连域名。
-  # `file_stat` / `file_rule` 仍保留为稳定键名与导出目标，
-  # 但运行过程中不再依赖自动写入 `gen/*.txt` 才能生效。
+  # 说明：
+  # - domain_output 会把统计与生成规则都写入 control.db
+  # - `publish_to` 直接指向下游 provider tag，运行时通过内部插件调用热更新
+  # - 不再通过 loopback HTTP 调 `/api/v1/lists/...`
   - name: my_realiplist
     type: domain_output
     args:
-      file_stat: gen/realiplist.txt
-      file_rule: gen/realiprule.txt
+      publish_to: my_realiprule
       max_entries: 80000
-      dump_interval: 36005
-      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_realiprule
+      persist_interval: 36005
 
   # 记忆代理域名。
   - name: my_fakeiplist
     type: domain_output
     args:
-      file_stat: gen/fakeiplist.txt
-      file_rule: gen/fakeiprule.txt
+      publish_to: my_fakeiprule
       max_entries: 80000
-      dump_interval: 36010
-      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_fakeiprule
+      persist_interval: 36010
 
   # 记忆无 IPv6 域名。
   - name: my_nov6list
     type: domain_output
     args:
-      file_stat: gen/nov6list.txt
-      file_rule: gen/nov6rule.txt
+      publish_to: my_nov6rule
       max_entries: 120000
-      dump_interval: 36040
-      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nov6rule
+      persist_interval: 36040
 
   # 记忆无 IPv4 域名。
   - name: my_nov4list
     type: domain_output
     args:
-      file_stat: gen/nov4list.txt
-      file_rule: gen/nov4rule.txt
+      publish_to: my_nov4rule
       max_entries: 80000
-      dump_interval: 36030
-      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nov4rule
+      persist_interval: 36030
 
   # 节点模式下的无 IPv6 记忆域名。
   - name: my_nodenov6list
     type: domain_output
     args:
-      file_stat: gen/nodenov6list.txt
-      file_rule: gen/nodenov6rule.txt
+      publish_to: my_nodenov6rule
       max_entries: 50000
-      dump_interval: 36060
-      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nodenov6rule
+      persist_interval: 36060
 
   # 节点模式下的无 IPv4 记忆域名。
   - name: my_nodenov4list
     type: domain_output
     args:
-      file_stat: gen/nodenov4list.txt
-      file_rule: gen/nodenov4rule.txt
+      publish_to: my_nodenov4rule
       max_entries: 50000
-      dump_interval: 36080
-      domain_set_url: http://127.0.0.1:9099/api/v1/lists/my_nodenov4rule
+      persist_interval: 36080
 
   # 强制直连 IP 段。
   - name: direct_ip
@@ -123,41 +113,36 @@ policies:
       socks5: 127.0.0.1:7891
       local_config: srs/cuscn.json
 
-  # 记忆类规则文件。
-  # 这些 provider 在启动时会优先从 generated_dataset 恢复，
-  # 只有显式导出后才会重新依赖对应的 `gen/*.txt` 文件。
+  # 记忆类规则 provider。
+  # 说明：
+  # - `generated_from` 表示直接从对应的 domain_output 规则数据集读取
+  # - 热更新时也直接回写数据库，不再走 `gen/*.txt`
   - name: my_realiprule
     type: domain_set_light
     args:
-      files:
-        - gen/realiprule.txt
+      generated_from: my_realiplist
   - name: my_fakeiprule
     type: domain_set_light
     args:
-      files:
-        - gen/fakeiprule.txt
+      generated_from: my_fakeiplist
   - name: my_nov6rule
     type: domain_set_light
     args:
-      files:
-        - gen/nov6rule.txt
+      generated_from: my_nov6list
   - name: my_nov4rule
     type: domain_set_light
     args:
-      files:
-        - gen/nov4rule.txt
+      generated_from: my_nov4list
 
-  # 节点模式记忆规则文件。
+  # 节点模式记忆规则 provider。
   - name: my_nodenov6rule
     type: domain_set
     args:
-      files:
-        - gen/nodenov6rule.txt
+      generated_from: my_nodenov6list
   - name: my_nodenov4rule
     type: domain_set
     args:
-      files:
-        - gen/nodenov4rule.txt
+      generated_from: my_nodenov4list
 
   # 规则源：国内域名集、国内 IP 集、国外域名集。
   - name: geosite_cn

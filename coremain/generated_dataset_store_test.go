@@ -11,8 +11,8 @@ func TestGeneratedDatasetStructuredStore(t *testing.T) {
 	dbPath := filepath.Join(baseDir, runtimeStateDBFilename)
 	target := filepath.Join(baseDir, "gen", "realip.rule")
 
-	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	dataset, ok, err := LoadGeneratedDatasetFromPath(dbPath, target)
@@ -62,8 +62,8 @@ func TestGeneratedDatasetVerifyOnFiles(t *testing.T) {
 	dbPath := filepath.Join(baseDir, runtimeStateDBFilename)
 	target := filepath.Join(baseDir, "gen", "realip.rule")
 
-	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	summary, err := VerifyGeneratedDatasetsOnFiles(dbPath)

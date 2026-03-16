@@ -34,8 +34,9 @@ func TestHandleRuntimeSummary(t *testing.T) {
 		MainConfigBaseDir = oldBaseDir
 	})
 
-	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), filepath.Join(MainConfigBaseDir, "gen", "realip.rule"), "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
+	if err := SaveGeneratedDatasetEntryToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	router := chi.NewRouter()
@@ -72,8 +73,8 @@ func TestHandleRuntimeHealth(t *testing.T) {
 	})
 
 	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	router := chi.NewRouter()
@@ -127,8 +128,8 @@ func TestHandleRuntimeDatasetsAndExport(t *testing.T) {
 	})
 
 	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(filepath.Join(MainConfigBaseDir, runtimeStateDBFilename), target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	router := chi.NewRouter()

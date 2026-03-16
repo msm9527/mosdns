@@ -21,7 +21,7 @@ func TestPollWatchedFilesReloadsRules(t *testing.T) {
 		subscribers: make([]func(), 0, 1),
 		fileStates:  make(map[string]watchedFileState),
 	}
-	initialRules, err := (&DomainSetLight{}).initAndLoadRules(nil, []string{ruleFile})
+	initialRules, err := (&DomainSetLight{}).initAndLoadRules(nil, []string{ruleFile}, "")
 	if err != nil {
 		t.Fatalf("load initial rules: %v", err)
 	}
@@ -60,19 +60,23 @@ func TestPollWatchedFilesReloadsRules(t *testing.T) {
 	}
 }
 
-func TestLoadGeneratedDatasetWhenFileMissing(t *testing.T) {
-	dir := t.TempDir()
-	ruleFile := filepath.Join(dir, "gen", "nov4rule.txt")
-	dbPath := coremain.RuntimeStateDBPathForPath(ruleFile)
+func TestLoadGeneratedRuntimeRules(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
 
-	if err := coremain.SaveGeneratedDatasetToPath(dbPath, ruleFile, coremain.GeneratedDatasetFormatDomainOutputRule, "full:runtime.example\n"); err != nil {
+	generatedFrom := "my_nov4list"
+	key := coremain.DomainOutputRuleDatasetKey(generatedFrom)
+	if err := coremain.SaveGeneratedDatasetToPath(coremain.RuntimeStateDBPath(), key, coremain.GeneratedDatasetFormatDomainOutputRule, "full:runtime.example\n"); err != nil {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
 	ds := &DomainSetLight{}
-	rules, err := ds.loadFileInternal(ruleFile)
+	rules, err := ds.loadGeneratedRuntimeRules(generatedFrom)
 	if err != nil {
-		t.Fatalf("loadFileInternal: %v", err)
+		t.Fatalf("loadGeneratedRuntimeRules: %v", err)
 	}
 	if len(rules) != 1 || rules[0] != "full:runtime.example" {
 		t.Fatalf("unexpected rules from generated dataset: %#v", rules)
@@ -80,9 +84,14 @@ func TestLoadGeneratedDatasetWhenFileMissing(t *testing.T) {
 }
 
 func TestReplaceListRuntimePersistsGeneratedDataset(t *testing.T) {
-	dir := t.TempDir()
-	ruleFile := filepath.Join(dir, "gen", "nov6rule.txt")
-	ds := &DomainSetLight{ruleFile: ruleFile}
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	generatedFrom := "my_nov6list"
+	ds := &DomainSetLight{generatedFrom: generatedFrom}
 
 	replaced, err := ds.ReplaceListRuntime(nil, []string{"full:example.com"})
 	if err != nil {
@@ -92,9 +101,9 @@ func TestReplaceListRuntimePersistsGeneratedDataset(t *testing.T) {
 		t.Fatalf("unexpected replaced count: %d", replaced)
 	}
 
-	dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(ruleFile)
+	dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(coremain.RuntimeStateDBPath(), coremain.DomainOutputRuleDatasetKey(generatedFrom))
 	if err != nil {
-		t.Fatalf("LoadGeneratedDatasetForOutputPath: %v", err)
+		t.Fatalf("LoadGeneratedDatasetFromPath: %v", err)
 	}
 	if !ok || dataset.Content != "full:example.com\n" {
 		t.Fatalf("unexpected generated dataset: ok=%v dataset=%+v", ok, dataset)

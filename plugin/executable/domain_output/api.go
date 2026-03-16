@@ -206,13 +206,11 @@ func (d *domainOutput) isVerificationDue(entry *statEntry, now time.Time) bool {
 }
 
 func (d *domainOutput) SaveToDisk(_ context.Context) error {
-	d.performWrite(WriteModeSave)
-	return nil
+	return d.performWrite(WriteModeSave)
 }
 
 func (d *domainOutput) FlushRuntime(_ context.Context) error {
-	d.performWrite(WriteModeFlush)
-	return nil
+	return d.performWrite(WriteModeFlush)
 }
 
 func (d *domainOutput) MarkDomainVerified(_ context.Context, domain, verifiedAt string) (int, error) {
@@ -242,8 +240,7 @@ func (d *domainOutput) MarkDomainVerified(_ context.Context, domain, verifiedAt 
 	if updated == 0 {
 		return 0, fmt.Errorf("domain not found")
 	}
-	d.performWrite(WriteModeSave)
-	return updated, nil
+	return updated, d.performWrite(WriteModeSave)
 }
 
 func (d *domainOutput) MemoryEntries(query string, offset, limit int) ([]coremain.MemoryEntry, int, error) {

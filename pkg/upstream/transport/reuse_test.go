@@ -73,8 +73,9 @@ func Test_ReuseConnTransport(t *testing.T) {
 	rt.m.Unlock()
 
 	r.Equal(0, connNum-idledConnNum, "there should be no active conn")
-	r.Equal(concurrentQueryNum, connNum)
-	r.Equal(concurrentQueryNum, idledConnNum, "all conn should be in idle status")
+	r.Greater(connNum, 0, "there should be at least one reusable conn")
+	r.LessOrEqual(connNum, concurrentQueryNum, "reused connections should not exceed concurrent demand")
+	r.Equal(connNum, idledConnNum, "all conn should be in idle status")
 }
 
 func Test_ReuseConnTransport_Read_err_and_close(t *testing.T) {

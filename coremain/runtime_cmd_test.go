@@ -33,8 +33,8 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
 	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
 
-	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 	if err := RecordSystemEvent("control.test", "info", "hello", map[string]any{"ok": true}); err != nil {
 		t.Fatalf("RecordSystemEvent: %v", err)
@@ -214,8 +214,8 @@ func TestRuntimeCmdDatasetsExportOutput(t *testing.T) {
 
 	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
 	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	cmd := newControlCmd()
@@ -244,8 +244,8 @@ func TestRuntimeCmdDatasetsVerifyOutput(t *testing.T) {
 
 	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
 	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	cmd := newControlCmd()
@@ -274,8 +274,8 @@ func TestRuntimeCmdHealthOutput(t *testing.T) {
 
 	dbPath := filepath.Join(MainConfigBaseDir, runtimeStateDBFilename)
 	target := filepath.Join(MainConfigBaseDir, "gen", "realip.rule")
-	if err := SaveGeneratedDatasetToPath(dbPath, target, "domain_output_rule", "full:example.com\n"); err != nil {
-		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
+	if err := SaveGeneratedDatasetEntryToPath(dbPath, target, "domain_output_rule", "full:example.com\n", target); err != nil {
+		t.Fatalf("SaveGeneratedDatasetEntryToPath: %v", err)
 	}
 
 	cmd := newControlCmd()

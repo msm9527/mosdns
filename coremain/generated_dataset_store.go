@@ -26,6 +26,7 @@ const (
 
 type GeneratedDatasetEntry struct {
 	Key                  string `json:"key"`
+	ExportPath           string `json:"export_path,omitempty"`
 	Format               string `json:"format"`
 	Content              string `json:"content"`
 	Version              int64  `json:"version"`
@@ -57,20 +58,11 @@ func LoadGeneratedDatasetFromPath(path, key string) (*GeneratedDataset, bool, er
 	return nil, false, nil
 }
 
-func LoadGeneratedDatasetForOutputPath(outputPath string) (*GeneratedDataset, bool, error) {
-	dbPath := RuntimeStateDBPathForPath(outputPath)
-	return LoadGeneratedDatasetFromPath(dbPath, filepath.Clean(outputPath))
-}
-
-func IsGeneratedDatasetOutputPath(path string) bool {
-	cleanPath := filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
-	if cleanPath == "" || cleanPath == "." {
-		return false
-	}
-	return cleanPath == "gen" || strings.HasPrefix(cleanPath, "gen/") || strings.Contains(cleanPath, "/gen/")
-}
-
 func SaveGeneratedDatasetToPath(path, key, format, content string) error {
+	return SaveGeneratedDatasetEntryToPath(path, key, format, content, "")
+}
+
+func SaveGeneratedDatasetEntryToPath(path, key, format, content, exportPath string) error {
 	store, err := getRuntimeStateStoreByPath(path)
 	if err != nil {
 		return err
@@ -131,7 +123,7 @@ func SaveGeneratedDatasetToPath(path, key, format, content string) error {
 				WHEN generated_dataset.content <> excluded.content OR generated_dataset.format <> excluded.format THEN ''
 				ELSE generated_dataset.last_file_sha256
 			END
-	`, key, key, format, content, sha256Text(content)); err != nil {
+	`, key, exportPath, format, content, sha256Text(content)); err != nil {
 		return fmt.Errorf("save generated_dataset %s: %w", key, err)
 	}
 	if err = tx.Commit(); err != nil {
@@ -164,19 +156,23 @@ func ExportGeneratedDatasetsToFiles(path string) (int, error) {
 	}
 	exported := 0
 	for _, dataset := range datasets {
-		if err := os.MkdirAll(filepath.Dir(dataset.Key), 0o755); err != nil {
-			_ = recordGeneratedDatasetExport(store.db.DB(), dataset.Key, "error", err.Error(), "")
-			return exported, fmt.Errorf("create dataset directory for %s: %w", dataset.Key, err)
+		exportPath := filepath.Clean(strings.TrimSpace(dataset.ExportPath))
+		if exportPath == "" {
+			continue
 		}
-		tmpFile := dataset.Key + ".tmp"
+		if err := os.MkdirAll(filepath.Dir(exportPath), 0o755); err != nil {
+			_ = recordGeneratedDatasetExport(store.db.DB(), dataset.Key, "error", err.Error(), "")
+			return exported, fmt.Errorf("create dataset directory for %s: %w", exportPath, err)
+		}
+		tmpFile := exportPath + ".tmp"
 		if err := os.WriteFile(tmpFile, []byte(dataset.Content), 0o644); err != nil {
 			_ = recordGeneratedDatasetExport(store.db.DB(), dataset.Key, "error", err.Error(), "")
-			return exported, fmt.Errorf("write generated dataset temp file %s: %w", dataset.Key, err)
+			return exported, fmt.Errorf("write generated dataset temp file %s: %w", exportPath, err)
 		}
-		if err := os.Rename(tmpFile, dataset.Key); err != nil {
+		if err := os.Rename(tmpFile, exportPath); err != nil {
 			_ = os.Remove(tmpFile)
 			_ = recordGeneratedDatasetExport(store.db.DB(), dataset.Key, "error", err.Error(), "")
-			return exported, fmt.Errorf("rename generated dataset file %s: %w", dataset.Key, err)
+			return exported, fmt.Errorf("rename generated dataset file %s: %w", exportPath, err)
 		}
 		if err := recordGeneratedDatasetExport(store.db.DB(), dataset.Key, "success", "", sha256Text(dataset.Content)); err != nil {
 			return exported, err
@@ -207,8 +203,12 @@ func VerifyGeneratedDatasetsOnFiles(path string) (*GeneratedDatasetVerifySummary
 		Entries: make([]GeneratedDatasetEntry, 0, len(datasets)),
 	}
 	for _, dataset := range datasets {
+		exportPath := filepath.Clean(strings.TrimSpace(dataset.ExportPath))
+		if exportPath == "" {
+			continue
+		}
 		summary.Checked++
-		fileData, err := os.ReadFile(dataset.Key)
+		fileData, err := os.ReadFile(exportPath)
 		switch {
 		case os.IsNotExist(err):
 			dataset.LastVerifiedStatus = "missing"
@@ -249,13 +249,14 @@ func VerifyGeneratedDatasetsOnFiles(path string) (*GeneratedDatasetVerifySummary
 func loadStructuredGeneratedDataset(db *sql.DB, key string) (GeneratedDatasetEntry, bool, error) {
 	var entry GeneratedDatasetEntry
 	err := db.QueryRow(`
-		SELECT dataset_key, format, content, version, content_sha256, updated_at_unix_ms,
+		SELECT dataset_key, output_path, format, content, version, content_sha256, updated_at_unix_ms,
 		       last_exported_at_unix_ms, last_export_status, last_export_error,
 		       last_verified_at_unix_ms, last_verified_status, last_verified_error, last_file_sha256
 		FROM generated_dataset
 		WHERE dataset_key = ?
 	`, key).Scan(
 		&entry.Key,
+		&entry.ExportPath,
 		&entry.Format,
 		&entry.Content,
 		&entry.Version,
@@ -281,7 +282,7 @@ func loadStructuredGeneratedDataset(db *sql.DB, key string) (GeneratedDatasetEnt
 
 func listStructuredGeneratedDatasets(db *sql.DB) ([]GeneratedDatasetEntry, error) {
 	rows, err := db.Query(`
-		SELECT dataset_key, format, content, version, content_sha256, updated_at_unix_ms,
+		SELECT dataset_key, output_path, format, content, version, content_sha256, updated_at_unix_ms,
 		       last_exported_at_unix_ms, last_export_status, last_export_error,
 		       last_verified_at_unix_ms, last_verified_status, last_verified_error, last_file_sha256
 		FROM generated_dataset
@@ -297,6 +298,7 @@ func listStructuredGeneratedDatasets(db *sql.DB) ([]GeneratedDatasetEntry, error
 		var entry GeneratedDatasetEntry
 		if err := rows.Scan(
 			&entry.Key,
+			&entry.ExportPath,
 			&entry.Format,
 			&entry.Content,
 			&entry.Version,

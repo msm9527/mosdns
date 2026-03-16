@@ -23,7 +23,7 @@ func TestPollWatchedFilesReloadsMatcher(t *testing.T) {
 		subscribers: make([]func(), 0, 1),
 		fileStates:  make(map[string]watchedFileState),
 	}
-	initialRules, err := ds.initAndLoadRules(nil, []string{ruleFile})
+	initialRules, err := ds.initAndLoadRules(nil, []string{ruleFile}, "")
 	if err != nil {
 		t.Fatalf("load initial rules: %v", err)
 	}
@@ -61,30 +61,44 @@ func TestPollWatchedFilesReloadsMatcher(t *testing.T) {
 	}
 }
 
-func TestLoadFilePrefersGeneratedDatasetWhenFileMissing(t *testing.T) {
-	dir := t.TempDir()
-	ruleFile := filepath.Join(dir, "gen", "realiprule.txt")
-	dbPath := coremain.RuntimeStateDBPathForPath(ruleFile)
+func TestLoadGeneratedRuntimeRules(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
 
-	if err := coremain.SaveGeneratedDatasetToPath(dbPath, ruleFile, coremain.GeneratedDatasetFormatDomainOutputRule, "full:runtime.example\n"); err != nil {
+	generatedFrom := "my_realiplist"
+	dbPath := coremain.RuntimeStateDBPath()
+	key := coremain.DomainOutputRuleDatasetKey(generatedFrom)
+	if err := coremain.SaveGeneratedDatasetToPath(dbPath, key, coremain.GeneratedDatasetFormatDomainOutputRule, "full:runtime.example\n"); err != nil {
 		t.Fatalf("SaveGeneratedDatasetToPath: %v", err)
 	}
 
-	m := domain.NewDomainMixMatcher()
-	if err := LoadFile(ruleFile, m); err != nil {
-		t.Fatalf("LoadFile: %v", err)
+	ds := &DomainSet{mixM: domain.NewDomainMixMatcher()}
+	rules, err := ds.loadGeneratedRuntimeRules(generatedFrom)
+	if err != nil {
+		t.Fatalf("loadGeneratedRuntimeRules: %v", err)
 	}
-	if _, ok := m.Match("runtime.example."); !ok {
+	if len(rules) != 1 || rules[0] != "full:runtime.example" {
+		t.Fatalf("unexpected generated rules: %#v", rules)
+	}
+	if _, ok := ds.Match("runtime.example."); !ok {
 		t.Fatal("expected matcher to load generated dataset content")
 	}
 }
 
 func TestReplaceListRuntimePersistsGeneratedDataset(t *testing.T) {
-	dir := t.TempDir()
-	ruleFile := filepath.Join(dir, "gen", "fakeiprule.txt")
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	generatedFrom := "my_fakeiplist"
 	ds := &DomainSet{
-		ruleFile: ruleFile,
-		mixM:     domain.NewDomainMixMatcher(),
+		generatedFrom: generatedFrom,
+		mixM:          domain.NewDomainMixMatcher(),
 	}
 
 	replaced, err := ds.ReplaceListRuntime(nil, []string{"full:example.com"})
@@ -95,9 +109,9 @@ func TestReplaceListRuntimePersistsGeneratedDataset(t *testing.T) {
 		t.Fatalf("unexpected replaced count: %d", replaced)
 	}
 
-	dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(ruleFile)
+	dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(coremain.RuntimeStateDBPath(), coremain.DomainOutputRuleDatasetKey(generatedFrom))
 	if err != nil {
-		t.Fatalf("LoadGeneratedDatasetForOutputPath: %v", err)
+		t.Fatalf("LoadGeneratedDatasetFromPath: %v", err)
 	}
 	if !ok || dataset.Content != "full:example.com\n" {
 		t.Fatalf("unexpected generated dataset: ok=%v dataset=%+v", ok, dataset)

@@ -31,9 +31,10 @@ func init() {
 }
 
 type Args struct {
-	Exps  []string `yaml:"exps"`
-	Sets  []string `yaml:"sets"`
-	Files []string `yaml:"files"`
+	Exps          []string `yaml:"exps"`
+	Sets          []string `yaml:"sets"`
+	Files         []string `yaml:"files"`
+	GeneratedFrom string   `yaml:"generated_from"`
 }
 
 type domainPayload struct {
@@ -62,8 +63,9 @@ type DomainSet struct {
 	mixM   *domain.MixMatcher[struct{}]
 	otherM []domain.Matcher[struct{}]
 
-	ruleFile string
-	rules    []string
+	ruleFile      string
+	generatedFrom string
+	rules         []string
 
 	// 新增：订阅者列表
 	subscribers []func()
@@ -103,7 +105,7 @@ func (d *DomainSet) notifySubscribers() {
 
 // initAndLoadRules is a new internal function for loading rules within this plugin.
 // It populates the matcher and returns the list of rule strings.
-func (d *DomainSet) initAndLoadRules(exps, files []string) ([]string, error) {
+func (d *DomainSet) initAndLoadRules(exps, files []string, generatedFrom string) ([]string, error) {
 	allRules := make([]string, 0, len(exps)+len(files)*100)
 
 	// Load from expressions
@@ -111,6 +113,14 @@ func (d *DomainSet) initAndLoadRules(exps, files []string) ([]string, error) {
 		return nil, err
 	}
 	allRules = append(allRules, exps...)
+
+	if generatedFrom != "" {
+		rules, err := d.loadGeneratedRuntimeRules(generatedFrom)
+		if err != nil {
+			return nil, err
+		}
+		allRules = append(allRules, rules...)
+	}
 
 	// Load from files
 	for i, f := range files {
@@ -166,6 +176,33 @@ func (d *DomainSet) loadFileInternal(f string) ([]string, error) {
 	return rules, scanner.Err()
 }
 
+func (d *DomainSet) loadGeneratedRuntimeRules(generatedFrom string) ([]string, error) {
+	key := coremain.DomainOutputRuleDatasetKey(generatedFrom)
+	if key == "" {
+		return nil, nil
+	}
+	dataset, ok, err := coremain.LoadGeneratedDatasetFromPath(coremain.RuntimeStateDBPath(), key)
+	if err != nil {
+		return nil, err
+	}
+	if !ok || !isGeneratedRuleDatasetFormat(dataset.Format) || dataset.Content == "" {
+		return nil, nil
+	}
+
+	rules := make([]string, 0, 64)
+	scanner := bufio.NewScanner(strings.NewReader(dataset.Content))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if err := d.mixM.Add(line, struct{}{}); err == nil {
+			rules = append(rules, line)
+		}
+	}
+	return rules, scanner.Err()
+}
+
 func Init(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
 	baseArgs := cloneArgs(cfg)
@@ -186,9 +223,10 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if len(cfg.Files) > 0 {
 		ds.ruleFile = cfg.Files[0]
 	}
+	ds.generatedFrom = strings.TrimSpace(cfg.GeneratedFrom)
 
 	// Use the new internal loading function to avoid changing public API.
-	loadedRules, err := ds.initAndLoadRules(cfg.Exps, cfg.Files)
+	loadedRules, err := ds.initAndLoadRules(cfg.Exps, cfg.Files, cfg.GeneratedFrom)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load rules: %w", err)
 	}
@@ -213,9 +251,10 @@ func cloneArgs(src *Args) *Args {
 		return new(Args)
 	}
 	return &Args{
-		Exps:  append([]string(nil), src.Exps...),
-		Sets:  append([]string(nil), src.Sets...),
-		Files: append([]string(nil), src.Files...),
+		Exps:          append([]string(nil), src.Exps...),
+		Sets:          append([]string(nil), src.Sets...),
+		Files:         append([]string(nil), src.Files...),
+		GeneratedFrom: src.GeneratedFrom,
 	}
 }
 
@@ -249,7 +288,7 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 
 	tmpMatcher := domain.NewDomainMixMatcher()
 	tmp := &DomainSet{mixM: tmpMatcher}
-	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files)
+	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
 	if err != nil {
 		return fmt.Errorf("failed to load rules: %w", err)
 	}
@@ -273,6 +312,7 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 	d.mixM = tmpMatcher
 	d.otherM = otherM
 	d.ruleFile = ruleFile
+	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
 	d.rules = loadedRules
 	d.updateWatchedFilesLocked(effective.Files)
 	d.mu.Unlock()
@@ -336,7 +376,7 @@ func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) er
 
 	tmpMatcher := domain.NewDomainMixMatcher()
 	tmp := &DomainSet{mixM: tmpMatcher}
-	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files)
+	loadedRules, err := tmp.initAndLoadRules(effective.Exps, effective.Files, effective.GeneratedFrom)
 	if err != nil {
 		return fmt.Errorf("failed to reload rules from files: %w", err)
 	}
@@ -359,6 +399,7 @@ func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) er
 	d.mixM = tmpMatcher
 	d.otherM = otherM
 	d.ruleFile = ruleFile
+	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
 	d.rules = loadedRules
 	d.fileStates = fileStates
 	d.mu.Unlock()
@@ -421,8 +462,9 @@ func (d *DomainSet) ListEntries(_ string, offset, limit int) ([]coremain.ListEnt
 func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int, error) {
 	d.mu.RLock()
 	ruleFile := d.ruleFile
+	generatedFrom := d.generatedFrom
 	d.mu.RUnlock()
-	if ruleFile == "" || !strings.EqualFold(filepath.Ext(ruleFile), ".txt") {
+	if generatedFrom == "" && (ruleFile == "" || !strings.EqualFold(filepath.Ext(ruleFile), ".txt")) {
 		return 0, fmt.Errorf("no txt file configured, cannot replace")
 	}
 
@@ -439,16 +481,17 @@ func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int,
 	d.rules = tmpRules
 	d.mu.Unlock()
 
-	if coremain.IsGeneratedDatasetOutputPath(ruleFile) {
+	if generatedFrom != "" {
 		content := strings.Join(tmpRules, "\n")
 		if content != "" {
 			content += "\n"
 		}
-		if err := coremain.SaveGeneratedDatasetToPath(
-			coremain.RuntimeStateDBPathForPath(ruleFile),
-			filepath.Clean(ruleFile),
+		if err := coremain.SaveGeneratedDatasetEntryToPath(
+			coremain.RuntimeStateDBPath(),
+			coremain.DomainOutputRuleDatasetKey(generatedFrom),
 			coremain.GeneratedDatasetFormatDomainOutputRule,
 			content,
+			"",
 		); err != nil {
 			return 0, err
 		}
@@ -542,12 +585,6 @@ func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 }
 
 func readDomainRulesSource(path string) ([]byte, string, error) {
-	if dataset, ok, err := coremain.LoadGeneratedDatasetForOutputPath(path); err != nil {
-		return nil, "", err
-	} else if ok && isGeneratedRuleDatasetFormat(dataset.Format) {
-		return []byte(dataset.Content), "generated dataset", nil
-	}
-
 	b, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

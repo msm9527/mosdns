@@ -326,7 +326,7 @@ type refreshJob struct {
 	MemoryID   string    `json:"memory_id,omitempty"`
 	QTypeMask  uint8     `json:"qtype_mask,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
-	VerifyURL  string    `json:"verify_url,omitempty"`
+	VerifyTag  string    `json:"verify_tag,omitempty"`
 	ObservedAt time.Time `json:"observed_at,omitempty"`
 	Priority   int       `json:"-"`
 }
@@ -1095,6 +1095,17 @@ func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
 	return true
 }
 
+func (p *Requery) EnqueueDomainRefresh(_ context.Context, job coremain.DomainRefreshJob) bool {
+	return p.enqueueRefreshJob(refreshJob{
+		Domain:     job.Domain,
+		MemoryID:   job.MemoryID,
+		QTypeMask:  job.QTypeMask,
+		Reason:     job.Reason,
+		VerifyTag:  job.VerifyTag,
+		ObservedAt: job.ObservedAt,
+	})
+}
+
 func (p *Requery) dequeueRefreshBatch(max int) []refreshJob {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1179,7 +1190,7 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 	}
 
 	for _, job := range jobs {
-		if job.VerifyURL != "" {
+		if job.VerifyTag != "" {
 			if err := p.markDomainVerified(ctx, job); err != nil {
 				p.mu.Lock()
 				p.lastError = err.Error()
@@ -1204,35 +1215,15 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 }
 
 func (p *Requery) markDomainVerified(ctx context.Context, job refreshJob) error {
-	if tag, op, ok := pluginActionFromURL(job.VerifyURL); ok && op == "verify" {
-		if verifier, ok := p.m.GetPlugin(tag).(coremain.DomainVerifyPlugin); ok && verifier != nil {
-			_, err := verifier.MarkDomainVerified(ctx, job.Domain, time.Now().UTC().Format(time.RFC3339))
-			return err
-		}
+	if strings.TrimSpace(job.VerifyTag) == "" {
+		return nil
 	}
-
-	body, err := json.Marshal(map[string]string{
-		"domain":      job.Domain,
-		"verified_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return err
+	verifier, ok := p.m.GetPlugin(job.VerifyTag).(coremain.DomainVerifyPlugin)
+	if !ok || verifier == nil {
+		return fmt.Errorf("verify target %s is not a DomainVerifyPlugin", job.VerifyTag)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.VerifyURL, strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("verify url returned %d", resp.StatusCode)
-	}
-	return nil
+	_, err := verifier.MarkDomainVerified(ctx, job.Domain, time.Now().UTC().Format(time.RFC3339))
+	return err
 }
 
 func workflowBool(v *bool, defaultValue bool) bool {
