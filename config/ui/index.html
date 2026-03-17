@@ -1032,7 +1032,7 @@
                                 <path
                                     d="M11.25 4.53335C11.6642 4.44457 12.0858 4.44457 12.5 4.53335C17.1524 5.54133 21 9.80443 21 14.6465C21 19.9806 16.9706 22 12 22C7.02944 22 3 19.9806 3 14.6465C3 9.80443 6.84759 5.54133 11.25 4.53335ZM12 2C6.47715 2 2 7.02165 2 14.6465C2 21.4939 6.27609 24 12 24C17.7239 24 22 21.4939 22 14.6465C22 7.02165 17.5228 2 12 2Z">
                                 </path>
-                            </svg><span>最新日志条目数</span></h3>
+                            </svg><span>当前窗口请求数</span></h3>
                         <div class="stat-card-main">
                             <div id="total-queries" class="value">--</div>
                             <span id="total-queries-change" class="stat-change" style="visibility: hidden;"></span>
@@ -1056,7 +1056,7 @@
                                 <path
                                     d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20ZM11 7H13V12L16.5 15.5L15.0858 16.9142L11 12.8284V7Z">
                                 </path>
-                            </svg><span>平均处理时间 (ms)</span></h3>
+                            </svg><span>当前窗口平均处理时间 (ms)</span></h3>
                         <div class="stat-card-main">
                             <div id="avg-duration" class="value">--</div>
                             <span id="avg-duration-change" class="stat-change" style="visibility: hidden;"></span>
@@ -1391,18 +1391,22 @@
                             </path>
                         </svg>审计存储</h3>
                     <div class="control-item">
-                        <strong>当前内存窗口上限:</strong> <span id="audit-capacity">查询中...</span>
+                        <strong>概览窗口:</strong> <span id="audit-capacity">查询中...</span>
                     </div>
                     <div class="control-item">
-                        <strong>当前内存日志数:</strong> <span id="audit-current-count">查询中...</span>
+                        <strong>原始日志保留:</strong> <span id="audit-current-count">查询中...</span>
                     </div>
                     <div class="control-item">
-                        <strong>当前磁盘占用:</strong> <span id="audit-disk-usage">查询中...</span>
+                        <strong>聚合保留:</strong> <span id="audit-aggregate-retention">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>当前存储占用:</strong> <span id="audit-disk-usage">查询中...</span>
                     </div>
                     <form id="capacity-form">
-                        <input type="number" id="new-capacity" required min="1" max="400000" placeholder="内存窗口条数">
-                        <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="保留天数">
-                        <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="磁盘上限(MB)">
+                        <input type="number" id="new-capacity" required min="1" max="86400" placeholder="概览窗口(秒)">
+                        <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="原始保留(天)">
+                        <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="聚合保留(天)">
+                        <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="存储上限(MB)">
                         <button type="submit" class="button primary" data-default-text="设置"><span>设置</span></button>
                     </form>
                     <div class="control-item tip-inline" style="margin-top: -0.25rem;">
@@ -1414,7 +1418,7 @@
                                 </path>
                             </svg>
                         </span>
-                        <small class="tip-text">内存窗口上限和保留策略保存后立即生效，无需重启；历史日志会落盘保存，并按天数和磁盘大小自动清理。</small>
+                        <small class="tip-text">概览窗口、原始日志保留、聚合保留和存储上限保存后立即生效，无需重启；原始日志与聚合统计都会按策略自动清理。</small>
                     </div>
                 </div>
                 <div class="control-module control-module--mini" id="auto-refresh-module">

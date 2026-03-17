@@ -56,19 +56,16 @@
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/v1/audit/start` | 审计 | `stable` | 开始采集 |
-| `POST` | `/api/v1/audit/stop` | 审计 | `stable` | 停止采集 |
-| `GET` | `/api/v1/audit/status` | 审计 | `stable` | 获取采集状态 |
-| `GET` | `/api/v1/audit/logs` | 审计 | `compat` | v1 日志获取，建议逐步弱化 |
-| `POST` | `/api/v1/audit/clear` | 审计 | `stable` | 清空审计数据 |
-| `GET` | `/api/v1/audit/capacity` | 审计存储 | `stable` | 获取审计存储设置 |
-| `POST` | `/api/v1/audit/capacity` | 审计存储 | `stable` | 更新审计存储设置 |
-| `GET` | `/api/v2/audit/stats` | 审计 | `stable` | 概览统计 |
-| `GET` | `/api/v2/audit/rank/domain` | 审计 | `stable` | 域名排行 |
-| `GET` | `/api/v2/audit/rank/client` | 审计 | `stable` | 客户端排行 |
-| `GET` | `/api/v2/audit/rank/domain_set` | 审计 | `stable` | 规则集排行 |
-| `GET` | `/api/v2/audit/rank/slowest` | 审计 | `stable` | 慢查询排行 |
-| `GET` | `/api/v2/audit/logs` | 审计 | `stable` | 分页日志查询 |
+| `GET` | `/api/v3/audit/overview` | 审计 | `stable` | 获取当前窗口实时指标 |
+| `GET` | `/api/v3/audit/timeseries` | 审计 | `stable` | 获取分钟/小时趋势 |
+| `GET` | `/api/v3/audit/rank/domain` | 审计 | `stable` | 域名排行 |
+| `GET` | `/api/v3/audit/rank/client` | 审计 | `stable` | 客户端排行 |
+| `GET` | `/api/v3/audit/rank/domain_set` | 审计 | `stable` | 规则集排行 |
+| `GET` | `/api/v3/audit/logs/slow` | 审计 | `stable` | 慢查询日志 |
+| `GET` | `/api/v3/audit/logs` | 审计 | `stable` | cursor 日志查询 |
+| `GET` | `/api/v3/audit/settings` | 审计存储 | `stable` | 获取审计开关与存储设置 |
+| `PUT` | `/api/v3/audit/settings` | 审计存储 | `stable` | 更新审计开关与存储设置 |
+| `POST` | `/api/v3/audit/clear` | 审计 | `stable` | 清空审计数据 |
 
 ## 3.4 运行态聚合
 

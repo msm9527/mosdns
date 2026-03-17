@@ -98,85 +98,86 @@
 - 动态域名记忆与统计真源已经统一为 SQLite `domain_pool_*` 表。
 - 运行态页面应按模块分别调用 `/summary`、`/health`、`/events` 与 `/runtime/requery/*`，不再依赖单一大聚合接口。
 
-### 2.4 审计 API v1
+### 2.4 审计 API v3
 
-根路径：`/api/v1/audit`
+根路径：`/api/v3/audit`
 
-| 方法 | 子路径 | 等级 | 说明 |
-| --- | --- | --- | --- |
-| `POST` | `/start` | `stable` | 开始审计采集 |
-| `POST` | `/stop` | `stable` | 停止审计采集 |
-| `GET` | `/status` | `stable` | 获取采集状态 |
-| `GET` | `/logs` | `compat` | 获取审计日志，建议逐步转向 v2 查询接口 |
-| `POST` | `/clear` | `stable` | 清空审计日志 |
-| `GET` | `/capacity` | `stable` | 获取审计存储设置 |
-| `POST` | `/capacity` | `stable` | 设置审计存储设置 |
+| 方法 | 子路径 | 等级 | 说明 | 常用参数 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/overview` | `stable` | 获取当前概览窗口的实时指标 | `window` |
+| `GET` | `/timeseries` | `stable` | 获取分钟级或小时级趋势 | `from,to,step` |
+| `GET` | `/rank/domain` | `stable` | 域名排行 | `from,to,limit` |
+| `GET` | `/rank/client` | `stable` | 客户端排行 | `from,to,limit` |
+| `GET` | `/rank/domain_set` | `stable` | 规则集排行 | `from,to,limit` |
+| `GET` | `/logs` | `stable` | 基于 cursor 的原始日志查询 | `from,to,limit,cursor,q,exact,domain,client_ip,rcode,domain_set,cache_status,upstream_tag,transport,answer` |
+| `GET` | `/logs/slow` | `stable` | 慢查询日志 | `from,to,limit` |
+| `GET` | `/settings` | `stable` | 获取审计开关与存储参数 | 无 |
+| `PUT` | `/settings` | `stable` | 更新审计开关与存储参数 | JSON body |
+| `POST` | `/clear` | `stable` | 清空原始日志、聚合数据与实时窗口 | 无 |
 
-示例：
+`GET /overview` 返回示例：
 
 ```json
 {
-  "capturing": true
+  "enabled": true,
+  "window_seconds": 60,
+  "query_count": 1280,
+  "qps": 21.33,
+  "average_duration_ms": 12.48,
+  "max_duration_ms": 184.77,
+  "error_count": 9,
+  "error_rate": 0.007,
+  "no_response_count": 3,
+  "cache_hit_count": 742,
+  "cache_hit_rate": 0.58,
+  "dropped_events": 0,
+  "queue_depth": 0,
+  "degraded": false,
+  "current_storage_bytes": 1048576
 }
 ```
 
+`GET /settings` / `PUT /settings` 返回或提交结构：
+
 ```json
 {
-  "memory_entries": 100000,
-  "current_memory_entries": 527,
-  "retention_days": 30,
-  "max_disk_size_mb": 10,
-  "current_disk_size_bytes": 1048576,
-  "capacity": 100000
+  "enabled": true,
+  "overview_window_seconds": 60,
+  "raw_retention_days": 30,
+  "aggregate_retention_days": 365,
+  "max_storage_mb": 512,
+  "sqlite_path": "db/audit.db",
+  "flush_batch_size": 512,
+  "flush_interval_ms": 1000,
+  "maintenance_interval_seconds": 300,
+  "current_storage_bytes": 1048576,
+  "queue_depth": 0,
+  "degraded": false
 }
 ```
 
-设置审计存储请求体：
+`GET /logs` 返回结构：
 
 ```json
 {
-  "memory_entries": 100000,
-  "retention_days": 30,
-  "max_disk_size_mb": 10
+  "summary": {
+    "matched_count": 256,
+    "average_duration_ms": 8.91,
+    "max_duration_ms": 233.14
+  },
+  "logs": [],
+  "next_cursor": "1710641465123:9988"
 }
 ```
 
 说明：
 
-- `memory_entries`：内存窗口条数，用于 UI 快速查询。
-- `current_memory_entries`：当前实际保存在内存窗口里的日志条数。
-- `retention_days`：磁盘日志保留天数。
-- `max_disk_size_mb`：磁盘日志总占用上限。
-- `capacity`：兼容旧前端，等同于 `memory_entries`。
-- `POST /clear`：会同时清空内存窗口和已落盘的审计历史。
-- `POST /capacity`：设置保存后立即生效，无需重启服务。
-
-### 2.5 审计 API v2
-
-根路径：`/api/v2/audit`
-
-| 方法 | 子路径 | 等级 | 说明 | 常用参数 |
-| --- | --- | --- | --- | --- |
-| `GET` | `/stats` | `stable` | 获取总请求数与平均耗时 | 无 |
-| `GET` | `/rank/domain` | `stable` | 域名排行 | `limit` |
-| `GET` | `/rank/client` | `stable` | 客户端排行 | `limit` |
-| `GET` | `/rank/domain_set` | `stable` | 规则集排行 | `limit` |
-| `GET` | `/rank/slowest` | `stable` | 慢查询排行 | `limit` |
-| `GET` | `/logs` | `stable` | 分页日志查询 | `page,limit,domain,answer_ip,cname,client_ip,q,exact` |
-
-`/logs` 返回结构：
-
-```json
-{
-  "pagination": {
-    "total_items": 0,
-    "total_pages": 0,
-    "current_page": 1,
-    "items_per_page": 50
-  },
-  "logs": []
-}
-```
+- 旧 `v1/v2 audit` 接口已经移除，不再保留兼容层。
+- 原始日志存于 SQLite `audit_log`，分钟级/小时级聚合存于 `audit_minute` / `audit_hour`。
+- `cursor` 为顺序翻页游标，前端不再使用 `page/offset`。
+- `overview_window_seconds` 只影响概览窗口口径，不影响原始日志保留。
+- `raw_retention_days` 与 `aggregate_retention_days` 分别控制原始日志和聚合数据清理策略。
+- `max_storage_mb` 为整个审计 SQLite 文件上限；维护任务会优先清理最旧原始日志与过期聚合。
 
 ### 2.6 覆盖配置
 
@@ -1207,17 +1208,17 @@
 
 ### 5.1 页面状态与统计
 
-- `GET /api/v1/audit/status`
-- `GET /api/v1/audit/capacity`
-- `GET /api/v2/audit/stats`
-- `GET /api/v2/audit/rank/domain`
-- `GET /api/v2/audit/rank/client`
-- `GET /api/v2/audit/rank/domain_set`
-- `GET /api/v2/audit/rank/slowest`
-- `GET /api/v2/audit/logs`
+- `GET /api/v3/audit/settings`
+- `PUT /api/v3/audit/settings`
+- `GET /api/v3/audit/overview`
+- `GET /api/v3/audit/timeseries`
+- `GET /api/v3/audit/rank/domain`
+- `GET /api/v3/audit/rank/client`
+- `GET /api/v3/audit/rank/domain_set`
+- `GET /api/v3/audit/logs/slow`
+- `GET /api/v3/audit/logs`
+- `POST /api/v3/audit/clear`
 - `GET /metrics`
-
-其中 `GET /api/v1/audit/capacity` 现在返回的是“审计存储设置 + 当前磁盘占用”，不再只是单一条目容量。
 
 ### 5.2 系统控制
 

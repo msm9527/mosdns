@@ -42,6 +42,7 @@ demo/
 /config/db/cache/*.dump
 /config/db/cache/*.wal
 /db/
+**/audit_logs/
 /bin/
 /adguard/
 /test-results/
