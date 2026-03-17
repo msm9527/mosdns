@@ -1,0 +1,3401 @@
+openapi: 3.1.0
+info:
+  title: mosdns Runtime API
+  version: "2026-03-17"
+  description: |
+    当前规范只描述源码中真实注册的接口：
+    - `/api/v1/*`
+    - `/api/v3/audit/*`
+
+    说明：
+    - `/api/v1/control/overrides`、`/api/v1/control/upstreams`、`/api/v1/control/upstreams/tags` 是兼容别名，已在规范中标记为 `deprecated`
+    - 核心 JSON 错误格式为 `{ "code": "...", "error": "..." }`
+    - requery 插件接口使用独立错误格式 `{ "status": "error", "message": "..." }`
+    - `GET /api/v1/update/status` 与 `POST /api/v1/update/check` 即使远程检查失败，当前实现仍返回 `200`
+servers:
+  - url: http://127.0.0.1:9099
+    description: Default local control endpoint
+tags:
+  - name: Capture
+    description: 临时运行日志抓取
+  - name: Audit
+    description: 审计日志与统计
+  - name: Runtime
+    description: 运行态摘要、健康检查、事件与分流解释
+  - name: Overrides
+    description: 全局覆盖、客户端别名
+  - name: Upstream
+    description: 上游 DNS 配置与健康检查
+  - name: Switches
+    description: 功能开关
+  - name: Requery
+    description: requery 运行时任务与调度
+  - name: Rules
+    description: 广告拦截与在线分流规则源
+  - name: Config
+    description: 配置导出与远程覆盖
+  - name: Update
+    description: 版本检查与程序更新
+  - name: System
+    description: 系统级操作
+  - name: Cache
+    description: 缓存实例与聚合缓存统计
+  - name: Memory
+    description: 记忆库、统计池与运行时名单
+  - name: Lists
+    description: 可编辑列表
+  - name: RuntimeStats
+    description: 运行时聚合统计
+  - name: Misc
+    description: 其他辅助接口
+paths:
+  /api/v1/capture/start:
+    post:
+      tags: [Capture]
+      summary: Start temporary log capture
+      description: 开始临时抓取 DEBUG 级别运行日志。请求体可省略，默认抓取 120 秒。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaptureStartRequest'
+            example:
+              duration_seconds: 120
+      responses:
+        '200':
+          description: Capture started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaptureStartResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+  /api/v1/capture/logs:
+    get:
+      tags: [Capture]
+      summary: Read and clear captured logs
+      description: 返回本次抓取到的结构化日志数组，并清空内存缓冲区。
+      responses:
+        '200':
+          description: Captured logs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CapturedLogsResponse'
+  /api/v3/audit/overview:
+    get:
+      tags: [Audit]
+      summary: Get realtime audit overview
+      parameters:
+        - $ref: '#/components/parameters/WindowQuery'
+      responses:
+        '200':
+          description: Current overview window
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditOverview'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/timeseries:
+    get:
+      tags: [Audit]
+      summary: Get audit timeseries
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/AuditStepQuery'
+      responses:
+        '200':
+          description: Timeseries points
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditTimeseriesPoint'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/rank/domain:
+    get:
+      tags: [Audit]
+      summary: Get domain rank
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Domain rank items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditRankItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/rank/client:
+    get:
+      tags: [Audit]
+      summary: Get client rank
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Client rank items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditRankItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/rank/domain_set:
+    get:
+      tags: [Audit]
+      summary: Get domain-set rank
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Domain-set rank items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditRankItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/logs:
+    get:
+      tags: [Audit]
+      summary: Query audit logs
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/CursorQuery'
+        - $ref: '#/components/parameters/DomainQuery'
+        - $ref: '#/components/parameters/ClientIPQuery'
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/ExactQuery'
+        - $ref: '#/components/parameters/ResponseCodeQuery'
+        - $ref: '#/components/parameters/DomainSetQuery'
+        - $ref: '#/components/parameters/CacheStatusQuery'
+        - $ref: '#/components/parameters/UpstreamTagQuery'
+        - $ref: '#/components/parameters/TransportQuery'
+        - $ref: '#/components/parameters/AnswerQuery'
+      responses:
+        '200':
+          description: Cursor-based audit query result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/logs/slow:
+    get:
+      tags: [Audit]
+      summary: Query slow audit logs
+      parameters:
+        - $ref: '#/components/parameters/FromQuery'
+        - $ref: '#/components/parameters/ToQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Slow logs
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/AuditLog'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/settings:
+    get:
+      tags: [Audit]
+      summary: Get audit settings
+      responses:
+        '200':
+          description: Current audit settings and storage runtime status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditSettingsResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    put:
+      tags: [Audit]
+      summary: Update audit settings
+      description: 保存后立即生效，无需重启。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditSettingsUpdateRequest'
+      responses:
+        '200':
+          description: Updated audit settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditSettingsResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/clear:
+    post:
+      tags: [Audit]
+      summary: Clear audit logs and aggregates
+      responses:
+        '200':
+          description: Cleared successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/summary:
+    get:
+      tags: [Runtime]
+      summary: Get runtime storage summary
+      responses:
+        '200':
+          description: SQLite runtime summary
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeSummaryResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/health:
+    get:
+      tags: [Runtime]
+      summary: Get runtime health report
+      responses:
+        '200':
+          description: Runtime health report
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeHealthResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/events:
+    get:
+      tags: [Runtime]
+      summary: List runtime system events
+      parameters:
+        - $ref: '#/components/parameters/ComponentQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: System events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SystemEventEntry'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/shunt/explain:
+    get:
+      tags: [Runtime]
+      summary: Explain shunt decision for one domain
+      parameters:
+        - $ref: '#/components/parameters/DomainRequiredQuery'
+        - $ref: '#/components/parameters/QTypeOptionalQuery'
+        - $ref: '#/components/parameters/LiveQuery'
+      responses:
+        '200':
+          description: Shunt explanation
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShuntExplainResult'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/shunt/conflicts:
+    get:
+      tags: [Runtime]
+      summary: List shunt conflicts
+      parameters:
+        - $ref: '#/components/parameters/LiveQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Conflict list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ShuntConflictsResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/overrides:
+    get:
+      tags: [Overrides]
+      deprecated: true
+      summary: Get global overrides (compat alias)
+      description: 兼容别名，推荐改用 `/api/v1/overrides`。
+      responses:
+        '200':
+          description: Current overrides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalOverridesResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Overrides]
+      deprecated: true
+      summary: Save global overrides (compat alias)
+      description: 兼容别名，推荐改用 `/api/v1/overrides`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalOverrides'
+      responses:
+        '200':
+          description: Saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/overrides:
+    get:
+      tags: [Overrides]
+      summary: Get global overrides
+      responses:
+        '200':
+          description: Current overrides
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalOverridesResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Overrides]
+      summary: Save global overrides
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GlobalOverrides'
+      responses:
+        '200':
+          description: Saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/clientname:
+    get:
+      tags: [Overrides]
+      summary: Get client alias map
+      responses:
+        '200':
+          description: Client alias map
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StringMap'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    put:
+      tags: [Overrides]
+      summary: Replace client alias map
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/StringMap'
+      responses:
+        '200':
+          description: Saved alias map
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StringMap'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/upstreams:
+    get:
+      tags: [Upstream]
+      deprecated: true
+      summary: Get upstream config (compat alias)
+      description: 兼容别名，推荐改用 `/api/v1/upstream/config`。
+      responses:
+        '200':
+          description: Upstream config grouped by plugin tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalUpstreamOverrides'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    put:
+      tags: [Upstream]
+      deprecated: true
+      summary: Replace upstream config (compat alias)
+      description: 兼容别名，推荐改用 `/api/v1/upstream/config`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamConfigReplaceRequest'
+      responses:
+        '200':
+          description: Saved or saved and applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '409':
+          $ref: '#/components/responses/ApiConflict'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Upstream]
+      deprecated: true
+      summary: Set one plugin upstream list (compat alias)
+      description: 兼容旧入口，请优先改用 `/api/v1/upstream/config`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamConfigCompatRequest'
+      responses:
+        '200':
+          description: Saved or saved and applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/upstreams/health:
+    get:
+      tags: [Upstream]
+      summary: Get aggregated upstream health
+      responses:
+        '200':
+          description: Upstream health overview
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamHealthOverview'
+  /api/v1/control/upstreams/tags:
+    get:
+      tags: [Upstream]
+      deprecated: true
+      summary: Get upstream plugin tags (compat alias)
+      description: 兼容别名，推荐改用 `/api/v1/upstream/tags`。
+      responses:
+        '200':
+          description: Runtime upstream plugin tags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StringList'
+  /api/v1/control/switches:
+    get:
+      tags: [Switches]
+      summary: List all switches
+      responses:
+        '200':
+          description: Switch states
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/SwitchState'
+  /api/v1/control/switches/{name}:
+    parameters:
+      - $ref: '#/components/parameters/SwitchNamePath'
+    get:
+      tags: [Switches]
+      summary: Get one switch
+      responses:
+        '200':
+          description: Switch state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwitchState'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+    put:
+      tags: [Switches]
+      summary: Update one switch
+      description: |
+        支持三种输入：
+        - `application/json`: `{ "value": "..." }`
+        - `application/x-www-form-urlencoded`: `value=...`
+        - `text/plain`: 直接提交值文本
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SwitchUpdateRequest'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/SwitchUpdateRequest'
+          text/plain:
+            schema:
+              type: string
+              description: Switch value as raw text
+      responses:
+        '200':
+          description: Updated switch state
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwitchState'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/control/requery:
+    get:
+      tags: [Requery]
+      summary: Get requery config
+      responses:
+        '200':
+          description: Requery runtime config
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryConfig'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/status:
+    get:
+      tags: [Requery]
+      summary: Get requery status snapshot
+      responses:
+        '200':
+          description: Runtime status snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryStatusSnapshot'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/summary:
+    get:
+      tags: [Requery]
+      summary: Get requery summary
+      responses:
+        '200':
+          description: Requery config, status, memory stats and recent runs
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequerySummaryResponse'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/jobs:
+    get:
+      tags: [Requery]
+      summary: List runtime requery jobs
+      responses:
+        '200':
+          description: Runtime job definitions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RequeryJob'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/runs:
+    get:
+      tags: [Requery]
+      summary: List runtime requery runs
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Runtime run history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RequeryRun'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/checkpoints:
+    get:
+      tags: [Requery]
+      summary: List runtime checkpoints
+      parameters:
+        - $ref: '#/components/parameters/LimitQuery'
+        - $ref: '#/components/parameters/RunIDQuery'
+      responses:
+        '200':
+          description: Runtime checkpoints
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RequeryCheckpoint'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/trigger:
+    post:
+      tags: [Requery]
+      summary: Trigger requery task
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequeryTriggerRequest'
+      responses:
+        '200':
+          description: Task started
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryTriggerResponse'
+        '409':
+          $ref: '#/components/responses/RequeryError'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/enqueue:
+    post:
+      tags: [Requery]
+      summary: Enqueue on-demand refresh job
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequeryRefreshJob'
+      responses:
+        '202':
+          description: Job queued or skipped
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryEnqueueResponse'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/cancel:
+    post:
+      tags: [Requery]
+      summary: Cancel running requery task
+      responses:
+        '200':
+          description: Cancellation requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusMessageResponse'
+        '404':
+          $ref: '#/components/responses/RequeryError'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/scheduler/config:
+    post:
+      tags: [Requery]
+      summary: Update scheduler and execution settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RequerySchedulerUpdateRequest'
+      responses:
+        '200':
+          description: Scheduler config updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StatusMessageResponse'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/rules/save:
+    post:
+      tags: [Requery]
+      summary: Execute batch save actions
+      responses:
+        '200':
+          description: Save action result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryBatchActionResult'
+        '502':
+          description: At least one target failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryBatchActionResult'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/rules/flush:
+    post:
+      tags: [Requery]
+      summary: Execute batch flush actions
+      responses:
+        '200':
+          description: Flush action result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryBatchActionResult'
+        '502':
+          description: At least one target failed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequeryBatchActionResult'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/control/requery/stats/source_file_counts:
+    get:
+      tags: [Requery]
+      summary: Count source-file rules
+      responses:
+        '200':
+          description: Source file counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RequerySourceFileCountResponse'
+        default:
+          $ref: '#/components/responses/RequeryError'
+  /api/v1/config/info:
+    get:
+      tags: [Config]
+      summary: Get config manager info
+      responses:
+        '200':
+          description: Current config directory and remote source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigManagerInfo'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/config/export:
+    post:
+      tags: [Config]
+      summary: Export current config directory as ZIP
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigManagerRequest'
+      responses:
+        '200':
+          description: ZIP archive
+          content:
+            application/zip:
+              schema:
+                type: string
+                format: binary
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+  /api/v1/config/update_from_url:
+    post:
+      tags: [Config]
+      summary: Download remote config and replace current config
+      description: 成功返回后后台会触发程序重启。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ConfigManagerRequest'
+      responses:
+        '200':
+          description: Updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ConfigUpdateFromURLResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/update/status:
+    get:
+      tags: [Update]
+      summary: Get current update status
+      description: 当前实现即使远程检查失败，也会返回 `200`，错误信息在 `message` 字段。
+      responses:
+        '200':
+          description: Update status or downgraded failure status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateStatus'
+  /api/v1/update/check:
+    post:
+      tags: [Update]
+      summary: Force refresh update status
+      description: 当前实现即使远程检查失败，也会返回 `200`，错误信息在 `message` 字段。
+      responses:
+        '200':
+          description: Update status or downgraded failure status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateStatus'
+  /api/v1/update/apply:
+    post:
+      tags: [Update]
+      summary: Apply update
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateApplyRequest'
+      responses:
+        '200':
+          description: Update action result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpdateActionResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '502':
+          $ref: '#/components/responses/ApiBadGateway'
+  /api/v1/system/restart:
+    post:
+      tags: [System]
+      summary: Schedule self restart
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SystemRestartRequest'
+      responses:
+        '200':
+          description: Restart scheduled
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SystemRestartResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '409':
+          $ref: '#/components/responses/ApiConflict'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '501':
+          $ref: '#/components/responses/ApiNotImplemented'
+        '503':
+          $ref: '#/components/responses/ApiServiceUnavailable'
+  /api/v1/reverse_lookup:
+    get:
+      tags: [Misc]
+      summary: Reverse lookup IP to domain
+      parameters:
+        - $ref: '#/components/parameters/IPRequiredQuery'
+      responses:
+        '200':
+          description: Lookup result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReverseLookupResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+  /api/v1/upstream/tags:
+    get:
+      tags: [Upstream]
+      summary: Get runtime upstream plugin tags
+      responses:
+        '200':
+          description: Plugin tags
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/StringList'
+  /api/v1/upstream/config:
+    get:
+      tags: [Upstream]
+      summary: Get upstream config
+      responses:
+        '200':
+          description: Upstream config grouped by plugin tag
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GlobalUpstreamOverrides'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    put:
+      tags: [Upstream]
+      summary: Replace upstream config
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamConfigReplaceRequest'
+      responses:
+        '200':
+          description: Saved or saved and applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '409':
+          $ref: '#/components/responses/ApiConflict'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Upstream]
+      summary: Set one plugin upstream list
+      description: |
+        兼容旧入口，请求体为 `{ "plugin_tag": "...", "upstreams": [...] }`。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamConfigCompatRequest'
+      responses:
+        '200':
+          description: Saved or saved and applied
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/upstream/apply:
+    post:
+      tags: [Upstream]
+      summary: Apply saved upstream config to runtime
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamApplyRequest'
+      responses:
+        '200':
+          description: Runtime apply finished
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+        '503':
+          $ref: '#/components/responses/ApiServiceUnavailable'
+  /api/v1/upstream/items:
+    get:
+      tags: [Upstream]
+      summary: List upstream items for one plugin tag
+      parameters:
+        - $ref: '#/components/parameters/PluginTagRequiredQuery'
+      responses:
+        '200':
+          description: Upstream items
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/UpstreamOverrideConfig'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Upstream]
+      summary: Create one upstream item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamItemMutationRequest'
+      responses:
+        '201':
+          description: Upstream created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '409':
+          $ref: '#/components/responses/ApiConflict'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/upstream/items/{upstreamTag}:
+    parameters:
+      - $ref: '#/components/parameters/UpstreamTagPath'
+    put:
+      tags: [Upstream]
+      summary: Update one upstream item
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamItemMutationRequest'
+      responses:
+        '200':
+          description: Upstream updated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '409':
+          $ref: '#/components/responses/ApiConflict'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    delete:
+      tags: [Upstream]
+      summary: Delete one upstream item
+      parameters:
+        - $ref: '#/components/parameters/PluginTagRequiredQuery'
+        - $ref: '#/components/parameters/ApplyQuery'
+      responses:
+        '200':
+          description: Upstream deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/adguard:
+    get:
+      tags: [Rules]
+      summary: List adguard rule sources
+      responses:
+        '200':
+          description: Rule sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RuleSourceItem'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Rules]
+      summary: Create adguard rule source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleSourceWriteRequest'
+      responses:
+        '201':
+          description: Created rule source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/adguard/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RuleIDPath'
+    put:
+      tags: [Rules]
+      summary: Update adguard rule source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleSourceWriteRequest'
+      responses:
+        '200':
+          description: Updated rule source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    delete:
+      tags: [Rules]
+      summary: Delete adguard rule source
+      responses:
+        '204':
+          description: Deleted successfully
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/adguard/update:
+    post:
+      tags: [Rules]
+      summary: Refresh all adguard rule sources
+      responses:
+        '200':
+          description: Refreshed rule sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RuleSourceItem'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/adguard/{id}/update:
+    parameters:
+      - $ref: '#/components/parameters/RuleIDPath'
+    post:
+      tags: [Rules]
+      summary: Refresh one adguard rule source
+      responses:
+        '200':
+          description: Refreshed rule source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceItem'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/diversion:
+    get:
+      tags: [Rules]
+      summary: List diversion rule sources
+      responses:
+        '200':
+          description: Rule sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RuleSourceItem'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    post:
+      tags: [Rules]
+      summary: Create diversion rule source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleSourceWriteRequest'
+      responses:
+        '201':
+          description: Created rule source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/diversion/{id}:
+    parameters:
+      - $ref: '#/components/parameters/RuleIDPath'
+    put:
+      tags: [Rules]
+      summary: Update diversion rule source
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RuleSourceWriteRequest'
+      responses:
+        '200':
+          description: Updated rule source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceItem'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    delete:
+      tags: [Rules]
+      summary: Delete diversion rule source
+      responses:
+        '204':
+          description: Deleted successfully
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/diversion/update:
+    post:
+      tags: [Rules]
+      summary: Refresh all diversion rule sources
+      responses:
+        '200':
+          description: Refreshed rule sources
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/RuleSourceItem'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/rules/diversion/{id}/update:
+    parameters:
+      - $ref: '#/components/parameters/RuleIDPath'
+    post:
+      tags: [Rules]
+      summary: Refresh one diversion rule source
+      responses:
+        '200':
+          description: Refreshed rule source
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceItem'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/cache/stats:
+    get:
+      tags: [RuntimeStats]
+      summary: Get aggregated cache stats
+      responses:
+        '200':
+          description: Aggregated cache stats by runtime profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AggregatedCacheStatsResponse'
+  /api/v1/data/domain_stats:
+    get:
+      tags: [RuntimeStats]
+      summary: Get aggregated domain stats
+      responses:
+        '200':
+          description: Aggregated domain stats by runtime profile
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AggregatedDomainStatsResponse'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/cache/{tag}/stats:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    get:
+      tags: [Cache]
+      summary: Get one cache instance stats
+      responses:
+        '200':
+          description: Cache stats
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheStatsSnapshot'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+  /api/v1/cache/{tag}/entries:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    get:
+      tags: [Cache]
+      summary: Query cache entries
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Cache entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CacheEntriesResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/cache/{tag}/save:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    post:
+      tags: [Cache]
+      summary: Persist cache instance
+      responses:
+        '200':
+          description: Saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagMessageResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/cache/{tag}/flush:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    post:
+      tags: [Cache]
+      summary: Flush cache instance
+      responses:
+        '200':
+          description: Flushed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MessageResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/cache/{tag}/purge_domain:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    post:
+      tags: [Cache]
+      summary: Purge cache by domain
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeDomainRequest'
+      responses:
+        '200':
+          description: Purge result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurgeDomainResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+  /api/v1/lists/{tag}:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    get:
+      tags: [Lists]
+      summary: Query editable list values
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: List values
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListEntriesResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+    put:
+      tags: [Lists]
+      summary: Replace editable list values
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ListReplaceRequest'
+      responses:
+        '200':
+          description: Replace result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ListReplaceResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+  /api/v1/memory/{tag}/stats:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    get:
+      tags: [Memory]
+      summary: Get memory pool stats
+      responses:
+        '200':
+          description: Domain stats snapshot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DomainStatsSnapshot'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+  /api/v1/memory/{tag}/entries:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    get:
+      tags: [Memory]
+      summary: Query memory entries
+      parameters:
+        - $ref: '#/components/parameters/SearchQuery'
+        - $ref: '#/components/parameters/OffsetQuery'
+        - $ref: '#/components/parameters/LimitQuery'
+      responses:
+        '200':
+          description: Memory entries
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryEntriesResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/memory/{tag}/save:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    post:
+      tags: [Memory]
+      summary: Persist memory pool
+      responses:
+        '200':
+          description: Saved successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagMessageResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/memory/{tag}/flush:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    post:
+      tags: [Memory]
+      summary: Flush memory pool
+      responses:
+        '200':
+          description: Flushed successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TagMessageResponse'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v1/memory/{tag}/verify:
+    parameters:
+      - $ref: '#/components/parameters/TagPath'
+    post:
+      tags: [Memory]
+      summary: Mark one domain as verified
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/VerifyMemoryRequest'
+      responses:
+        '200':
+          description: Verify result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VerifyMemoryResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+components:
+  responses:
+    ApiBadRequest:
+      description: Invalid request
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiRequestTooLarge:
+      description: Request body too large
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiNotFound:
+      description: Resource or plugin not found
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiConflict:
+      description: Conflict with current runtime state
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiInternalError:
+      description: Internal server error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiServiceUnavailable:
+      description: Service unavailable
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiBadGateway:
+      description: Upstream or remote dependency failed
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    ApiNotImplemented:
+      description: Operation not implemented on current platform
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/APIErrorResponse'
+    RequeryError:
+      description: Requery plugin error
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RequeryErrorResponse'
+  parameters:
+    WindowQuery:
+      name: window
+      in: query
+      description: 概览窗口秒数；默认读取当前审计设置中的 `overview_window_seconds`
+      schema:
+        type: integer
+        minimum: 1
+    FromQuery:
+      name: from
+      in: query
+      description: Unix 毫秒时间戳或 RFC3339。省略时使用默认窗口。
+      schema:
+        type: string
+    ToQuery:
+      name: to
+      in: query
+      description: Unix 毫秒时间戳或 RFC3339。省略时默认为当前时间。
+      schema:
+        type: string
+    AuditStepQuery:
+      name: step
+      in: query
+      description: timeseries 粒度
+      schema:
+        type: string
+        enum: [minute, hour]
+    LimitQuery:
+      name: limit
+      in: query
+      description: 返回条数或上限。具体默认值由各接口决定。
+      schema:
+        type: integer
+        minimum: 1
+    OffsetQuery:
+      name: offset
+      in: query
+      description: 偏移量
+      schema:
+        type: integer
+        minimum: 0
+    CursorQuery:
+      name: cursor
+      in: query
+      description: 审计日志顺序翻页游标
+      schema:
+        type: string
+    SearchQuery:
+      name: q
+      in: query
+      description: 搜索关键字
+      schema:
+        type: string
+    ExactQuery:
+      name: exact
+      in: query
+      description: 审计搜索是否精确匹配
+      schema:
+        type: boolean
+    DomainQuery:
+      name: domain
+      in: query
+      schema:
+        type: string
+    DomainRequiredQuery:
+      name: domain
+      in: query
+      required: true
+      schema:
+        type: string
+    ClientIPQuery:
+      name: client_ip
+      in: query
+      schema:
+        type: string
+    ResponseCodeQuery:
+      name: rcode
+      in: query
+      schema:
+        type: string
+    DomainSetQuery:
+      name: domain_set
+      in: query
+      schema:
+        type: string
+    CacheStatusQuery:
+      name: cache_status
+      in: query
+      schema:
+        type: string
+    UpstreamTagQuery:
+      name: upstream_tag
+      in: query
+      schema:
+        type: string
+    TransportQuery:
+      name: transport
+      in: query
+      schema:
+        type: string
+    AnswerQuery:
+      name: answer
+      in: query
+      schema:
+        type: string
+    ComponentQuery:
+      name: component
+      in: query
+      schema:
+        type: string
+    QTypeOptionalQuery:
+      name: qtype
+      in: query
+      description: DNS 查询类型；省略时按 `A` 解释
+      schema:
+        type: string
+    LiveQuery:
+      name: live
+      in: query
+      description: 是否把运行态热规则合并进分流分析；默认 true
+      schema:
+        type: boolean
+        default: true
+    PluginTagRequiredQuery:
+      name: plugin_tag
+      in: query
+      required: true
+      schema:
+        type: string
+    ApplyQuery:
+      name: apply
+      in: query
+      description: 删除上游后是否立即热重载
+      schema:
+        type: boolean
+        default: false
+    RunIDQuery:
+      name: run_id
+      in: query
+      schema:
+        type: string
+    IPRequiredQuery:
+      name: ip
+      in: query
+      required: true
+      schema:
+        type: string
+    TagPath:
+      name: tag
+      in: path
+      required: true
+      schema:
+        type: string
+    SwitchNamePath:
+      name: name
+      in: path
+      required: true
+      schema:
+        type: string
+        enum:
+          - block_response
+          - client_proxy_mode
+          - branch_cache
+          - block_query_type
+          - block_ipv6
+          - ad_block
+          - prefer_ipv4
+          - cn_answer_mode
+          - prefer_ipv6
+          - main_cache
+          - udp_fast_path
+    UpstreamTagPath:
+      name: upstreamTag
+      in: path
+      required: true
+      schema:
+        type: string
+    RuleIDPath:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    APIErrorResponse:
+      type: object
+      required: [code, error]
+      properties:
+        code:
+          type: string
+        error:
+          type: string
+    RequeryErrorResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+          enum: [error]
+        message:
+          type: string
+    RawJSON:
+      description: Arbitrary JSON value persisted by runtime state
+      oneOf:
+        - type: object
+          additionalProperties: true
+        - type: array
+          items: {}
+        - type: string
+        - type: number
+        - type: integer
+        - type: boolean
+    StringList:
+      type: array
+      items:
+        type: string
+    StringMap:
+      type: object
+      additionalProperties:
+        type: string
+    MessageResponse:
+      type: object
+      required: [message]
+      properties:
+        message:
+          type: string
+    StatusMessageResponse:
+      type: object
+      required: [status, message]
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+    TagMessageResponse:
+      type: object
+      required: [message, tag]
+      properties:
+        message:
+          type: string
+        tag:
+          type: string
+    CaptureStartRequest:
+      type: object
+      properties:
+        duration_seconds:
+          type: integer
+          minimum: 1
+          maximum: 600
+          default: 120
+    CaptureStartResponse:
+      type: object
+      required: [message, duration_seconds]
+      properties:
+        message:
+          type: string
+        duration_seconds:
+          type: integer
+    CapturedLogEntry:
+      type: object
+      additionalProperties: true
+      properties:
+        level:
+          type: string
+        time:
+          type: string
+          format: date-time
+        msg:
+          type: string
+        logger_name:
+          type: string
+    CapturedLogsResponse:
+      type: array
+      items:
+        $ref: '#/components/schemas/CapturedLogEntry'
+    AnswerDetail:
+      type: object
+      required: [type, ttl, data]
+      properties:
+        type:
+          type: string
+        ttl:
+          type: integer
+        data:
+          type: string
+    ResponseFlags:
+      type: object
+      properties:
+        aa:
+          type: boolean
+        tc:
+          type: boolean
+        ra:
+          type: boolean
+    AuditLog:
+      type: object
+      properties:
+        id:
+          type: integer
+        query_time:
+          type: string
+          format: date-time
+        client_ip:
+          type: string
+        query_type:
+          type: string
+        query_name:
+          type: string
+        query_class:
+          type: string
+        duration_ms:
+          type: number
+        trace_id:
+          type: string
+        response_code:
+          type: string
+        response_flags:
+          $ref: '#/components/schemas/ResponseFlags'
+        answers:
+          type: array
+          items:
+            $ref: '#/components/schemas/AnswerDetail'
+        answer_count:
+          type: integer
+        domain_set_raw:
+          type: string
+        domain_set_norm:
+          type: string
+        upstream_tag:
+          type: string
+        transport:
+          type: string
+        server_name:
+          type: string
+        url_path:
+          type: string
+        cache_status:
+          type: string
+    AuditOverview:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        window_seconds:
+          type: integer
+        total_query_count:
+          type: integer
+          format: int64
+        total_average_duration_ms:
+          type: number
+        query_count:
+          type: integer
+          format: int64
+        qps:
+          type: number
+        average_duration_ms:
+          type: number
+        max_duration_ms:
+          type: number
+        error_count:
+          type: integer
+          format: int64
+        error_rate:
+          type: number
+        no_response_count:
+          type: integer
+          format: int64
+        cache_hit_count:
+          type: integer
+          format: int64
+        cache_hit_rate:
+          type: number
+        dropped_events:
+          type: integer
+          format: int64
+        queue_depth:
+          type: integer
+        degraded:
+          type: boolean
+        current_storage_bytes:
+          type: integer
+          format: int64
+    AuditTimeseriesPoint:
+      type: object
+      properties:
+        bucket_start:
+          type: string
+          format: date-time
+        query_count:
+          type: integer
+        average_duration_ms:
+          type: number
+        max_duration_ms:
+          type: number
+        error_count:
+          type: integer
+        cache_hit_count:
+          type: integer
+    AuditRankItem:
+      type: object
+      properties:
+        key:
+          type: string
+        count:
+          type: integer
+    AuditLogsSummary:
+      type: object
+      properties:
+        matched_count:
+          type: integer
+        average_duration_ms:
+          type: number
+        max_duration_ms:
+          type: number
+    AuditLogsResponse:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/AuditLogsSummary'
+        logs:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLog'
+        next_cursor:
+          type: string
+    AuditSettingsUpdateRequest:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        overview_window_seconds:
+          type: integer
+        raw_retention_days:
+          type: integer
+        aggregate_retention_days:
+          type: integer
+        max_storage_mb:
+          type: integer
+        sqlite_path:
+          type: string
+        flush_batch_size:
+          type: integer
+        flush_interval_ms:
+          type: integer
+        maintenance_interval_seconds:
+          type: integer
+    AuditSettingsResponse:
+      allOf:
+        - $ref: '#/components/schemas/AuditSettingsUpdateRequest'
+        - type: object
+          properties:
+            current_storage_bytes:
+              type: integer
+              format: int64
+            queue_depth:
+              type: integer
+            degraded:
+              type: boolean
+    RuntimeNamespaceSummary:
+      type: object
+      properties:
+        namespace:
+          type: string
+        keys:
+          type: integer
+    RuntimeHealthCheck:
+      type: object
+      properties:
+        name:
+          type: string
+        status:
+          type: string
+          enum: [ok, warn, error]
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+    RuntimeHealthResponse:
+      type: object
+      properties:
+        storage_engine:
+          type: string
+        db_path:
+          type: string
+        db_exists:
+          type: boolean
+        db_size_bytes:
+          type: integer
+          format: int64
+        wal_size_bytes:
+          type: integer
+          format: int64
+        status:
+          type: string
+          enum: [ok, warn, error]
+        checks:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeHealthCheck'
+        suggested_actions:
+          type: array
+          items:
+            type: string
+    RuntimeSummaryResponse:
+      type: object
+      properties:
+        storage_engine:
+          type: string
+        db_path:
+          type: string
+        namespaces:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeNamespaceSummary'
+        upstreams:
+          $ref: '#/components/schemas/UpstreamHealthOverview'
+    SystemEventEntry:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        component:
+          type: string
+        level:
+          type: string
+        message:
+          type: string
+        details:
+          type: object
+          additionalProperties: true
+        created_at_unix_ms:
+          type: integer
+          format: int64
+    ShuntMatchedRule:
+      type: object
+      properties:
+        tag:
+          type: string
+        mark:
+          type: integer
+        output_tag:
+          type: string
+        plugin_type:
+          type: string
+        source_files:
+          type: array
+          items:
+            type: string
+    ShuntDecision:
+      type: object
+      properties:
+        stage:
+          type: string
+        action:
+          type: string
+        reason:
+          type: string
+        matched_mark:
+          type: integer
+    ShuntDecisionStep:
+      type: object
+      properties:
+        order:
+          type: integer
+        stage:
+          type: string
+        mark:
+          type: integer
+        action:
+          type: string
+        reason:
+          type: string
+        matched:
+          type: boolean
+        rule_tag:
+          type: string
+        output_tag:
+          type: string
+        skipped_by:
+          type: string
+        decision_hit:
+          type: boolean
+    ShuntExplainResult:
+      type: object
+      properties:
+        domain:
+          type: string
+        qtype:
+          type: string
+        switches:
+          $ref: '#/components/schemas/StringMap'
+        default_mark:
+          type: integer
+        default_tag:
+          type: string
+        matches:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShuntMatchedRule'
+        decision:
+          $ref: '#/components/schemas/ShuntDecision'
+        decision_path:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShuntDecisionStep'
+        warnings:
+          type: array
+          items:
+            type: string
+    ShuntConflictRule:
+      type: object
+      properties:
+        tag:
+          type: string
+        mark:
+          type: integer
+        output_tag:
+          type: string
+    ShuntConflictEntry:
+      type: object
+      properties:
+        rule_key:
+          type: string
+        providers:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShuntConflictRule'
+    ShuntConflictsResponse:
+      type: object
+      properties:
+        base_dir:
+          type: string
+        count:
+          type: integer
+        conflicts:
+          type: array
+          items:
+            $ref: '#/components/schemas/ShuntConflictEntry'
+        warnings:
+          type: array
+          items:
+            type: string
+    ReplacementRule:
+      type: object
+      properties:
+        original:
+          type: string
+        new:
+          type: string
+        comment:
+          type: string
+    ReplacementRuleAPIResponse:
+      allOf:
+        - $ref: '#/components/schemas/ReplacementRule'
+        - type: object
+          properties:
+            result:
+              type: string
+    GlobalOverrides:
+      type: object
+      properties:
+        socks5:
+          type: string
+        ecs:
+          type: string
+        replacements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReplacementRule'
+    GlobalOverridesResponse:
+      type: object
+      properties:
+        socks5:
+          type: string
+        ecs:
+          type: string
+        replacements:
+          type: array
+          items:
+            $ref: '#/components/schemas/ReplacementRuleAPIResponse'
+    UpstreamOverrideConfig:
+      type: object
+      properties:
+        tag:
+          type: string
+        enabled:
+          type: boolean
+        protocol:
+          type: string
+        addr:
+          type: string
+        dial_addr:
+          type: string
+        idle_timeout:
+          type: integer
+        upstream_query_timeout:
+          type: integer
+        enable_pipeline:
+          type: boolean
+        enable_http3:
+          type: boolean
+        insecure_skip_verify:
+          type: boolean
+        socks5:
+          type: string
+        so_mark:
+          type: integer
+        bind_to_device:
+          type: string
+        bootstrap:
+          type: string
+        bootstrap_version:
+          type: integer
+        account_id:
+          type: string
+        access_key_id:
+          type: string
+        access_key_secret:
+          type: string
+        server_addr:
+          type: string
+        ecs_client_ip:
+          type: string
+        ecs_client_mask:
+          type: integer
+          minimum: 0
+          maximum: 255
+    GlobalUpstreamOverrides:
+      type: object
+      additionalProperties:
+        type: array
+        items:
+          $ref: '#/components/schemas/UpstreamOverrideConfig'
+    UpstreamConfigReplaceRequest:
+      type: object
+      properties:
+        config:
+          $ref: '#/components/schemas/GlobalUpstreamOverrides'
+        apply:
+          type: boolean
+    UpstreamConfigCompatRequest:
+      type: object
+      properties:
+        plugin_tag:
+          type: string
+        upstreams:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpstreamOverrideConfig'
+    UpstreamApplyRequest:
+      type: object
+      properties:
+        plugin_tag:
+          type: string
+    UpstreamItemMutationRequest:
+      type: object
+      properties:
+        plugin_tag:
+          type: string
+        upstream:
+          $ref: '#/components/schemas/UpstreamOverrideConfig'
+        apply:
+          type: boolean
+    UpstreamHealthSnapshot:
+      type: object
+      properties:
+        plugin_tag:
+          type: string
+        plugin_type:
+          type: string
+        upstream_tag:
+          type: string
+        address:
+          type: string
+        score:
+          type: integer
+          format: int64
+        average_latency_ms:
+          type: number
+        inflight:
+          type: integer
+          format: int64
+        consecutive_failures:
+          type: integer
+        healthy:
+          type: boolean
+        unhealthy_until_unix_ms:
+          type: integer
+          format: int64
+    UpstreamHealthOverview:
+      type: object
+      properties:
+        total:
+          type: integer
+        healthy:
+          type: integer
+        degraded:
+          type: integer
+        unhealthy:
+          type: integer
+        worst_score:
+          type: integer
+          format: int64
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/UpstreamHealthSnapshot'
+    SwitchState:
+      type: object
+      properties:
+        name:
+          type: string
+        value:
+          type: string
+    SwitchUpdateRequest:
+      type: object
+      properties:
+        value:
+          type: string
+          description: |
+            可用值依赖开关名：
+            - `block_response` / `branch_cache` / `block_query_type` / `block_ipv6` / `ad_block` / `prefer_ipv4` / `prefer_ipv6` / `main_cache` / `udp_fast_path`: `on` / `off`
+            - `client_proxy_mode`: `all` / `blacklist` / `whitelist`
+            - `cn_answer_mode`: `realip` / `fakeip`
+    RequerySourceFile:
+      type: object
+      properties:
+        alias:
+          type: string
+        path:
+          type: string
+    RequeryDomainProcessing:
+      type: object
+      properties:
+        source_files:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequerySourceFile'
+    RequeryURLActions:
+      type: object
+      properties:
+        save_rules:
+          type: array
+          items:
+            type: string
+        flush_rules:
+          type: array
+          items:
+            type: string
+    RequeryWorkflowSettings:
+      type: object
+      properties:
+        flush_mode:
+          type: string
+        mode:
+          type: string
+        save_before_refresh:
+          type: boolean
+        save_after_refresh:
+          type: boolean
+    RequerySchedulerConfig:
+      type: object
+      properties:
+        enabled:
+          type: boolean
+        start_datetime:
+          type: string
+          format: date-time
+        interval_minutes:
+          type: integer
+    RequeryRecoverySettings:
+      type: object
+      properties:
+        auto_resume:
+          type: boolean
+        checkpoint_batch_size:
+          type: integer
+        resume_delay_ms:
+          type: integer
+    RequeryExecutionSettings:
+      type: object
+      properties:
+        queries_per_second:
+          type: integer
+        quick_queries_per_second:
+          type: integer
+        prewarm_queries_per_second:
+          type: integer
+        resolver_address:
+          type: string
+        refresh_resolver_address:
+          type: string
+        refresh_resolver_pool:
+          type: array
+          items:
+            type: string
+        query_mode:
+          type: string
+        url_call_delay_ms:
+          type: integer
+        url_call_concurrency:
+          type: integer
+        date_range_days:
+          type: integer
+        max_queue_size:
+          type: integer
+        on_demand_batch_size:
+          type: integer
+        quick_rebuild_limit:
+          type: integer
+        prewarm_limit:
+          type: integer
+        full_rebuild_priority_limit:
+          type: integer
+    RequeryProgress:
+      type: object
+      properties:
+        processed:
+          type: integer
+          format: int64
+        total:
+          type: integer
+          format: int64
+    RequeryDomainCandidate:
+      type: object
+      properties:
+        name:
+          type: string
+        qtype_mask:
+          type: integer
+        weight:
+          type: integer
+    RequeryFullRebuildTask:
+      type: object
+      properties:
+        task_id:
+          type: string
+        mode:
+          type: string
+        stage:
+          type: string
+        stage_label:
+          type: string
+        started_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        total:
+          type: integer
+        completed:
+          type: integer
+        primary:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequeryDomainCandidate'
+        secondary:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequeryDomainCandidate'
+        last_error:
+          type: string
+        resume_count:
+          type: integer
+    RequeryStatus:
+      type: object
+      properties:
+        task_state:
+          type: string
+        active_run_id:
+          type: string
+        task_mode:
+          type: string
+        task_stage:
+          type: string
+        task_stage_label:
+          type: string
+        task_stage_processed:
+          type: integer
+          format: int64
+        task_stage_total:
+          type: integer
+          format: int64
+        last_run_start_time:
+          type: string
+          format: date-time
+        last_run_end_time:
+          type: string
+          format: date-time
+        last_run_domain_count:
+          type: integer
+        last_run_mode:
+          type: string
+        progress:
+          $ref: '#/components/schemas/RequeryProgress'
+        pending_queue:
+          type: integer
+        on_demand_triggered:
+          type: integer
+          format: int64
+        on_demand_processed:
+          type: integer
+          format: int64
+        on_demand_skipped:
+          type: integer
+          format: int64
+        last_on_demand_at:
+          type: string
+          format: date-time
+        last_on_demand_domain:
+          type: string
+    RequeryRefreshJobView:
+      type: object
+      properties:
+        domain:
+          type: string
+        memory_id:
+          type: string
+        reason:
+          type: string
+        qtype_mask:
+          type: integer
+        priority:
+          type: integer
+        observed_at:
+          type: string
+          format: date-time
+    RequeryRuleActionTargets:
+      type: object
+      properties:
+        save_targets:
+          type: array
+          items:
+            type: string
+        flush_targets:
+          type: array
+          items:
+            type: string
+    RequeryMemoryStatView:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        tag:
+          type: string
+        memory_id:
+          type: string
+        kind:
+          type: string
+        total_entries:
+          type: integer
+        dirty_entries:
+          type: integer
+        promoted_entries:
+          type: integer
+          format: int64
+        published_rules:
+          type: integer
+          format: int64
+        total_observations:
+          type: integer
+          format: int64
+        dropped_observations:
+          type: integer
+          format: int64
+        dropped_by_buffer:
+          type: integer
+          format: int64
+        dropped_by_cap:
+          type: integer
+          format: int64
+        error:
+          type: string
+    RequeryStatusSnapshot:
+      allOf:
+        - $ref: '#/components/schemas/RequeryStatus'
+        - type: object
+          properties:
+            max_queue_size:
+              type: integer
+            last_error:
+              type: string
+            queue_preview:
+              type: array
+              items:
+                $ref: '#/components/schemas/RequeryRefreshJobView'
+            memory_stats:
+              type: array
+              items:
+                $ref: '#/components/schemas/RequeryMemoryStatView'
+            batch_capabilities:
+              $ref: '#/components/schemas/RequeryRuleActionTargets'
+    RequeryConfig:
+      type: object
+      properties:
+        domain_processing:
+          $ref: '#/components/schemas/RequeryDomainProcessing'
+        url_actions:
+          $ref: '#/components/schemas/RequeryURLActions'
+        workflow:
+          $ref: '#/components/schemas/RequeryWorkflowSettings'
+        scheduler:
+          $ref: '#/components/schemas/RequerySchedulerConfig'
+        recovery:
+          $ref: '#/components/schemas/RequeryRecoverySettings'
+        execution_settings:
+          $ref: '#/components/schemas/RequeryExecutionSettings'
+        status:
+          $ref: '#/components/schemas/RequeryStatus'
+        full_rebuild_task:
+          $ref: '#/components/schemas/RequeryFullRebuildTask'
+    RequerySummaryResponse:
+      type: object
+      properties:
+        config:
+          $ref: '#/components/schemas/RequeryConfig'
+        status:
+          $ref: '#/components/schemas/RequeryStatusSnapshot'
+        memory_stats:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequeryMemoryStatView'
+        rule_targets:
+          $ref: '#/components/schemas/RequeryRuleActionTargets'
+        recent_runs:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequeryRun'
+    RequeryJob:
+      type: object
+      properties:
+        job_id:
+          type: string
+        config_key:
+          type: string
+        mode:
+          type: string
+        trigger_source:
+          type: string
+        enabled:
+          type: boolean
+        definition:
+          $ref: '#/components/schemas/RawJSON'
+        updated_at_unix_ms:
+          type: integer
+          format: int64
+    RequeryRun:
+      type: object
+      properties:
+        run_id:
+          type: string
+        config_key:
+          type: string
+        job_id:
+          type: string
+        mode:
+          type: string
+        trigger_source:
+          type: string
+        state:
+          type: string
+        stage:
+          type: string
+        stage_label:
+          type: string
+        total:
+          type: integer
+        completed:
+          type: integer
+        error_text:
+          type: string
+        metadata:
+          $ref: '#/components/schemas/RawJSON'
+        started_at_unix_ms:
+          type: integer
+          format: int64
+        ended_at_unix_ms:
+          type: integer
+          format: int64
+        updated_at_unix_ms:
+          type: integer
+          format: int64
+    RequeryCheckpoint:
+      type: object
+      properties:
+        id:
+          type: integer
+          format: int64
+        config_key:
+          type: string
+        run_id:
+          type: string
+        stage:
+          type: string
+        completed:
+          type: integer
+        total:
+          type: integer
+        snapshot:
+          $ref: '#/components/schemas/RawJSON'
+        created_at_unix_ms:
+          type: integer
+          format: int64
+    RequeryTriggerRequest:
+      type: object
+      properties:
+        mode:
+          type: string
+          enum: [full_rebuild, quick_rebuild, quick_prewarm]
+        limit:
+          type: integer
+    RequeryTriggerResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        task_mode:
+          type: string
+    RequeryRefreshJob:
+      type: object
+      properties:
+        domain:
+          type: string
+        memory_id:
+          type: string
+        qtype_mask:
+          type: integer
+        reason:
+          type: string
+        verify_tag:
+          type: string
+        observed_at:
+          type: string
+          format: date-time
+    RequeryEnqueueResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        message:
+          type: string
+        domain:
+          type: string
+        pending_queue:
+          type: integer
+    RequerySchedulerUpdateRequest:
+      allOf:
+        - $ref: '#/components/schemas/RequerySchedulerConfig'
+        - type: object
+          properties:
+            date_range_days:
+              type: integer
+            mode:
+              type: string
+            queries_per_second:
+              type: integer
+            quick_queries_per_second:
+              type: integer
+            prewarm_queries_per_second:
+              type: integer
+            quick_rebuild_limit:
+              type: integer
+            prewarm_limit:
+              type: integer
+            full_rebuild_priority_limit:
+              type: integer
+            refresh_resolver_address:
+              type: string
+            refresh_resolver_pool:
+              type: array
+              items:
+                type: string
+    RequeryBatchActionItem:
+      type: object
+      properties:
+        url:
+          type: string
+        tag:
+          type: string
+        ok:
+          type: boolean
+        status_code:
+          type: integer
+        error:
+          type: string
+        duration_ms:
+          type: integer
+          format: int64
+    RequeryBatchActionResult:
+      type: object
+      properties:
+        action:
+          type: string
+        total:
+          type: integer
+        success:
+          type: integer
+        failed:
+          type: integer
+        duration_ms:
+          type: integer
+          format: int64
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequeryBatchActionItem'
+    RequerySourceFileCountItem:
+      type: object
+      properties:
+        alias:
+          type: string
+        count:
+          type: integer
+    RequerySourceFileCountResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/RequerySourceFileCountItem'
+    ConfigManagerRequest:
+      type: object
+      properties:
+        url:
+          type: string
+        dir:
+          type: string
+    ConfigManagerInfo:
+      type: object
+      properties:
+        dir:
+          type: string
+        remote_source:
+          type: string
+        warning:
+          type: string
+    ConfigUpdateFromURLResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        status:
+          type: string
+    UpdateStatus:
+      type: object
+      properties:
+        current_version:
+          type: string
+        latest_version:
+          type: string
+        release_url:
+          type: string
+        architecture:
+          type: string
+        asset_name:
+          type: string
+        download_url:
+          type: string
+        asset_signature:
+          type: string
+        current_signature:
+          type: string
+        published_at:
+          type: string
+          format: date-time
+        checked_at:
+          type: string
+          format: date-time
+        cache_expires_at:
+          type: string
+          format: date-time
+        update_available:
+          type: boolean
+        cached:
+          type: boolean
+        message:
+          type: string
+        pending_restart:
+          type: boolean
+        amd64_v3_capable:
+          type: boolean
+        current_is_v3:
+          type: boolean
+    UpdateApplyRequest:
+      type: object
+      properties:
+        force:
+          type: boolean
+        prefer_v3:
+          type: boolean
+    UpdateActionResponse:
+      type: object
+      properties:
+        status:
+          $ref: '#/components/schemas/UpdateStatus'
+        installed:
+          type: boolean
+        restart_required:
+          type: boolean
+        notes:
+          type: string
+    SystemRestartRequest:
+      type: object
+      properties:
+        delay_ms:
+          type: integer
+          description: Default 300 when omitted or <= 0
+    SystemRestartResponse:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [scheduled]
+        delay_ms:
+          type: integer
+    RuleSourceWriteRequest:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        bind_to:
+          type: string
+        bindings:
+          type: array
+          items:
+            type: string
+        enabled:
+          type: boolean
+        behavior:
+          type: string
+          enum: [adguard, domain, ipcidr]
+        match_mode:
+          type: string
+          enum: [adguard_native, domain_set, ip_cidr_set]
+        format:
+          type: string
+          enum: [txt, list, rules, json, yaml, srs, mrs]
+        source_kind:
+          type: string
+          enum: [local, remote]
+        path:
+          type: string
+        url:
+          type: string
+        auto_update:
+          type: boolean
+        update_interval_hours:
+          type: integer
+    RuleSourceItem:
+      allOf:
+        - $ref: '#/components/schemas/RuleSourceWriteRequest'
+        - type: object
+          properties:
+            rule_count:
+              type: integer
+            last_updated:
+              type: string
+              format: date-time
+            last_error:
+              type: string
+    CacheStatsSnapshot:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        tag:
+          type: string
+        snapshot_file:
+          type: string
+        wal_file:
+          type: string
+        backend_size:
+          type: integer
+        l1_size:
+          type: integer
+        updated_keys:
+          type: integer
+          format: int64
+        counters:
+          type: object
+          additionalProperties:
+            type: integer
+            format: int64
+        last_dump:
+          type: object
+          additionalProperties: true
+        last_load:
+          type: object
+          additionalProperties: true
+        last_wal_replay:
+          type: object
+          additionalProperties: true
+        config:
+          type: object
+          additionalProperties: true
+        error:
+          type: string
+    DomainStatsSnapshot:
+      type: object
+      properties:
+        key:
+          type: string
+        name:
+          type: string
+        tag:
+          type: string
+        memory_id:
+          type: string
+        kind:
+          type: string
+        total_entries:
+          type: integer
+        dirty_entries:
+          type: integer
+        promoted_entries:
+          type: integer
+          format: int64
+        published_rules:
+          type: integer
+          format: int64
+        hot_rules:
+          type: integer
+          format: int64
+        hot_pending_rules:
+          type: integer
+          format: int64
+        hot_add_total:
+          type: integer
+          format: int64
+        hot_replace_total:
+          type: integer
+          format: int64
+        hot_dispatch_fail_total:
+          type: integer
+          format: int64
+        last_hot_sync_at_unix_ms:
+          type: integer
+          format: int64
+        total_observations:
+          type: integer
+          format: int64
+        dropped_observations:
+          type: integer
+          format: int64
+        dropped_by_buffer:
+          type: integer
+          format: int64
+        dropped_by_cap:
+          type: integer
+          format: int64
+        error:
+          type: string
+    AggregatedCacheStatsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CacheStatsSnapshot'
+    AggregatedDomainStatsResponse:
+      type: object
+      properties:
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/DomainStatsSnapshot'
+    CacheEntry:
+      type: object
+      properties:
+        key:
+          type: string
+        domain_set:
+          type: string
+        stored_time:
+          type: string
+        msg_expire:
+          type: string
+        cache_expire:
+          type: string
+        dns_message:
+          type: string
+    CacheEntriesResponse:
+      type: object
+      properties:
+        tag:
+          type: string
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/CacheEntry'
+    PurgeDomainRequest:
+      type: object
+      required: [qname]
+      properties:
+        qname:
+          type: string
+        qtype:
+          type: integer
+    PurgeDomainResponse:
+      type: object
+      properties:
+        qname:
+          type: string
+        qtype:
+          type: integer
+        purged:
+          type: integer
+    ListEntry:
+      type: object
+      properties:
+        value:
+          type: string
+    ListEntriesResponse:
+      type: object
+      properties:
+        tag:
+          type: string
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/ListEntry'
+    ListReplaceRequest:
+      type: object
+      properties:
+        values:
+          type: array
+          items:
+            type: string
+    ListReplaceResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        replaced:
+          type: integer
+        tag:
+          type: string
+    MemoryEntry:
+      type: object
+      properties:
+        domain:
+          type: string
+        count:
+          type: integer
+        date:
+          type: string
+        qtype_mask:
+          type: integer
+        score:
+          type: integer
+        promoted:
+          type: boolean
+    MemoryEntriesResponse:
+      type: object
+      properties:
+        tag:
+          type: string
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/MemoryEntry'
+    VerifyMemoryRequest:
+      type: object
+      required: [domain]
+      properties:
+        domain:
+          type: string
+        verified_at:
+          type: string
+          format: date-time
+    VerifyMemoryResponse:
+      type: object
+      properties:
+        status:
+          type: string
+        updated:
+          type: integer
+    ReverseLookupResponse:
+      type: object
+      properties:
+        ip:
+          type: string
+        domain:
+          type: string
