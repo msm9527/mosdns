@@ -1,0 +1,65 @@
+# 用户自定义在线分流规则源
+#
+# 这是“在线分流”入口的长期配置真源。
+# - 前端规则管理页保存后会直接改这个文件，并立即热重载相关 provider。
+# - 你也可以手工修改这个文件，然后重启 mosdns 生效。
+# - 数据库只保留运行态元数据，例如 rule_count / last_updated / last_error。
+# - 原始规则文件建议保留在 config/diversion/ 目录；这里不再保存运行态统计。
+#
+# 字段说明：
+# - id: 规则源唯一标识，只用于识别单条 source。
+# - name: Web UI 显示名称。
+# - bind_to: 绑定到哪个系统分流入口。
+#   - geosite_cn: 国内域名分流
+#   - geosite_no_cn: 代理域名分流
+#   - geoip_cn: 国内 IP 分流
+#   - cuscn: 自定义直连补充
+#   - cusnocn: 自定义代理补充
+#   同一个 bind_to 下可以同时挂多个 source，运行时会自动聚合。
+# - enabled: 是否启用该规则源。
+# - behavior: 规则语义：
+#   - domain: 域名集合。
+#   - ipcidr: IP/CIDR 集合。
+# - match_mode:
+#   - domain_set: 域名集合匹配。
+#   - ip_cidr_set: IP/CIDR 匹配。
+# - format: 原始文件格式，例如 list / txt / json / yaml / srs / mrs。
+# - source_kind: local / remote。
+# - path: 原始文件相对 config 根目录的路径，建议放在 diversion/ 目录下。
+# - url: 仅 remote 源需要填写。
+# - auto_update / update_interval_hours: 仅 remote 源有效。
+
+sources:
+    - id: geoip_cn
+      name: 国内 IP 集
+      bind_to: geoip_cn
+      enabled: true
+      behavior: ipcidr
+      match_mode: ip_cidr_set
+      format: srs
+      source_kind: remote
+      path: diversion/geoip-cn.srs
+      url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geoip/cn.srs
+      update_interval_hours: 24
+    - id: geosite_cn
+      name: 国内域名集
+      bind_to: geosite_cn
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: srs
+      source_kind: remote
+      path: diversion/geosite-cn.srs
+      url: https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/cn.srs
+      update_interval_hours: 24
+    - id: geosite_no_cn
+      name: 非国内域名集
+      bind_to: geosite_no_cn
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: srs
+      source_kind: remote
+      path: diversion/geolocation-!cn.srs
+      url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geosite/geolocation-!cn.srs
+      update_interval_hours: 24

@@ -706,6 +706,88 @@
                 min-width: 0 !important;
             }
         }
+
+        /* 系统控制页面显示不全修复 - 最小化修复 */
+        #system-control-tab {
+            min-height: 100vh;
+            padding-bottom: 2rem;
+        }
+
+        .control-panel-grid {
+            width: 100%;
+            overflow: visible;
+        }
+
+        @media (max-width: 768px) {
+            .control-panel-grid {
+                display: block !important;
+            }
+
+            .control-module {
+                margin-bottom: 1rem;
+                width: 100%;
+                box-sizing: border-box;
+            }
+
+            /* 存储策略模块表单优化 */
+            #audit-storage-form {
+                margin-top: 1rem;
+            }
+
+            .form-group {
+                margin-bottom: 1rem;
+            }
+
+            .form-group label {
+                display: block;
+                margin-bottom: 0.25rem;
+                font-weight: 500;
+                color: var(--color-text-secondary);
+                font-size: 0.85rem;
+            }
+
+            #audit-storage-form input {
+                width: 100%;
+                padding: 0.5rem;
+                border: 1px solid var(--color-border);
+                border-radius: 4px;
+                background: var(--color-bg-input);
+                color: var(--color-text-primary);
+                font-size: 0.9rem;
+                box-sizing: border-box;
+            }
+
+            #audit-storage-form input:focus {
+                outline: none;
+                border-color: var(--color-primary);
+                box-shadow: 0 0 0 2px rgba(var(--color-primary-rgb), 0.2);
+            }
+
+            #audit-storage-form button {
+                width: 100%;
+                margin-top: 0.5rem;
+            }
+
+            /* 提示信息样式优化 */
+            .tip-inline {
+                margin-top: 0.75rem !important;
+                padding: 0.5rem;
+                background: rgba(var(--color-info-rgb), 0.1);
+                border-radius: 4px;
+                border-left: 3px solid var(--color-info);
+            }
+
+            .tip-inline .info-inline {
+                margin-right: 0.5rem;
+                color: var(--color-info);
+            }
+
+            .tip-text {
+                color: var(--color-text-secondary);
+                font-size: 0.8rem;
+                line-height: 1.4;
+            }
+        }
     </style>
 </head>
 
@@ -811,45 +893,68 @@
                 <div class="modal-body">
                     <input type="hidden" id="rule-id" name="id">
                     <input type="hidden" id="rule-mode" name="mode">
+                    <div class="form-field">
+                        <label for="rule-source-id">规则源 ID</label>
+                        <input type="text" id="rule-source-id" name="source_id" placeholder="例如: geosite_cn_remote" required>
+                    </div>
                     <div class="form-field" id="rule-type-wrapper" style="display: none;">
-                        <label for="rule-type">类型</label>
+                        <label for="rule-type">绑定入口</label>
                         <select id="rule-type" name="type" required>
                             <option value="" disabled selected>请选择类型</option>
-                            <option value="geositecn">中国域名</option>
-                            <option value="geositenocn">非中国域名</option>
-                            <option value="geoipcn">中国ip</option>
-                            <option value="cuscn">cn@!cn</option>
-                            <option value="cusnocn">!cn@cn</option>
+                            <option value="geosite_cn">geosite_cn</option>
+                            <option value="geosite_no_cn">geosite_no_cn</option>
+                            <option value="geoip_cn">geoip_cn</option>
+                            <option value="cuscn">cuscn</option>
+                            <option value="cusnocn">cusnocn</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label for="rule-match-mode">匹配模式</label>
+                        <select id="rule-match-mode" name="match_mode" required>
+                            <option value="adguard_native">adguard_native</option>
+                            <option value="domain_set">domain_set</option>
+                            <option value="ip_cidr_set">ip_cidr_set</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label for="rule-format">文件格式</label>
+                        <select id="rule-format" name="format" required>
+                            <option value="txt">txt</option>
+                            <option value="list">list</option>
+                            <option value="rules">rules</option>
+                            <option value="json">json</option>
+                            <option value="yaml">yaml</option>
+                            <option value="srs">srs</option>
+                            <option value="mrs">mrs</option>
+                        </select>
+                    </div>
+                    <div class="form-field">
+                        <label for="rule-source-kind">来源类型</label>
+                        <select id="rule-source-kind" name="source_kind" required>
+                            <option value="remote">remote</option>
+                            <option value="local">local</option>
                         </select>
                     </div>
                     <div class="form-field">
                         <label for="rule-name">名称</label>
                         <input type="text" id="rule-name" name="name" placeholder="例如：My Custom Rules" required>
                     </div>
-                    <div class="form-field" id="rule-files-wrapper" style="display: none;">
-                        <label for="rule-files">本地文件路径</label>
-                        <input type="text" id="rule-files" name="files" placeholder="例如: /mosdns/geosite-cn.srs"
-                            required>
+                    <div class="form-field" id="rule-path-wrapper">
+                        <label for="rule-path">原始文件路径</label>
+                        <input type="text" id="rule-path" name="path" placeholder="例如: adguard/httpdns.rules 或 diversion/custom.list">
                     </div>
-                    <div class="form-field">
+                    <div class="form-field" id="rule-url-wrapper">
                         <label for="rule-url">清单网址 (URL)</label>
-                        <input type="url" id="rule-url" name="url" placeholder="https://example.com/rules.txt" required>
+                        <input type="url" id="rule-url" name="url" placeholder="https://example.com/rules.txt">
                     </div>
-                    <div class="form-field control-item" style="justify-content: space-between;">
+                    <div class="form-field control-item" id="rule-auto-update-wrapper" style="justify-content: space-between;">
                         <strong>自动更新</strong>
                         <label class="switch">
                             <input type="checkbox" id="rule-auto-update" name="auto_update">
                             <span class="slider"></span>
                         </label>
                     </div>
-                    <div class="form-field control-item" id="rule-enable-regexp-wrapper" style="justify-content: space-between; display: none;">
-                        <strong>启用正则规则</strong>
-                        <label class="switch">
-                            <input type="checkbox" id="rule-enable-regexp" name="enable_regexp">
-                            <span class="slider"></span>
-                        </label>
-                    </div>
-                    <div class="form-field">
+                    <div class="form-field" id="rule-update-interval-wrapper">
                         <label for="rule-update-interval">更新间隔 (小时)</label>
                         <input type="number" id="rule-update-interval" name="update_interval_hours" min="1" value="24"
                             style="width: 120px;">
@@ -1289,20 +1394,35 @@
                     </div>
                     <div id="adguard-sub-tab" class="sub-tab-content" style="padding: 0 1.25rem 1.25rem;">
                         <div class="rule-actions-wrapper">
-                            <button id="add-adguard-rule-btn" class="button primary">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                    <path d="M11 11V5H13V11H19V13H13V19H11V13H5V11H11Z"></path>
-                                </svg>
-                                <span>添加拦截规则</span>
-                            </button>
-                            <button id="check-adguard-updates-btn" class="button secondary">
-                                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                                    <path
-                                        d="M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C16.1333 2 19.536 4.30641 21.1009 7.82362L18.3294 8.76801C17.1523 6.22352 14.7951 4.5 12 4.5C7.85786 4.5 4.5 7.85786 4.5 12C4.5 16.1421 7.85786 19.5 12 19.5C15.2443 19.5 17.9739 17.4478 18.9472 14.5H16.5V12.5H22V18.5H20V15.118C18.6468 19.068 15.5849 22 12 22Z">
-                                    </path>
-                                </svg>
-                                <span>检查更新</span>
-                            </button>
+                            <div style="display:flex; gap:0.75rem; flex-wrap:wrap; align-items:center;">
+                                <button id="add-adguard-rule-btn" class="button primary">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                        <path d="M11 11V5H13V11H19V13H13V19H11V13H5V11H11Z"></path>
+                                    </svg>
+                                    <span>添加拦截规则</span>
+                                </button>
+                                <button id="check-adguard-updates-btn" class="button secondary">
+                                    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                        <path
+                                            d="M12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2C16.1333 2 19.536 4.30641 21.1009 7.82362L18.3294 8.76801C17.1523 6.22352 14.7951 4.5 12 4.5C7.85786 4.5 4.5 7.85786 4.5 12C4.5 16.1421 7.85786 19.5 12 19.5C15.2443 19.5 17.9739 17.4478 18.9472 14.5H16.5V12.5H22V18.5H20V15.118C18.6468 19.068 15.5849 22 12 22Z">
+                                        </path>
+                                    </svg>
+                                    <span>刷新远程源</span>
+                                </button>
+                            </div>
+                            <div style="display:flex; gap:0.75rem; align-items:center; margin-left:auto;">
+                                <label for="adguard-format-filter" style="color:var(--color-text-secondary); font-size:0.9rem;">格式筛选</label>
+                                <select id="adguard-format-filter" style="min-width:9rem;">
+                                    <option value="all">全部格式</option>
+                                    <option value="txt">txt</option>
+                                    <option value="list">list</option>
+                                    <option value="rules">rules</option>
+                                    <option value="json">json</option>
+                                    <option value="yaml">yaml</option>
+                                    <option value="srs">srs</option>
+                                    <option value="mrs">mrs</option>
+                                </select>
+                            </div>
                         </div>
                         <div class="scrollable-table-container" id="adguard-table-container">
                             <table id="adguard-rules-table">
@@ -1310,10 +1430,14 @@
                                     <tr>
                                         <th class="text-center hide-on-mobile" style="width: 6rem;">启用</th>
                                         <th class="hide-on-mobile">名称</th>
-                                        <th class="hide-on-mobile">清单网址</th>
+                                        <th class="hide-on-mobile">匹配模式</th>
+                                        <th class="hide-on-mobile">格式</th>
+                                        <th class="hide-on-mobile">来源</th>
+                                        <th class="hide-on-mobile">路径 / URL</th>
                                         <th class="text-right hide-on-mobile" style="width: 7rem;">规则数</th>
                                         <th class="hide-on-mobile" style="width: 12rem;">上次更新</th>
-                                        <th class="text-center hide-on-mobile" style="width: 12rem;">操作</th>
+                                        <th class="hide-on-mobile">最近错误</th>
+                                        <th class="text-center hide-on-mobile" style="width: 14rem;">操作</th>
                                     </tr>
                                 </thead>
                                 <tbody id="adguard-rules-tbody"></tbody>
@@ -1340,6 +1464,17 @@
                                         </path>
                                     </svg>
                                 </button>
+                                <label for="diversion-format-filter" style="color:var(--color-text-secondary); font-size:0.9rem; align-self:center;">格式筛选</label>
+                                <select id="diversion-format-filter" style="min-width:9rem;">
+                                    <option value="all">全部格式</option>
+                                    <option value="txt">txt</option>
+                                    <option value="list">list</option>
+                                    <option value="rules">rules</option>
+                                    <option value="json">json</option>
+                                    <option value="yaml">yaml</option>
+                                    <option value="srs">srs</option>
+                                    <option value="mrs">mrs</option>
+                                </select>
                             </div>
                         </div>
                         <div class="scrollable-table-container" id="diversion-table-container">
@@ -1348,10 +1483,14 @@
                                     <tr>
                                         <th class="text-center hide-on-mobile" style="width: 6rem;">启用</th>
                                         <th class="hide-on-mobile">名称</th>
-                                        <th class="hide-on-mobile">类型</th>
-                                        <th class="hide-on-mobile">清单网址</th>
+                                        <th class="hide-on-mobile">绑定入口</th>
+                                        <th class="hide-on-mobile">匹配模式</th>
+                                        <th class="hide-on-mobile">格式</th>
+                                        <th class="hide-on-mobile">来源</th>
+                                        <th class="hide-on-mobile">路径 / URL</th>
                                         <th class="text-right hide-on-mobile" style="width: 7rem;">规则数</th>
                                         <th class="hide-on-mobile" style="width: 12rem;">上次更新</th>
+                                        <th class="hide-on-mobile">最近错误</th>
                                         <th class="text-center hide-on-mobile" style="width: 16rem;">操作</th>
                                     </tr>
                                 </thead>
@@ -1409,9 +1548,18 @@
                         <strong>存储上限:</strong> <span id="audit-storage-limit">查询中...</span>
                     </div>
                     <form id="audit-storage-form">
-                        <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="原始保留(天)">
-                        <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="聚合保留(天)">
-                        <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="存储上限(MB)">
+                        <div class="form-group">
+                            <label for="audit-retention-days">原始日志保留天数:</label>
+                            <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="输入天数 (1-365)">
+                        </div>
+                        <div class="form-group">
+                            <label for="audit-aggregate-retention-days">聚合数据保留天数:</label>
+                            <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="输入天数 (1-3650)">
+                        </div>
+                        <div class="form-group">
+                            <label for="audit-max-disk-size">存储空间上限 (MB):</label>
+                            <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="输入大小 (1-10240)">
+                        </div>
                         <button type="submit" class="button primary" data-default-text="保存策略"><span>保存策略</span></button>
                     </form>
                     <div class="control-item tip-inline" style="margin-top: -0.25rem;">

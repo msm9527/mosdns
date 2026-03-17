@@ -421,6 +421,22 @@ func baseMigrations() []Migration {
 				DROP TABLE IF EXISTS generated_dataset;
 			`,
 		},
+		{
+			ID: "0017_rule_source_status",
+			Up: `
+				CREATE TABLE IF NOT EXISTS rule_source_status (
+					scope TEXT NOT NULL,
+					source_id TEXT NOT NULL,
+					rule_count INTEGER NOT NULL DEFAULT 0,
+					last_updated_unix_ms INTEGER NOT NULL DEFAULT 0,
+					last_error TEXT NOT NULL DEFAULT '',
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (scope, source_id)
+				);
+				CREATE INDEX IF NOT EXISTS idx_rule_source_status_scope
+				ON rule_source_status(scope, updated_at_unix_ms DESC);
+			`,
+		},
 	}
 }
 

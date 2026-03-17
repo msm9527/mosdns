@@ -31,7 +31,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/netlist"
@@ -134,13 +133,6 @@ func NewIPSet(bp *coremain.BP, args *Args) (*IPSet, error) {
 	}
 
 	p.rebuildSnapshot()
-
-	// 提示回收解析期间产生的临时对象
-	go func() {
-		time.Sleep(1 * time.Second)
-		coremain.ManualGC()
-	}()
-
 	return p, nil
 }
 
@@ -197,12 +189,6 @@ func (d *IPSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []corema
 	d.otherSets = otherSets
 	d.rebuildSnapshot()
 	d.mutex.Unlock()
-
-	go func() {
-		time.Sleep(1 * time.Second)
-		coremain.ManualGC()
-	}()
-
 	return nil
 }
 
@@ -254,7 +240,6 @@ func (d *IPSet) ReplaceListRuntime(ctx context.Context, values []string) (int, e
 		return 0, err
 	}
 
-	coremain.ManualGC()
 	return d.list.Len(), nil
 }
 

@@ -1,0 +1,52 @@
+# 用户自定义广告拦截规则源
+#
+# 这是“广告拦截”入口的长期配置真源。
+# - 前端规则管理页保存后会直接改这个文件，并立即热重载相关插件。
+# - 你也可以手工修改这个文件，然后重启 mosdns 生效。
+# - 数据库只保留运行态元数据，例如 rule_count / last_updated / last_error。
+# - 原始规则文件保留在 config/adguard/ 目录；这里不再混入运行态统计字段。
+#
+# 字段说明：
+# - id: 规则源唯一标识，只允许使用字母、数字、下划线和中划线。
+# - name: Web UI 显示名称。
+# - enabled: 是否启用该规则源。
+# - behavior: 广告入口允许 adguard / domain 两种语义。
+# - match_mode: 广告入口允许 adguard_native / domain_set。
+# - format: 原始文件格式，例如 rules / list / txt / json / yaml。
+# - source_kind: local / remote。
+# - path: 原始文件相对 config 根目录的路径，建议保留在 adguard/ 目录下。
+# - url: 仅 remote 源需要填写。
+# - auto_update: 仅 remote 源有效，表示是否允许后台自动更新。
+# - update_interval_hours: 仅 remote 源有效，自动更新间隔（小时）。
+
+sources:
+    - id: httpdns
+      name: HttpDNS
+      enabled: true
+      behavior: adguard
+      match_mode: adguard_native
+      format: rules
+      source_kind: remote
+      path: adguard/httpdns.rules
+      url: https://raw.githubusercontent.com/yyysuo/firetv/refs/heads/master/httpdns.txt
+      update_interval_hours: 24
+    - id: pcdn1
+      name: PCDN Filter 1
+      enabled: true
+      behavior: adguard
+      match_mode: adguard_native
+      format: rules
+      source_kind: remote
+      path: adguard/pcdn1.rules
+      url: https://thhbdd.github.io/Block-pcdn-domains/ban.txt
+      update_interval_hours: 24
+    - id: pcdn2
+      name: PCDN Filter 2
+      enabled: true
+      behavior: adguard
+      match_mode: adguard_native
+      format: rules
+      source_kind: remote
+      path: adguard/pcdn2.rules
+      url: https://cdn.jsdelivr.net/gh/susetao/PCDNFilter-CHN-@main/PCDNFilter.txt
+      update_interval_hours: 24

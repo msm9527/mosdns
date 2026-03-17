@@ -50,13 +50,16 @@ type DomainMapper struct {
 	baseArgs    *Args
 	logger      *zap.Logger
 	matcher     atomic.Value
+	hotLookup   atomic.Value
 	updateMu    sync.Mutex
+	hotMu       sync.Mutex
 	updateTimer *time.Timer
 	ruleConfigs []RuleConfig
 	defaultMark uint8
 	defaultTag  string
 	providers   map[string]data_provider.RuleExporter
 	subscribed  map[string]bool
+	hotRules    map[string]map[string]struct{}
 }
 
 var _ sequence.Executable = (*DomainMapper)(nil)
@@ -102,6 +105,7 @@ func NewMapper(bp *coremain.BP, args any) (any, error) {
 		subscribed:  make(map[string]bool),
 	}
 	dm.matcher.Store(domain.NewMixMatcher[*MatchResult]())
+	dm.hotLookup.Store(make(map[string]*MatchResult))
 
 	if err := dm.reloadFromConfig(cfg); err != nil {
 		return nil, err
@@ -159,6 +163,9 @@ func (dm *DomainMapper) subscribeProvider(tag string, exporter data_provider.Rul
 	dm.subscribed[tag] = true
 	exporter.Subscribe(func() {
 		dm.logger.Info("upstream rule provider updated", zap.String("plugin", tag))
+		if err := dm.refreshProviderHotRules(tag, exporter); err != nil {
+			dm.logger.Warn("domain_mapper refresh provider hot rules failed", zap.String("plugin", tag), zap.Error(err))
+		}
 		dm.triggerUpdate()
 	})
 }
@@ -261,11 +268,6 @@ func (dm *DomainMapper) rebuild() {
 		zap.Int("rules", totalRules),
 		zap.Int("pooled_results", len(pool)),
 		zap.Duration("duration", time.Since(start)))
-
-	go func() {
-		time.Sleep(3 * time.Second)
-		coremain.ManualGC()
-	}()
 }
 
 func normalizeRuleKey(rule string) string {
@@ -315,9 +317,15 @@ func (dm *DomainMapper) reloadFromConfig(cfg *Args) error {
 	dm.defaultMark = cfg.DefaultMark
 	dm.defaultTag = cfg.DefaultTag
 	dm.providers = providers
+	if dm.hotRules == nil {
+		dm.hotRules = make(map[string]map[string]struct{})
+	}
 
 	for tag, exporter := range providers {
 		dm.subscribeProvider(tag, exporter)
+	}
+	if err := dm.replaceHotRulesFromProviders(providers); err != nil {
+		return err
 	}
 
 	dm.rebuild()
@@ -333,8 +341,7 @@ func (dm *DomainMapper) ReloadControlConfig(global *coremain.GlobalOverrides, _ 
 }
 
 func (dm *DomainMapper) FastMatch(qname string) ([]uint8, string, bool) {
-	matcher := dm.matcher.Load().(*domain.MixMatcher[*MatchResult])
-	result, ok := matcher.Match(qname)
+	result, ok := dm.match(qname)
 	if ok && result != nil {
 		return result.Marks, result.JoinedTags, true
 	}
@@ -359,9 +366,7 @@ func (dm *DomainMapper) Exec(ctx context.Context, qCtx *query_context.Context) e
 		qname = q.Question[0].Name
 	}
 
-	matcher := dm.matcher.Load().(*domain.MixMatcher[*MatchResult])
-
-	result, ok := matcher.Match(qname)
+	result, ok := dm.match(qname)
 	if ok && result != nil {
 		for _, mark := range result.Marks {
 			qCtx.SetFastFlag(mark)
@@ -397,8 +402,7 @@ func (dm *DomainMapper) GetFastExec() func(ctx context.Context, qCtx *query_cont
 			qname = q.Question[0].Name
 		}
 
-		matcher := dm.matcher.Load().(*domain.MixMatcher[*MatchResult])
-		result, ok := matcher.Match(qname)
+		result, ok := dm.match(qname)
 		if ok && result != nil {
 			for _, mark := range result.Marks {
 				qCtx.SetFastFlag(mark)
