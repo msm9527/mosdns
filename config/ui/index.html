@@ -1032,12 +1032,11 @@
                                 <path
                                     d="M11.25 4.53335C11.6642 4.44457 12.0858 4.44457 12.5 4.53335C17.1524 5.54133 21 9.80443 21 14.6465C21 19.9806 16.9706 22 12 22C7.02944 22 3 19.9806 3 14.6465C3 9.80443 6.84759 5.54133 11.25 4.53335ZM12 2C6.47715 2 2 7.02165 2 14.6465C2 21.4939 6.27609 24 12 24C17.7239 24 22 21.4939 22 14.6465C22 7.02165 17.5228 2 12 2Z">
                                 </path>
-                            </svg><span>当前窗口请求数</span></h3>
+                            </svg><span>总请求数</span></h3>
                         <div class="stat-card-main">
                             <div id="total-queries" class="value">--</div>
                             <span id="total-queries-change" class="stat-change" style="visibility: hidden;"></span>
                         </div>
-                        <div class="sparkline-container" id="sparkline-total"></div>
                     </div>
                 </div>
                 <div class="stat-card theme-gradient">
@@ -1056,12 +1055,11 @@
                                 <path
                                     d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM12 20C16.4183 20 20 16.4183 20 12C20 7.58172 16.4183 4 12 4C7.58172 4 4 7.58172 4 12C4 16.4183 7.58172 20 12 20ZM11 7H13V12L16.5 15.5L15.0858 16.9142L11 12.8284V7Z">
                                 </path>
-                            </svg><span>当前窗口平均处理时间 (ms)</span></h3>
+                            </svg><span>总平均处理时间 (ms)</span></h3>
                         <div class="stat-card-main">
-                            <div id="avg-duration" class="value">--</div>
-                            <span id="avg-duration-change" class="stat-change" style="visibility: hidden;"></span>
+                            <div id="total-avg-duration" class="value">--</div>
+                            <span id="total-avg-duration-change" class="stat-change" style="visibility: hidden;"></span>
                         </div>
-                        <div class="sparkline-container" id="sparkline-avg"></div>
                     </div>
                 </div>
             </div>
@@ -1368,33 +1366,38 @@
         <section id="system-control-tab" class="tab-content">
             <div class="control-panel-grid">
                 <!-- Row 1 -->
-                <div class="control-module control-module--mini">
+                <div class="control-module control-module--mini" id="audit-runtime-module">
                     <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
                             <path
                                 d="M19 3H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm-9 14l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z">
                             </path>
-                        </svg>审计控制</h3>
+                        </svg>审计采集</h3>
                     <div class="control-item">
                         <strong>运行状态:</strong> <span id="audit-status">查询中...</span>
                     </div>
+                    <div class="control-item">
+                        <strong>写入队列:</strong> <span id="audit-queue-depth">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>存储状态:</strong> <span id="audit-degraded-state">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>窗口内丢弃:</strong> <span id="audit-dropped-events">查询中...</span>
+                    </div>
+                    <p class="module-desc" style="margin: 0.75rem 0 1rem;">这里反映的是当前采集链路是否健康，包含写入队列和降级/丢弃状态。</p>
                     <div class="button-group">
                         <button id="toggle-audit-btn" class="button primary" disabled
                             data-default-text="请稍后"><span>请稍后</span></button>
-                        <button id="clear-audit-btn" class="button danger"
-                            data-default-text="清空日志"><span>清空日志</span></button>
                     </div>
                 </div>
-                <div class="control-module control-module--mini">
+                <div class="control-module control-module--mini" id="audit-storage-module">
                     <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
                             <path
                                 d="M2 20h20v-4H2v4zm2-3h2v2H4v-2zM2 4v4h20V4H2zm4 3H4V5h2v2zm-4 7h20v-4H2v4zm2-3h2v2H4v-2z">
                             </path>
-                        </svg>审计存储</h3>
+                        </svg>存储策略</h3>
                     <div class="control-item">
-                        <strong>概览窗口:</strong> <span id="audit-capacity">查询中...</span>
-                    </div>
-                    <div class="control-item">
-                        <strong>原始日志保留:</strong> <span id="audit-current-count">查询中...</span>
+                        <strong>原始日志保留:</strong> <span id="audit-raw-retention">查询中...</span>
                     </div>
                     <div class="control-item">
                         <strong>聚合保留:</strong> <span id="audit-aggregate-retention">查询中...</span>
@@ -1402,12 +1405,14 @@
                     <div class="control-item">
                         <strong>当前存储占用:</strong> <span id="audit-disk-usage">查询中...</span>
                     </div>
-                    <form id="capacity-form">
-                        <input type="number" id="new-capacity" required min="1" max="86400" placeholder="概览窗口(秒)">
+                    <div class="control-item">
+                        <strong>存储上限:</strong> <span id="audit-storage-limit">查询中...</span>
+                    </div>
+                    <form id="audit-storage-form">
                         <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="原始保留(天)">
                         <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="聚合保留(天)">
                         <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="存储上限(MB)">
-                        <button type="submit" class="button primary" data-default-text="设置"><span>设置</span></button>
+                        <button type="submit" class="button primary" data-default-text="保存策略"><span>保存策略</span></button>
                     </form>
                     <div class="control-item tip-inline" style="margin-top: -0.25rem;">
                         <span class="info-inline" aria-hidden="true">
@@ -1418,7 +1423,47 @@
                                 </path>
                             </svg>
                         </span>
-                        <small class="tip-text">概览窗口、原始日志保留、聚合保留和存储上限保存后立即生效，无需重启；原始日志与聚合统计都会按策略自动清理。</small>
+                        <small class="tip-text">这里只控制数据保留策略和空间上限；原始日志与聚合统计都会按策略自动清理。</small>
+                    </div>
+                </div>
+                <div class="control-module control-module--mini" id="audit-overview-module">
+                    <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                            <path
+                                d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM11 7H13V13H11V7ZM11 15H13V17H11V15Z">
+                            </path>
+                        </svg>概览口径</h3>
+                    <div class="control-item">
+                        <strong>概览窗口:</strong> <span id="audit-capacity">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>首页与趋势:</strong> <span id="audit-overview-scope">查询中...</span>
+                    </div>
+                    <form id="audit-overview-form">
+                        <input type="number" id="audit-overview-window-input" required min="1" max="86400" placeholder="概览窗口(秒)">
+                        <button type="submit" class="button primary" data-default-text="更新口径"><span>更新口径</span></button>
+                    </form>
+                    <div class="control-item tip-inline" style="margin-top: -0.25rem;">
+                        <span class="info-inline" aria-hidden="true">
+                            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" width="14"
+                                height="14">
+                                <path
+                                    d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm-1-13h2v2h-2V7zm0 4h2v6h-2v-6z">
+                                </path>
+                            </svg>
+                        </span>
+                        <small class="tip-text">概览窗口只影响首页和概览趋势口径，不影响原始日志保留时长。</small>
+                    </div>
+                </div>
+                <div class="control-module control-module--mini" id="audit-danger-module">
+                    <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                            <path
+                                d="M12 2C17.5228 2 22 6.47715 22 12C22 17.5228 17.5228 22 12 22C6.47715 22 2 17.5228 2 12C2 6.47715 6.47715 2 12 2ZM11 7H13V13H11V7ZM11 15H13V17H11V15Z">
+                            </path>
+                        </svg>危险操作</h3>
+                    <p class="module-desc" style="margin: 0 0 1rem;">清空操作会同时删除原始日志、分钟/小时聚合和实时窗口，且不可恢复。</p>
+                    <div class="button-group">
+                        <button id="clear-audit-btn" class="button danger"
+                            data-default-text="清空全部审计数据"><span>清空全部审计数据</span></button>
                     </div>
                 </div>
                 <div class="control-module control-module--mini" id="auto-refresh-module">
@@ -1426,9 +1471,9 @@
                             <path
                                 d="M12 2.5C12.4142 2.5 12.75 2.83579 12.75 3.25V5.03131C15.2635 5.50376 17.25 7.49021 17.7224 9.99993H19.5C19.9142 9.99993 20.25 10.3357 20.25 10.75V13.25C20.25 13.6642 19.9142 14 19.5 14H17.7224C17.25 16.5097 15.2635 18.4962 12.75 18.9686V20.75C12.75 21.1642 12.4142 21.5 12 21.5C11.5858 21.5 11.25 21.1642 11.25 20.75V18.9686C8.73652 18.4962 6.75 16.5097 6.27758 14H4.5C4.08579 14 3.75 13.6642 3.75 13.25V10.75C3.75 10.3357 4.08579 9.99993 4.5 9.99993H6.27758C6.75 7.49021 8.73652 5.50376 11.25 5.03131V3.25C11.25 2.83579 11.5858 2.5 12 2.5ZM12 7C9.23858 7 7 9.23858 7 12C7 14.7614 9.23858 17 12 17C14.7614 17 17 14.7614 17 12C17 9.23858 14.7614 7 12 7Z">
                             </path>
-                        </svg>自动刷新</h3>
+                        </svg>页面刷新</h3>
                     <div class="control-item">
-                        <strong>启用状态</strong>
+                        <strong>自动刷新</strong>
                         <label class="switch" style="margin-left:auto;">
                             <input type="checkbox" id="auto-refresh-toggle">
                             <span class="slider"></span>
@@ -1443,6 +1488,7 @@
                             <span style="color: var(--color-text-secondary); font-size: 0.9rem;">秒</span>
                         </form>
                     </div>
+                    <p class="module-desc" style="margin: 0.75rem 0 0;">这是当前浏览器页面的本地偏好，只影响 Web UI，不会写入服务端配置。</p>
                 </div>
                 <div class="control-module control-module--mini" id="appearance-module">
                     <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">

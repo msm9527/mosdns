@@ -32,8 +32,8 @@ function closeAndUnlock(dialogElement) {
 
 
 document.addEventListener('DOMContentLoaded', () => {
-    const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: { query: '', exact: false }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440, AUDIT_WINDOW_MIN: 1, AUDIT_WINDOW_MAX: 86400, AUDIT_RAW_RETENTION_MAX: 365, AUDIT_AGG_RETENTION_MAX: 3650, AUDIT_STORAGE_MAX_MB: 10240 };
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: { query: '', exact: false }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const actionLocks = new Set();
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
@@ -47,11 +47,15 @@ document.addEventListener('DOMContentLoaded', () => {
         independentChartPanel: document.getElementById('independent-chart-panel'),
         bigSparklineMerged: document.getElementById('big-sparkline-merged'), lastUpdated: document.getElementById('last-updated'),
         autoRefreshToggle: document.getElementById('auto-refresh-toggle'), autoRefreshIntervalInput: document.getElementById('auto-refresh-interval'), autoRefreshForm: document.getElementById('auto-refresh-form'),
-        totalQueries: document.getElementById('total-queries'), avgDuration: document.getElementById('avg-duration'),
-        totalQueriesChange: document.getElementById('total-queries-change'), avgDurationChange: document.getElementById('avg-duration-change'),
-        sparklineTotal: document.getElementById('sparkline-total'), sparklineAvg: document.getElementById('sparkline-avg'),
+        totalQueries: document.getElementById('total-queries'), totalAvgDuration: document.getElementById('total-avg-duration'), recentQueries: document.getElementById('recent-queries'), recentAvgDuration: document.getElementById('recent-avg-duration'),
+        totalQueriesChange: document.getElementById('total-queries-change'), totalAvgDurationChange: document.getElementById('total-avg-duration-change'), recentQueriesChange: document.getElementById('recent-queries-change'), recentAvgDurationChange: document.getElementById('recent-avg-duration-change'),
+        recentQueriesLabel: document.getElementById('recent-queries-label'), recentAvgLabel: document.getElementById('recent-avg-label'),
+        sparklineRecentQueries: document.getElementById('sparkline-recent-queries'), sparklineRecentAvg: document.getElementById('sparkline-recent-avg'),
         auditStatus: document.getElementById('audit-status'), toggleAuditBtn: document.getElementById('toggle-audit-btn'), clearAuditBtn: document.getElementById('clear-audit-btn'),
-        auditCapacity: document.getElementById('audit-capacity'), auditCurrentCount: document.getElementById('audit-current-count'), auditAggregateRetention: document.getElementById('audit-aggregate-retention'), auditDiskUsage: document.getElementById('audit-disk-usage'), capacityForm: document.getElementById('capacity-form'), newCapacityInput: document.getElementById('new-capacity'),
+        auditQueueDepth: document.getElementById('audit-queue-depth'), auditDegradedState: document.getElementById('audit-degraded-state'), auditDroppedEvents: document.getElementById('audit-dropped-events'),
+        auditCapacity: document.getElementById('audit-capacity'), auditOverviewScope: document.getElementById('audit-overview-scope'),
+        auditRawRetention: document.getElementById('audit-raw-retention'), auditAggregateRetention: document.getElementById('audit-aggregate-retention'), auditDiskUsage: document.getElementById('audit-disk-usage'), auditStorageLimit: document.getElementById('audit-storage-limit'),
+        auditStorageForm: document.getElementById('audit-storage-form'), auditOverviewForm: document.getElementById('audit-overview-form'), auditOverviewWindowInput: document.getElementById('audit-overview-window-input'),
         auditRetentionDaysInput: document.getElementById('audit-retention-days'), auditAggregateRetentionDaysInput: document.getElementById('audit-aggregate-retention-days'), auditMaxDiskSizeInput: document.getElementById('audit-max-disk-size'),
         cacheStatsTbody: document.getElementById('cache-stats-tbody'),
         topDomainsBody: document.getElementById('top-domains-body'), topClientsBody: document.getElementById('top-clients-body'), slowestQueriesBody: document.getElementById('slowest-queries-body'),
@@ -286,6 +290,9 @@ document.addEventListener('DOMContentLoaded', () => {
         isBusyButton(target) { const button = target?.closest?.('button, input[type="button"], input[type="submit"]'); return Boolean(button && (button.disabled || button.getAttribute('aria-busy') === 'true' || button.dataset.inflight === 'true')); },
         async runExclusive(lockKey, action) { if (!lockKey) return await action(); if (actionLocks.has(lockKey)) return; actionLocks.add(lockKey); try { return await action(); } finally { actionLocks.delete(lockKey); } },
         setLoading(button, isLoading) { if (!button) return; const textSpan = button.querySelector('span'); button.disabled = isLoading; button.setAttribute('aria-busy', String(isLoading)); if (isLoading) { button.dataset.inflight = 'true'; } else { delete button.dataset.inflight; } if (textSpan) { if (isLoading) { if (!button.dataset.defaultText) { button.dataset.defaultText = textSpan.textContent; } textSpan.textContent = '处理中...'; } else { if (button.dataset.defaultText) { textSpan.textContent = button.dataset.defaultText; } } } },
+        setText(element, text) {
+            if (element) element.textContent = text;
+        },
         updateStatus(isCapturing) {
             if (!elements.toggleAuditBtn || !elements.auditStatus) return;
             this.setLoading(elements.toggleAuditBtn, false);
@@ -314,24 +321,33 @@ document.addEventListener('DOMContentLoaded', () => {
             if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
             return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
         },
-        updateCapacity(settings) {
-            if (elements.auditCapacity) {
-                elements.auditCapacity.textContent = settings?.overview_window_seconds != null ? `${settings.overview_window_seconds.toLocaleString()} 秒` : '查询失败';
+        formatOverviewWindowPhrase(windowSeconds) {
+            const seconds = Number(windowSeconds || 60);
+            if (seconds === 60) return '近 1 分钟';
+            if (seconds % 3600 === 0) return `近 ${seconds / 3600} 小时`;
+            if (seconds % 60 === 0) return `近 ${seconds / 60} 分钟`;
+            return `近 ${seconds} 秒`;
+        },
+        updateAuditRuntime(overview, settings) {
+            const queueDepth = settings?.queue_depth ?? overview?.queue_depth;
+            const degraded = settings?.degraded ?? overview?.degraded;
+            const droppedEvents = overview?.dropped_events;
+            this.setText(elements.auditQueueDepth, Number.isFinite(queueDepth) ? `${queueDepth.toLocaleString()} 条` : '查询失败');
+            this.setText(elements.auditDroppedEvents, Number.isFinite(droppedEvents) ? `${droppedEvents.toLocaleString()} 条` : '查询失败');
+            if (!elements.auditDegradedState) return;
+            if (typeof degraded !== 'boolean') {
+                elements.auditDegradedState.textContent = '查询失败';
+                elements.auditDegradedState.style.color = 'var(--color-text-secondary)';
+                return;
             }
-            if (elements.auditCurrentCount) {
-                elements.auditCurrentCount.textContent = settings?.raw_retention_days != null ? `${settings.raw_retention_days.toLocaleString()} 天` : '查询失败';
-            }
-            if (elements.auditAggregateRetention) {
-                elements.auditAggregateRetention.textContent = settings?.aggregate_retention_days != null ? `${settings.aggregate_retention_days.toLocaleString()} 天` : '查询失败';
-            }
-            if (elements.auditDiskUsage) {
-                const current = this.formatBytes(settings?.current_storage_bytes);
-                const limit = settings?.max_storage_mb != null ? ` / ${settings.max_storage_mb.toLocaleString()} MB` : '';
-                elements.auditDiskUsage.textContent = `${current}${limit}`;
-            }
-            if (elements.newCapacityInput && settings?.overview_window_seconds != null) {
-                elements.newCapacityInput.value = settings.overview_window_seconds;
-            }
+            elements.auditDegradedState.textContent = degraded ? '降级中' : '正常';
+            elements.auditDegradedState.style.color = degraded ? 'var(--color-warning)' : 'var(--color-success)';
+        },
+        updateAuditStorage(settings) {
+            this.setText(elements.auditRawRetention, settings?.raw_retention_days != null ? `${settings.raw_retention_days.toLocaleString()} 天` : '查询失败');
+            this.setText(elements.auditAggregateRetention, settings?.aggregate_retention_days != null ? `${settings.aggregate_retention_days.toLocaleString()} 天` : '查询失败');
+            this.setText(elements.auditDiskUsage, this.formatBytes(settings?.current_storage_bytes));
+            this.setText(elements.auditStorageLimit, settings?.max_storage_mb != null ? `${settings.max_storage_mb.toLocaleString()} MB` : '查询失败');
             if (elements.auditRetentionDaysInput && settings?.raw_retention_days != null) {
                 elements.auditRetentionDaysInput.value = settings.raw_retention_days;
             }
@@ -341,21 +357,47 @@ document.addEventListener('DOMContentLoaded', () => {
             if (elements.auditMaxDiskSizeInput && settings?.max_storage_mb != null) {
                 elements.auditMaxDiskSizeInput.value = settings.max_storage_mb;
             }
-            if (elements.capacityForm) {
-                elements.capacityForm.dataset.queueDepth = String(settings?.queue_depth || 0);
-                elements.capacityForm.dataset.degraded = settings?.degraded ? 'true' : 'false';
+        },
+        updateAuditOverviewScope(settings, overview) {
+            const windowSeconds = settings?.overview_window_seconds ?? overview?.window_seconds;
+            this.setText(elements.auditCapacity, windowSeconds != null ? `${windowSeconds.toLocaleString()} 秒` : '查询失败');
+            this.setText(elements.auditOverviewScope, windowSeconds != null ? `首页概览与趋势使用${this.formatOverviewWindowPhrase(windowSeconds)}实时窗口` : '查询失败');
+            if (elements.auditOverviewWindowInput && windowSeconds != null) {
+                elements.auditOverviewWindowInput.value = windowSeconds;
+            }
+        },
+        formatOverviewWindowLabel(windowSeconds, suffix) {
+            return `${this.formatOverviewWindowPhrase(windowSeconds)}${suffix}`;
+        },
+        updateOverviewLabels(windowSeconds) {
+            if (elements.recentQueriesLabel) {
+                elements.recentQueriesLabel.textContent = this.formatOverviewWindowLabel(windowSeconds, '请求数');
+            }
+            if (elements.recentAvgLabel) {
+                elements.recentAvgLabel.textContent = this.formatOverviewWindowLabel(windowSeconds, '平均处理时间 (ms)');
             }
         },
         updateOverviewStats() {
-            const { totalQueries, avgDuration } = state.data;
+            const {
+                totalQueries,
+                totalAvgDuration,
+                recentQueries,
+                recentAvgDuration
+            } = state.data;
+            this.updateOverviewLabels(state.auditOverview?.window_seconds || state.auditSettings?.overview_window_seconds || 60);
+
             animateValue(elements.totalQueries, totalQueries.previous, totalQueries.current, CONSTANTS.ANIMATION_DURATION);
-            animateValue(elements.avgDuration, avgDuration.previous, avgDuration.current, CONSTANTS.ANIMATION_DURATION, 2);
+            animateValue(elements.totalAvgDuration, totalAvgDuration.previous, totalAvgDuration.current, CONSTANTS.ANIMATION_DURATION, 2);
+            animateValue(elements.recentQueries, recentQueries.previous, recentQueries.current, CONSTANTS.ANIMATION_DURATION);
+            animateValue(elements.recentAvgDuration, recentAvgDuration.previous, recentAvgDuration.current, CONSTANTS.ANIMATION_DURATION, 2);
             updateStatChange(elements.totalQueriesChange, totalQueries.previous, totalQueries.current);
-            updateStatChange(elements.avgDurationChange, avgDuration.previous, avgDuration.current, true);
+            updateStatChange(elements.totalAvgDurationChange, totalAvgDuration.previous, totalAvgDuration.current, true);
+            updateStatChange(elements.recentQueriesChange, recentQueries.previous, recentQueries.current);
+            updateStatChange(elements.recentAvgDurationChange, recentAvgDuration.previous, recentAvgDuration.current, true);
 
             // Standard small charts
-            if (elements.sparklineTotal) elements.sparklineTotal.innerHTML = generateSparklineSVG(state.history.totalQueries);
-            if (elements.sparklineAvg) elements.sparklineAvg.innerHTML = generateSparklineSVG(state.history.avgDuration, true);
+            if (elements.sparklineRecentQueries) elements.sparklineRecentQueries.innerHTML = generateSparklineSVG(state.history.totalQueries);
+            if (elements.sparklineRecentAvg) elements.sparklineRecentAvg.innerHTML = generateSparklineSVG(state.history.avgDuration, true);
 
             // Independent mode merged big chart
             const isIndependent = document.querySelector('.stats-grid')?.classList.contains('independent-mode');
@@ -1599,7 +1641,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const animateValue = (element, start, end, duration, decimals = 0) => { if (!element || start === null || end === null) return; if (start === end) { element.textContent = (decimals > 0 ? parseFloat(end).toFixed(decimals) : Math.floor(end).toLocaleString()); return; } let startTimestamp = null; const step = (timestamp) => { if (!startTimestamp) startTimestamp = timestamp; const progress = Math.min((timestamp - startTimestamp) / duration, 1); const current = start + progress * (end - start); element.textContent = (decimals > 0 ? parseFloat(current).toFixed(decimals) : Math.floor(current).toLocaleString()); if (progress < 1) window.requestAnimationFrame(step); }; window.requestAnimationFrame(step); };
-    const updateStatChange = (element, prev, curr, isTime = false) => { if (prev === null || curr === null || prev === 0) { element.style.visibility = 'hidden'; return; } const diff = curr - prev; const change = (diff / prev) * 100; if (Math.abs(change) < 0.1) { element.style.visibility = 'hidden'; return; } const direction = isTime ? (diff < 0 ? 'up' : 'down') : (diff > 0 ? 'up' : 'down'); const icon = direction === 'up' ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8L18 14H6L12 8Z"></path></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 16L6 10H18L12 16Z"></path></svg>'; element.className = `stat-change ${direction}`; element.innerHTML = `${icon} ${Math.abs(change).toFixed(1)}%`; element.style.visibility = 'visible'; };
+    const updateStatChange = (element, prev, curr, isTime = false) => { if (!element) return; if (prev === null || curr === null || prev === 0) { element.style.visibility = 'hidden'; return; } const diff = curr - prev; const change = (diff / prev) * 100; if (Math.abs(change) < 0.1) { element.style.visibility = 'hidden'; return; } const direction = isTime ? (diff < 0 ? 'up' : 'down') : (diff > 0 ? 'up' : 'down'); const icon = direction === 'up' ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8L18 14H6L12 8Z"></path></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 16L6 10H18L12 16Z"></path></svg>'; element.className = `stat-change ${direction}`; element.innerHTML = `${icon} ${Math.abs(change).toFixed(1)}%`; element.style.visibility = 'visible'; };
     const setupGlowEffect = () => { elements.container?.addEventListener('mousemove', (e) => { const card = e.target.closest('.card:not(dialog)'); if (card) { const rect = card.getBoundingClientRect(); card.style.setProperty('--glow-x', `${e.clientX - rect.left}px`); card.style.setProperty('--glow-y', `${e.clientY - rect.top}px`); } }); };
 
     // 双波段图表生成器 (独立模式使用 - 增强版)
@@ -1880,15 +1922,24 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.auditOverview = overviewRes.value;
             }
 
-            ui.updateStatus(settingsRes.status === 'fulfilled' ? settingsRes.value?.enabled : null);
-            ui.updateCapacity(settingsRes.status === 'fulfilled' ? settingsRes.value : null);
+            const auditSettings = settingsRes.status === 'fulfilled' ? settingsRes.value : null;
+            const auditOverview = overviewRes.status === 'fulfilled' ? overviewRes.value : null;
+
+            ui.updateStatus(auditSettings?.enabled ?? null);
+            ui.updateAuditRuntime(auditOverview, auditSettings);
+            ui.updateAuditStorage(auditSettings);
+            ui.updateAuditOverviewScope(auditSettings, auditOverview);
 
             if (overviewRes.status === 'fulfilled' && overviewRes.value) {
                 const overview = overviewRes.value;
-                state.data.totalQueries.previous = state.data.totalQueries.current === null ? overview.query_count : state.data.totalQueries.current;
-                state.data.avgDuration.previous = state.data.avgDuration.current === null ? overview.average_duration_ms : state.data.avgDuration.current;
-                state.data.totalQueries.current = overview.query_count;
-                state.data.avgDuration.current = overview.average_duration_ms;
+                state.data.totalQueries.previous = state.data.totalQueries.current === null ? overview.total_query_count : state.data.totalQueries.current;
+                state.data.totalAvgDuration.previous = state.data.totalAvgDuration.current === null ? overview.total_average_duration_ms : state.data.totalAvgDuration.current;
+                state.data.recentQueries.previous = state.data.recentQueries.current === null ? overview.query_count : state.data.recentQueries.current;
+                state.data.recentAvgDuration.previous = state.data.recentAvgDuration.current === null ? overview.average_duration_ms : state.data.recentAvgDuration.current;
+                state.data.totalQueries.current = overview.total_query_count;
+                state.data.totalAvgDuration.current = overview.total_average_duration_ms;
+                state.data.recentQueries.current = overview.query_count;
+                state.data.recentAvgDuration.current = overview.average_duration_ms;
             }
 
             if (timeseriesRes.status === 'fulfilled') {
@@ -4238,17 +4289,27 @@ renderReplacementsTable() {
         [elements.autoRefreshToggle, elements.autoRefreshIntervalInput].forEach(el => el && el.addEventListener('change', () => { const enabled = elements.autoRefreshToggle.checked; elements.autoRefreshIntervalInput.disabled = !enabled; autoRefreshManager.updateSettings(enabled, parseInt(elements.autoRefreshIntervalInput.value, 10) || 15); }));
         document.addEventListener('visibilitychange', () => document.hidden ? autoRefreshManager.stop() : autoRefreshManager.start());
 
+        const ensureAuditSettings = async () => {
+            if (!state.auditSettings) {
+                state.auditSettings = await api.audit.getSettings();
+            }
+            return state.auditSettings;
+        };
+
+        const saveAuditSettings = async (patch) => {
+            const currentSettings = await ensureAuditSettings();
+            const nextSettings = await api.audit.updateSettings({ ...currentSettings, ...patch });
+            state.auditSettings = nextSettings;
+            return nextSettings;
+        };
+
+        const isValidAuditNumber = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+
         elements.toggleAuditBtn?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             ui.setLoading(btn, true);
             try {
-                if (!state.auditSettings) {
-                    state.auditSettings = await api.audit.getSettings();
-                }
-                await api.audit.updateSettings({
-                    ...state.auditSettings,
-                    enabled: !state.isCapturing
-                });
+                await saveAuditSettings({ enabled: !state.isCapturing });
                 await updatePageData(true);
             } catch (error) {
                 console.error("操作失败:", error);
@@ -4273,47 +4334,55 @@ renderReplacementsTable() {
             }
         });
 
-        elements.capacityForm?.addEventListener('submit', async (e) => {
+        elements.auditStorageForm?.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const overviewWindowSeconds = parseInt(elements.newCapacityInput.value, 10);
             const rawRetentionDays = parseInt(elements.auditRetentionDaysInput.value, 10);
             const aggregateRetentionDays = parseInt(elements.auditAggregateRetentionDaysInput.value, 10);
             const maxStorageMB = parseInt(elements.auditMaxDiskSizeInput.value, 10);
-            if (!overviewWindowSeconds || overviewWindowSeconds <= 0 || overviewWindowSeconds > 86400) {
-                ui.showToast('请输入1到86400之间的有效概览窗口秒数', 'error');
+            if (!isValidAuditNumber(rawRetentionDays, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_RAW_RETENTION_MAX)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_RAW_RETENTION_MAX}之间的有效原始日志保留天数`, 'error');
                 return;
             }
-            if (!rawRetentionDays || rawRetentionDays <= 0 || rawRetentionDays > 365) {
-                ui.showToast('请输入1到365之间的有效原始日志保留天数', 'error');
+            if (!isValidAuditNumber(aggregateRetentionDays, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_AGG_RETENTION_MAX)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_AGG_RETENTION_MAX}之间的有效聚合保留天数`, 'error');
                 return;
             }
-            if (!aggregateRetentionDays || aggregateRetentionDays <= 0 || aggregateRetentionDays > 3650) {
-                ui.showToast('请输入1到3650之间的有效聚合保留天数', 'error');
+            if (!isValidAuditNumber(maxStorageMB, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_STORAGE_MAX_MB)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_STORAGE_MAX_MB}之间的有效存储上限`, 'error');
                 return;
             }
-            if (!maxStorageMB || maxStorageMB <= 0 || maxStorageMB > 10240) {
-                ui.showToast('请输入1到10240之间的有效存储上限', 'error');
-                return;
-            }
-            if (confirm(`确定要将审计存储设置更新为：\n\n概览窗口：${overviewWindowSeconds.toLocaleString()} 秒\n原始日志保留：${rawRetentionDays} 天\n聚合保留：${aggregateRetentionDays} 天\n存储上限：${maxStorageMB} MB\n\n设置会立即生效，无需重启。超出保留策略或空间上限的旧数据会自动清理。`)) {
+            if (confirm(`确定要更新审计存储策略吗？\n\n原始日志保留：${rawRetentionDays} 天\n聚合保留：${aggregateRetentionDays} 天\n存储上限：${maxStorageMB} MB\n\n设置会立即生效，无需重启。超出保留策略或空间上限的旧数据会自动清理。`)) {
                 const btn = e.currentTarget.querySelector('button');
                 ui.setLoading(btn, true);
                 try {
-                    if (!state.auditSettings) {
-                        state.auditSettings = await api.audit.getSettings();
-                    }
-                    await api.audit.updateSettings({
-                        ...state.auditSettings,
-                        overview_window_seconds: overviewWindowSeconds,
-                        raw_retention_days: rawRetentionDays,
-                        aggregate_retention_days: aggregateRetentionDays,
-                        max_storage_mb: maxStorageMB,
-                    });
-                    ui.showToast('审计设置已立即生效', 'success');
+                    await saveAuditSettings({ raw_retention_days: rawRetentionDays, aggregate_retention_days: aggregateRetentionDays, max_storage_mb: maxStorageMB });
+                    ui.showToast('审计存储策略已立即生效', 'success');
                     if (elements.logSearch) elements.logSearch.value = '';
                     await updatePageData(true);
                 } catch (error) {
-                    console.error("Set audit settings failed:", error);
+                    console.error("Set audit storage settings failed:", error);
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            }
+        });
+
+        elements.auditOverviewForm?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const overviewWindowSeconds = parseInt(elements.auditOverviewWindowInput.value, 10);
+            if (!isValidAuditNumber(overviewWindowSeconds, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_WINDOW_MAX)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_WINDOW_MAX}之间的有效概览窗口秒数`, 'error');
+                return;
+            }
+            if (confirm(`确定要更新概览口径吗？\n\n概览窗口：${overviewWindowSeconds.toLocaleString()} 秒\n\n设置会立即生效，无需重启。首页概览和趋势分析会使用新的实时窗口。`)) {
+                const btn = e.currentTarget.querySelector('button');
+                ui.setLoading(btn, true);
+                try {
+                    await saveAuditSettings({ overview_window_seconds: overviewWindowSeconds });
+                    ui.showToast('概览口径已立即生效', 'success');
+                    await updatePageData(true);
+                } catch (error) {
+                    console.error("Set audit overview settings failed:", error);
                 } finally {
                     ui.setLoading(btn, false);
                 }

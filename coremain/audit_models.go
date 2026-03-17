@@ -49,21 +49,23 @@ type AuditSettings struct {
 }
 
 type AuditOverview struct {
-	Enabled             bool    `json:"enabled"`
-	WindowSeconds       int     `json:"window_seconds"`
-	QueryCount          uint64  `json:"query_count"`
-	QPS                 float64 `json:"qps"`
-	AverageDurationMs   float64 `json:"average_duration_ms"`
-	MaxDurationMs       float64 `json:"max_duration_ms"`
-	ErrorCount          uint64  `json:"error_count"`
-	ErrorRate           float64 `json:"error_rate"`
-	NoResponseCount     uint64  `json:"no_response_count"`
-	CacheHitCount       uint64  `json:"cache_hit_count"`
-	CacheHitRate        float64 `json:"cache_hit_rate"`
-	DroppedEvents       uint64  `json:"dropped_events"`
-	QueueDepth          int     `json:"queue_depth"`
-	Degraded            bool    `json:"degraded"`
-	CurrentStorageBytes int64   `json:"current_storage_bytes"`
+	Enabled                bool    `json:"enabled"`
+	WindowSeconds          int     `json:"window_seconds"`
+	TotalQueryCount        uint64  `json:"total_query_count"`
+	TotalAverageDurationMs float64 `json:"total_average_duration_ms"`
+	QueryCount             uint64  `json:"query_count"`
+	QPS                    float64 `json:"qps"`
+	AverageDurationMs      float64 `json:"average_duration_ms"`
+	MaxDurationMs          float64 `json:"max_duration_ms"`
+	ErrorCount             uint64  `json:"error_count"`
+	ErrorRate              float64 `json:"error_rate"`
+	NoResponseCount        uint64  `json:"no_response_count"`
+	CacheHitCount          uint64  `json:"cache_hit_count"`
+	CacheHitRate           float64 `json:"cache_hit_rate"`
+	DroppedEvents          uint64  `json:"dropped_events"`
+	QueueDepth             int     `json:"queue_depth"`
+	Degraded               bool    `json:"degraded"`
+	CurrentStorageBytes    int64   `json:"current_storage_bytes"`
 }
 
 type AuditTimeseriesPoint struct {

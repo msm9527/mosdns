@@ -120,6 +120,17 @@ func TestSQLiteAuditStorageWritesLogsQueryAndTimeseries(t *testing.T) {
 	if len(rank) == 0 || rank[0].Key == "" {
 		t.Fatalf("unexpected rank result: %+v", rank)
 	}
+
+	totalQueryCount, totalAverageDurationMs, err := storage.QueryOverviewTotals()
+	if err != nil {
+		t.Fatalf("QueryOverviewTotals() error = %v", err)
+	}
+	if totalQueryCount != 3 {
+		t.Fatalf("totalQueryCount = %d, want 3", totalQueryCount)
+	}
+	if totalAverageDurationMs != 5 {
+		t.Fatalf("totalAverageDurationMs = %.2f, want 5", totalAverageDurationMs)
+	}
 }
 
 func testAuditLog(name string, at time.Time, duration float64, rcode, domainSet, cacheStatus string) AuditLog {

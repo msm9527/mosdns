@@ -22,8 +22,14 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	if overview.QueryCount != 3 {
 		t.Fatalf("overview.QueryCount = %d, want 3", overview.QueryCount)
 	}
+	if overview.TotalQueryCount != 3 {
+		t.Fatalf("overview.TotalQueryCount = %d, want 3", overview.TotalQueryCount)
+	}
 	if overview.CacheHitCount != 2 {
 		t.Fatalf("overview.CacheHitCount = %d, want 2", overview.CacheHitCount)
+	}
+	if overview.TotalAverageDurationMs != 5 {
+		t.Fatalf("overview.TotalAverageDurationMs = %.2f, want 5", overview.TotalAverageDurationMs)
 	}
 
 	settings := fetchAuditSettings(t, router)

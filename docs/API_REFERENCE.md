@@ -121,6 +121,8 @@
 {
   "enabled": true,
   "window_seconds": 60,
+  "total_query_count": 982341,
+  "total_average_duration_ms": 11.42,
   "query_count": 1280,
   "qps": 21.33,
   "average_duration_ms": 12.48,
@@ -174,6 +176,7 @@
 
 - 旧 `v1/v2 audit` 接口已经移除，不再保留兼容层。
 - 原始日志存于 SQLite `audit_log`，分钟级/小时级聚合存于 `audit_minute` / `audit_hour`。
+- `total_query_count` / `total_average_duration_ms` 来自小时聚合表，表示当前保留期内的累计请求与累计平均耗时。
 - `cursor` 为顺序翻页游标，前端不再使用 `page/offset`。
 - `overview_window_seconds` 只影响概览窗口口径，不影响原始日志保留。
 - `raw_retention_days` 与 `aggregate_retention_days` 分别控制原始日志和聚合数据清理策略。
