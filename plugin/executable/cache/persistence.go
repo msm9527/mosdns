@@ -332,12 +332,8 @@ func writeWALRecord(w io.Writer, record walStoreRecord) error {
 }
 
 func readWALRecord(r io.Reader) (walStoreRecord, error) {
-	var size [4]byte
-	if _, err := io.ReadFull(r, size[:]); err != nil {
-		return walStoreRecord{}, err
-	}
-	payload := make([]byte, binary.BigEndian.Uint32(size[:]))
-	if _, err := io.ReadFull(r, payload); err != nil {
+	payload, err := readSizedBytes(r, maxWALRecordPayloadLength, "cache wal record")
+	if err != nil {
 		return walStoreRecord{}, err
 	}
 	buf := bytes.NewReader(payload)
@@ -406,15 +402,7 @@ func writeBytes(w io.Writer, b []byte) {
 }
 
 func readBytes(r io.Reader) ([]byte, error) {
-	var size [4]byte
-	if _, err := io.ReadFull(r, size[:]); err != nil {
-		return nil, err
-	}
-	b := make([]byte, binary.BigEndian.Uint32(size[:]))
-	if _, err := io.ReadFull(r, b); err != nil {
-		return nil, err
-	}
-	return b, nil
+	return readSizedBytes(r, maxWALRecordPayloadLength, "cache payload field")
 }
 
 func writeString(w io.Writer, s string) {
