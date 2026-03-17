@@ -430,19 +430,59 @@ func (s *SQLiteAuditStorage) EnforceRetention(settings AuditSettings) error {
 		if sizeBytes <= maxBytes {
 			break
 		}
-		if _, err := s.runtimeDB.DB().Exec(`
+		rowsAffected, err := s.deleteOldestAuditRows(5000)
+		if err != nil {
+			return err
+		}
+		if err := s.checkpointWAL(); err != nil {
+			return err
+		}
+		if rowsAffected > 0 {
+			continue
+		}
+		if err := s.compactDatabase(); err != nil {
+			return err
+		}
+		compactedBytes, err := s.DiskUsageBytes()
+		if err != nil {
+			return err
+		}
+		if compactedBytes >= sizeBytes {
+			break
+		}
+	}
+	return nil
+}
+
+func (s *SQLiteAuditStorage) deleteOldestAuditRows(limit int) (int64, error) {
+	result, err := s.runtimeDB.DB().Exec(`
 			DELETE FROM audit_log
 			WHERE id IN (
 				SELECT id FROM audit_log
 				ORDER BY query_time_unix_ms ASC, id ASC
-				LIMIT 5000
+				LIMIT ?
 			)
-		`); err != nil {
-			return fmt.Errorf("trim sqlite audit logs by size: %w", err)
-		}
-		if _, err := s.runtimeDB.DB().Exec(`PRAGMA wal_checkpoint(TRUNCATE);`); err != nil {
-			return fmt.Errorf("checkpoint sqlite audit wal: %w", err)
-		}
+		`, limit)
+	if err != nil {
+		return 0, fmt.Errorf("trim sqlite audit logs by size: %w", err)
+	}
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read trimmed sqlite audit row count: %w", err)
+	}
+	return rowsAffected, nil
+}
+
+func (s *SQLiteAuditStorage) checkpointWAL() error {
+	if _, err := s.runtimeDB.DB().Exec(`PRAGMA wal_checkpoint(TRUNCATE);`); err != nil {
+		return fmt.Errorf("checkpoint sqlite audit wal: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteAuditStorage) compactDatabase() error {
+	if _, err := s.runtimeDB.DB().Exec(`VACUUM;`); err != nil {
+		return fmt.Errorf("vacuum sqlite audit db: %w", err)
 	}
 	return nil
 }

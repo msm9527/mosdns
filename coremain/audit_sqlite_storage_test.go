@@ -1,7 +1,9 @@
 package coremain
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -206,5 +208,77 @@ func TestSQLiteAuditStorageQueryRankByDomainSetNormalizes(t *testing.T) {
 	}
 	if got["白名单"] != 1 {
 		t.Fatalf("白名单 count = %d, want 1", got["白名单"])
+	}
+}
+
+func TestSQLiteAuditStorageEnforceRetentionDoesNotLoopWhenNoRowsRemain(t *testing.T) {
+	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"), 1)
+	if err := storage.Open(); err != nil {
+		t.Fatalf("open sqlite storage: %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	now := time.Now().Truncate(time.Millisecond)
+	payload := strings.Repeat("x", 4096)
+	for batch := 0; batch < 32; batch++ {
+		logs := make([]AuditLog, 0, 64)
+		for i := 0; i < 64; i++ {
+			index := batch*64 + i
+			logs = append(logs, AuditLog{
+				ClientIP:     "127.0.0.1",
+				QueryType:    "A",
+				QueryName:    fmt.Sprintf("bulk-%d.example", index),
+				QueryClass:   "IN",
+				QueryTime:    now.Add(time.Duration(index) * time.Millisecond),
+				DurationMs:   1,
+				TraceID:      fmt.Sprintf("trace-%d", index),
+				ResponseCode: "NOERROR",
+				DomainSet:    "bulk",
+				Answers: []AnswerDetail{
+					{Type: "TXT", Data: payload},
+				},
+			})
+		}
+		if err := storage.WriteBatch(logs); err != nil {
+			t.Fatalf("write bulk batch %d: %v", batch, err)
+		}
+		sizeBytes, err := storage.DiskUsageBytes()
+		if err != nil {
+			t.Fatalf("disk usage after batch %d: %v", batch, err)
+		}
+		if sizeBytes > 1024*1024 {
+			break
+		}
+	}
+
+	if err := storage.Clear(); err != nil {
+		t.Fatalf("clear storage: %v", err)
+	}
+	sizeBefore, err := storage.DiskUsageBytes()
+	if err != nil {
+		t.Fatalf("disk usage before retention: %v", err)
+	}
+	if sizeBefore <= 1024*1024 {
+		t.Fatalf("expected sqlite file to exceed 1 MiB before retention, got %d", sizeBefore)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- storage.EnforceRetention(AuditSettings{
+			MemoryEntries: 100000,
+			RetentionDays: 30,
+			MaxDiskSizeMB: 1,
+			MaxDBSizeMB:   1,
+			StorageEngine: "sqlite",
+		})
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("EnforceRetention: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("EnforceRetention timed out; likely stuck in size-trim loop")
 	}
 }
