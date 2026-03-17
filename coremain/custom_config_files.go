@@ -382,15 +382,33 @@ func saveUpstreamOverridesToCustomConfig(cfg GlobalUpstreamOverrides) error {
 }
 
 func writeTextFileAtomically(path string, content []byte) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir for %s: %w", path, err)
 	}
-	tmpFile := path + ".tmp"
-	if err := os.WriteFile(tmpFile, content, 0o644); err != nil {
+	tmpFile, err := os.CreateTemp(dir, filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", path, err)
+	}
+	tmpPath := tmpFile.Name()
+	cleanup := func() {
+		_ = tmpFile.Close()
+		_ = os.Remove(tmpPath)
+	}
+	if _, err := tmpFile.Write(content); err != nil {
+		cleanup()
 		return fmt.Errorf("write temp file %s: %w", path, err)
 	}
-	if err := os.Rename(tmpFile, path); err != nil {
-		_ = os.Remove(tmpFile)
+	if err := tmpFile.Sync(); err != nil {
+		cleanup()
+		return fmt.Errorf("sync temp file %s: %w", path, err)
+	}
+	if err := tmpFile.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close temp file %s: %w", path, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
 		return fmt.Errorf("rename temp file %s: %w", path, err)
 	}
 	return nil

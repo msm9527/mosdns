@@ -2,8 +2,11 @@ package coremain
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/go-chi/chi/v5"
@@ -182,5 +185,57 @@ func TestRuntimeAliasesForOverridesAndUpstreams(t *testing.T) {
 	}
 	if len(upstreams["test"]) != 1 {
 		t.Fatalf("unexpected upstreams payload: %+v", upstreams)
+	}
+}
+
+func TestRuntimeOverridesPostSupportsConcurrentRequests(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, nil)
+
+	start := make(chan struct{})
+	errCh := make(chan error, 8)
+	var wg sync.WaitGroup
+
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start
+			body := fmt.Sprintf(`{"socks5":"127.0.0.1:%d","ecs":"2408::%d","replacements":[]}`, 7000+i, i)
+			req := httptest.NewRequest(http.MethodPost, "/api/v1/control/overrides", strings.NewReader(body))
+			req.Header.Set("Content-Type", "application/json")
+			w := httptest.NewRecorder()
+			router.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				errCh <- fmt.Errorf("status=%d body=%s", w.Code, w.Body.String())
+			}
+		}(i)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent overrides POST failed: %v", err)
+		}
+	}
+
+	values, ok, err := loadGlobalOverridesFromCustomConfig()
+	if err != nil {
+		t.Fatalf("loadGlobalOverridesFromCustomConfig: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected overrides config file to exist")
+	}
+	if values == nil || values.Socks5 == "" {
+		t.Fatalf("unexpected overrides payload after concurrent writes: %+v", values)
 	}
 }

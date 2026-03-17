@@ -1,6 +1,13 @@
 package coremain
 
-import "testing"
+import (
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+)
 
 func TestSwitchesCustomConfigRoundTrip(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
@@ -40,5 +47,54 @@ func TestSaveSwitchesToCustomConfigRejectsUnknownSwitch(t *testing.T) {
 
 	if err := SaveSwitchesToCustomConfig(map[string]string{"unknown_switch": "on"}); err == nil {
 		t.Fatal("expected unknown switch to be rejected")
+	}
+}
+
+func TestWriteTextFileAtomicallySupportsConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global_overrides.yaml")
+	start := make(chan struct{})
+	errCh := make(chan error, 16)
+	var wg sync.WaitGroup
+
+	for writer := 0; writer < 8; writer++ {
+		wg.Add(1)
+		go func(writer int) {
+			defer wg.Done()
+			<-start
+			for round := 0; round < 20; round++ {
+				content := []byte(fmt.Sprintf("writer=%d round=%d\n", writer, round))
+				if err := writeTextFileAtomically(path, content); err != nil {
+					errCh <- err
+					return
+				}
+			}
+		}(writer)
+	}
+
+	close(start)
+	wg.Wait()
+	close(errCh)
+
+	for err := range errCh {
+		if err != nil {
+			t.Fatalf("concurrent write failed: %v", err)
+		}
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read final file: %v", err)
+	}
+	if !strings.HasPrefix(string(raw), "writer=") {
+		t.Fatalf("unexpected final file content: %q", string(raw))
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "global_overrides.yaml.tmp-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(matches) != 0 {
+		t.Fatalf("expected no temp files left, got %v", matches)
 	}
 }

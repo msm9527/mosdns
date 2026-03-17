@@ -10,6 +10,6 @@
 # - ecs: 用于替换配置里 `ecs x.x.x.x` / `ecs 2408:...` 这类 ECS 指定值
 # - replacements: 可选的字符串替换表，适合少量精确替换
 
-socks5: "127.0.0.1:7891"
-ecs: ""
+socks5: 127.0.0.1:7891
+ecs: 2408:8214:213::1
 replacements: []

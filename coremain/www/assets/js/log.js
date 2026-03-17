@@ -34,6 +34,7 @@ function closeAndUnlock(dialogElement) {
 document.addEventListener('DOMContentLoaded', () => {
     const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440 };
     let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    const actionLocks = new Set();
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
         colorSwatches: document.querySelectorAll('.color-swatch'),
@@ -210,7 +211,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const ui = {
         showToast(message, type = 'success') { if (!elements.toast) return; clearTimeout(toastTimeout); const icon = type === 'success' ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"></path></svg>` : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"></path></svg>`; elements.toast.innerHTML = `${icon}<span>${message}</span>`; elements.toast.className = `show ${type}`; const hideToast = () => { elements.toast.className = elements.toast.className.replace('show', ''); }; elements.toast.onmouseenter = () => clearTimeout(toastTimeout); elements.toast.onmouseleave = () => toastTimeout = setTimeout(hideToast, CONSTANTS.TOAST_DURATION); toastTimeout = setTimeout(hideToast, CONSTANTS.TOAST_DURATION); },
-        setLoading(button, isLoading) { if (!button) return; const textSpan = button.querySelector('span'); button.disabled = isLoading; button.setAttribute('aria-busy', String(isLoading)); if (textSpan) { if (isLoading) { if (!button.dataset.defaultText) { button.dataset.defaultText = textSpan.textContent; } textSpan.textContent = '处理中...'; } else { if (button.dataset.defaultText) { textSpan.textContent = button.dataset.defaultText; } } } },
+        bindClickOnce(button, handler) { if (!button || button.dataset.bound === 'true') return; button.dataset.bound = 'true'; button.addEventListener('click', handler); },
+        isBusyButton(target) { const button = target?.closest?.('button, input[type="button"], input[type="submit"]'); return Boolean(button && (button.disabled || button.getAttribute('aria-busy') === 'true' || button.dataset.inflight === 'true')); },
+        async runExclusive(lockKey, action) { if (!lockKey) return await action(); if (actionLocks.has(lockKey)) return; actionLocks.add(lockKey); try { return await action(); } finally { actionLocks.delete(lockKey); } },
+        setLoading(button, isLoading) { if (!button) return; const textSpan = button.querySelector('span'); button.disabled = isLoading; button.setAttribute('aria-busy', String(isLoading)); if (isLoading) { button.dataset.inflight = 'true'; } else { delete button.dataset.inflight; } if (textSpan) { if (isLoading) { if (!button.dataset.defaultText) { button.dataset.defaultText = textSpan.textContent; } textSpan.textContent = '处理中...'; } else { if (button.dataset.defaultText) { textSpan.textContent = button.dataset.defaultText; } } } },
         updateStatus(isCapturing) { if (!elements.toggleAuditBtn || !elements.auditStatus) return; this.setLoading(elements.toggleAuditBtn, false); const statusIndicator = elements.systemControlTabIndicator; if (statusIndicator) statusIndicator.className = 'status-indicator'; if (typeof isCapturing === 'boolean') { state.isCapturing = isCapturing; elements.auditStatus.textContent = isCapturing ? '运行中' : '已停止'; elements.auditStatus.style.color = isCapturing ? 'var(--color-success)' : 'var(--color-danger)'; const actionText = isCapturing ? '关闭审计' : '开启审计'; elements.toggleAuditBtn.querySelector('span').textContent = actionText; elements.toggleAuditBtn.dataset.defaultText = actionText; elements.toggleAuditBtn.className = `button ${isCapturing ? 'danger' : 'primary'}`; if (statusIndicator) statusIndicator.classList.add(isCapturing ? 'running' : 'stopped'); } else { elements.auditStatus.textContent = '未知'; elements.auditStatus.style.color = 'var(--color-text-secondary)'; elements.toggleAuditBtn.querySelector('span').textContent = '刷新状态'; elements.toggleAuditBtn.dataset.defaultText = '刷新状态'; } },
         formatBytes(bytes) {
             if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) return '查询失败';
@@ -3201,15 +3205,6 @@ const cacheManager = {
             // 1. 注入新板块
             this.injectNewCard();
 
-            if (els.oldLoadBtn && !els.oldLoadBtn.dataset.bound) {
-                els.oldLoadBtn.dataset.bound = 'true';
-                els.oldLoadBtn.addEventListener('click', () => this.load());
-            }
-            if (els.oldSaveBtn && !els.oldSaveBtn.dataset.bound) {
-                els.oldSaveBtn.dataset.bound = 'true';
-                els.oldSaveBtn.addEventListener('click', () => this.save(els.oldSaveBtn, { restart: false }));
-            }
-
             try {
                 const data = await api.fetch('/api/v1/control/overrides');
 
@@ -3405,48 +3400,51 @@ renderReplacementsTable() {
         },
 
         async save(triggerBtn, options = {}) {
-            const els = this.getElements();
-            if (!els.socks5 || !els.ecs) return;
             const restart = Boolean(options.restart);
-            if (restart && !confirm('保存后将重启 MosDNS，是否继续？')) return;
+            const lockKey = restart ? 'overrides:save-and-restart' : 'overrides:save';
+            return ui.runExclusive(lockKey, async () => {
+                const els = this.getElements();
+                if (!els.socks5 || !els.ecs) return;
+                if (restart && !confirm('保存后将重启 MosDNS，是否继续？')) return;
 
-            const repBtn = document.getElementById('rep-save-btn');
-            const btns = [triggerBtn, repBtn].filter(Boolean);
-            btns.forEach((btn) => ui.setLoading(btn, true));
+                const repBtn = document.getElementById('rep-save-btn');
+                const btns = [triggerBtn, repBtn].filter(Boolean);
+                btns.forEach((btn) => ui.setLoading(btn, true));
 
-            const socks5 = els.socks5.value.trim();
-            const ecs = els.ecs.value.trim();
-            // 过滤掉空行
-            const validReplacements = this.state.replacements
-                .map(r => ({
-                    original: r.original.trim(),
-                    new: r.new.trim(),
-                    comment: r.comment ? r.comment.trim() : ''
-                }))
-                .filter(r => r.original);
+                const socks5 = els.socks5.value.trim();
+                const ecs = els.ecs.value.trim();
+                // 过滤掉空行
+                const validReplacements = this.state.replacements
+                    .map(r => ({
+                        original: r.original.trim(),
+                        new: r.new.trim(),
+                        comment: r.comment ? r.comment.trim() : ''
+                    }))
+                    .filter(r => r.original);
 
-            const payload = {
-                socks5: socks5,
-                ecs: ecs,
-                replacements: validReplacements
-            };
+                const payload = {
+                    socks5: socks5,
+                    ecs: ecs,
+                    replacements: validReplacements
+                };
 
-            try {
-                const result = await api.fetch('/api/v1/control/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if (restart) {
-                    await this.requestRestart();
-                } else {
-                    const msg = (result && typeof result === 'object' && result.message) ? result.message : '配置已保存并生效';
-                    ui.showToast(msg, 'success');
-                    await this.load(true);
+                try {
+                    const result = await api.fetch('/api/v1/control/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if (restart) {
+                        await this.requestRestart();
+                    } else {
+                        const msg = (result && typeof result === 'object' && result.message) ? result.message : '配置已保存并生效';
+                        ui.showToast(msg, 'success');
+                        await this.load(true);
+                    }
+                } catch (e) {
+                    const msg = restart ? '保存或重启失败' : '保存配置失败';
+                    ui.showToast(msg, 'error');
+                    console.error("Save Error:", e);
+                } finally {
+                    btns.forEach((btn) => ui.setLoading(btn, false));
                 }
-            } catch (e) {
-                const msg = restart ? '保存或重启失败' : '保存配置失败';
-                ui.showToast(msg, 'error');
-                console.error("Save Error:", e);
-            } finally {
-                btns.forEach((btn) => ui.setLoading(btn, false));
-            }
+            });
         }
     };
 
@@ -3992,49 +3990,63 @@ renderReplacementsTable() {
         },
 
         async applyCurrentConfig() {
-            const btn = document.getElementById('upstream-apply-btn');
-            if (!this.state.dirty) {
-                ui.showToast('没有需要提交的更改', 'success');
-                return;
-            }
+            return ui.runExclusive('upstreams:apply', async () => {
+                const btn = document.getElementById('upstream-apply-btn');
+                if (!this.state.dirty) {
+                    ui.showToast('没有需要提交的更改', 'success');
+                    return;
+                }
 
-            ui.setLoading(btn, true);
-            try {
-                const payload = {
-                    config: this.cloneConfig(this.state.draftConfig),
-                    apply: true
-                };
-                const resp = await api.fetch('/api/v1/control/upstreams', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const msg = (resp && typeof resp === 'object' && resp.message) ? resp.message : '上游配置已保存并生效';
-                this.state.serverConfig = this.cloneConfig(this.state.draftConfig);
-                this.setDirty(false);
-                ui.showToast(msg, 'success');
-                await this.loadData({ forceConfig: true });
-            } catch (e) {
-                ui.showToast('上游配置保存失败: ' + e.message, 'error');
-            } finally {
-                ui.setLoading(btn, false);
-            }
+                ui.setLoading(btn, true);
+                try {
+                    const payload = {
+                        config: this.cloneConfig(this.state.draftConfig),
+                        apply: true
+                    };
+                    const resp = await api.fetch('/api/v1/control/upstreams', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const msg = (resp && typeof resp === 'object' && resp.message) ? resp.message : '上游配置已保存并生效';
+                    this.state.serverConfig = this.cloneConfig(this.state.draftConfig);
+                    this.setDirty(false);
+                    ui.showToast(msg, 'success');
+                    await this.loadData({ forceConfig: true });
+                } catch (e) {
+                    ui.showToast('上游配置保存失败: ' + e.message, 'error');
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            });
         },
 
         async restartService() {
-            if (!confirm('确定要重启 MosDNS 吗？')) return;
-            try {
-                await api.fetch('/api/v1/system/restart', { method: 'POST', body: JSON.stringify({ delay_ms: 500 }) });
-                ui.showToast('正在重启...', 'success');
-                setTimeout(() => location.reload(), 4000);
-            } catch (e) {
-                ui.showToast('重启请求失败', 'error');
-            }
+            return ui.runExclusive('system:restart', async () => {
+                const btn = document.getElementById('global-restart-btn');
+                if (!confirm('确定要重启 MosDNS 吗？')) return;
+                ui.setLoading(btn, true);
+                try {
+                    await api.fetch('/api/v1/system/restart', { method: 'POST', body: JSON.stringify({ delay_ms: 500 }) });
+                    ui.showToast('正在重启...', 'success');
+                    setTimeout(() => location.reload(), 4000);
+                } catch (e) {
+                    ui.showToast('重启请求失败', 'error');
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            });
         }
     };
     // [插入点结束]
 
     function setupEventListeners() {
+        document.addEventListener('click', (event) => {
+            if (!ui.isBusyButton(event.target)) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }, true);
+
         // -- [修改] -- 统一处理所有弹窗的关闭行为（遮罩层点击和ESC键）
         document.querySelectorAll('dialog').forEach(dialog => {
             // 1. 点击遮罩层时关闭
@@ -4056,8 +4068,8 @@ renderReplacementsTable() {
 
         elements.tabLinks.forEach(link => link.addEventListener('click', (e) => { e.preventDefault(); handleNavigation(link); }));
         // 覆盖配置：按钮事件
-        if (elements.overridesLoadBtn) elements.overridesLoadBtn.addEventListener('click', () => overridesManager.load(false));
-        if (elements.overridesSaveBtn) elements.overridesSaveBtn.addEventListener('click', () => overridesManager.save());
+        ui.bindClickOnce(elements.overridesLoadBtn, () => overridesManager.load(false));
+        ui.bindClickOnce(elements.overridesSaveBtn, () => overridesManager.save(elements.overridesSaveBtn));
         window.addEventListener('popstate', () => { const hash = window.location.hash || '#overview'; const targetLink = document.querySelector(`.tab-link[href="${hash}"]`); handleNavigation(targetLink || elements.tabLinks[0]); });
         window.addEventListener('resize', debounce(handleResize, 150));
         elements.globalRefreshBtn?.addEventListener('click', () => updatePageData(true));
