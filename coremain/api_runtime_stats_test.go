@@ -95,10 +95,16 @@ func TestHandleAggregatedDomainStats(t *testing.T) {
 	m := NewTestMosdnsWithPlugins(map[string]any{
 		"my_fakeiplist": mockDomainStatsProvider{
 			snapshot: DomainStatsSnapshot{
-				MemoryID:     "fakeip_memory",
-				Kind:         "fakeip",
-				TotalEntries: 101,
-				DirtyEntries: 4,
+				MemoryID:             "fakeip_memory",
+				Kind:                 "fakeip",
+				TotalEntries:         101,
+				DirtyEntries:         4,
+				HotRules:             7,
+				HotPendingRules:      2,
+				HotAddTotal:          11,
+				HotReplaceTotal:      3,
+				HotDispatchFailTotal: 1,
+				LastHotSyncAtUnixMS:  12345,
 			},
 		},
 		"custom_hotlist": mockDomainStatsProvider{
@@ -138,7 +144,14 @@ func TestHandleAggregatedDomainStats(t *testing.T) {
 	for _, item := range resp.Items {
 		switch item.Tag {
 		case "my_fakeiplist":
-			foundFakeip = item.Key == "fakeip" && item.TotalEntries == 101
+			foundFakeip = item.Key == "fakeip" &&
+				item.TotalEntries == 101 &&
+				item.HotRules == 7 &&
+				item.HotPendingRules == 2 &&
+				item.HotAddTotal == 11 &&
+				item.HotReplaceTotal == 3 &&
+				item.HotDispatchFailTotal == 1 &&
+				item.LastHotSyncAtUnixMS == 12345
 		case "custom_hotlist":
 			foundCustom = item.Key == "custom_hotlist" && item.TotalEntries == 7
 		case "my_realiplist":

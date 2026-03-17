@@ -55,6 +55,15 @@ func waitHotRuleCall(t *testing.T, ch <-chan hotRuleCall) hotRuleCall {
 	}
 }
 
+func assertNoHotRuleCall(t *testing.T, ch <-chan hotRuleCall, wait time.Duration) {
+	t.Helper()
+	select {
+	case call := <-ch:
+		t.Fatalf("unexpected hot rule call: %+v", call)
+	case <-time.After(wait):
+	}
+}
+
 func TestMemoryPoolAggregatesEntriesByBareDomain(t *testing.T) {
 	oldBaseDir := coremain.MainConfigBaseDir
 	coremain.MainConfigBaseDir = t.TempDir()
@@ -154,13 +163,10 @@ func TestMemoryPoolPushesImmediateHotRuleOnPromotion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDomainMemoryPool: %v", err)
 	}
+	t.Cleanup(func() { _ = pool.Close() })
 
 	pool.processRecord(&logItem{name: "example.com.", source: "live"})
-	select {
-	case call := <-consumer.addCh:
-		t.Fatalf("unexpected hot add before promotion: %+v", call)
-	default:
-	}
+	assertNoHotRuleCall(t, consumer.addCh, 100*time.Millisecond)
 
 	pool.processRecord(&logItem{name: "example.com.", source: "live"})
 	call := waitHotRuleCall(t, consumer.addCh)
@@ -204,6 +210,7 @@ func TestMemoryPoolFlushReplacesHotRules(t *testing.T) {
 	if err != nil {
 		t.Fatalf("newDomainMemoryPool: %v", err)
 	}
+	t.Cleanup(func() { _ = pool.Close() })
 
 	pool.processRecord(&logItem{name: "flush.example.", source: "live"})
 	_ = waitHotRuleCall(t, consumer.addCh)
@@ -223,4 +230,97 @@ func TestMemoryPoolFlushReplacesHotRules(t *testing.T) {
 	if len(flushCall.rules) != 0 {
 		t.Fatalf("expected empty replace after flush, got %+v", flushCall)
 	}
+}
+
+func TestMemoryPoolHotRulesRespectPublishDebounce(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	saveMemoryPoolPolicyForTest(t, "my_realiplist", coremain.DomainPoolPolicy{
+		Kind:                 coremain.DomainPoolKindMemory,
+		PublishTo:            "my_realiprule",
+		PromoteAfter:         1,
+		MaxDomains:           100,
+		MaxVariantsPerDomain: 4,
+		EvictionPolicy:       "lru",
+		FlushIntervalMS:      1000,
+		PublishDebounceMS:    150,
+		PruneIntervalSec:     60,
+	})
+
+	consumer := newMockHotRuleConsumer()
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{"mapper": consumer})
+	pool, err := newDomainMemoryPool("my_realiplist", m, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+
+	pool.processRecord(&logItem{name: "debounce.example.", source: "live"})
+	assertNoHotRuleCall(t, consumer.addCh, 80*time.Millisecond)
+
+	rules, err := pool.SnapshotHotRules()
+	if err != nil {
+		t.Fatalf("SnapshotHotRules before debounce: %v", err)
+	}
+	if len(rules) != 0 {
+		t.Fatalf("expected no applied hot rules before debounce, got %v", rules)
+	}
+
+	call := waitHotRuleCall(t, consumer.addCh)
+	if len(call.rules) != 1 || call.rules[0] != "full:debounce.example" {
+		t.Fatalf("unexpected debounced add: %+v", call)
+	}
+
+	rules, err = pool.SnapshotHotRules()
+	if err != nil {
+		t.Fatalf("SnapshotHotRules after debounce: %v", err)
+	}
+	if len(rules) != 1 || rules[0] != "full:debounce.example" {
+		t.Fatalf("unexpected applied hot rules after debounce: %v", rules)
+	}
+}
+
+func TestMemoryPoolSaveCancelsPendingHotAdd(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	saveMemoryPoolPolicyForTest(t, "my_realiplist", coremain.DomainPoolPolicy{
+		Kind:                 coremain.DomainPoolKindMemory,
+		PublishTo:            "my_realiprule",
+		PromoteAfter:         1,
+		MaxDomains:           100,
+		MaxVariantsPerDomain: 4,
+		EvictionPolicy:       "lru",
+		FlushIntervalMS:      1000,
+		PublishDebounceMS:    200,
+		PruneIntervalSec:     60,
+	})
+
+	consumer := newMockHotRuleConsumer()
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{"mapper": consumer})
+	pool, err := newDomainMemoryPool("my_realiplist", m, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+
+	pool.processRecord(&logItem{name: "save.example.", source: "live"})
+	assertNoHotRuleCall(t, consumer.addCh, 60*time.Millisecond)
+
+	if err := pool.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite save: %v", err)
+	}
+	replaceCall := waitHotRuleCall(t, consumer.replaceCh)
+	if len(replaceCall.rules) != 1 || replaceCall.rules[0] != "full:save.example" {
+		t.Fatalf("unexpected replace rules: %+v", replaceCall)
+	}
+
+	assertNoHotRuleCall(t, consumer.addCh, 260*time.Millisecond)
 }

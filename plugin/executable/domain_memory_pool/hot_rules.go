@@ -5,7 +5,6 @@ import (
 	"strings"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
-	"go.uber.org/zap"
 )
 
 var _ coremain.HotRuleSnapshotProvider = (*domainMemoryPool)(nil)
@@ -13,53 +12,94 @@ var _ coremain.HotRuleSnapshotProvider = (*domainMemoryPool)(nil)
 func (d *domainMemoryPool) SnapshotHotRules() ([]string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return d.currentHotRulesLocked(), nil
+	return d.snapshotActiveHotRulesLocked(), nil
 }
 
-func (d *domainMemoryPool) currentHotRulesLocked() []string {
-	rules := make([]string, 0, d.domainCount)
-	seen := make(map[string]struct{}, d.domainCount)
-	for storageKey, entry := range d.stats {
-		if entry == nil || !entry.Promoted {
-			continue
-		}
-		domain, _ := splitStorageKey(storageKey)
-		domain = strings.TrimSpace(domain)
-		if domain == "" {
-			continue
-		}
-		rule := "full:" + domain
-		if _, exists := seen[rule]; exists {
-			continue
-		}
-		seen[rule] = struct{}{}
+func (d *domainMemoryPool) snapshotActiveHotRulesLocked() []string {
+	rules := make([]string, 0, len(d.hotActiveRules))
+	for rule := range d.hotActiveRules {
 		rules = append(rules, rule)
 	}
 	slices.Sort(rules)
 	return rules
 }
 
-func (d *domainMemoryPool) pushHotRulesAdd(rules []string) {
-	target := d.publishTarget()
-	if err := coremain.DispatchHotRulesAdd(d.manager, target, rules); err != nil && d.logger != nil {
-		d.logger.Warn("domain_memory_pool push hot add failed", zap.String("publish_to", target), zap.Error(err))
+func (d *domainMemoryPool) replaceActiveHotRulesLocked(rules []string) {
+	d.hotActiveRules = make(map[string]struct{}, len(rules))
+	for _, rule := range normalizePoolHotRules(rules) {
+		d.hotActiveRules[rule] = struct{}{}
 	}
 }
 
+func (d *domainMemoryPool) addActiveHotRules(rules []string) int {
+	normalized := normalizePoolHotRules(rules)
+	if len(normalized) == 0 {
+		return d.activeHotRuleCount()
+	}
+	d.mu.Lock()
+	for _, rule := range normalized {
+		d.hotActiveRules[rule] = struct{}{}
+	}
+	count := len(d.hotActiveRules)
+	d.mu.Unlock()
+	return count
+}
+
+func (d *domainMemoryPool) replaceActiveHotRules(rules []string) int {
+	d.mu.Lock()
+	d.replaceActiveHotRulesLocked(rules)
+	count := len(d.hotActiveRules)
+	d.mu.Unlock()
+	return count
+}
+
+func (d *domainMemoryPool) activeHotRuleCount() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return len(d.hotActiveRules)
+}
+
+func (d *domainMemoryPool) pushHotRulesAdd(rules []string) {
+	if d.hotCmdChan == nil {
+		return
+	}
+	d.hotCmdChan <- hotPublishRequest{mode: hotPublishAdd, rules: normalizePoolHotRules(rules)}
+}
+
 func (d *domainMemoryPool) pushHotRulesReplace(rules []string) error {
-	target := d.publishTarget()
-	if target == "" {
+	normalized := normalizePoolHotRules(rules)
+	if d.hotCmdChan == nil {
+		d.replaceActiveHotRules(normalized)
 		return nil
 	}
-	if err := coremain.DispatchHotRulesReplace(d.manager, target, rules); err != nil {
-		if d.logger != nil {
-			d.logger.Warn("domain_memory_pool push hot replace failed", zap.String("publish_to", target), zap.Error(err))
-		}
-		return err
-	}
-	return nil
+	resp := make(chan error, 1)
+	d.hotCmdChan <- hotPublishRequest{mode: hotPublishReplace, rules: normalized, resp: resp}
+	return <-resp
 }
 
 func (d *domainMemoryPool) publishTarget() string {
 	return strings.TrimSpace(d.policy.raw.PublishTo)
+}
+
+func normalizePoolHotRules(rules []string) []string {
+	normalized := make([]string, 0, len(rules))
+	seen := make(map[string]struct{}, len(rules))
+	for _, rule := range rules {
+		key := strings.TrimSpace(rule)
+		if !strings.HasPrefix(key, "full:") {
+			continue
+		}
+		key = strings.TrimSpace(strings.TrimPrefix(key, "full:"))
+		if key == "" {
+			continue
+		}
+		normalizedRule := "full:" + key
+		if _, exists := seen[normalizedRule]; exists {
+			continue
+		}
+		seen[normalizedRule] = struct{}{}
+		normalized = append(normalized, normalizedRule)
+	}
+	slices.Sort(normalized)
+	return normalized
 }

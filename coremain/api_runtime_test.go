@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -237,5 +238,143 @@ func TestRuntimeOverridesPostSupportsConcurrentRequests(t *testing.T) {
 	}
 	if values == nil || values.Socks5 == "" {
 		t.Fatalf("unexpected overrides payload after concurrent writes: %+v", values)
+	}
+}
+
+func TestHandleControlShuntExplainLiveFlag(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	mustWriteShuntFile(t, filepath.Join(MainConfigBaseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(MainConfigBaseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      generated_from: my_fakeiplist
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+`)
+
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"my_fakeiplist": &mockHotRuleSnapshotProvider{rules: []string{"full:live-proxy.example"}},
+	})
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/shunt/explain?domain=live-proxy.example&qtype=A&live=true", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected live explain status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var liveResp shuntExplainResult
+	if err := json.Unmarshal(w.Body.Bytes(), &liveResp); err != nil {
+		t.Fatalf("decode live explain: %v", err)
+	}
+	if liveResp.Decision.Matched != 12 || len(liveResp.Matches) != 1 {
+		t.Fatalf("unexpected live explain payload: %+v", liveResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/control/shunt/explain?domain=live-proxy.example&qtype=A&live=false", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected persisted explain status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var persistedResp shuntExplainResult
+	if err := json.Unmarshal(w.Body.Bytes(), &persistedResp); err != nil {
+		t.Fatalf("decode persisted explain: %v", err)
+	}
+	if len(persistedResp.Matches) != 0 || persistedResp.Decision.Matched == 12 {
+		t.Fatalf("expected live=false to ignore runtime hot rule, got %+v", persistedResp)
+	}
+}
+
+func TestHandleControlShuntConflictsLiveFlag(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	mustWriteShuntFile(t, filepath.Join(MainConfigBaseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(MainConfigBaseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: static_hot
+    type: domain_set_light
+    args:
+      files:
+        - rule/hot.txt
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      generated_from: my_fakeiplist
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: static_hot
+          mark: 8
+          output_tag: 静态
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+`)
+	mustWriteShuntFile(t, filepath.Join(MainConfigBaseDir, "rule", "hot.txt"), "full:live-proxy.example\n")
+
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"my_fakeiplist": &mockHotRuleSnapshotProvider{rules: []string{"full:live-proxy.example"}},
+	})
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/shunt/conflicts?live=true&limit=10", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected live conflicts status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var liveResp struct {
+		Count     int                  `json:"count"`
+		Conflicts []shuntConflictEntry `json:"conflicts"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &liveResp); err != nil {
+		t.Fatalf("decode live conflicts: %v", err)
+	}
+	if liveResp.Count != 1 || len(liveResp.Conflicts) != 1 {
+		t.Fatalf("expected one live conflict, got %+v", liveResp)
+	}
+
+	req = httptest.NewRequest(http.MethodGet, "/api/v1/control/shunt/conflicts?live=false&limit=10", nil)
+	w = httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected persisted conflicts status: %d body=%s", w.Code, w.Body.String())
+	}
+
+	var persistedResp struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &persistedResp); err != nil {
+		t.Fatalf("decode persisted conflicts: %v", err)
+	}
+	if persistedResp.Count != 0 {
+		t.Fatalf("expected no persisted conflicts without live hot rules, got %+v", persistedResp)
 	}
 }

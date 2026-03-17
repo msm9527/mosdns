@@ -120,6 +120,7 @@ type domainMemoryPool struct {
 	domainCount        int
 	rules              []string
 	subscribers        []func()
+	hotActiveRules     map[string]struct{}
 
 	mu      sync.Mutex
 	writeMu sync.Mutex
@@ -134,11 +135,20 @@ type domainMemoryPool struct {
 	writeSignalChan    chan struct{}
 	stopChan           chan struct{}
 	workerDoneChan     chan struct{}
+	hotCmdChan         chan hotPublishRequest
+	hotDoneChan        chan struct{}
+	workerStarted      atomic.Bool
 
-	dirtyPending  atomic.Bool
-	lastRulesHash uint64
-	hasRulesHash  bool
-	closeOnce     sync.Once
+	dirtyPending         atomic.Bool
+	hotNeedsReplace      atomic.Bool
+	lastRulesHash        uint64
+	hasRulesHash         bool
+	closeOnce            sync.Once
+	hotPendingCount      int64
+	hotAddTotal          int64
+	hotReplaceTotal      int64
+	hotDispatchFailTotal int64
+	lastHotSyncAtUnixMS  int64
 }
 
 func init() {
@@ -154,6 +164,7 @@ func Init(bp *coremain.BP, _ any) (any, error) {
 	if err := pool.loadFromStore(); err != nil {
 		return nil, err
 	}
+	pool.workerStarted.Store(true)
 	go pool.startWorker()
 	return pool, nil
 }
@@ -167,7 +178,7 @@ func newDomainMemoryPool(pluginTag string, manager *coremain.Mosdns, logger *zap
 	if err != nil {
 		return nil, err
 	}
-	return &domainMemoryPool{
+	pool := &domainMemoryPool{
 		pluginTag:          strings.TrimSpace(pluginTag),
 		manager:            manager,
 		logger:             logger,
@@ -179,11 +190,14 @@ func newDomainMemoryPool(pluginTag string, manager *coremain.Mosdns, logger *zap
 		domainVariantCount: make(map[string]int),
 		rules:              make([]string, 0),
 		subscribers:        make([]func(), 0),
+		hotActiveRules:     make(map[string]struct{}),
 		recordChan:         make(chan *logItem, RecordBufferLimit),
 		writeSignalChan:    make(chan struct{}, 1),
 		stopChan:           make(chan struct{}),
 		workerDoneChan:     make(chan struct{}),
-	}, nil
+	}
+	pool.initHotPublisher()
+	return pool, nil
 }
 
 func (d *domainMemoryPool) Exec(_ context.Context, qCtx *query_context.Context) error {
@@ -352,7 +366,7 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 		go d.notifyDirty(*notify)
 	}
 	if len(hotRules) > 0 {
-		go d.pushHotRulesAdd(hotRules)
+		d.pushHotRulesAdd(hotRules)
 	}
 }
 
@@ -462,11 +476,37 @@ func (d *domainMemoryPool) runWrite(mode WriteMode) {
 func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	if mode == WriteModePeriodic && !d.dirtyPending.Load() {
+	if !d.shouldWrite(mode) {
 		return nil
 	}
 
 	snapshot := d.buildSnapshot(mode)
+	if d.shouldOnlySyncHotRules(mode) {
+		return d.syncHotRulesOnly(snapshot.rules)
+	}
+	return d.persistSnapshot(mode, snapshot)
+}
+
+func (d *domainMemoryPool) shouldWrite(mode WriteMode) bool {
+	if mode != WriteModePeriodic {
+		return true
+	}
+	return d.dirtyPending.Load() || d.hotNeedsReplace.Load()
+}
+
+func (d *domainMemoryPool) shouldOnlySyncHotRules(mode WriteMode) bool {
+	return mode == WriteModePeriodic && !d.dirtyPending.Load() && d.hotNeedsReplace.Load()
+}
+
+func (d *domainMemoryPool) syncHotRulesOnly(rules []string) error {
+	if err := d.pushHotRulesReplace(rules); err != nil {
+		return err
+	}
+	atomic.StoreInt64(&d.publishedCount, int64(len(rules)))
+	return nil
+}
+
+func (d *domainMemoryPool) persistSnapshot(mode WriteMode, snapshot writeSnapshot) error {
 	rulesHash := hashRules(snapshot.rules)
 	rulesChanged := mode == WriteModeFlush || !d.hasRulesHash || d.lastRulesHash != rulesHash
 	if rulesChanged {
@@ -480,7 +520,6 @@ func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 	d.hasRulesHash = true
 	d.dirtyPending.Store(false)
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
-	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
 
 	d.mu.Lock()
 	d.rules = append([]string(nil), snapshot.rules...)
@@ -488,6 +527,7 @@ func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 	if err := d.pushHotRulesReplace(snapshot.rules); err != nil {
 		return err
 	}
+	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
 
 	if mode != WriteModeShutdown && rulesChanged {
 		d.notifySubscribers()
@@ -759,9 +799,14 @@ func (d *domainMemoryPool) nextDirtyReason(entry *statEntry, now time.Time) stri
 func (d *domainMemoryPool) Close() error {
 	var closeErr error
 	d.closeOnce.Do(func() {
-		close(d.stopChan)
-		<-d.workerDoneChan
+		if d.workerStarted.Load() {
+			close(d.stopChan)
+			<-d.workerDoneChan
+		}
 		closeErr = d.performWrite(WriteModeShutdown)
+		if err := d.stopHotPublisher(); err != nil && closeErr == nil {
+			closeErr = err
+		}
 	})
 	return closeErr
 }

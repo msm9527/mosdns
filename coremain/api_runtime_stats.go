@@ -24,20 +24,26 @@ type CacheStatsSnapshot struct {
 }
 
 type DomainStatsSnapshot struct {
-	Key                 string `json:"key"`
-	Name                string `json:"name"`
-	Tag                 string `json:"tag"`
-	MemoryID            string `json:"memory_id,omitempty"`
-	Kind                string `json:"kind,omitempty"`
-	TotalEntries        int    `json:"total_entries"`
-	DirtyEntries        int    `json:"dirty_entries"`
-	PromotedEntries     int64  `json:"promoted_entries"`
-	PublishedRules      int64  `json:"published_rules"`
-	TotalObservations   int64  `json:"total_observations"`
-	DroppedObservations int64  `json:"dropped_observations"`
-	DroppedByBuffer     int64  `json:"dropped_by_buffer"`
-	DroppedByCap        int64  `json:"dropped_by_cap"`
-	Error               string `json:"error,omitempty"`
+	Key                  string `json:"key"`
+	Name                 string `json:"name"`
+	Tag                  string `json:"tag"`
+	MemoryID             string `json:"memory_id,omitempty"`
+	Kind                 string `json:"kind,omitempty"`
+	TotalEntries         int    `json:"total_entries"`
+	DirtyEntries         int    `json:"dirty_entries"`
+	PromotedEntries      int64  `json:"promoted_entries"`
+	PublishedRules       int64  `json:"published_rules"`
+	HotRules             int64  `json:"hot_rules,omitempty"`
+	HotPendingRules      int64  `json:"hot_pending_rules,omitempty"`
+	HotAddTotal          int64  `json:"hot_add_total,omitempty"`
+	HotReplaceTotal      int64  `json:"hot_replace_total,omitempty"`
+	HotDispatchFailTotal int64  `json:"hot_dispatch_fail_total,omitempty"`
+	LastHotSyncAtUnixMS  int64  `json:"last_hot_sync_at_unix_ms,omitempty"`
+	TotalObservations    int64  `json:"total_observations"`
+	DroppedObservations  int64  `json:"dropped_observations"`
+	DroppedByBuffer      int64  `json:"dropped_by_buffer"`
+	DroppedByCap         int64  `json:"dropped_by_cap"`
+	Error                string `json:"error,omitempty"`
 }
 
 type CacheStatsProvider interface {

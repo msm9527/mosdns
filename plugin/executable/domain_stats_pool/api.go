@@ -27,22 +27,14 @@ func (h *outputRankHeap) Pop() any {
 func (d *domainStatsPool) SnapshotDomainStats() coremain.DomainStatsSnapshot {
 	d.mu.Lock()
 	totalEntries := d.domainCount
-	dirtyEntries := 0
-	for domain, variants := range d.domainVariantCount {
-		if variants == 0 || domain == "" {
-			continue
-		}
-		if d.domainHasDirtyVariantLocked(domain) {
-			dirtyEntries++
-		}
-	}
+	dirtyEntries, promotedEntries := d.snapshotDomainCountersLocked()
 	d.mu.Unlock()
 	return coremain.DomainStatsSnapshot{
 		MemoryID:            d.memoryID,
 		Kind:                d.policy.kind,
 		TotalEntries:        totalEntries,
 		DirtyEntries:        dirtyEntries,
-		PromotedEntries:     atomic.LoadInt64(&d.promotedCount),
+		PromotedEntries:     int64(promotedEntries),
 		PublishedRules:      atomic.LoadInt64(&d.publishedCount),
 		TotalObservations:   atomic.LoadInt64(&d.totalCount),
 		DroppedObservations: atomic.LoadInt64(&d.droppedCount),
@@ -51,14 +43,22 @@ func (d *domainStatsPool) SnapshotDomainStats() coremain.DomainStatsSnapshot {
 	}
 }
 
-func (d *domainStatsPool) domainHasDirtyVariantLocked(domain string) bool {
+func (d *domainStatsPool) snapshotDomainCountersLocked() (int, int) {
+	dirty := make(map[string]struct{}, len(d.domainVariantCount))
+	promoted := make(map[string]struct{}, len(d.domainVariantCount))
 	for key, entry := range d.stats {
 		bare, _ := splitStorageKey(key)
-		if bare == domain && entry.RefreshState == "dirty" {
-			return true
+		if bare == "" {
+			continue
+		}
+		if entry.RefreshState == "dirty" {
+			dirty[bare] = struct{}{}
+		}
+		if entry.Promoted {
+			promoted[bare] = struct{}{}
 		}
 	}
-	return false
+	return len(dirty), len(promoted)
 }
 
 func (d *domainStatsPool) SnapshotRefreshCandidates(req coremain.DomainRefreshCandidateRequest) []coremain.DomainRefreshCandidate {

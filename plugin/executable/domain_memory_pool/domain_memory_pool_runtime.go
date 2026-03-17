@@ -37,7 +37,11 @@ func (d *domainMemoryPool) loadFromStore() error {
 		d.trackEntryCreatedLocked(variant.Domain)
 	}
 	d.rules = buildRulesFromStoredDomains(state.Domains)
+	d.replaceActiveHotRulesLocked(d.rules)
 	atomicStoreIfGreater(&d.totalCount, state.Meta.TotalObservations)
+	atomicStoreIfGreater(&d.promotedCount, int64(state.Meta.PromotedDomainCount))
+	atomicStoreIfGreater(&d.publishedCount, int64(len(d.rules)))
+	atomicStoreIfGreater(&d.lastHotSyncAtUnixMS, state.Meta.LastPublishAtUnixMS)
 	return nil
 }
 
