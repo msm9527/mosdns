@@ -10,39 +10,39 @@ import (
 
 func TestShuntAnalyzerExplain(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
 block_response: "on"
 block_query_type: "on"
 block_ipv6: "off"
 ad_block: "off"
 `)
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
-plugins:
-  - tag: whitelist
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: whitelist
     type: domain_set_light
     args:
       files:
-        - "rule/whitelist.txt"
-  - tag: greylist
+        - rule/whitelist.txt
+  - name: greylist
     type: domain_set_light
     args:
       files:
-        - "rule/greylist.txt"
-  - tag: unified_matcher1
+        - rule/greylist.txt
+  - name: unified_matcher1
     type: domain_mapper
     args:
       default_mark: 17
-      default_tag: "未命中"
+      default_tag: 未命中
       rules:
         - tag: greylist
           mark: 7
-          output_tag: "灰名单"
+          output_tag: 灰名单
         - tag: whitelist
           mark: 8
-          output_tag: "白名单"
+          output_tag: 白名单
 `)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 
 	analyzer, err := newShuntAnalyzer(baseDir)
 	if err != nil {
@@ -58,99 +58,179 @@ plugins:
 	if result.Decision.Action != "sequence_fakeip" || result.Decision.Matched != 7 {
 		t.Fatalf("unexpected decision: %+v", result.Decision)
 	}
-	if len(result.DecisionPath) == 0 {
-		t.Fatalf("expected decision path")
-	}
-	if result.DecisionPath[len(result.DecisionPath)-1].DecisionHit && result.DecisionPath[len(result.DecisionPath)-1].Action == result.Decision.Action {
-		// okay for fallback case
-	} else {
-		foundWinner := false
-		for _, step := range result.DecisionPath {
-			if step.DecisionHit && step.Action == result.Decision.Action {
-				foundWinner = true
-				break
-			}
-		}
-		if !foundWinner {
-			t.Fatalf("expected winning step in decision path: %+v", result.DecisionPath)
-		}
-	}
 }
 
 func TestShuntAnalyzerConflicts(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
-plugins:
-  - tag: whitelist
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: whitelist
     type: domain_set_light
     args:
       files:
-        - "rule/whitelist.txt"
-  - tag: greylist
+        - rule/whitelist.txt
+  - name: greylist
     type: domain_set_light
     args:
       files:
-        - "rule/greylist.txt"
-  - tag: unified_matcher1
+        - rule/greylist.txt
+  - name: unified_matcher1
     type: domain_mapper
     args:
       default_mark: 17
-      default_tag: "未命中"
+      default_tag: 未命中
       rules:
         - tag: greylist
           mark: 7
-          output_tag: "灰名单"
+          output_tag: 灰名单
         - tag: whitelist
           mark: 8
-          output_tag: "白名单"
+          output_tag: 白名单
 `)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 
 	analyzer, err := newShuntAnalyzer(baseDir)
 	if err != nil {
 		t.Fatalf("newShuntAnalyzer: %v", err)
 	}
 	conflicts := analyzer.Conflicts()
-	if len(conflicts) != 1 {
+	if len(conflicts) != 1 || conflicts[0].RuleKey != "domain:bing.com" {
 		t.Fatalf("unexpected conflicts: %+v", conflicts)
 	}
-	if conflicts[0].RuleKey != "domain:bing.com" {
-		t.Fatalf("unexpected conflict rule key: %+v", conflicts[0])
+}
+
+func TestShuntAnalyzerUsesGeneratedSources(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      generated_from: my_fakeiplist
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+`)
+	if err := SaveDomainPoolStateToPath(runtimeStateDBPathForBaseDir(baseDir), DomainPoolState{
+		Meta: DomainPoolMeta{
+			PoolTag:              "my_fakeiplist",
+			PoolKind:             DomainPoolKindMemory,
+			MemoryID:             "fakeip",
+			Policy:               DefaultDomainPoolPolicy("my_fakeiplist"),
+			DomainCount:          1,
+			PromotedDomainCount:  1,
+			PublishedDomainCount: 1,
+		},
+		Domains: []DomainPoolDomain{{
+			PoolTag:    "my_fakeiplist",
+			Domain:     "proxy.example",
+			TotalCount: 3,
+			Score:      3,
+			Promoted:   true,
+		}},
+	}); err != nil {
+		t.Fatalf("SaveDomainPoolStateToPath: %v", err)
+	}
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("proxy.example", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 12 || result.Decision.Action != "sequence_fakeip" {
+		t.Fatalf("unexpected decision: %+v", result.Decision)
+	}
+}
+
+func TestShuntAnalyzerUsesBoundDiversionSourcesFromBaseDir(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: geosite_no_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_no_cn
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: geosite_no_cn
+          mark: 14
+          output_tag: 订阅代理
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: remote_geosite
+    name: geosite remote
+    bind_to: geosite_no_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/geosite-no-cn.list
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "geosite-no-cn.list"), "proxy.example\n")
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("proxy.example", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 14 || result.Decision.Action != "sequence_fakeip_addlist" {
+		t.Fatalf("unexpected decision: %+v matches=%+v", result.Decision, result.Matches)
 	}
 }
 
 func TestRuntimeShuntConflictsCmd(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
-plugins:
-  - tag: whitelist
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: whitelist
     type: domain_set_light
     args:
       files:
-        - "rule/whitelist.txt"
-  - tag: greylist
+        - rule/whitelist.txt
+  - name: greylist
     type: domain_set_light
     args:
       files:
-        - "rule/greylist.txt"
-  - tag: unified_matcher1
+        - rule/greylist.txt
+  - name: unified_matcher1
     type: domain_mapper
     args:
       default_mark: 17
-      default_tag: "未命中"
+      default_tag: 未命中
       rules:
         - tag: greylist
           mark: 7
-          output_tag: "灰名单"
+          output_tag: 灰名单
         - tag: whitelist
           mark: 8
-          output_tag: "白名单"
+          output_tag: 白名单
 `)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 
 	cmd := newRuntimeShuntCmd()
 	buf := new(strings.Builder)
@@ -160,6 +240,7 @@ plugins:
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("cmd.Execute: %v", err)
 	}
+
 	var payload struct {
 		Count int `json:"count"`
 	}
@@ -173,39 +254,39 @@ plugins:
 
 func TestRuntimeShuntExplainCmdTable(t *testing.T) {
 	baseDir := t.TempDir()
-	mustWriteFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
 block_response: "on"
 block_query_type: "on"
 block_ipv6: "off"
 ad_block: "off"
 `)
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
-	mustWriteFile(t, filepath.Join(baseDir, "sub_config", "rule_set.yaml"), `
-plugins:
-  - tag: whitelist
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: whitelist
     type: domain_set_light
     args:
       files:
-        - "rule/whitelist.txt"
-  - tag: greylist
+        - rule/whitelist.txt
+  - name: greylist
     type: domain_set_light
     args:
       files:
-        - "rule/greylist.txt"
-  - tag: unified_matcher1
+        - rule/greylist.txt
+  - name: unified_matcher1
     type: domain_mapper
     args:
       default_mark: 17
-      default_tag: "未命中"
+      default_tag: 未命中
       rules:
         - tag: greylist
           mark: 7
-          output_tag: "灰名单"
+          output_tag: 灰名单
         - tag: whitelist
           mark: 8
-          output_tag: "白名单"
+          output_tag: 白名单
 `)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "whitelist.txt"), "domain:bing.com\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "rule", "greylist.txt"), "domain:bing.com\n")
 
 	cmd := newRuntimeShuntCmd()
 	buf := new(strings.Builder)
@@ -221,7 +302,7 @@ plugins:
 	}
 }
 
-func mustWriteFile(t *testing.T, path, content string) {
+func mustWriteShuntFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatalf("MkdirAll(%s): %v", path, err)

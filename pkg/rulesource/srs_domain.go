@@ -24,7 +24,7 @@ const (
 )
 
 func parseDomainSRS(data []byte) ([]string, error) {
-	reader, count, err := newSRSReader(data)
+	reader, count, _, err := newSRSReader(data)
 	if err != nil {
 		return nil, err
 	}
@@ -35,26 +35,26 @@ func parseDomainSRS(data []byte) ([]string, error) {
 	return uniqueStrings(rules), nil
 }
 
-func newSRSReader(data []byte) (*bufio.Reader, uint64, error) {
+func newSRSReader(data []byte) (*bufio.Reader, uint64, uint8, error) {
 	raw := bytes.NewReader(data)
 	var magic [3]byte
 	if _, err := io.ReadFull(raw, magic[:]); err != nil || magic != srsMagic {
-		return nil, 0, fmt.Errorf("invalid srs header")
+		return nil, 0, 0, fmt.Errorf("invalid srs header")
 	}
 	var version uint8
 	if err := binary.Read(raw, binary.BigEndian, &version); err != nil || version > srsRuleSetVersionCurrent {
-		return nil, 0, fmt.Errorf("unsupported srs version")
+		return nil, 0, 0, fmt.Errorf("unsupported srs version")
 	}
 	zr, err := zlib.NewReader(raw)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
 	reader := bufio.NewReader(zr)
 	count, err := binary.ReadUvarint(reader)
 	if err != nil {
-		return nil, 0, err
+		return nil, 0, 0, err
 	}
-	return reader, count, nil
+	return reader, count, version, nil
 }
 
 func collectDomainSRSRules(reader *bufio.Reader, count uint64, rules *[]string) error {

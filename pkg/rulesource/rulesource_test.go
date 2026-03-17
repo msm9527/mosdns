@@ -70,6 +70,12 @@ func TestParseIPFormats(t *testing.T) {
 	}
 	expectPrefixes(t, srsRules, []string{"4.4.4.0/24", "2001:db8::/32"})
 
+	srsRangeRules, err := ParseIPCIDRBytes(FormatSRS, buildIPRangeSRS(t))
+	if err != nil {
+		t.Fatalf("ParseIPCIDRBytes range srs: %v", err)
+	}
+	expectPrefixes(t, srsRangeRules, []string{"6.6.6.0/24"})
+
 	mrsRules, err := ParseIPCIDRBytes(FormatMRS, buildIPMRS(t))
 	if err != nil {
 		t.Fatalf("ParseIPCIDRBytes mrs: %v", err)
@@ -195,6 +201,47 @@ func buildIPSRS(t *testing.T) []byte {
 	}
 	writeSRSPrefix(t, bw, "4.4.4.0/24")
 	writeSRSPrefix(t, bw, "2001:db8::/32")
+	if err := bw.WriteByte(srsRuleItemFinal); err != nil {
+		t.Fatalf("WriteByte final: %v", err)
+	}
+	if err := bw.Flush(); err != nil {
+		t.Fatalf("bw.Flush: %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zw.Close: %v", err)
+	}
+	return raw.Bytes()
+}
+
+func buildIPRangeSRS(t *testing.T) []byte {
+	var raw bytes.Buffer
+	raw.Write(srsMagic[:])
+	if err := binary.Write(&raw, binary.BigEndian, uint8(2)); err != nil {
+		t.Fatalf("binary.Write version: %v", err)
+	}
+	zw := zlib.NewWriter(&raw)
+	bw := bufio.NewWriter(zw)
+	if _, err := varbin.WriteUvarint(bw, 1); err != nil {
+		t.Fatalf("WriteUvarint rules: %v", err)
+	}
+	if err := bw.WriteByte(0); err != nil {
+		t.Fatalf("WriteByte mode: %v", err)
+	}
+	if err := bw.WriteByte(srsRuleItemIPCIDR); err != nil {
+		t.Fatalf("WriteByte ip item: %v", err)
+	}
+	if err := bw.WriteByte(1); err != nil {
+		t.Fatalf("WriteByte ipset version: %v", err)
+	}
+	if err := binary.Write(bw, binary.BigEndian, uint64(1)); err != nil {
+		t.Fatalf("binary.Write range count: %v", err)
+	}
+	if err := varbin.Write(bw, binary.BigEndian, []byte{6, 6, 6, 0}); err != nil {
+		t.Fatalf("varbin.Write range from: %v", err)
+	}
+	if err := varbin.Write(bw, binary.BigEndian, []byte{6, 6, 6, 255}); err != nil {
+		t.Fatalf("varbin.Write range to: %v", err)
+	}
 	if err := bw.WriteByte(srsRuleItemFinal); err != nil {
 		t.Fatalf("WriteByte final: %v", err)
 	}

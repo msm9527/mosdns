@@ -33,7 +33,7 @@ function closeAndUnlock(dialogElement) {
 
 document.addEventListener('DOMContentLoaded', () => {
     const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440, AUDIT_WINDOW_MIN: 1, AUDIT_WINDOW_MAX: 86400, AUDIT_RAW_RETENTION_MAX: 365, AUDIT_AGG_RETENTION_MAX: 3650, AUDIT_STORAGE_MAX_MB: 10240 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: { query: '', exact: false }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: { query: '', exact: false }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], ruleFilters: { adguard: { format: 'all' }, diversion: { format: 'all' } }, requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const actionLocks = new Set();
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
@@ -77,8 +77,10 @@ document.addEventListener('DOMContentLoaded', () => {
         systemControlTabIndicator: document.querySelector('a[data-tab="system-control"] .status-indicator'),
         addAdguardRuleBtn: document.getElementById('add-adguard-rule-btn'),
         checkAdguardUpdatesBtn: document.getElementById('check-adguard-updates-btn'),
+        adguardFormatFilter: document.getElementById('adguard-format-filter'),
         adguardRulesTbody: document.getElementById('adguard-rules-tbody'),
         addDiversionRuleBtn: document.getElementById('add-diversion-rule-btn'),
+        diversionFormatFilter: document.getElementById('diversion-format-filter'),
         diversionRulesTbody: document.getElementById('diversion-rules-tbody'),
         ruleModal: document.getElementById('rule-modal'),
         modalTitle: document.getElementById('modal-title'),
@@ -88,7 +90,15 @@ document.addEventListener('DOMContentLoaded', () => {
         saveRuleBtn: document.getElementById('save-rule-btn'),
         ruleMode: document.getElementById('rule-mode'),
         ruleTypeWrapper: document.getElementById('rule-type-wrapper'),
-        ruleFilesWrapper: document.getElementById('rule-files-wrapper'),
+        ruleMatchMode: document.getElementById('rule-match-mode'),
+        ruleFormat: document.getElementById('rule-format'),
+        ruleSourceKind: document.getElementById('rule-source-kind'),
+        rulePathWrapper: document.getElementById('rule-path-wrapper'),
+        rulePathInput: document.getElementById('rule-path'),
+        ruleURLWrapper: document.getElementById('rule-url-wrapper'),
+        ruleURLInput: document.getElementById('rule-url'),
+        ruleAutoUpdateWrapper: document.getElementById('rule-auto-update-wrapper'),
+        ruleUpdateIntervalWrapper: document.getElementById('rule-update-interval-wrapper'),
         rulesSubNavLinks: document.querySelectorAll('.sub-nav-link'),
         rulesSubTabContents: document.querySelectorAll('.sub-tab-content'),
         logDetailModal: document.getElementById('log-detail-modal'),
@@ -474,36 +484,35 @@ document.addEventListener('DOMContentLoaded', () => {
             const isDiversion = mode === 'diversion';
             elements.modalTitle.textContent = rule ? `修改${isDiversion ? '分流' : '拦截'}规则` : `添加${isDiversion ? '分流' : '拦截'}规则`;
             elements.ruleTypeWrapper.style.display = isDiversion ? 'block' : 'none';
-            elements.ruleFilesWrapper.style.display = isDiversion ? 'block' : 'none';
-            const regexpWrapper = document.getElementById('rule-enable-regexp-wrapper');
-            if (regexpWrapper) {
-                regexpWrapper.style.display = isDiversion ? 'flex' : 'none';
-            }
             form.elements['type'].required = isDiversion;
-            form.elements['files'].required = isDiversion;
+            configureRuleMatchModeOptions(mode);
 
             if (rule) {
-                form.elements['id'].value = rule.id ?? rule.name;
+                form.elements['id'].value = rule.id || '';
+                form.elements['source_id'].value = rule.id || '';
                 form.elements['name'].value = rule.name;
-                form.elements['url'].value = rule.url;
+                form.elements['type'].value = rule.bind_to || '';
+                form.elements['match_mode'].value = rule.match_mode;
+                form.elements['format'].value = rule.format;
+                form.elements['source_kind'].value = rule.source_kind;
+                form.elements['path'].value = rule.path || '';
+                form.elements['url'].value = rule.url || '';
                 form.elements['auto_update'].checked = rule.auto_update;
                 form.elements['update_interval_hours'].value = rule.update_interval_hours || 24;
-                if (form.elements['enable_regexp']) {
-                    form.elements['enable_regexp'].checked = rule.enable_regexp || false;
-                }
-                if (isDiversion) {
-                    form.elements['type'].value = rule.type;
-                    form.elements['files'].value = rule.files;
-                }
             } else {
                 form.elements['id'].value = '';
+                form.elements['source_id'].value = '';
+                form.elements['type'].value = '';
+                form.elements['match_mode'].value = isDiversion ? 'domain_set' : 'adguard_native';
+                form.elements['format'].value = isDiversion ? 'list' : 'rules';
+                form.elements['source_kind'].value = 'remote';
+                form.elements['path'].value = '';
+                form.elements['url'].value = '';
                 form.elements['auto_update'].checked = true;
-                if (form.elements['enable_regexp']) {
-                    form.elements['enable_regexp'].checked = false;
-                }
                 form.elements['update_interval_hours'].value = 24;
-                if (isDiversion) form.elements['type'].value = "";
             }
+            syncRuleFormByMode(mode);
+            syncRuleFormBySourceKind(form.elements['source_kind'].value);
 
             // -- [修改] -- 采用新的滚动锁定机制
             lockScroll();
@@ -2429,86 +2438,283 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-function renderRuleTable(tbody, rules, mode) {
-        // [修复] 移除旧的 mobile-rule-card-layout 类，使用新的 mobile-card-view
-        tbody.closest('table').classList.toggle('mobile-card-view', state.isMobile);
-        
-        const sortedRules = [...rules].sort((a, b) => (a.name || '').localeCompare(b.name || ''));
-        renderTable(tbody, sortedRules, (rule, index) => {
-            // [修复] 如果是移动端，强制使用新的卡片渲染逻辑
-            if (state.isMobile) {
-                const tr = document.createElement('tr');
-                tr.dataset.ruleId = mode === 'adguard' ? rule.id : rule.name;
-                if (rule.type) tr.dataset.ruleType = rule.type;
+    const RULE_BIND_LABELS = { geosite_cn: '国内域名', geosite_no_cn: '代理域名', geoip_cn: '国内 IP', cuscn: '自定义直连', cusnocn: '自定义代理' };
+    const RULE_MATCH_MODE_BY_BIND = { geosite_cn: 'domain_set', geosite_no_cn: 'domain_set', geoip_cn: 'ip_cidr_set', cuscn: 'domain_set', cusnocn: 'domain_set' };
 
-                const lastUpdated = rule.last_updated && !rule.last_updated.startsWith('0001-01-01') ? formatRelativeTime(rule.last_updated) : '从未';
-                
-                // 构建卡片内容
-                tr.innerHTML = `
-                    <td>
-                        <div class="mobile-system-card">
-                            <div class="card-header">
-                                <div style="display:flex; flex-direction:column; max-width:70%;">
-                                    <span class="card-title">${rule.name}</span>
-                                    <small style="color:var(--color-text-secondary); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${rule.url}</small>
-                                </div>
-                                <label class="switch">
-                                    <input type="checkbox" class="rule-enabled-toggle" ${rule.enabled ? 'checked' : ''}>
-                                    <span class="slider"></span>
-                                </label>
-                            </div>
-                            <div class="mobile-stats-grid">
-                                <div class="mobile-stat-item">
-                                    <span class="mobile-stat-label">规则数</span>
-                                    <span class="mobile-stat-value">${(rule.rule_count || 0).toLocaleString()}</span>
-                                </div>
-                                <div class="mobile-stat-item">
-                                    <span class="mobile-stat-label">上次更新</span>
-                                    <span class="mobile-stat-value">${lastUpdated}</span>
-                                </div>
-                                ${mode === 'diversion' ? `
-                                <div class="mobile-stat-item" style="grid-column: 1 / -1;">
-                                    <span class="mobile-stat-label">类型</span>
-                                    <span class="mobile-stat-value"><span class="response-tag other">${rule.type}</span></span>
-                                </div>` : ''}
-                            </div>
-                            <div class="mobile-card-actions">
-                                ${mode === 'diversion' && rule.url ? `<button class="button secondary small rule-update-btn" style="flex:1;">更新</button>` : ''}
-                                <button class="button secondary small rule-edit-btn" style="flex:1;">编辑</button>
-                                <button class="button danger small rule-delete-btn" style="flex:1;">删除</button>
-                            </div>
-                        </div>
-                    </td>
-                `;
-                return tr;
-            } else {
-                // PC 端保持原样
-                const item = renderRuleTableRow(rule, mode);
-                item.dataset.ruleId = mode === 'adguard' ? rule.id : rule.name;
-                if (rule.type) item.dataset.ruleType = rule.type;
-                return item;
+    function configureRuleMatchModeOptions(mode) {
+        Array.from(elements.ruleMatchMode.options).forEach((option) => {
+            option.disabled = false;
+            option.hidden = false;
+        });
+        if (mode === 'adguard') {
+            const ipOption = elements.ruleMatchMode.querySelector('option[value="ip_cidr_set"]');
+            if (ipOption) {
+                ipOption.disabled = true;
+                ipOption.hidden = true;
             }
-        }, mode);
+            elements.ruleMatchMode.disabled = false;
+            return;
+        }
+        const adguardOption = elements.ruleMatchMode.querySelector('option[value="adguard_native"]');
+        if (adguardOption) {
+            adguardOption.disabled = true;
+            adguardOption.hidden = true;
+        }
+        elements.ruleMatchMode.disabled = true;
     }
 
-    function renderRuleTableRow(rule, mode) { const tr = document.createElement('tr'); const lastUpdated = rule.last_updated && !rule.last_updated.startsWith('0001-01-01') ? new Date(rule.last_updated).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-') : '—'; let html = `<td class="text-center"><label class="switch"><input type="checkbox" class="rule-enabled-toggle" ${rule.enabled ? 'checked' : ''}><span class="slider"></span></label></td><td>${rule.name}</td>`; if (mode === 'diversion') { html += `<td><span class="response-tag other">${rule.type}</span></td>`; } html += `<td><span class="truncate-text" title="${rule.url}">${rule.url}</span></td><td class="text-right">${(rule.rule_count || 0).toLocaleString()}</td><td>${lastUpdated}</td><td class="text-center"><div style="display: inline-flex; gap: 0.5rem; white-space: nowrap;">`; if (mode === 'diversion' && rule.url) { html += `<button class="button secondary rule-update-btn" style="padding: 0.4rem 0.8rem;" title="更新此规则"><span>更新</span></button>`; } html += `<button class="button secondary rule-edit-btn" style="padding: 0.4rem 0.8rem;"><span>编辑</span></button><button class="button danger rule-delete-btn" style="padding: 0.4rem 0.8rem;"><span>删除</span></button></div></td>`; tr.innerHTML = html; return tr; }
-
-    function renderRuleMobileCard(rule, mode) {
-        const card = document.createElement('div'); card.className = 'rule-card';
-        const lastUpdated = rule.last_updated && !rule.last_updated.startsWith('0001-01-01') ? formatRelativeTime(rule.last_updated) : '从未';
-        let metaHtml = `<span class="url" title="${rule.url}">${rule.url}</span>`;
-        if (mode === 'diversion') metaHtml += `<span><span class="response-tag other">${rule.type}</span></span>`;
-        metaHtml += `<span><strong>规则数:</strong> ${(rule.rule_count || 0).toLocaleString()}</span><span><strong>更新于:</strong> ${lastUpdated}</span>`;
-        let actionsHtml = '';
-        if (mode === 'diversion' && rule.url) actionsHtml += `<button class="button secondary rule-update-btn"><span>更新</span></button>`;
-        actionsHtml += `<button class="button secondary rule-edit-btn"><span>编辑</span></button><button class="button danger rule-delete-btn"><span>删除</span></button>`;
-        card.innerHTML = `<div class="rule-card-toggle"><label class="switch"><input type="checkbox" class="rule-enabled-toggle" ${rule.enabled ? 'checked' : ''}><span class="slider"></span></label></div><div class="rule-card-name">${rule.name}</div><div class="rule-card-meta">${metaHtml}</div><div class="rule-card-actions">${actionsHtml}</div>`;
-        return card;
+    function configureRuleFormatOptions(matchMode) {
+        const unsupported = {
+            adguard_native: ['srs', 'mrs'],
+            domain_set: [],
+            ip_cidr_set: ['rules'],
+        };
+        Array.from(elements.ruleFormat.options).forEach((option) => {
+            const disabled = (unsupported[matchMode] || []).includes(option.value);
+            option.disabled = disabled;
+            option.hidden = disabled;
+        });
+        if (elements.ruleFormat.selectedOptions[0]?.disabled) {
+            elements.ruleFormat.value = matchMode === 'adguard_native' ? 'rules' : 'list';
+        }
     }
 
-    async function handleAdguardUpdateCheck() { ui.setLoading(elements.checkAdguardUpdatesBtn, true); ui.showToast('已开始在后台更新所有启用的拦截规则...'); try { await api.fetch('/api/v1/rules/adguard/update', { method: 'POST' }); ui.showToast('更新请求已发送，5秒后自动刷新列表...', 'success'); await new Promise(resolve => setTimeout(resolve, 5000)); await adguardManager.load(); ui.showToast('拦截规则列表已刷新！', 'success'); } catch (e) { } finally { ui.setLoading(elements.checkAdguardUpdatesBtn, false); } }
-    async function handleRuleTableClick(event, mode) { const target = event.target.closest('button, input.rule-enabled-toggle'); if (!target) return; const itemElement = target.closest('[data-rule-id]'); if (!itemElement) return; const id = itemElement.dataset.ruleId; const rules = mode === 'adguard' ? state.adguardRules : state.diversionRules; const rule = rules.find(r => (mode === 'adguard' ? r.id : r.name) === id); if (!rule) return; if (target.matches('.rule-edit-btn')) ui.openRuleModal(mode, rule); else if (target.matches('.rule-delete-btn')) { if (confirm(`确定要删除规则 "${rule.name}" 吗？此操作不可恢复。`)) { ui.setLoading(target, true); try { if (mode === 'adguard') await api.fetch(`/api/v1/rules/adguard/${encodeURIComponent(id)}`, { method: 'DELETE' }); else await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(rule.type)}/${encodeURIComponent(id)}`, { method: 'DELETE' }); ui.showToast(`规则 "${rule.name}" 已删除`); await (mode === 'adguard' ? adguardManager.load() : diversionManager.load()); } catch (e) { console.error(`Failed to delete rule ${id}:`, e); } finally { ui.setLoading(target, false); } } } else if (target.matches('.rule-update-btn')) { ui.setLoading(target, true); ui.showToast(`正在后台更新规则 "${rule.name}"...`); try { await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(rule.type)}/${encodeURIComponent(id)}/update`, { method: 'POST' }); ui.showToast('更新请求已发送, 5秒后自动刷新', 'success'); setTimeout(() => diversionManager.load(), 5000); } catch (e) { } finally { ui.setLoading(target, false); } } else if (target.matches('.rule-enabled-toggle')) { const updatedRule = { ...rule, enabled: target.checked }; target.disabled = true; try { if (mode === 'adguard') await api.fetch(`/api/v1/rules/adguard/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updatedRule) }); else await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(rule.type)}/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(updatedRule) }); rule.enabled = target.checked; ui.showToast(`规则 "${rule.name}" 已${target.checked ? '启用' : '禁用'}`); } catch (error) { target.checked = !target.checked; } finally { target.disabled = false; } } }
-    async function handleRuleFormSubmit(event) { event.preventDefault(); ui.setLoading(elements.saveRuleBtn, true); const form = elements.ruleForm; const mode = form.elements['mode'].value; const id = form.elements['id'].value; try { if (mode === 'adguard') { const data = { name: form.elements['name'].value, url: form.elements['url'].value, auto_update: form.elements['auto_update'].checked, update_interval_hours: parseInt(form.elements['update_interval_hours'].value, 10) || 24 }; if (id) { const originalRule = state.adguardRules.find(r => r.id === id); await api.fetch(`/api/v1/rules/adguard/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...originalRule, ...data }) }); } else { await api.fetch('/api/v1/rules/adguard', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...data, enabled: true }) }); } ui.showToast(`广告拦截规则${id ? '更新' : '添加'}成功`); await adguardManager.load(); } else { const data = { name: form.elements['name'].value, url: form.elements['url'].value, type: form.elements['type'].value, files: form.elements['files'].value, auto_update: form.elements['auto_update'].checked, enable_regexp: form.elements['enable_regexp'] ? form.elements['enable_regexp'].checked : false, update_interval_hours: parseInt(form.elements['update_interval_hours'].value, 10) || 24 }; if (!data.type) throw new Error('无效的分流规则类型'); if (id) { const originalRule = state.diversionRules.find(r => r.name === id); if (data.name !== id) { if (!confirm(`规则名称已从 "${id}" 更改为 "${data.name}"。\n\n这将删除旧规则并创建一个新规则，确定要继续吗？`)) throw new Error('User cancelled name change.'); await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(originalRule.type)}/${encodeURIComponent(id)}`, { method: 'DELETE' }); await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(data.type)}/${encodeURIComponent(data.name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...data, enabled: originalRule.enabled }) }); } else { await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(data.type)}/${encodeURIComponent(id)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...originalRule, ...data }) }); } } else { await api.fetch(`/api/v1/rules/diversion/${encodeURIComponent(data.type)}/${encodeURIComponent(data.name)}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...data, enabled: true }) }); } ui.showToast(`分流规则${id ? '更新' : '添加'}成功`); await diversionManager.load(); if (!id || (id && data.name !== id)) { ui.showToast('正在后台获取规则详情...'); setTimeout(() => diversionManager.load(), 5000); } } ui.closeRuleModal(); } catch (err) { console.error(`${mode} form submission failed:`, err); } finally { ui.setLoading(elements.saveRuleBtn, false); } }
+    function syncRuleFormByMode(mode) {
+        if (mode === 'diversion') {
+            const bindTo = elements.ruleForm.elements['type'].value;
+            const matchMode = RULE_MATCH_MODE_BY_BIND[bindTo] || 'domain_set';
+            elements.ruleMatchMode.value = matchMode;
+            configureRuleFormatOptions(matchMode);
+            return;
+        }
+        configureRuleFormatOptions(elements.ruleMatchMode.value || 'adguard_native');
+    }
+
+    function syncRuleFormBySourceKind(sourceKind) {
+        const isRemote = sourceKind === 'remote';
+        elements.ruleURLWrapper.style.display = isRemote ? 'block' : 'none';
+        elements.ruleAutoUpdateWrapper.style.display = isRemote ? 'flex' : 'none';
+        elements.ruleUpdateIntervalWrapper.style.display = isRemote ? 'block' : 'none';
+        elements.ruleForm.elements['url'].required = isRemote;
+        if (!isRemote) {
+            elements.ruleForm.elements['auto_update'].checked = false;
+        }
+    }
+
+    function formatRuleTime(value) {
+        return value && !value.startsWith('0001-01-01') ? new Date(value).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-') : '—';
+    }
+
+    function formatRuleTimeRelative(value) {
+        return value && !value.startsWith('0001-01-01') ? formatRelativeTime(value) : '从未';
+    }
+
+    function formatRuleLocation(rule) {
+        return rule.source_kind === 'remote' ? (rule.url || rule.path || '—') : (rule.path || '—');
+    }
+
+    function formatRuleBind(rule, mode) {
+        if (mode === 'adguard') return 'adguard';
+        return RULE_BIND_LABELS[rule.bind_to] || rule.bind_to || '—';
+    }
+
+    function filterRulesForMode(rules, mode) {
+        const format = state.ruleFilters[mode].format;
+        return rules.filter(rule => format === 'all' || rule.format === format);
+    }
+
+    function renderRuleTable(tbody, rules, mode) {
+        tbody.closest('table').classList.toggle('mobile-card-view', state.isMobile);
+        const filtered = filterRulesForMode(rules, mode).sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        renderTable(tbody, filtered, (rule) => state.isMobile ? renderRuleMobileRow(rule, mode) : renderRuleTableRow(rule, mode), mode);
+    }
+
+    function renderRuleTableRow(rule, mode) {
+        const tr = document.createElement('tr');
+        tr.dataset.ruleId = rule.id;
+        const location = formatRuleLocation(rule);
+        const actions = [];
+        if (rule.source_kind === 'remote') actions.push(`<button class="button secondary rule-update-btn" style="padding: 0.4rem 0.8rem;"><span>更新</span></button>`);
+        actions.push(`<button class="button secondary rule-edit-btn" style="padding: 0.4rem 0.8rem;"><span>编辑</span></button>`);
+        actions.push(`<button class="button danger rule-delete-btn" style="padding: 0.4rem 0.8rem;"><span>删除</span></button>`);
+        tr.innerHTML = `
+            <td class="text-center"><label class="switch"><input type="checkbox" class="rule-enabled-toggle" ${rule.enabled ? 'checked' : ''}><span class="slider"></span></label></td>
+            <td>${rule.name}</td>
+            ${mode === 'diversion' ? `<td><span class="response-tag other">${formatRuleBind(rule, mode)}</span></td>` : ''}
+            <td><span class="response-tag other">${rule.match_mode}</span></td>
+            <td><span class="response-tag other">${rule.format}</span></td>
+            <td><span class="response-tag other">${rule.source_kind}</span></td>
+            <td><span class="truncate-text" title="${location}">${location}</span></td>
+            <td class="text-right">${(rule.rule_count || 0).toLocaleString()}</td>
+            <td>${formatRuleTime(rule.last_updated)}</td>
+            <td><span class="truncate-text" title="${rule.last_error || ''}">${rule.last_error || '—'}</span></td>
+            <td class="text-center"><div style="display:inline-flex; gap:0.5rem; white-space:nowrap;">${actions.join('')}</div></td>
+        `;
+        return tr;
+    }
+
+    function renderRuleMobileRow(rule, mode) {
+        const tr = document.createElement('tr');
+        tr.dataset.ruleId = rule.id;
+        const location = formatRuleLocation(rule);
+        const actions = [];
+        if (rule.source_kind === 'remote') actions.push(`<button class="button secondary small rule-update-btn" style="flex:1;">更新</button>`);
+        actions.push(`<button class="button secondary small rule-edit-btn" style="flex:1;">编辑</button>`);
+        actions.push(`<button class="button danger small rule-delete-btn" style="flex:1;">删除</button>`);
+        tr.innerHTML = `
+            <td>
+                <div class="mobile-system-card">
+                    <div class="card-header">
+                        <div style="display:flex; flex-direction:column; max-width:75%;">
+                            <span class="card-title">${rule.name}</span>
+                            <small style="color:var(--color-text-secondary); margin-top:4px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${location}</small>
+                        </div>
+                        <label class="switch">
+                            <input type="checkbox" class="rule-enabled-toggle" ${rule.enabled ? 'checked' : ''}>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <div class="mobile-stats-grid">
+                        <div class="mobile-stat-item">
+                            <span class="mobile-stat-label">匹配</span>
+                            <span class="mobile-stat-value">${rule.match_mode}</span>
+                        </div>
+                        <div class="mobile-stat-item">
+                            <span class="mobile-stat-label">格式</span>
+                            <span class="mobile-stat-value">${rule.format}</span>
+                        </div>
+                        <div class="mobile-stat-item">
+                            <span class="mobile-stat-label">来源</span>
+                            <span class="mobile-stat-value">${rule.source_kind}</span>
+                        </div>
+                        <div class="mobile-stat-item">
+                            <span class="mobile-stat-label">规则数</span>
+                            <span class="mobile-stat-value">${(rule.rule_count || 0).toLocaleString()}</span>
+                        </div>
+                        ${mode === 'diversion' ? `<div class="mobile-stat-item" style="grid-column: 1 / -1;"><span class="mobile-stat-label">绑定入口</span><span class="mobile-stat-value">${formatRuleBind(rule, mode)}</span></div>` : ''}
+                        <div class="mobile-stat-item" style="grid-column: 1 / -1;">
+                            <span class="mobile-stat-label">上次更新</span>
+                            <span class="mobile-stat-value">${formatRuleTimeRelative(rule.last_updated)}</span>
+                        </div>
+                        ${rule.last_error ? `<div class="mobile-stat-item" style="grid-column: 1 / -1;"><span class="mobile-stat-label">最近错误</span><span class="mobile-stat-value">${rule.last_error}</span></div>` : ''}
+                    </div>
+                    <div class="mobile-card-actions">${actions.join('')}</div>
+                </div>
+            </td>
+        `;
+        return tr;
+    }
+
+    async function handleAdguardUpdateCheck() {
+        ui.setLoading(elements.checkAdguardUpdatesBtn, true);
+        try {
+            await api.fetch('/api/v1/rules/adguard/update', { method: 'POST' });
+            await adguardManager.load();
+            ui.showToast('广告规则远程源已刷新', 'success');
+        } finally {
+            ui.setLoading(elements.checkAdguardUpdatesBtn, false);
+        }
+    }
+
+    function getRuleListByMode(mode) {
+        return mode === 'adguard' ? state.adguardRules : state.diversionRules;
+    }
+
+    async function handleRuleTableClick(event, mode) {
+        const target = event.target.closest('button, input.rule-enabled-toggle');
+        if (!target) return;
+        const itemElement = target.closest('[data-rule-id]');
+        if (!itemElement) return;
+        const id = itemElement.dataset.ruleId;
+        const rule = getRuleListByMode(mode).find(r => r.id === id);
+        if (!rule) return;
+        if (target.matches('.rule-edit-btn')) {
+            ui.openRuleModal(mode, rule);
+            return;
+        }
+        if (target.matches('.rule-delete-btn')) {
+            if (!confirm(`确定要删除规则 "${rule.name}" 吗？此操作不可恢复。`)) return;
+            ui.setLoading(target, true);
+            try {
+                await api.fetch(`/api/v1/rules/${mode}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                ui.showToast(`规则 "${rule.name}" 已删除`);
+                await (mode === 'adguard' ? adguardManager.load() : diversionManager.load());
+            } finally {
+                ui.setLoading(target, false);
+            }
+            return;
+        }
+        if (target.matches('.rule-update-btn')) {
+            ui.setLoading(target, true);
+            try {
+                await api.fetch(`/api/v1/rules/${mode}/${encodeURIComponent(id)}/update`, { method: 'POST' });
+                await (mode === 'adguard' ? adguardManager.load() : diversionManager.load());
+                ui.showToast(`规则 "${rule.name}" 已刷新`, 'success');
+            } finally {
+                ui.setLoading(target, false);
+            }
+            return;
+        }
+        if (target.matches('.rule-enabled-toggle')) {
+            target.disabled = true;
+            try {
+                await api.fetch(`/api/v1/rules/${mode}/${encodeURIComponent(id)}`, {
+                    method: 'PUT',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ ...rule, enabled: target.checked }),
+                });
+                rule.enabled = target.checked;
+                ui.showToast(`规则 "${rule.name}" 已${target.checked ? '启用' : '禁用'}`);
+            } catch (error) {
+                target.checked = !target.checked;
+            } finally {
+                target.disabled = false;
+            }
+        }
+    }
+
+    function buildRuleFormPayload(mode, existingRule) {
+        const form = elements.ruleForm;
+        const sourceKind = form.elements['source_kind'].value;
+        const bindTo = mode === 'diversion' ? form.elements['type'].value : '';
+        const matchMode = mode === 'diversion' ? (RULE_MATCH_MODE_BY_BIND[bindTo] || 'domain_set') : form.elements['match_mode'].value;
+        return {
+            id: form.elements['source_id'].value.trim(),
+            name: form.elements['name'].value.trim(),
+            bind_to: bindTo,
+            enabled: existingRule ? existingRule.enabled : true,
+            match_mode: matchMode,
+            format: form.elements['format'].value,
+            source_kind: sourceKind,
+            path: form.elements['path'].value.trim(),
+            url: sourceKind === 'remote' ? form.elements['url'].value.trim() : '',
+            auto_update: sourceKind === 'remote' ? form.elements['auto_update'].checked : false,
+            update_interval_hours: sourceKind === 'remote' && form.elements['auto_update'].checked ? (parseInt(form.elements['update_interval_hours'].value, 10) || 24) : 0,
+        };
+    }
+
+    async function handleRuleFormSubmit(event) {
+        event.preventDefault();
+        ui.setLoading(elements.saveRuleBtn, true);
+        const form = elements.ruleForm;
+        const mode = form.elements['mode'].value;
+        const originalId = form.elements['id'].value;
+        const existingRule = getRuleListByMode(mode).find(rule => rule.id === originalId) || null;
+        try {
+            const payload = buildRuleFormPayload(mode, existingRule);
+            const method = originalId ? 'PUT' : 'POST';
+            const url = originalId ? `/api/v1/rules/${mode}/${encodeURIComponent(originalId)}` : `/api/v1/rules/${mode}`;
+            await api.fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            await (mode === 'adguard' ? adguardManager.load() : diversionManager.load());
+            ui.showToast(`${mode === 'adguard' ? '广告拦截' : '在线分流'}规则${originalId ? '更新' : '添加'}成功`, 'success');
+            ui.closeRuleModal();
+        } catch (err) {
+            console.error(`${mode} form submission failed:`, err);
+        } finally {
+            ui.setLoading(elements.saveRuleBtn, false);
+        }
+    }
+
     const adguardManager = { async load() { try { state.adguardRules = await api.fetch('/api/v1/rules/adguard') || []; } catch (error) { state.adguardRules = []; } this.render(); }, render() { renderRuleTable(elements.adguardRulesTbody, state.adguardRules, 'adguard'); }, };
     const diversionManager = { async load() { try { state.diversionRules = await api.fetch('/api/v1/rules/diversion') || []; } catch (e) { state.diversionRules = []; } this.render(); }, render() { renderRuleTable(elements.diversionRulesTbody, state.diversionRules, 'diversion'); }, };
 
@@ -4534,6 +4740,17 @@ const handleInteractiveClick = (e) => {
         elements.ruleForm.addEventListener('submit', handleRuleFormSubmit);
         elements.closeRuleModalBtn.addEventListener('click', () => closeAndUnlock(elements.ruleModal));
         elements.cancelRuleModalBtn.addEventListener('click', () => closeAndUnlock(elements.ruleModal));
+        elements.ruleSourceKind?.addEventListener('change', (e) => syncRuleFormBySourceKind(e.target.value));
+        elements.ruleTypeWrapper?.querySelector('select')?.addEventListener('change', () => syncRuleFormByMode(elements.ruleMode.value));
+        elements.ruleMatchMode?.addEventListener('change', (e) => configureRuleFormatOptions(e.target.value));
+        elements.adguardFormatFilter?.addEventListener('change', (e) => {
+            state.ruleFilters.adguard.format = e.target.value;
+            adguardManager.render();
+        });
+        elements.diversionFormatFilter?.addEventListener('change', (e) => {
+            state.ruleFilters.diversion.format = e.target.value;
+            diversionManager.render();
+        });
         elements.addAdguardRuleBtn.addEventListener('click', () => ui.openRuleModal('adguard'));
         elements.checkAdguardUpdatesBtn.addEventListener('click', handleAdguardUpdateCheck);
         elements.adguardRulesTbody.addEventListener('click', (e) => handleRuleTableClick(e, 'adguard'));
@@ -4552,10 +4769,10 @@ const handleInteractiveClick = (e) => {
                 if (tabId === 'list-mgmt' && !state.listManagerInitialized) {
                     listManager.init();
                 } else if (tabId === 'adguard' && state.adguardRules.length === 0) {
-                    renderSkeletonRows(elements.adguardRulesTbody, 5, state.isMobile ? 1 : 6);
+                    renderSkeletonRows(elements.adguardRulesTbody, 5, state.isMobile ? 1 : 10);
                     adguardManager.load();
                 } else if (tabId === 'diversion' && state.diversionRules.length === 0) {
-                    renderSkeletonRows(elements.diversionRulesTbody, 5, state.isMobile ? 1 : 7);
+                    renderSkeletonRows(elements.diversionRulesTbody, 5, state.isMobile ? 1 : 11);
                     diversionManager.load();
                 }
             });
@@ -4942,11 +5159,11 @@ document.addEventListener('DOMContentLoaded', function () {
                         </header>
                         <div class="card-body" style="padding: 1.5rem;">
                             <div style="line-height: 1.6; font-size: 0.95rem;">
-                                <p style="margin-bottom: 0.5rem;"><strong>geositecn:</strong> 中国大陆域名列表，用于直连。</p>
-                                <p style="margin-bottom: 0.5rem;"><strong>geositenocn:</strong> 非中国大陆域名列表，用于代理。</p>
-                                <p style="margin-bottom: 0.5rem;"><strong>geoipcn:</strong> 中国大陆 IP 列表。</p>
-                                <p style="margin-bottom: 0.5rem;"><strong>cuscn:</strong> 自定义中国大陆域名。</p>
-                                <p style="margin-bottom: 0.5rem;"><strong>cusnocn:</strong> 自定义非中国大陆域名。</p>
+                                <p style="margin-bottom: 0.5rem;"><strong>geosite_cn:</strong> 国内域名入口，聚合所有直连域名 source。</p>
+                                <p style="margin-bottom: 0.5rem;"><strong>geosite_no_cn:</strong> 代理域名入口，聚合所有代理域名 source。</p>
+                                <p style="margin-bottom: 0.5rem;"><strong>geoip_cn:</strong> 国内 IP 入口，聚合所有 IP/CIDR source。</p>
+                                <p style="margin-bottom: 0.5rem;"><strong>cuscn:</strong> 自定义直连补充入口，可挂多个本地或远程 source。</p>
+                                <p style="margin-bottom: 0.5rem;"><strong>cusnocn:</strong> 自定义代理补充入口，可挂多个本地或远程 source。</p>
                             </div>
                         </div>
                         <footer class="modal-footer" style="padding: 1rem 1.5rem; border-top: 1px solid var(--color-border); text-align: right;">
