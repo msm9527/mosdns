@@ -1,20 +1,11 @@
 package sd_set
 
 import (
-	"bufio"
-	"bytes"
-	"compress/zlib"
 	"context"
-	"encoding/binary"
-	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"net/http"
-	"os"
-	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,16 +13,16 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	scdomain "github.com/sagernet/sing/common/domain"
-	"github.com/sagernet/sing/common/varbin"
 	"golang.org/x/net/proxy"
 )
 
 const (
-	PluginType       = "sd_set"
-	downloadTimeout  = 60 * time.Second
-	runtimeNamespace = "diversion_rule"
+	PluginType      = "sd_set"
+	syncTimeout     = 60 * time.Second
+	syncCheckPeriod = 10 * time.Minute
+	scope           = rulesource.ScopeDiversion
 )
 
 func init() {
@@ -39,114 +30,71 @@ func init() {
 }
 
 type Args struct {
-	Socks5      string `yaml:"socks5,omitempty"`
-	LocalConfig string `yaml:"local_config"`
-}
-
-type RuleSource struct {
-	Name                string    `json:"name"`
-	Type                string    `json:"type"`
-	Files               string    `json:"files"`
-	URL                 string    `json:"url"`
-	Enabled             bool      `json:"enabled"`
-	EnableRegexp        bool      `json:"enable_regexp,omitempty"` // Added: 默认为 false
-	AutoUpdate          bool      `json:"auto_update"`
-	UpdateIntervalHours int       `json:"update_interval_hours"`
-	RuleCount           int       `json:"rule_count"`
-	LastUpdated         time.Time `json:"last_updated"`
+	Socks5     string `yaml:"socks5,omitempty"`
+	ConfigFile string `yaml:"config_file"`
+	SourceID   string `yaml:"source_id"`
 }
 
 type SdSet struct {
-	matcher atomic.Value // 使用 atomic.Value 来安全地读写 matcher 指针
+	pluginTag string
+	baseArgs  *Args
 
-	mu      sync.RWMutex // mu 保护 sources map 和相关的配置文件写入
-	sources map[string]*RuleSource
+	matcher atomic.Value
 
-	localConfigFile string
-	httpClient      *http.Client
-	ctx             context.Context
-	cancel          context.CancelFunc
+	mu         sync.RWMutex
+	source     rulesource.Source
+	configFile string
+	sourceID   string
+	rules      []string
+	httpClient *http.Client
+	ctx        context.Context
+	cancel     context.CancelFunc
 
-	// 新增：订阅者
-	subscribers []func()
-	subsMu      sync.RWMutex
+	subsMu       sync.RWMutex
+	subscribers  []func()
 }
 
 var _ data_provider.DomainMatcherProvider = (*SdSet)(nil)
+var _ data_provider.RuleExporter = (*SdSet)(nil)
+var _ coremain.ControlConfigReloader = (*SdSet)(nil)
 var _ io.Closer = (*SdSet)(nil)
 
-// 确保实现了 RuleExporter 接口
-var _ data_provider.RuleExporter = (*SdSet)(nil)
-
-// RuleReceiver 接口用于解耦 SRS 解析和具体的 Matcher
-type RuleReceiver interface {
-	Add(string, struct{}) error
-}
-
-// ruleCollector 用于 GetRules 时收集规则
-type ruleCollector struct {
-	rules []string
-}
-
-func (c *ruleCollector) Add(s string, _ struct{}) error {
-	c.rules = append(c.rules, s)
-	return nil
-}
-
-// Subscribe 实现 RuleExporter
-func (p *SdSet) Subscribe(cb func()) {
-	p.subsMu.Lock()
-	defer p.subsMu.Unlock()
-	p.subscribers = append(p.subscribers, cb)
-}
-
-// GetRules 实现 RuleExporter
-// 注意：这会读取所有启用的本地文件并重新解析规则，以获取字符串形式的规则列表
-func (p *SdSet) GetRules() ([]string, error) {
-	p.mu.RLock()
-	sourcesSnapshot := make([]*RuleSource, 0, len(p.sources))
-	for _, src := range p.sources {
-		if src.Enabled {
-			sourcesSnapshot = append(sourcesSnapshot, src)
-		}
-	}
-	p.mu.RUnlock()
-
-	collector := &ruleCollector{rules: make([]string, 0)}
-
-	for _, src := range sourcesSnapshot {
-		if src.Files == "" {
-			continue
-		}
-		b, err := os.ReadFile(src.Files)
-		if err != nil {
-			// 在导出模式下，如果文件不可读，记录日志但继续处理其他文件
-			log.Printf("[%s] GetRules: WARN: cannot read file %s: %v", PluginType, src.Files, err)
-			continue
-		}
-		// 使用通用的 tryLoadSRS，传入 collector
-		tryLoadSRS(b, collector, src.EnableRegexp)
-	}
-	return collector.rules, nil
-}
-
-func (p *SdSet) notifySubscribers() {
-	p.subsMu.RLock()
-	subs := make([]func(), len(p.subscribers))
-	copy(subs, p.subscribers)
-	p.subsMu.RUnlock()
-
-	for _, cb := range subs {
-		go cb()
-	}
-}
-
 func newSdSet(bp *coremain.BP, args any) (any, error) {
-	cfg := args.(*Args)
-	if cfg.LocalConfig == "" {
-		return nil, fmt.Errorf("%s: 'local_config' must be specified", PluginType)
+	cfg := cloneArgs(args.(*Args))
+	client, err := newHTTPClient(cfg.Socks5)
+	if err != nil {
+		return nil, err
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	p := &SdSet{
+		pluginTag:    bp.Tag(),
+		baseArgs:     cfg,
+		configFile:   cfg.ConfigFile,
+		sourceID:     cfg.SourceID,
+		httpClient:   client,
+		ctx:          ctx,
+		cancel:       cancel,
+		subscribers:  make([]func(), 0),
+	}
+	p.matcher.Store(domain.NewDomainMixMatcher())
+	if err := p.loadSource(); err != nil {
+		return nil, err
+	}
+	if err := p.reloadAllRules(false); err != nil {
+		return nil, err
+	}
+	go p.backgroundSync()
+	return p, nil
+}
 
+func cloneArgs(src *Args) *Args {
+	if src == nil {
+		return &Args{}
+	}
+	return &Args{Socks5: src.Socks5, ConfigFile: src.ConfigFile, SourceID: src.SourceID}
+}
+
+func newHTTPClient(socks5 string) (*http.Client, error) {
 	transport := &http.Transport{
 		Proxy: http.ProxyFromEnvironment,
 		DialContext: (&net.Dialer{
@@ -155,51 +103,22 @@ func newSdSet(bp *coremain.BP, args any) (any, error) {
 		}).DialContext,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}
-	if cfg.Socks5 != "" {
-		log.Printf("[%s] using SOCKS5 proxy: %s", PluginType, cfg.Socks5)
-		dialer, err := proxy.SOCKS5("tcp", cfg.Socks5, nil, proxy.Direct)
+	if strings.TrimSpace(socks5) != "" {
+		dialer, err := proxy.SOCKS5("tcp", socks5, nil, proxy.Direct)
 		if err != nil {
-			return nil, fmt.Errorf("%s: failed to create SOCKS5 dialer: %w", PluginType, err)
+			return nil, fmt.Errorf("%s: create socks5 dialer: %w", PluginType, err)
 		}
 		contextDialer, ok := dialer.(proxy.ContextDialer)
 		if !ok {
-			return nil, fmt.Errorf("%s: created dialer does not support context", PluginType)
+			return nil, fmt.Errorf("%s: socks5 dialer does not support context", PluginType)
 		}
 		transport.DialContext = contextDialer.DialContext
 		transport.Proxy = nil
 	}
-	httpClient := &http.Client{
-		Timeout:   downloadTimeout,
-		Transport: transport,
-	}
-
-	ctx, cancel := context.WithCancel(context.Background())
-
-	p := &SdSet{
-		sources:         make(map[string]*RuleSource),
-		localConfigFile: cfg.LocalConfig,
-		httpClient:      httpClient,
-		ctx:             ctx,
-		cancel:          cancel,
-		subscribers:     make([]func(), 0),
-	}
-	p.matcher.Store(domain.NewDomainMixMatcher()) // 初始化为一个空的 matcher
-
-	if err := p.loadConfig(); err != nil {
-		log.Printf("[%s] failed to load config file: %v. Starting with empty config.", PluginType, err)
-	}
-
-	if err := p.reloadAllRules(); err != nil {
-		log.Printf("[%s] failed to perform initial rule load: %v", PluginType, err)
-	}
-
-	go p.backgroundUpdater()
-
-	return p, nil
+	return &http.Client{Timeout: syncTimeout, Transport: transport}, nil
 }
 
 func (p *SdSet) Close() error {
-	log.Printf("[%s] closing...", PluginType)
 	p.cancel()
 	return nil
 }
@@ -208,540 +127,134 @@ func (p *SdSet) GetDomainMatcher() domain.Matcher[struct{}] {
 	return p
 }
 
-func (p *SdSet) Match(domainStr string) (value struct{}, ok bool) {
-	m := p.matcher.Load().(*domain.MixMatcher[struct{}])
-	return m.Match(domainStr)
+func (p *SdSet) Match(domainStr string) (struct{}, bool) {
+	return p.matcher.Load().(*domain.MixMatcher[struct{}]).Match(domainStr)
 }
 
-func (p *SdSet) ListDiversionRules() ([]coremain.DiversionRuleItem, error) {
+func (p *SdSet) Subscribe(callback func()) {
+	p.subsMu.Lock()
+	defer p.subsMu.Unlock()
+	p.subscribers = append(p.subscribers, callback)
+}
+
+func (p *SdSet) GetRules() ([]string, error) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-
-	items := make([]coremain.DiversionRuleItem, 0, len(p.sources))
-	for _, src := range p.sources {
-		items = append(items, coremain.DiversionRuleItem{
-			Name:                src.Name,
-			Type:                src.Type,
-			Files:               src.Files,
-			URL:                 src.URL,
-			Enabled:             src.Enabled,
-			EnableRegexp:        src.EnableRegexp,
-			AutoUpdate:          src.AutoUpdate,
-			UpdateIntervalHours: src.UpdateIntervalHours,
-			RuleCount:           src.RuleCount,
-			LastUpdated:         src.LastUpdated,
-		})
-	}
-	sort.Slice(items, func(i, j int) bool { return items[i].Name < items[j].Name })
-	return items, nil
+	return append([]string(nil), p.rules...), nil
 }
 
-func (p *SdSet) UpsertDiversionRule(name string, item coremain.DiversionRuleItem) (coremain.DiversionRuleItem, bool, error) {
-	if strings.TrimSpace(item.Files) == "" || strings.TrimSpace(item.URL) == "" {
-		return coremain.DiversionRuleItem{}, false, coremain.NewRuleAPIError(http.StatusBadRequest, "RULES_DIVERSION_INVALID", "'files' and 'url' fields are required")
+func (p *SdSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+	effective := new(Args)
+	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
+		return err
 	}
-
-	reqData := RuleSource{
-		Name:                name,
-		Type:                item.Type,
-		Files:               item.Files,
-		URL:                 item.URL,
-		Enabled:             item.Enabled,
-		EnableRegexp:        item.EnableRegexp,
-		AutoUpdate:          item.AutoUpdate,
-		UpdateIntervalHours: item.UpdateIntervalHours,
+	client, err := newHTTPClient(effective.Socks5)
+	if err != nil {
+		return err
 	}
-
-	var created bool
-	var updatedSource *RuleSource
 	p.mu.Lock()
-	existing, isUpdate := p.sources[name]
-	if isUpdate {
-		existing.Type = reqData.Type
-		existing.Files = reqData.Files
-		existing.URL = reqData.URL
-		existing.Enabled = reqData.Enabled
-		existing.EnableRegexp = reqData.EnableRegexp
-		existing.AutoUpdate = reqData.AutoUpdate
-		existing.UpdateIntervalHours = reqData.UpdateIntervalHours
-		updatedSource = existing
-	} else {
-		reqData.RuleCount = 0
-		reqData.LastUpdated = time.Time{}
-		p.sources[name] = &reqData
-		updatedSource = &reqData
-		created = true
-	}
+	p.baseArgs = cloneArgs(effective)
+	p.configFile = effective.ConfigFile
+	p.sourceID = effective.SourceID
+	p.httpClient = client
 	p.mu.Unlock()
-
-	if err := p.saveConfig(); err != nil {
-		return coremain.DiversionRuleItem{}, false, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_DIVERSION_SAVE_FAILED", "failed to save config")
+	if err := p.loadSource(); err != nil {
+		return err
 	}
-
-	go p.reloadAllRules()
-
-	return coremain.DiversionRuleItem{
-		Name:                updatedSource.Name,
-		Type:                updatedSource.Type,
-		Files:               updatedSource.Files,
-		URL:                 updatedSource.URL,
-		Enabled:             updatedSource.Enabled,
-		EnableRegexp:        updatedSource.EnableRegexp,
-		AutoUpdate:          updatedSource.AutoUpdate,
-		UpdateIntervalHours: updatedSource.UpdateIntervalHours,
-		RuleCount:           updatedSource.RuleCount,
-		LastUpdated:         updatedSource.LastUpdated,
-	}, created, nil
+	return p.reloadAllRules(false)
 }
 
-func (p *SdSet) DeleteDiversionRule(name string) error {
-	var srcToDelete *RuleSource
+func (p *SdSet) loadSource() error {
+	configFile, sourceID := p.currentBinding()
+	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(sourceID) == "" {
+		return fmt.Errorf("%s: config_file and source_id are required", PluginType)
+	}
+	source, err := coremain.LoadRuleSourceByID(configFile, scope, sourceID)
+	if err != nil {
+		return err
+	}
+	if source.Behavior != rulesource.BehaviorDomain || source.MatchMode != rulesource.MatchModeDomainSet {
+		return fmt.Errorf("%s: source %s is not a domain_set source", PluginType, sourceID)
+	}
 	p.mu.Lock()
-	src, ok := p.sources[name]
-	if ok {
-		srcToDelete = src
-		delete(p.sources, name)
-	}
+	p.source = source
 	p.mu.Unlock()
-	if !ok {
-		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_DIVERSION_NOT_FOUND", "source not found")
-	}
-	if srcToDelete.Files != "" {
-		if err := os.Remove(srcToDelete.Files); err != nil && !os.IsNotExist(err) {
-			log.Printf("[%s] WARN: failed to delete srs file %s: %v", PluginType, srcToDelete.Files, err)
-		}
-	}
-	if err := p.saveConfig(); err != nil {
-		return coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_DIVERSION_SAVE_FAILED", "failed to save config")
-	}
-	go p.reloadAllRules()
 	return nil
 }
 
-func (p *SdSet) TriggerDiversionRuleUpdate(name string) error {
-	p.mu.RLock()
-	_, ok := p.sources[name]
-	p.mu.RUnlock()
-	if !ok {
-		return coremain.NewRuleAPIError(http.StatusNotFound, "RULES_DIVERSION_NOT_FOUND", "source not found")
+func (p *SdSet) reloadAllRules(forceRemote bool) error {
+	source := p.sourceSnapshot()
+	if !source.Enabled {
+		p.setRules(nil)
+		return nil
 	}
-
-	go func() {
-		log.Printf("[%s] manual update triggered for source '%s'.", PluginType, name)
-		updateCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout)
-		defer cancel()
-		if err := p.downloadAndUpdateLocalFile(updateCtx, name); err != nil {
-			log.Printf("[%s] ERROR: failed to manually update source '%s': %v", PluginType, name, err)
-			return
-		}
-		log.Printf("[%s] manual update for '%s' successful, triggering reload.", PluginType, name)
-		p.reloadAllRules()
-	}()
-	return nil
-}
-
-func (p *SdSet) loadConfig() error {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	if key := p.runtimeConfigKey(); key != "" {
-		var sources []*RuleSource
-		ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeNamespace, key, &sources)
-		if err == nil && ok {
-			p.sources = make(map[string]*RuleSource, len(sources))
-			for _, src := range sources {
-				if src == nil || src.Name == "" {
-					continue
-				}
-				p.sources[src.Name] = src
-			}
-			log.Printf("[%s] loaded %d rule sources from runtime store", PluginType, len(p.sources))
-			return nil
-		}
-		if err != nil {
+	ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+	defer cancel()
+	result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
+	if err != nil {
+		p.setRules(nil)
+		return err
+	}
+	rules, err := rulesource.ParseDomainBytes(source.Format, result.Data)
+	if err != nil {
+		p.setRules(nil)
+		return err
+	}
+	next := domain.NewDomainMixMatcher()
+	for _, rule := range rules {
+		if err := next.Add(rule, struct{}{}); err != nil {
 			return err
 		}
 	}
-
-	data, err := os.ReadFile(p.localConfigFile)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[%s] config file not found at %s, will create a new one.", PluginType, p.localConfigFile)
-			return nil
-		}
-		return err
-	}
-	if len(data) == 0 {
-		p.sources = make(map[string]*RuleSource)
-		return nil
-	}
-
-	var sources []*RuleSource
-	if err := json.Unmarshal(data, &sources); err != nil {
-		return fmt.Errorf("failed to parse config json: %w", err)
-	}
-
-	if len(sources) == 0 {
-		log.Printf("[%s] WARN: config file %s is not empty, but parsed 0 rules. Treating as empty config.", PluginType, p.localConfigFile)
-	}
-
-	p.sources = make(map[string]*RuleSource, len(sources))
-	for _, src := range sources {
-		if src.Name == "" {
-			log.Printf("[%s] WARN: found a rule source with empty name, skipping.", PluginType)
-			continue
-		}
-		p.sources[src.Name] = src
-	}
-	log.Printf("[%s] loaded %d rule sources from %s", PluginType, len(p.sources), p.localConfigFile)
+	p.matcher.Store(next)
+	p.setRules(rules)
+	p.notifySubscribers()
 	return nil
 }
 
-// **MODIFIED**: This function now uses a write lock to ensure the entire file-saving
-// process is atomic, preventing race conditions from concurrent calls.
-func (p *SdSet) saveConfig() error {
+func (p *SdSet) setRules(rules []string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	// Create a snapshot of the sources map.
-	sourcesSnapshot := make([]*RuleSource, 0, len(p.sources))
-	for _, src := range p.sources {
-		s := *src // Create a copy for safety
-		sourcesSnapshot = append(sourcesSnapshot, &s)
-	}
-
-	// Perform slow operations on the snapshot.
-	sort.Slice(sourcesSnapshot, func(i, j int) bool {
-		return sourcesSnapshot[i].Name < sourcesSnapshot[j].Name
-	})
-
-	data, err := json.MarshalIndent(sourcesSnapshot, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config to json: %w", err)
-	}
-	if key := p.runtimeConfigKey(); key != "" {
-		if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeNamespace, key, sourcesSnapshot); err != nil {
-			return fmt.Errorf("failed to save config to runtime store: %w", err)
-		}
-	}
-
-	// Atomically write the file.
-	tmpFile := p.localConfigFile + ".tmp"
-	if err := os.WriteFile(tmpFile, data, 0644); err != nil {
-		return fmt.Errorf("failed to write to temporary config file: %w", err)
-	}
-	if err := os.Rename(tmpFile, p.localConfigFile); err != nil {
-		return fmt.Errorf("failed to rename temporary config to final: %w", err)
-	}
-	return nil
+	p.rules = append([]string(nil), rules...)
 }
 
-func (p *SdSet) runtimeDBPath() string {
-	return coremain.RuntimeStateDBPathForPath(p.localConfigFile)
-}
-
-func (p *SdSet) runtimeConfigKey() string {
-	if p.localConfigFile == "" {
-		return ""
-	}
-	return filepath.Clean(p.localConfigFile)
-}
-
-func (p *SdSet) reloadAllRules() error {
-	log.Printf("[%s] starting to reload all rules...", PluginType)
-
-	p.mu.RLock()
-	sourcesSnapshot := make([]*RuleSource, 0, len(p.sources))
-	for _, src := range p.sources {
-		if src.Enabled {
-			sourcesSnapshot = append(sourcesSnapshot, src)
-		}
-	}
-	p.mu.RUnlock()
-
-	newMatcher := domain.NewDomainMixMatcher()
-	totalRules := 0
-	rulesCountUpdated := false
-
-	for _, src := range sourcesSnapshot {
-		if src.Files == "" {
-			log.Printf("[%s] WARN: skipping enabled source '%s', local file path is empty.", PluginType, src.Name)
-			continue
-		}
-
-		b, err := os.ReadFile(src.Files)
-		if err != nil {
-			log.Printf("[%s] WARN: skipping source '%s', cannot read file %s: %v", PluginType, src.Name, src.Files, err)
-			p.mu.Lock()
-			if s, ok := p.sources[src.Name]; ok && s.RuleCount != 0 {
-				s.RuleCount = 0
-				rulesCountUpdated = true
-			}
-			p.mu.Unlock()
-			continue
-		}
-
-		// Modified: pass src.EnableRegexp
-		ok, count, lastRule := tryLoadSRS(b, newMatcher, src.EnableRegexp)
-		if !ok {
-			log.Printf("[%s] ERROR: failed to load SRS file for source '%s' from %s", PluginType, src.Name, src.Files)
-			continue
-		}
-		totalRules += count
-		log.Printf("[%s] loaded %d rules from source '%s' (file: %s, last rule: %s)", PluginType, count, src.Name, src.Files, lastRule)
-
-		p.mu.Lock()
-		if s, ok := p.sources[src.Name]; ok && s.RuleCount != count {
-			s.RuleCount = count
-			rulesCountUpdated = true
-		}
-		p.mu.Unlock()
-	}
-
-	p.matcher.Store(newMatcher)
-	log.Printf("[%s] finished reloading. Total active rules: %d", PluginType, totalRules)
-	newMatcher = nil
-
-	if rulesCountUpdated {
-		log.Printf("[%s] Rule counts have changed, saving configuration...", PluginType)
-		if err := p.saveConfig(); err != nil {
-			log.Printf("[%s] ERROR: failed to save config after reloading rules: %v", PluginType, err)
-		}
-	}
-
-	// 规则更新完毕（无论是手动、API还是定时器），通知订阅者
-	p.notifySubscribers()
-	coremain.ManualGC()
-	return nil
-}
-
-func (p *SdSet) downloadAndUpdateLocalFile(ctx context.Context, sourceName string) error {
-	p.mu.RLock()
-	source, ok := p.sources[sourceName]
-	if !ok {
-		p.mu.RUnlock()
-		return fmt.Errorf("source '%s' not found", sourceName)
-	}
-	sourceURL := source.URL
-	localFile := source.Files
-	enableRegexp := source.EnableRegexp // Added: retrieve config
-	p.mu.RUnlock()
-
-	if sourceURL == "" {
-		return fmt.Errorf("source '%s' has no URL configured", sourceName)
-	}
-	if localFile == "" {
-		return fmt.Errorf("source '%s' has no local file path configured", sourceName)
-	}
-
-	log.Printf("[%s] downloading rule for '%s' from %s", PluginType, sourceName, sourceURL)
-	req, err := http.NewRequestWithContext(ctx, "GET", sourceURL, nil)
-	if err != nil {
-		return fmt.Errorf("failed to create request for '%s': %w", sourceName, err)
-	}
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("http request failed for '%s': %w", sourceName, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad status code for '%s': %d", sourceName, resp.StatusCode)
-	}
-
-	srsData, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response body for '%s': %w", sourceName, err)
-	}
-
-	tempMatcher := domain.NewDomainMixMatcher()
-	// Modified: pass enableRegexp to validation
-	ok, count, _ := tryLoadSRS(srsData, tempMatcher, enableRegexp)
-	tempMatcher = nil
-	if !ok {
-		return fmt.Errorf("downloaded file for '%s' is not a valid SRS file or is corrupted", sourceName)
-	}
-	log.Printf("[%s] downloaded file for '%s' validated successfully with %d rules.", PluginType, sourceName, count)
-
-	if err := os.MkdirAll(filepath.Dir(localFile), 0755); err != nil {
-		return fmt.Errorf("failed to create directory for '%s': %w", localFile, err)
-	}
-	if err := os.WriteFile(localFile, srsData, 0644); err != nil {
-		return fmt.Errorf("failed to write srs file for '%s': %w", sourceName, err)
-	}
-
-	p.mu.Lock()
-	if source, ok := p.sources[sourceName]; ok {
-		source.RuleCount = count
-		source.LastUpdated = time.Now()
-	}
-	p.mu.Unlock()
-
-	if err := p.saveConfig(); err != nil {
-		log.Printf("[%s] ERROR: failed to save config after updating '%s': %v", PluginType, sourceName, err)
-	}
-	srsData = nil
-	return nil
-}
-
-func (p *SdSet) backgroundUpdater() {
-	select {
-	case <-time.After(1 * time.Minute):
-	case <-p.ctx.Done():
-		return
-	}
-	ticker := time.NewTicker(10 * time.Minute)
+func (p *SdSet) backgroundSync() {
+	ticker := time.NewTicker(syncCheckPeriod)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ticker.C:
-			p.mu.RLock()
-			var sourcesToUpdate []string
-			for name, src := range p.sources {
-				if src.Enabled && src.AutoUpdate && src.UpdateIntervalHours > 0 {
-					if time.Since(src.LastUpdated).Hours() >= float64(src.UpdateIntervalHours) {
-						sourcesToUpdate = append(sourcesToUpdate, name)
-					}
-				}
+			if err := p.loadSource(); err == nil {
+				_ = p.reloadAllRules(false)
 			}
-			p.mu.RUnlock()
-			if len(sourcesToUpdate) == 0 {
-				continue
-			}
-			log.Printf("[%s] auto-update: found %d source(s) that need updating.", PluginType, len(sourcesToUpdate))
-			var wg sync.WaitGroup
-			for _, name := range sourcesToUpdate {
-				wg.Add(1)
-				go func(sourceName string) {
-					defer wg.Done()
-					updateCtx, cancel := context.WithTimeout(p.ctx, downloadTimeout)
-					defer cancel()
-					if err := p.downloadAndUpdateLocalFile(updateCtx, sourceName); err != nil {
-						log.Printf("[%s] ERROR: failed to auto-update source '%s': %v", PluginType, sourceName, err)
-					}
-				}(name)
-			}
-			wg.Wait()
-			log.Printf("[%s] auto-update: downloads finished, triggering reload.", PluginType)
-			p.reloadAllRules()
-			coremain.ManualGC()
 		case <-p.ctx.Done():
-			log.Printf("[%s] background updater is shutting down.", PluginType)
 			return
 		}
 	}
 }
 
-var (
-	magicBytes            = [3]byte{0x53, 0x52, 0x53}
-	ruleItemDomain        = uint8(2)
-	ruleItemDomainKeyword = uint8(3)
-	ruleItemDomainRegex   = uint8(4)
-	ruleItemFinal         = uint8(0xFF)
-)
-
-const ruleSetVersionCurrent = 3
-
-// Modified: added enableRegexp parameter and RuleReceiver interface
-func tryLoadSRS(b []byte, m RuleReceiver, enableRegexp bool) (ok bool, count int, lastRule string) {
-	r := bytes.NewReader(b)
-	var mb [3]byte
-	if _, err := io.ReadFull(r, mb[:]); err != nil || mb != magicBytes {
-		return false, 0, ""
+func (p *SdSet) notifySubscribers() {
+	p.subsMu.RLock()
+	subs := append([]func(){}, p.subscribers...)
+	p.subsMu.RUnlock()
+	for _, callback := range subs {
+		go callback()
 	}
-	var version uint8
-	if err := binary.Read(r, binary.BigEndian, &version); err != nil || version > ruleSetVersionCurrent {
-		return false, 0, ""
-	}
-	zr, err := zlib.NewReader(r)
-	if err != nil {
-		return false, 0, ""
-	}
-	defer zr.Close()
-	br := bufio.NewReader(zr)
-	length, err := binary.ReadUvarint(br)
-	if err != nil {
-		return false, 0, ""
-	}
-	for i := uint64(0); i < length; i++ {
-		count += readRuleCompat(br, m, &lastRule, enableRegexp)
-	}
-	return true, count, lastRule
 }
 
-// Modified: added enableRegexp parameter and RuleReceiver interface
-func readRuleCompat(r *bufio.Reader, m RuleReceiver, last *string, enableRegexp bool) int {
-	ct := 0
-	mode, err := r.ReadByte()
-	if err != nil {
-		return 0
-	}
-	switch mode {
-	case 0:
-		ct += readDefaultRuleCompat(r, m, last, enableRegexp)
-	case 1:
-		r.ReadByte()
-		n, _ := binary.ReadUvarint(r)
-		for i := uint64(0); i < n; i++ {
-			ct += readRuleCompat(r, m, last, enableRegexp)
-		}
-		r.ReadByte()
-	}
-	return ct
+func (p *SdSet) currentBinding() (string, string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.configFile, p.sourceID
 }
 
-// Modified: added enableRegexp parameter and RuleReceiver interface
-func readDefaultRuleCompat(r *bufio.Reader, m RuleReceiver, last *string, enableRegexp bool) int {
-	count := 0
-	for {
-		item, err := r.ReadByte()
-		if err != nil {
-			break
-		}
-		switch item {
-		case ruleItemDomain:
-			matcher, err := scdomain.ReadMatcher(r)
-			if err != nil {
-				return count
-			}
-			doms, suffix := matcher.Dump()
-			for _, d := range doms {
-				*last = "full:" + d
-				if m.Add(*last, struct{}{}) == nil {
-					count++
-				}
-			}
-			for _, d := range suffix {
-				*last = "domain:" + d
-				if m.Add(*last, struct{}{}) == nil {
-					count++
-				}
-			}
-		case ruleItemDomainKeyword:
-			sl, _ := varbin.ReadValue[[]string](r, binary.BigEndian)
-			for _, d := range sl {
-				*last = "keyword:" + d
-				if m.Add(*last, struct{}{}) == nil {
-					count++
-				}
-			}
-		case ruleItemDomainRegex:
-			sl, _ := varbin.ReadValue[[]string](r, binary.BigEndian)
-			// Modified: check enableRegexp before adding
-			if enableRegexp {
-				for _, d := range sl {
-					*last = "regexp:" + d
-					if m.Add(*last, struct{}{}) == nil {
-						count++
-					}
-				}
-			}
-		case ruleItemFinal:
-			return count
-		default:
-			return count
-		}
-	}
-	return count
+func (p *SdSet) sourceSnapshot() rulesource.Source {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.source
+}
+
+func (p *SdSet) runtimeDBPath() string {
+	configFile, _ := p.currentBinding()
+	return coremain.RuntimeStateDBPathForPath(configFile)
 }

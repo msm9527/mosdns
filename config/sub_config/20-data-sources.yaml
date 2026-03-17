@@ -16,8 +16,8 @@ policies:
   - name: adguard
     type: adguard_rule
     args:
-      dir: adguard/
-      socks5: 127.0.0.1:7891
+      socks5: ""
+      config_file: custom_config/adguard_sources.yaml
 
   # 热门域名统计。
   # 说明：
@@ -81,15 +81,17 @@ policies:
   - name: cusnocn
     type: sd_set_light
     args:
-      socks5: 127.0.0.1:7891
-      local_config: srs/cusnocn.json
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      source_id: cusnocn
 
   # 订阅补充：直连补充规则。
   - name: cuscn
     type: sd_set_light
     args:
-      socks5: 127.0.0.1:7891
-      local_config: srs/cuscn.json
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      source_id: cuscn
 
   # 记忆类规则 provider。
   # 说明：
@@ -126,18 +128,21 @@ policies:
   - name: geosite_cn
     type: sd_set_light
     args:
-      socks5: 127.0.0.1:7891
-      local_config: srs/geositecn.json
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      source_id: geosite_cn
   - name: geoip_cn
     type: si_set
     args:
-      socks5: 127.0.0.1:7891
-      local_config: srs/geoipcn.json
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      source_id: geoip_cn
   - name: geosite_no_cn
     type: sd_set_light
     args:
-      socks5: 127.0.0.1:7891
-      local_config: srs/geositenocn.json
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      source_id: geosite_no_cn
 
   # 客户端 IP 白黑名单。
   - name: client_ip
