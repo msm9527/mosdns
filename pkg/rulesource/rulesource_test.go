@@ -10,9 +10,9 @@ import (
 	"slices"
 	"testing"
 
+	"github.com/klauspost/compress/zstd"
 	mcidr "github.com/metacubex/mihomo/component/cidr"
 	mtrie "github.com/metacubex/mihomo/component/trie"
-	"github.com/klauspost/compress/zstd"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
 )
@@ -97,6 +97,7 @@ func TestValidateConfig(t *testing.T) {
 		Sources: []Source{{
 			ID:         "geo",
 			Name:       "geo",
+			BindTo:     "geosite_cn",
 			Behavior:   BehaviorDomain,
 			MatchMode:  MatchModeDomainSet,
 			Format:     FormatSRS,
@@ -107,6 +108,23 @@ func TestValidateConfig(t *testing.T) {
 	}
 	if err := ValidateConfig(ScopeDiversion, cfg); err != nil {
 		t.Fatalf("ValidateConfig: %v", err)
+	}
+}
+
+func TestValidateConfigRequiresBindToForDiversion(t *testing.T) {
+	cfg := Config{
+		Sources: []Source{{
+			ID:         "geo",
+			Name:       "geo",
+			Behavior:   BehaviorDomain,
+			MatchMode:  MatchModeDomainSet,
+			Format:     FormatList,
+			SourceKind: SourceKindLocal,
+			Path:       "diversion/geo.list",
+		}},
+	}
+	if err := ValidateConfig(ScopeDiversion, cfg); err == nil {
+		t.Fatal("expected bind_to validation error")
 	}
 }
 

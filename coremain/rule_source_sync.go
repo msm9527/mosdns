@@ -19,19 +19,6 @@ type RuleSourceSyncResult struct {
 	LastUpdated time.Time
 }
 
-func LoadRuleSourceByID(configPath string, scope rulesource.Scope, sourceID string) (rulesource.Source, error) {
-	cfg, _, err := rulesource.LoadConfig(ResolveMainConfigPath(configPath), scope)
-	if err != nil {
-		return rulesource.Source{}, err
-	}
-	for _, source := range cfg.Sources {
-		if source.ID == sourceID {
-			return source, nil
-		}
-	}
-	return rulesource.Source{}, fmt.Errorf("source %q not found in %s", sourceID, configPath)
-}
-
 func SyncRuleSource(
 	ctx context.Context,
 	client *http.Client,

@@ -17,6 +17,7 @@ func TestSdSetLightLoadSource(t *testing.T) {
 		Sources: []rulesource.Source{{
 			ID:         "geo",
 			Name:       "geo",
+			BindTo:     "geosite_cn",
 			Enabled:    true,
 			Behavior:   rulesource.BehaviorDomain,
 			MatchMode:  rulesource.MatchModeDomainSet,
@@ -29,11 +30,11 @@ func TestSdSetLightLoadSource(t *testing.T) {
 		t.Fatalf("SaveDiversionSourcesToCustomConfig: %v", err)
 	}
 
-	p := &SdSetLight{configFile: filepath.Join("custom_config", "diversion_sources.yaml"), sourceID: "geo"}
-	if err := p.loadSource(); err != nil {
-		t.Fatalf("loadSource: %v", err)
+	p := &SdSetLight{configFile: filepath.Join("custom_config", "diversion_sources.yaml"), bindTo: "geosite_cn"}
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
 	}
-	if p.source.ID != "geo" {
-		t.Fatalf("unexpected source: %+v", p.source)
+	if len(p.sources) != 1 || p.sources[0].ID != "geo" {
+		t.Fatalf("unexpected sources: %+v", p.sources)
 	}
 }

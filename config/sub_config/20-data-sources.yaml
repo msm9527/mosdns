@@ -83,7 +83,7 @@ policies:
     args:
       socks5: ""
       config_file: custom_config/diversion_sources.yaml
-      source_id: cusnocn
+      bind_to: cusnocn
 
   # 订阅补充：直连补充规则。
   - name: cuscn
@@ -91,7 +91,7 @@ policies:
     args:
       socks5: ""
       config_file: custom_config/diversion_sources.yaml
-      source_id: cuscn
+      bind_to: cuscn
 
   # 记忆类规则 provider。
   # 说明：
@@ -130,19 +130,19 @@ policies:
     args:
       socks5: ""
       config_file: custom_config/diversion_sources.yaml
-      source_id: geosite_cn
+      bind_to: geosite_cn
   - name: geoip_cn
     type: si_set
     args:
       socks5: ""
       config_file: custom_config/diversion_sources.yaml
-      source_id: geoip_cn
+      bind_to: geoip_cn
   - name: geosite_no_cn
     type: sd_set_light
     args:
       socks5: ""
       config_file: custom_config/diversion_sources.yaml
-      source_id: geosite_no_cn
+      bind_to: geosite_no_cn
 
   # 客户端 IP 白黑名单。
   - name: client_ip

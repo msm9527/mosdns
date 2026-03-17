@@ -7,8 +7,15 @@
 # - 原始规则文件建议保留在 config/diversion/ 目录；这里不再保存运行态统计。
 #
 # 字段说明：
-# - id: 规则源唯一标识；sub_config 里的 provider 会通过 source_id 绑定到这里。
+# - id: 规则源唯一标识，只用于识别单条 source。
 # - name: Web UI 显示名称。
+# - bind_to: 绑定到哪个系统分流入口。
+#   - geosite_cn: 国内域名分流
+#   - geosite_no_cn: 代理域名分流
+#   - geoip_cn: 国内 IP 分流
+#   - cuscn: 自定义直连补充
+#   - cusnocn: 自定义代理补充
+#   同一个 bind_to 下可以同时挂多个 source，运行时会自动聚合。
 # - enabled: 是否启用该规则源。
 # - behavior: 规则语义：
 #   - domain: 域名集合。
@@ -25,6 +32,7 @@
 sources:
   - id: geosite_cn
     name: 国内域名集
+    bind_to: geosite_cn
     enabled: true
     behavior: domain
     match_mode: domain_set
@@ -37,6 +45,7 @@ sources:
 
   - id: geoip_cn
     name: 国内 IP 集
+    bind_to: geoip_cn
     enabled: true
     behavior: ipcidr
     match_mode: ip_cidr_set
@@ -49,6 +58,7 @@ sources:
 
   - id: geosite_no_cn
     name: 非国内域名集
+    bind_to: geosite_no_cn
     enabled: true
     behavior: domain
     match_mode: domain_set
@@ -61,6 +71,7 @@ sources:
 
   - id: cuscn
     name: 自定义直连补充
+    bind_to: cuscn
     enabled: true
     behavior: domain
     match_mode: domain_set
@@ -70,6 +81,7 @@ sources:
 
   - id: cusnocn
     name: 自定义代理补充
+    bind_to: cusnocn
     enabled: true
     behavior: domain
     match_mode: domain_set

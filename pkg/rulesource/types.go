@@ -57,6 +57,7 @@ type Config struct {
 type Source struct {
 	ID                  string     `yaml:"id" json:"id"`
 	Name                string     `yaml:"name" json:"name"`
+	BindTo              string     `yaml:"bind_to,omitempty" json:"bind_to,omitempty"`
 	Enabled             bool       `yaml:"enabled" json:"enabled"`
 	Behavior            Behavior   `yaml:"behavior" json:"behavior"`
 	MatchMode           MatchMode  `yaml:"match_mode" json:"match_mode"`
@@ -84,6 +85,7 @@ func NormalizeConfig(cfg Config) Config {
 func NormalizeSource(src Source) Source {
 	src.ID = strings.TrimSpace(src.ID)
 	src.Name = strings.TrimSpace(src.Name)
+	src.BindTo = strings.TrimSpace(src.BindTo)
 	src.Path = strings.TrimSpace(src.Path)
 	src.URL = strings.TrimSpace(src.URL)
 	src.Behavior = Behavior(strings.ToLower(strings.TrimSpace(string(src.Behavior))))
@@ -120,6 +122,9 @@ func ValidateSource(scope Scope, src Source) error {
 		return fmt.Errorf("name is required")
 	}
 	if err := validateScope(scope); err != nil {
+		return err
+	}
+	if err := validateBindTo(scope, src.BindTo); err != nil {
 		return err
 	}
 	if err := validateBehavior(scope, src.Behavior, src.MatchMode); err != nil {
@@ -185,6 +190,22 @@ func validateBehavior(scope Scope, behavior Behavior, mode MatchMode) error {
 		}
 	}
 	return fmt.Errorf("behavior %q does not match mode %q", behavior, mode)
+}
+
+func validateBindTo(scope Scope, bindTo string) error {
+	switch scope {
+	case ScopeAdguard:
+		if bindTo != "" {
+			return fmt.Errorf("bind_to is not supported for adguard scope")
+		}
+	case ScopeDiversion:
+		if !sourceIDPattern.MatchString(bindTo) {
+			return fmt.Errorf("bind_to is required for diversion scope")
+		}
+	default:
+		return fmt.Errorf("unsupported scope %q", scope)
+	}
+	return nil
 }
 
 func validateFormatForMode(format Format, mode MatchMode) error {

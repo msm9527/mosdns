@@ -14,26 +14,40 @@ func TestSdSetLoadSource(t *testing.T) {
 	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
 
 	cfg := rulesource.Config{
-		Sources: []rulesource.Source{{
-			ID:         "geo",
-			Name:       "geo",
-			Enabled:    true,
-			Behavior:   rulesource.BehaviorDomain,
-			MatchMode:  rulesource.MatchModeDomainSet,
-			Format:     rulesource.FormatList,
-			SourceKind: rulesource.SourceKindLocal,
-			Path:       "diversion/geo.list",
-		}},
+		Sources: []rulesource.Source{
+			{
+				ID:         "geo-a",
+				Name:       "geo-a",
+				BindTo:     "geosite_cn",
+				Enabled:    true,
+				Behavior:   rulesource.BehaviorDomain,
+				MatchMode:  rulesource.MatchModeDomainSet,
+				Format:     rulesource.FormatList,
+				SourceKind: rulesource.SourceKindLocal,
+				Path:       "diversion/geo-a.list",
+			},
+			{
+				ID:         "geo-b",
+				Name:       "geo-b",
+				BindTo:     "geosite_cn",
+				Enabled:    true,
+				Behavior:   rulesource.BehaviorDomain,
+				MatchMode:  rulesource.MatchModeDomainSet,
+				Format:     rulesource.FormatList,
+				SourceKind: rulesource.SourceKindLocal,
+				Path:       "diversion/geo-b.list",
+			},
+		},
 	}
 	if err := coremain.SaveDiversionSourcesToCustomConfig(cfg); err != nil {
 		t.Fatalf("SaveDiversionSourcesToCustomConfig: %v", err)
 	}
 
-	p := &SdSet{configFile: filepath.Join("custom_config", "diversion_sources.yaml"), sourceID: "geo"}
-	if err := p.loadSource(); err != nil {
-		t.Fatalf("loadSource: %v", err)
+	p := &SdSet{configFile: filepath.Join("custom_config", "diversion_sources.yaml"), bindTo: "geosite_cn"}
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
 	}
-	if p.source.ID != "geo" {
-		t.Fatalf("unexpected source: %+v", p.source)
+	if len(p.sources) != 2 || p.sources[0].ID != "geo-a" || p.sources[1].ID != "geo-b" {
+		t.Fatalf("unexpected sources: %+v", p.sources)
 	}
 }

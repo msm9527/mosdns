@@ -31,7 +31,7 @@ func init() {
 type Args struct {
 	Socks5     string `yaml:"socks5,omitempty"`
 	ConfigFile string `yaml:"config_file"`
-	SourceID   string `yaml:"source_id"`
+	BindTo     string `yaml:"bind_to"`
 }
 
 type SdSetLight struct {
@@ -39,9 +39,9 @@ type SdSetLight struct {
 	baseArgs  *Args
 
 	mu         sync.RWMutex
-	source     rulesource.Source
+	sources    []rulesource.Source
 	configFile string
-	sourceID   string
+	bindTo     string
 	rules      []string
 	httpClient *http.Client
 	ctx        context.Context
@@ -64,16 +64,16 @@ func newSdSetLight(bp *coremain.BP, args any) (any, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &SdSetLight{
-		pluginTag:    bp.Tag(),
-		baseArgs:     cfg,
-		configFile:   cfg.ConfigFile,
-		sourceID:     cfg.SourceID,
-		httpClient:   client,
-		ctx:          ctx,
-		cancel:       cancel,
-		subscribers:  make([]func(), 0),
+		pluginTag:   bp.Tag(),
+		baseArgs:    cfg,
+		configFile:  cfg.ConfigFile,
+		bindTo:      cfg.BindTo,
+		httpClient:  client,
+		ctx:         ctx,
+		cancel:      cancel,
+		subscribers: make([]func(), 0),
 	}
-	if err := p.loadSource(); err != nil {
+	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
 	if err := p.reloadAllRules(false); err != nil {
@@ -87,7 +87,7 @@ func cloneArgs(src *Args) *Args {
 	if src == nil {
 		return &Args{}
 	}
-	return &Args{Socks5: src.Socks5, ConfigFile: src.ConfigFile, SourceID: src.SourceID}
+	return &Args{Socks5: src.Socks5, ConfigFile: src.ConfigFile, BindTo: src.BindTo}
 }
 
 func newHTTPClient(socks5 string) (*http.Client, error) {
@@ -151,50 +151,55 @@ func (p *SdSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []c
 	p.mu.Lock()
 	p.baseArgs = cloneArgs(effective)
 	p.configFile = effective.ConfigFile
-	p.sourceID = effective.SourceID
+	p.bindTo = effective.BindTo
 	p.httpClient = client
 	p.mu.Unlock()
-	if err := p.loadSource(); err != nil {
+	if err := p.loadSources(); err != nil {
 		return err
 	}
 	return p.reloadAllRules(false)
 }
 
-func (p *SdSetLight) loadSource() error {
-	configFile, sourceID := p.currentBinding()
-	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(sourceID) == "" {
-		return fmt.Errorf("%s: config_file and source_id are required", PluginType)
+func (p *SdSetLight) loadSources() error {
+	configFile, bindTo := p.currentBinding()
+	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(bindTo) == "" {
+		return fmt.Errorf("%s: config_file and bind_to are required", PluginType)
 	}
-	source, err := coremain.LoadRuleSourceByID(configFile, scope, sourceID)
+	sources, err := coremain.LoadRuleSourcesByBinding(configFile, scope, bindTo)
 	if err != nil {
 		return err
 	}
-	if source.Behavior != rulesource.BehaviorDomain || source.MatchMode != rulesource.MatchModeDomainSet {
-		return fmt.Errorf("%s: source %s is not a domain_set source", PluginType, sourceID)
+	for _, source := range sources {
+		if source.Behavior != rulesource.BehaviorDomain || source.MatchMode != rulesource.MatchModeDomainSet {
+			return fmt.Errorf("%s: source %s is not a domain_set source", PluginType, source.ID)
+		}
 	}
 	p.mu.Lock()
-	p.source = source
+	p.sources = append([]rulesource.Source(nil), sources...)
 	p.mu.Unlock()
 	return nil
 }
 
 func (p *SdSetLight) reloadAllRules(forceRemote bool) error {
-	source := p.sourceSnapshot()
-	if !source.Enabled {
-		p.setRules(nil)
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-	defer cancel()
-	result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
-	if err != nil {
-		p.setRules(nil)
-		return err
-	}
-	rules, err := rulesource.ParseDomainBytes(source.Format, result.Data)
-	if err != nil {
-		p.setRules(nil)
-		return err
+	sources := p.sourceSnapshot()
+	rules := make([]string, 0)
+	for _, source := range sources {
+		if !source.Enabled {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
+		cancel()
+		if err != nil {
+			p.setRules(nil)
+			return err
+		}
+		sourceRules, err := rulesource.ParseDomainBytes(source.Format, result.Data)
+		if err != nil {
+			p.setRules(nil)
+			return err
+		}
+		rules = append(rules, sourceRules...)
 	}
 	p.setRules(rules)
 	p.notifySubscribers()
@@ -213,7 +218,7 @@ func (p *SdSetLight) backgroundSync() {
 	for {
 		select {
 		case <-ticker.C:
-			if err := p.loadSource(); err == nil {
+			if err := p.loadSources(); err == nil {
 				_ = p.reloadAllRules(false)
 			}
 		case <-p.ctx.Done():
@@ -234,13 +239,13 @@ func (p *SdSetLight) notifySubscribers() {
 func (p *SdSetLight) currentBinding() (string, string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.configFile, p.sourceID
+	return p.configFile, p.bindTo
 }
 
-func (p *SdSetLight) sourceSnapshot() rulesource.Source {
+func (p *SdSetLight) sourceSnapshot() []rulesource.Source {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.source
+	return append([]rulesource.Source(nil), p.sources...)
 }
 
 func (p *SdSetLight) runtimeDBPath() string {

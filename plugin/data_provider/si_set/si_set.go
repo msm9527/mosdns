@@ -33,7 +33,7 @@ func init() {
 type Args struct {
 	Socks5     string `yaml:"socks5,omitempty"`
 	ConfigFile string `yaml:"config_file"`
-	SourceID   string `yaml:"source_id"`
+	BindTo     string `yaml:"bind_to"`
 }
 
 type SiSet struct {
@@ -43,9 +43,9 @@ type SiSet struct {
 	matcher atomic.Value
 
 	mu         sync.RWMutex
-	source     rulesource.Source
+	sources    []rulesource.Source
 	configFile string
-	sourceID   string
+	bindTo     string
 	httpClient *http.Client
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -67,13 +67,13 @@ func newSiSet(bp *coremain.BP, args any) (any, error) {
 		pluginTag:  bp.Tag(),
 		baseArgs:   cfg,
 		configFile: cfg.ConfigFile,
-		sourceID:   cfg.SourceID,
+		bindTo:     cfg.BindTo,
 		httpClient: client,
 		ctx:        ctx,
 		cancel:     cancel,
 	}
 	p.matcher.Store(netlist.NewList())
-	if err := p.loadSource(); err != nil {
+	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
 	if err := p.reloadAllRules(false); err != nil {
@@ -87,7 +87,7 @@ func cloneArgs(src *Args) *Args {
 	if src == nil {
 		return &Args{}
 	}
-	return &Args{Socks5: src.Socks5, ConfigFile: src.ConfigFile, SourceID: src.SourceID}
+	return &Args{Socks5: src.Socks5, ConfigFile: src.ConfigFile, BindTo: src.BindTo}
 }
 
 func newHTTPClient(socks5 string) (*http.Client, error) {
@@ -139,53 +139,55 @@ func (p *SiSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []corema
 	p.mu.Lock()
 	p.baseArgs = cloneArgs(effective)
 	p.configFile = effective.ConfigFile
-	p.sourceID = effective.SourceID
+	p.bindTo = effective.BindTo
 	p.httpClient = client
 	p.mu.Unlock()
-	if err := p.loadSource(); err != nil {
+	if err := p.loadSources(); err != nil {
 		return err
 	}
 	return p.reloadAllRules(false)
 }
 
-func (p *SiSet) loadSource() error {
-	configFile, sourceID := p.currentBinding()
-	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(sourceID) == "" {
-		return fmt.Errorf("%s: config_file and source_id are required", PluginType)
+func (p *SiSet) loadSources() error {
+	configFile, bindTo := p.currentBinding()
+	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(bindTo) == "" {
+		return fmt.Errorf("%s: config_file and bind_to are required", PluginType)
 	}
-	source, err := coremain.LoadRuleSourceByID(configFile, scope, sourceID)
+	sources, err := coremain.LoadRuleSourcesByBinding(configFile, scope, bindTo)
 	if err != nil {
 		return err
 	}
-	if source.Behavior != rulesource.BehaviorIPCIDR || source.MatchMode != rulesource.MatchModeIPCIDRSet {
-		return fmt.Errorf("%s: source %s is not an ip_cidr_set source", PluginType, sourceID)
+	for _, source := range sources {
+		if source.Behavior != rulesource.BehaviorIPCIDR || source.MatchMode != rulesource.MatchModeIPCIDRSet {
+			return fmt.Errorf("%s: source %s is not an ip_cidr_set source", PluginType, source.ID)
+		}
 	}
 	p.mu.Lock()
-	p.source = source
+	p.sources = append([]rulesource.Source(nil), sources...)
 	p.mu.Unlock()
 	return nil
 }
 
 func (p *SiSet) reloadAllRules(forceRemote bool) error {
-	source := p.sourceSnapshot()
-	if !source.Enabled {
-		p.matcher.Store(netlist.NewList())
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-	defer cancel()
-	result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
-	if err != nil {
-		p.matcher.Store(netlist.NewList())
-		return err
-	}
-	prefixes, err := rulesource.ParseIPCIDRBytes(source.Format, result.Data)
-	if err != nil {
-		p.matcher.Store(netlist.NewList())
-		return err
-	}
 	list := netlist.NewList()
-	list.Append(prefixes...)
+	for _, source := range p.sourceSnapshot() {
+		if !source.Enabled {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
+		cancel()
+		if err != nil {
+			p.matcher.Store(netlist.NewList())
+			return err
+		}
+		prefixes, err := rulesource.ParseIPCIDRBytes(source.Format, result.Data)
+		if err != nil {
+			p.matcher.Store(netlist.NewList())
+			return err
+		}
+		list.Append(prefixes...)
+	}
 	list.Sort()
 	p.matcher.Store(list)
 	return nil
@@ -197,7 +199,7 @@ func (p *SiSet) backgroundSync() {
 	for {
 		select {
 		case <-ticker.C:
-			if err := p.loadSource(); err == nil {
+			if err := p.loadSources(); err == nil {
 				_ = p.reloadAllRules(false)
 			}
 		case <-p.ctx.Done():
@@ -209,13 +211,13 @@ func (p *SiSet) backgroundSync() {
 func (p *SiSet) currentBinding() (string, string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.configFile, p.sourceID
+	return p.configFile, p.bindTo
 }
 
-func (p *SiSet) sourceSnapshot() rulesource.Source {
+func (p *SiSet) sourceSnapshot() []rulesource.Source {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.source
+	return append([]rulesource.Source(nil), p.sources...)
 }
 
 func (p *SiSet) runtimeDBPath() string {
