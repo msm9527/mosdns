@@ -2,6 +2,7 @@ package requery
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,7 +17,12 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/miekg/dns"
+	_ "modernc.org/sqlite"
 )
+
+func newTestRequeryStore(dir string) (string, string) {
+	return "state/requery", filepath.Join(dir, "control.db")
+}
 
 func TestRequeryAPI_GetConfigAndStatus(t *testing.T) {
 	t.Parallel()
@@ -125,6 +131,52 @@ func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T)
 	}
 }
 
+func TestCollectRuntimeCandidatesUsesMemoryPoolPolicies(t *testing.T) {
+	t.Parallel()
+
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	otherPolicy := coremain.DefaultDomainPoolPolicy("other_list")
+	otherPolicy.RequeryTag = "other-requery"
+	if err := coremain.SaveMemoryPoolPoliciesToCustomConfig(map[string]coremain.DomainPoolPolicy{
+		"my_realiplist": coremain.DefaultDomainPoolPolicy("my_realiplist"),
+		"other_list":    otherPolicy,
+	}); err != nil {
+		t.Fatalf("SaveMemoryPoolPoliciesToCustomConfig: %v", err)
+	}
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "policy.example", QTypeMask: qtypeMaskA, Weight: 9000, Reason: "stale"},
+			},
+		},
+		"other_list": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "ignored.example", QTypeMask: qtypeMaskAAAA, Weight: 9500, Reason: "stale"},
+			},
+		},
+	})
+
+	p := &Requery{
+		m:         m,
+		pluginTag: "requery",
+		config:    &Config{},
+	}
+
+	got, err := p.collectRuntimeCandidates(taskProfile{Mode: "quick_rebuild", Limit: 10})
+	if err != nil {
+		t.Fatalf("collectRuntimeCandidates: %v", err)
+	}
+	if len(got) != 1 || got[0].Name != "policy.example" {
+		t.Fatalf("unexpected runtime candidates from memory_pools policy: %#v", got)
+	}
+}
+
 func TestMergeAndFilterDomainsMergesRuntimeCandidatesForFullMode(t *testing.T) {
 	t.Parallel()
 
@@ -226,14 +278,15 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 	defer httpSrv.Close()
 
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 	source := filepath.Join(dir, "top.txt")
 	if err := os.WriteFile(source, []byte("0000000002 2026-03-06 example.com qmask=1 score=2 promoted=1\n"), 0644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
 
 	p := &Requery{
-		filePath:   cfgFile,
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 		config: &Config{
 			DomainProcessing: DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
@@ -286,26 +339,26 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 		verifyHit []string
 	)
 	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		defer r.Body.Close()
 		switch r.URL.Path {
 		case "/save":
 			mu.Lock()
 			saveHits++
-			mu.Unlock()
-		case "/verify":
-			var payload map[string]string
-			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-				t.Fatalf("decode verify payload: %v", err)
-			}
-			mu.Lock()
-			verifyHit = append(verifyHit, payload["domain"])
 			mu.Unlock()
 		}
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer httpSrv.Close()
 
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockDomainVerifier{mark: func(domain string) {
+			mu.Lock()
+			defer mu.Unlock()
+			verifyHit = append(verifyHit, domain)
+		}},
+	})
+
 	p := &Requery{
+		m:          m,
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 		queueIndex: make(map[string]struct{}),
 		queueKick:  make(chan struct{}, 1),
@@ -332,7 +385,7 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 		MemoryID:  "realip",
 		QTypeMask: qtypeMaskA,
 		Reason:    "stale",
-		VerifyURL: httpSrv.URL + "/verify",
+		VerifyTag: "my_realiplist",
 	}); !ok {
 		t.Fatal("expected enqueue to succeed")
 	}
@@ -385,10 +438,11 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
 	persist := &Requery{
-		filePath: cfgFile,
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
 		config: &Config{
 			Workflow: WorkflowSettings{
 				Mode:              "hybrid",
@@ -425,7 +479,7 @@ func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testi
 		t.Fatalf("persistFullRebuildTask: %v", err)
 	}
 
-	reloaded := &Requery{filePath: cfgFile}
+	reloaded := &Requery{runtimeKey: runtimeKey, dbPath: dbPath}
 	if err := reloaded.loadConfig(); err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
@@ -481,69 +535,81 @@ func TestApplyConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestLoadConfigMigratesLegacyStateToSidecar(t *testing.T) {
+func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	cfgFile := filepath.Join(dir, "requery.json")
-	legacy := map[string]any{
-		"workflow": map[string]any{
-			"mode":                "hybrid",
-			"flush_mode":          "none",
-			"save_before_refresh": true,
-			"save_after_refresh":  true,
-		},
-		"execution_settings": map[string]any{
-			"queries_per_second": 100,
-			"date_range_days":    30,
-			"query_mode":         "observed",
-		},
-		"status": map[string]any{
-			"task_state": "failed",
-			"task_mode":  "full_rebuild",
-		},
-		"full_rebuild_task": map[string]any{
-			"task_id":    "legacy-task",
-			"mode":       "full_rebuild",
-			"stage":      "tail",
-			"total":      2,
-			"completed":  1,
-			"updated_at": time.Now().UTC().Format(time.RFC3339),
-		},
-	}
-	data, err := json.MarshalIndent(legacy, "", "  ")
-	if err != nil {
-		t.Fatalf("marshal legacy config: %v", err)
-	}
-	if err := os.WriteFile(cfgFile, data, 0644); err != nil {
-		t.Fatalf("write legacy config: %v", err)
-	}
+	runtimeKey, dbPath := newTestRequeryStore(dir)
 
-	p := &Requery{filePath: cfgFile}
+	p := &Requery{runtimeKey: runtimeKey, dbPath: dbPath}
 	if err := p.loadConfig(); err != nil {
 		t.Fatalf("loadConfig: %v", err)
 	}
-	if p.fullTask == nil || p.fullTask.TaskID != "legacy-task" {
-		t.Fatalf("unexpected migrated task: %#v", p.fullTask)
+	if p.fullTask != nil {
+		t.Fatalf("unexpected task after init: %#v", p.fullTask)
 	}
-	if p.status.TaskState != "failed" {
-		t.Fatalf("unexpected migrated status: %+v", p.status)
+	if p.status.TaskState != "idle" {
+		t.Fatalf("unexpected status after init: %+v", p.status)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "state", "requeryconfig.json")); !os.IsNotExist(err) {
+		t.Fatalf("expected pseudo config file to stay absent, got err=%v", err)
+	}
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), &persistedConfig{}); err != nil || !ok {
+		t.Fatalf("expected runtime config in DB, ok=%v err=%v", ok, err)
+	}
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeStateKey(), &persistedState{}); err != nil || !ok {
+		t.Fatalf("expected runtime state in DB, ok=%v err=%v", ok, err)
+	}
+}
+
+func TestBeginTaskExecutionRollsBackOnPersistFailure(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	p := &Requery{
+		runtimeKey: "state/requery",
+		dbPath:     filepath.Join(coremain.MainConfigBaseDir, "control.db"),
+		config:     newDefaultConfig(),
+		status:     Status{TaskState: "idle"},
+	}
+	if err := p.saveStateUnlocked(); err != nil {
+		t.Fatalf("seed runtime state: %v", err)
 	}
 
-	cfgBytes, err := os.ReadFile(cfgFile)
+	lockDB, err := sql.Open("sqlite", p.runtimeDBPath())
 	if err != nil {
-		t.Fatalf("read migrated config: %v", err)
+		t.Fatalf("open lock db: %v", err)
 	}
-	if strings.Contains(string(cfgBytes), "\"full_rebuild_task\"") || strings.Contains(string(cfgBytes), "\"status\"") {
-		t.Fatalf("expected migrated config to exclude runtime state, got %s", string(cfgBytes))
+	defer lockDB.Close()
+	tx, err := lockDB.Begin()
+	if err != nil {
+		t.Fatalf("begin lock tx: %v", err)
 	}
+	if _, err := tx.Exec(`UPDATE requery_state SET payload_json = payload_json WHERE file_path = ? AND state_kind = ?`, p.normalizedRuntimeKey(), "state"); err != nil {
+		_ = tx.Rollback()
+		t.Fatalf("lock requery state row: %v", err)
+	}
+	defer tx.Rollback()
 
-	stateBytes, err := os.ReadFile(stateFilePath(cfgFile))
-	if err != nil {
-		t.Fatalf("read state file: %v", err)
+	p.taskCtx, p.taskCancel = context.WithCancel(context.Background())
+	p.activeTriggerSource = "manual"
+	if ok := p.beginTaskExecution(taskProfile{Mode: "quick_prewarm"}, nil); ok {
+		t.Fatal("expected beginTaskExecution to fail while sqlite row is locked")
 	}
-	if !strings.Contains(string(stateBytes), "\"full_rebuild_task\"") || !strings.Contains(string(stateBytes), "\"task_state\": \"failed\"") {
-		t.Fatalf("unexpected state file content: %s", string(stateBytes))
+	if p.status.TaskState != "idle" {
+		t.Fatalf("expected task state to roll back to idle, got %q", p.status.TaskState)
+	}
+	if p.activeRunID != "" || p.status.ActiveRunID != "" {
+		t.Fatalf("expected active run id to be cleared, got %q / %q", p.activeRunID, p.status.ActiveRunID)
+	}
+	if p.taskCtx != nil || p.taskCancel != nil {
+		t.Fatal("expected task context to be cleared after failed start")
+	}
+	if p.lastError == "" {
+		t.Fatal("expected lastError to capture persist failure")
 	}
 }
 
@@ -601,4 +667,15 @@ func (m mockRefreshCandidateProvider) SnapshotRefreshCandidates(req coremain.Dom
 		return append([]coremain.DomainRefreshCandidate(nil), m.candidates[:req.Limit]...)
 	}
 	return append([]coremain.DomainRefreshCandidate(nil), m.candidates...)
+}
+
+type mockDomainVerifier struct {
+	mark func(domain string)
+}
+
+func (m mockDomainVerifier) MarkDomainVerified(_ context.Context, domain, _ string) (int, error) {
+	if m.mark != nil {
+		m.mark(domain)
+	}
+	return 1, nil
 }

@@ -29,11 +29,6 @@ var ordered = []Definition{
 		"blacklist": "blacklist",
 		"whitelist": "whitelist",
 	}},
-	{Name: "core_mode", DefaultValue: "secure", aliases: map[string]string{
-		"compat":     "compat",
-		"compatible": "compat",
-		"secure":     "secure",
-	}},
 	{Name: "branch_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_query_type", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_ipv6", DefaultValue: "off", aliases: onOffAliases()},

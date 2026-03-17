@@ -24,8 +24,6 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
-	"math/rand"
-	"strings"
 	"sync"
 	"time"
 
@@ -109,7 +107,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 
 var _ sequence.Executable = (*Forward)(nil)
 var _ sequence.QuickConfigurableExec = (*Forward)(nil)
-var _ coremain.RuntimeConfigReloader = (*Forward)(nil)
+var _ coremain.ControlConfigReloader = (*Forward)(nil)
 
 type Forward struct {
 	runtimeMu  sync.RWMutex
@@ -210,266 +208,46 @@ func (f *Forward) RegisterMetricsTo(r prometheus.Registerer) error {
 	return nil
 }
 
-func cloneArgs(src *Args) *Args {
-	if src == nil {
-		return &Args{}
-	}
-	dst := *src
-	if src.Upstreams != nil {
-		dst.Upstreams = append([]UpstreamConfig(nil), src.Upstreams...)
-	}
-	return &dst
-}
-
-func buildEffectiveArgs(base *Args, global *coremain.GlobalOverrides) *Args {
-	a := cloneArgs(base)
-	if global != nil && global.Socks5 != "" {
-		a.Socks5 = global.Socks5
-	}
-	return a
-}
-
-func (f *Forward) snapshotRuntime() (*Args, []*upstreamWrapper) {
-	f.runtimeMu.RLock()
-	defer f.runtimeMu.RUnlock()
-	return f.args, append([]*upstreamWrapper(nil), f.us...)
-}
-
-func (f *Forward) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrapper, error) {
-	f.runtimeMu.RLock()
-	defer f.runtimeMu.RUnlock()
-
-	us := make([]*upstreamWrapper, 0, len(tags))
-	for _, tag := range tags {
-		u := f.tag2Upstream[tag]
-		if u == nil {
-			return nil, nil, fmt.Errorf("cannot find upstream by tag %s", tag)
-		}
-		us = append(us, u)
-	}
-	return f.args, us, nil
-}
-
-func (f *Forward) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
-	f.runtimeMu.RLock()
-	base := cloneArgs(f.baseArgs)
-	metricsTag := f.metricsTag
-	f.runtimeMu.RUnlock()
-
-	effective := buildEffectiveArgs(base, global)
-	rebuilt, err := NewForward(effective, Opts{Logger: f.logger, MetricsTag: metricsTag})
-	if err != nil {
-		return err
-	}
-
-	f.runtimeMu.Lock()
-	oldUs := f.us
-	f.args = effective
-	f.us = rebuilt.us
-	f.tag2Upstream = rebuilt.tag2Upstream
-	f.runtimeMu.Unlock()
-
-	go func(old []*upstreamWrapper) {
-		time.Sleep(2 * time.Second)
-		for _, u := range old {
-			_ = u.Close()
-		}
-	}(oldUs)
-
-	return nil
-}
-
-func (f *Forward) Exec(ctx context.Context, qCtx *query_context.Context) (err error) {
-	args, us := f.snapshotRuntime()
-	r, err := f.exchange(ctx, qCtx, args, us)
-	if err != nil {
-		return err
-	}
-	qCtx.SetResponse(r)
-	return nil
-}
-
-// QuickConfigureExec format: [upstream_tag]...
-func (f *Forward) QuickConfigureExec(args string) (any, error) {
-	selectedTags := strings.Fields(args)
-	var execFunc sequence.ExecutableFunc = func(ctx context.Context, qCtx *query_context.Context) error {
-		var (
-			runtimeArgs *Args
-			us          []*upstreamWrapper
-			err         error
-		)
-		if len(selectedTags) == 0 {
-			runtimeArgs, us = f.snapshotRuntime()
-		} else {
-			runtimeArgs, us, err = f.snapshotRuntimeByTags(selectedTags)
-			if err != nil {
-				return err
-			}
-		}
-
-		r, err := f.exchange(ctx, qCtx, runtimeArgs, us)
-		if err != nil {
-			return err
-		}
-		qCtx.SetResponse(r)
-		return nil
-	}
-	return execFunc, nil
-}
-
-func (f *Forward) Close() error {
-	f.runtimeMu.RLock()
-	us := append([]*upstreamWrapper(nil), f.us...)
-	f.runtimeMu.RUnlock()
-	for _, u := range us {
-		_ = u.Close()
-	}
-	return nil
-}
-
-// ===============================================================================
-// ===== VVVV  The only modified function is `exchange` below. VVVV =====
-// ===============================================================================
-
 func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, runtimeArgs *Args, us []*upstreamWrapper) (*dns.Msg, error) {
 	if len(us) == 0 {
 		return nil, errors.New("no upstream to exchange")
 	}
-
 	queryPayload, err := pool.PackBuffer(qCtx.Q())
 	if err != nil {
 		return nil, err
 	}
 	defer pool.ReleaseBuf(queryPayload)
 
-	concurrent := runtimeArgs.Concurrent
-	if concurrent <= 0 {
-		concurrent = 1
-	}
-	if concurrent > maxConcurrentQueries {
-		concurrent = maxConcurrentQueries
-	}
-
-	type res struct {
-		r   *dns.Msg
-		err error
-	}
-
-	resChan := make(chan res)
+	selected := pickUpstreams(us, normalizeConcurrent(runtimeArgs.Concurrent, len(us)), time.Now())
+	results := make(chan exchangeResult, len(selected))
 	done := make(chan struct{})
 	defer close(done)
+	queryCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	// --- MODIFICATION START ---
-	// Variables to store the best available "fallback" results according to priority.
-	var lastSuccessOrNXRes *dns.Msg // Priority 2: Stores NOERROR or NXDOMAIN responses.
-	var lastOtherRes *dns.Msg       // Priority 3: Stores other responses like SERVFAIL.
-	var lastError error             // Priority 4: Stores the first encountered network error.
-	// --- MODIFICATION END ---
-
-	r := rand.Intn(len(us))
-	for i := 0; i < concurrent; i++ {
-		u := us[(r+i)%len(us)]
-		qc := copyPayload(queryPayload)
-
-		upstreamTimeout := time.Duration(u.cfg.UpstreamQueryTimeout) * time.Millisecond
-		if upstreamTimeout == 0 {
-			upstreamTimeout = queryTimeout
-		}
-
-		go func(uqid uint32, question dns.Question) {
-			defer pool.ReleaseBuf(qc)
-			upstreamCtx, cancel := context.WithTimeout(context.Background(), upstreamTimeout)
-			defer cancel()
-
-			var r *dns.Msg
-			respPayload, err := u.ExchangeContext(upstreamCtx, *qc)
-			if err != nil {
-				// Skip logging "context deadline exceeded"
-			} else {
-				r = new(dns.Msg)
-				err = r.Unpack(*respPayload)
-				pool.ReleaseBuf(respPayload)
-				if err != nil {
-					r = nil
-				}
-			}
-			select {
-			case resChan <- res{r: r, err: err}:
-			case <-done:
-			}
-		}(qCtx.Id(), qCtx.QQuestion())
+	for i, u := range selected {
+		f.startExchangeWorker(queryCtx, done, results, u, copyPayload(queryPayload), hedgeDelayAt(i))
 	}
 
-	for i := 0; i < concurrent; i++ {
+	picker := new(responsePicker)
+	for range selected {
 		select {
-		case res := <-resChan:
-			r, err := res.r, res.err
-
-			// --- MODIFICATION START ---
-			if err != nil {
-				if lastError == nil { // Record the first network error encountered.
-					lastError = err
-				}
-				continue // Move to the next result.
+		case result := <-results:
+			if winner, tag, done := picker.add(result.resp, result.err, result.tag); done {
+				cancel()
+				setAuditWinnerTag(qCtx, tag)
+				return winner, nil
 			}
-
-			// Priority 1: A response with an IP address is always the best. Return immediately.
-			if len(r.Answer) > 0 {
-				for _, ans := range r.Answer {
-					if a, ok := ans.(*dns.A); ok && len(a.A) > 0 {
-						return r, nil
-					}
-					if aaaa, ok := ans.(*dns.AAAA); ok && len(aaaa.AAAA) > 0 {
-						return r, nil
-					}
-				}
-			}
-
-			// If no IP, classify and store other valid responses for later decision.
-			// Priority 2: A definitive response (NOERROR or NXDOMAIN).
-			if r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError {
-				if lastSuccessOrNXRes == nil {
-					lastSuccessOrNXRes = r
-				}
-			} else { // Priority 3: Other responses like SERVFAIL, REFUSED, etc.
-				if lastOtherRes == nil {
-					lastOtherRes = r
-				}
-			}
-			// --- MODIFICATION END ---
-
 		case <-ctx.Done():
+			cancel()
+			if fallback, tag, err := picker.final(); err == nil && fallback != nil {
+				setAuditWinnerTag(qCtx, tag)
+				return fallback, nil
+			}
 			return nil, context.Cause(ctx)
 		}
 	}
-
-	// --- MODIFICATION START ---
-	// After all concurrent queries are done, return the best result we found based on priority.
-	if lastSuccessOrNXRes != nil {
-		return lastSuccessOrNXRes, nil
-	}
-	if lastOtherRes != nil {
-		return lastOtherRes, nil
-	}
-	if lastError != nil {
-		// Priority 4: If all we got were network errors, propagate the first error up.
-		return nil, lastError
-	}
-
-	// Fallback: This case should be rare but is more informative than returning `nil, nil`.
-	return nil, errors.New("all upstreams failed or returned no usable response")
-	// --- MODIFICATION END ---
-}
-
-// ===============================================================================
-// ===== ^^^^ The only modified function is `exchange` above. ^^^^ =====
-// ===============================================================================
-
-func quickSetup(bq sequence.BQ, s string) (any, error) {
-	args := new(Args)
-	args.Concurrent = maxConcurrentQueries
-	for _, u := range strings.Fields(s) {
-		args.Upstreams = append(args.Upstreams, UpstreamConfig{Addr: u})
-	}
-	return NewForward(args, Opts{Logger: bq.L()})
+	resp, tag, err := picker.final()
+	setAuditWinnerTag(qCtx, tag)
+	return resp, err
 }

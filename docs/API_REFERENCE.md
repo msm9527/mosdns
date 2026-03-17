@@ -13,12 +13,12 @@
 ## 0. 当前稳定接口优先顺序
 
 - 配置与系统：优先使用 `/api/v1/*`
-- 开关：优先使用 `/api/v1/switches/*`
+- 开关：优先使用 `/api/v1/control/switches/*`
 - 上游与规则：优先使用 `/api/v1/upstream/*`、`/api/v1/rules/*`
 - 缓存：优先使用 `/api/v1/cache/*`
 - 分流记忆库：优先使用 `/api/v1/memory/*`
 - 可编辑列表：优先使用 `/api/v1/lists/*`
-- `clientname` / `reverse_lookup`：优先使用 `/api/v1/clientname`、`/api/v1/reverse_lookup`
+- `clientname` / `reverse_lookup`：优先使用 `/api/v1/control/clientname`、`/api/v1/reverse_lookup`
 
 ## 1. 基础约定
 
@@ -73,87 +73,116 @@
 
 获取抓取到的日志，返回 JSON 数组。
 
-### 2.3 审计 API v1
+### 2.3 运行态聚合 API
 
-根路径：`/api/v1/audit`
+根路径：`/api/v1/control`
 
 | 方法 | 子路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `POST` | `/start` | `stable` | 开始审计采集 |
-| `POST` | `/stop` | `stable` | 停止审计采集 |
-| `GET` | `/status` | `stable` | 获取采集状态 |
-| `GET` | `/logs` | `compat` | 获取审计日志，建议逐步转向 v2 查询接口 |
-| `POST` | `/clear` | `stable` | 清空审计日志 |
-| `GET` | `/capacity` | `stable` | 获取审计存储设置 |
-| `POST` | `/capacity` | `stable` | 设置审计存储设置 |
+| `GET` | `/summary` | `stable` | 获取运行态命名空间概览、存储引擎和聚合摘要 |
+| `GET` | `/health` | `stable` | 获取运行态自检结果 |
+| `GET` | `/events` | `stable` | 获取 runtime system events |
+| `GET` | `/requery/jobs` | `stable` | 获取 requery 任务定义 |
+| `GET` | `/requery/runs` | `stable` | 获取最近 requery 运行历史 |
+| `GET` | `/requery/checkpoints` | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
+| `POST` | `/requery/enqueue` | `stable` | 触发 requery 任务入队 |
 
-示例：
+`GET /api/v1/control/summary` 重点用于：
+
+- 前端首页或诊断页做统一状态拉取
+- 确认当前运行态是否已经由 SQLite 接管
+- 查看 `switch / webinfo / requery / adguard_rule / diversion_rule / domain_pool_*` 是否有数据
+
+说明：
+
+- 动态域名记忆与统计真源已经统一为 SQLite `domain_pool_*` 表。
+- 运行态页面应按模块分别调用 `/summary`、`/health`、`/events` 与 `/runtime/requery/*`，不再依赖单一大聚合接口。
+
+### 2.4 审计 API v3
+
+根路径：`/api/v3/audit`
+
+| 方法 | 子路径 | 等级 | 说明 | 常用参数 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/overview` | `stable` | 获取当前概览窗口的实时指标 | `window` |
+| `GET` | `/timeseries` | `stable` | 获取分钟级或小时级趋势 | `from,to,step` |
+| `GET` | `/rank/domain` | `stable` | 域名排行 | `from,to,limit` |
+| `GET` | `/rank/client` | `stable` | 客户端排行 | `from,to,limit` |
+| `GET` | `/rank/domain_set` | `stable` | 规则集排行 | `from,to,limit` |
+| `GET` | `/logs` | `stable` | 基于 cursor 的原始日志查询 | `from,to,limit,cursor,q,exact,domain,client_ip,rcode,domain_set,cache_status,upstream_tag,transport,answer` |
+| `GET` | `/logs/slow` | `stable` | 慢查询日志 | `from,to,limit` |
+| `GET` | `/settings` | `stable` | 获取审计开关与存储参数 | 无 |
+| `PUT` | `/settings` | `stable` | 更新审计开关与存储参数 | JSON body |
+| `POST` | `/clear` | `stable` | 清空原始日志、聚合数据与实时窗口 | 无 |
+
+`GET /overview` 返回示例：
 
 ```json
 {
-  "capturing": true
+  "enabled": true,
+  "window_seconds": 60,
+  "total_query_count": 982341,
+  "total_average_duration_ms": 11.42,
+  "query_count": 1280,
+  "qps": 21.33,
+  "average_duration_ms": 12.48,
+  "max_duration_ms": 184.77,
+  "error_count": 9,
+  "error_rate": 0.007,
+  "no_response_count": 3,
+  "cache_hit_count": 742,
+  "cache_hit_rate": 0.58,
+  "dropped_events": 0,
+  "queue_depth": 0,
+  "degraded": false,
+  "current_storage_bytes": 1048576
 }
 ```
 
+`GET /settings` / `PUT /settings` 返回或提交结构：
+
 ```json
 {
-  "memory_entries": 100000,
-  "current_memory_entries": 527,
-  "retention_days": 30,
-  "max_disk_size_mb": 10,
-  "current_disk_size_bytes": 1048576,
-  "capacity": 100000
+  "enabled": true,
+  "overview_window_seconds": 60,
+  "raw_retention_days": 30,
+  "aggregate_retention_days": 365,
+  "max_storage_mb": 512,
+  "sqlite_path": "db/audit.db",
+  "flush_batch_size": 512,
+  "flush_interval_ms": 1000,
+  "maintenance_interval_seconds": 300,
+  "current_storage_bytes": 1048576,
+  "queue_depth": 0,
+  "degraded": false
 }
 ```
 
-设置审计存储请求体：
+`GET /logs` 返回结构：
 
 ```json
 {
-  "memory_entries": 100000,
-  "retention_days": 30,
-  "max_disk_size_mb": 10
+  "summary": {
+    "matched_count": 256,
+    "average_duration_ms": 8.91,
+    "max_duration_ms": 233.14
+  },
+  "logs": [],
+  "next_cursor": "1710641465123:9988"
 }
 ```
 
 说明：
 
-- `memory_entries`：内存窗口条数，用于 UI 快速查询。
-- `current_memory_entries`：当前实际保存在内存窗口里的日志条数。
-- `retention_days`：磁盘日志保留天数。
-- `max_disk_size_mb`：磁盘日志总占用上限。
-- `capacity`：兼容旧前端，等同于 `memory_entries`。
-- `POST /clear`：会同时清空内存窗口和已落盘的审计历史。
-- `POST /capacity`：设置保存后立即生效，无需重启服务。
+- 旧 `v1/v2 audit` 接口已经移除，不再保留兼容层。
+- 原始日志存于 SQLite `audit_log`，分钟级/小时级聚合存于 `audit_minute` / `audit_hour`。
+- `total_query_count` / `total_average_duration_ms` 来自小时聚合表，表示当前保留期内的累计请求与累计平均耗时。
+- `cursor` 为顺序翻页游标，前端不再使用 `page/offset`。
+- `overview_window_seconds` 只影响概览窗口口径，不影响原始日志保留。
+- `raw_retention_days` 与 `aggregate_retention_days` 分别控制原始日志和聚合数据清理策略。
+- `max_storage_mb` 为整个审计 SQLite 文件上限；维护任务会优先清理最旧原始日志与过期聚合。
 
-### 2.4 审计 API v2
-
-根路径：`/api/v2/audit`
-
-| 方法 | 子路径 | 等级 | 说明 | 常用参数 |
-| --- | --- | --- | --- | --- |
-| `GET` | `/stats` | `stable` | 获取总请求数与平均耗时 | 无 |
-| `GET` | `/rank/domain` | `stable` | 域名排行 | `limit` |
-| `GET` | `/rank/client` | `stable` | 客户端排行 | `limit` |
-| `GET` | `/rank/domain_set` | `stable` | 规则集排行 | `limit` |
-| `GET` | `/rank/slowest` | `stable` | 慢查询排行 | `limit` |
-| `GET` | `/logs` | `stable` | 分页日志查询 | `page,limit,domain,answer_ip,cname,client_ip,q,exact` |
-
-`/logs` 返回结构：
-
-```json
-{
-  "pagination": {
-    "total_items": 0,
-    "total_pages": 0,
-    "current_page": 1,
-    "items_per_page": 50
-  },
-  "logs": []
-}
-```
-
-### 2.5 覆盖配置
+### 2.6 覆盖配置
 
 根路径：`/api/v1/overrides`
 
@@ -178,7 +207,7 @@
 }
 ```
 
-### 2.6 配置管理
+### 2.7 配置管理
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
@@ -248,7 +277,7 @@
 }
 ```
 
-### 2.7 版本检查与程序更新
+### 2.8 版本检查与程序更新
 
 根路径：`/api/v1/update`
 
@@ -408,7 +437,7 @@
 
 - `key`: 前端使用的稳定标识
 - `name`: 展示名称
-- `tag`: 对应 domain_output 插件 tag
+- `tag`: 对应 memory pool / stats pool 插件 tag
 - `memory_id`: 插件内部内存实例标识
 - `kind`: 统计类型，例如 `fakeip`、`realip`、`nov4`、`nov6`、`generic`
 - `total_entries`: 当前内存中统计条目数
@@ -557,19 +586,19 @@
 
 ### 3.1 核心开关接口（`stable`）
 
-根路径：`/api/v1/switches`
+根路径：`/api/v1/control/switches`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/switches` | `stable` | 获取全部开关状态 |
-| `GET` | `/api/v1/switches/{name}` | `stable` | 获取单个开关状态 |
-| `PUT` | `/api/v1/switches/{name}` | `stable` | 更新单个开关 |
+| `GET` | `/api/v1/control/switches` | `stable` | 获取全部开关状态 |
+| `GET` | `/api/v1/control/switches/{name}` | `stable` | 获取单个开关状态 |
+| `PUT` | `/api/v1/control/switches/{name}` | `stable` | 更新单个开关 |
 
 返回示例：
 
 ```json
 [
-  { "name": "core_mode", "value": "secure" },
+  { "name": "branch_cache", "value": "on" },
   { "name": "client_proxy_mode", "value": "all" }
 ]
 ```
@@ -584,7 +613,6 @@
 
 当前具名开关包括：
 
-- `core_mode`
 - `client_proxy_mode`
 - `block_response`
 - `block_query_type`
@@ -601,7 +629,7 @@
 
 ```json
 [
-  { "name": "core_mode", "value": "secure" },
+  { "name": "branch_cache", "value": "on" },
   { "name": "client_proxy_mode", "value": "all" }
 ]
 ```
@@ -618,7 +646,7 @@
 
 - 旧的 `/plugins/switches/*` 聚合接口已移除
 - 旧的 `/plugins/{switch_name}` 单实例接口已移除
-- 开关能力现在只保留 `/api/v1/switches/*`
+- 开关能力现在只保留 `/api/v1/control/switches/*`
 
 ## 4. 常用插件 API
 
@@ -632,26 +660,26 @@
 
 ### 4.1 Requery / 批量重建分流任务（`stable`）
 
-根路径：`/api/v1/requery`
+根路径：`/api/v1/control/requery`
 
 这组接口用于“批量重建分流 / 快速预热缓存”流程本身，不负责直接读写具体分流列表内容。
 
 当前推荐优先使用聚合接口，减少前端请求次数：
 
-- `GET /api/v1/requery/summary`
-- `POST /api/v1/requery/rules/save`
-- `POST /api/v1/requery/rules/flush`
+- `GET /api/v1/control/requery/summary`
+- `POST /api/v1/control/requery/rules/save`
+- `POST /api/v1/control/requery/rules/flush`
 
 典型调用链：
 
-1. `GET /api/v1/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
-2. `POST /api/v1/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
-3. `POST /api/v1/requery/enqueue` 入队单域名按需刷新
-4. `POST /api/v1/requery/cancel` 取消当前任务
-5. `POST /api/v1/requery/scheduler/config` 更新定时刷新配置
-6. `POST /api/v1/requery/rules/save` 批量保存当前分流规则
-7. `POST /api/v1/requery/rules/flush` 批量清空动态分流规则
-8. `GET /api/v1/requery/stats/source_file_counts` 获取刷新源文件统计
+1. `GET /api/v1/control/requery/summary` 一次性获取配置、运行状态、队列预览、分流记忆库统计
+2. `POST /api/v1/control/requery/trigger` 触发 `full_rebuild / quick_rebuild / quick_prewarm`
+3. `POST /api/v1/control/requery/enqueue` 入队单域名按需刷新
+4. `POST /api/v1/control/requery/cancel` 取消当前任务
+5. `POST /api/v1/control/requery/scheduler/config` 更新定时刷新配置
+6. `POST /api/v1/control/requery/rules/save` 批量保存当前分流规则
+7. `POST /api/v1/control/requery/rules/flush` 批量清空动态分流规则
+8. `GET /api/v1/control/requery/stats/source_file_counts` 获取刷新源文件统计
 
 三种任务模式：
 
@@ -690,7 +718,7 @@
 | `POST` | `/rules/flush` | `stable` | 批量清空 `url_actions.flush_rules` 中的目标 |
 | `GET` | `/stats/source_file_counts` | `stable` | 获取各源文件条目统计 |
 
-`GET /api/v1/requery/summary` 返回核心字段：
+`GET /api/v1/control/requery/summary` 返回核心字段：
 
 - `config.domain_processing.source_files`
 - `config.url_actions.save_rules`
@@ -725,7 +753,7 @@
 - `status.last_error`
 - `memory_stats`
 
-`GET /api/v1/requery` 返回核心字段：
+`GET /api/v1/control/requery` 返回核心字段：
 
 - `domain_processing.source_files`
 - `url_actions.save_rules`
@@ -759,9 +787,9 @@
 说明：
 
 - 旧的 `/plugins/requery/*` 接口已移除
-- `requery` 现在只保留 `/api/v1/requery/*`
+- `requery` 现在只保留 `/api/v1/control/requery/*`
 
-`POST /api/v1/requery/trigger` 请求体示例：
+`POST /api/v1/control/requery/trigger` 请求体示例：
 
 ```json
 {
@@ -776,7 +804,7 @@
 - `quick_rebuild`
 - `quick_prewarm`
 
-`POST /api/v1/requery/trigger` 成功返回示例：
+`POST /api/v1/control/requery/trigger` 成功返回示例：
 
 ```json
 {
@@ -786,7 +814,7 @@
 }
 ```
 
-`POST /api/v1/requery/enqueue` 请求体示例：
+`POST /api/v1/control/requery/enqueue` 请求体示例：
 
 ```json
 {
@@ -806,7 +834,7 @@
 - `reason` 会影响队列优先级，常见值：`observed`、`stale`、`conflict`、`error`
 - 如果队列判定为重复或无需处理，接口会返回 `202 Accepted` 且 `status=skipped`
 
-`POST /api/v1/requery/enqueue` 成功返回示例：
+`POST /api/v1/control/requery/enqueue` 成功返回示例：
 
 ```json
 {
@@ -816,7 +844,7 @@
 }
 ```
 
-`POST /api/v1/requery/rules/save` / `POST /api/v1/requery/rules/flush` 返回示例：
+`POST /api/v1/control/requery/rules/save` / `POST /api/v1/control/requery/rules/flush` 返回示例：
 
 ```json
 {
@@ -837,7 +865,7 @@
 }
 ```
 
-`POST /api/v1/requery/scheduler/config` 示例：
+`POST /api/v1/control/requery/scheduler/config` 示例：
 
 ```json
 {
@@ -912,7 +940,7 @@
   - 这套任务会真实发 DNS 查询重建分流结果，不是单纯内存刷新
   - 即使做了增量优化，`full_rebuild` 也不应被当成“秒级无感操作”
 
-`GET /api/v1/requery/stats/source_file_counts` 返回示例：
+`GET /api/v1/control/requery/stats/source_file_counts` 返回示例：
 
 ```json
 {
@@ -961,11 +989,11 @@
 
 - 命中 `DDNS域名` 标签的缓存项，过期后不会再走 lazy stale 返回旧值，而是直接回源重查。
 
-### 4.3 domain_output / 分流记忆库与域名输出（`stable`）
+### 4.3 domain_memory_pool / domain_stats_pool（`stable`）
 
 根路径：`/api/v1/memory/{memory_tag}`
 
-这组接口是“刷新分流”真正读写的数据面。`requery` 任务最终会把结果发布到这些记忆库。
+这组接口是“刷新分流”真正读写的数据面。`requery` 任务最终会把结果发布到这些记忆池。
 
 常见 tag：
 
@@ -976,12 +1004,11 @@
 - `my_nov6list`
 - `my_nodenov4list`
 - `my_nodenov6list`
-- `my_notinlist`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
 | `POST` | `/flush` | `stable` | 清空并写盘 |
-| `POST` | `/save` | `stable` | 保存当前内存到文件 |
+| `POST` | `/save` | `stable` | 立即把当前内存刷入 SQLite |
 | `GET` | `/entries` | `stable` | 查看记忆数据 |
 | `GET` | `/stats` | `stable` | 获取统计信息 |
 | `POST` | `/verify` | `stable` | 标记域名已验证、清理 dirty 状态 |
@@ -1142,11 +1169,11 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/clientname` | `stable` | 获取客户端别名映射 |
-| `PUT` | `/api/v1/clientname` | `stable` | 更新客户端别名映射 |
+| `GET` | `/api/v1/control/clientname` | `stable` | 获取客户端别名映射 |
+| `PUT` | `/api/v1/control/clientname` | `stable` | 更新客户端别名映射 |
 | `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
 
-`PUT /api/v1/clientname` 请求体示例：
+`PUT /api/v1/control/clientname` 请求体示例：
 
 ```json
 {
@@ -1168,6 +1195,7 @@
 
 - 旧的 `/plugins/clientname` 已移除
 - 旧的 `/plugins/reverse_lookup` 已移除
+- `clientname` 现在直接读写 `config/custom_config/clientname.yaml`
 
 ## 5. 当前前端重点依赖的接口
 
@@ -1179,26 +1207,26 @@
 - 它们只是当前前端实际仍在调用
 - 后续若存在同能力的核心 API，应优先迁移
 
-如果你是在维护 `log.html` / `log.js` 这套前端，优先关注这些接口：
+如果你是在维护 `config/ui/index.html` / `config/ui/assets/js/log.js` 这套前端，优先关注这些接口：
 
 ### 5.1 页面状态与统计
 
-- `GET /api/v1/audit/status`
-- `GET /api/v1/audit/capacity`
-- `GET /api/v2/audit/stats`
-- `GET /api/v2/audit/rank/domain`
-- `GET /api/v2/audit/rank/client`
-- `GET /api/v2/audit/rank/domain_set`
-- `GET /api/v2/audit/rank/slowest`
-- `GET /api/v2/audit/logs`
+- `GET /api/v3/audit/settings`
+- `PUT /api/v3/audit/settings`
+- `GET /api/v3/audit/overview`
+- `GET /api/v3/audit/timeseries`
+- `GET /api/v3/audit/rank/domain`
+- `GET /api/v3/audit/rank/client`
+- `GET /api/v3/audit/rank/domain_set`
+- `GET /api/v3/audit/logs/slow`
+- `GET /api/v3/audit/logs`
+- `POST /api/v3/audit/clear`
 - `GET /metrics`
-
-其中 `GET /api/v1/audit/capacity` 现在返回的是“审计存储设置 + 当前磁盘占用”，不再只是单一条目容量。
 
 ### 5.2 系统控制
 
-- `GET /api/v1/switches`
-- `PUT /api/v1/switches/{name}`
+- `GET /api/v1/control/switches`
+- `PUT /api/v1/control/switches/{name}`
 - `GET /api/v1/update/status`
 - `POST /api/v1/update/check`
 - `POST /api/v1/update/apply`
@@ -1219,16 +1247,16 @@
 
 批量重建 / 预热主流程：
 
-- `GET /api/v1/requery/summary`
-- `GET /api/v1/requery`
-- `GET /api/v1/requery/status`
-- `POST /api/v1/requery/trigger`
-- `POST /api/v1/requery/enqueue`
-- `POST /api/v1/requery/cancel`
-- `POST /api/v1/requery/scheduler/config`
-- `POST /api/v1/requery/rules/save`
-- `POST /api/v1/requery/rules/flush`
-- `GET /api/v1/requery/stats/source_file_counts`
+- `GET /api/v1/control/requery/summary`
+- `GET /api/v1/control/requery`
+- `GET /api/v1/control/requery/status`
+- `POST /api/v1/control/requery/trigger`
+- `POST /api/v1/control/requery/enqueue`
+- `POST /api/v1/control/requery/cancel`
+- `POST /api/v1/control/requery/scheduler/config`
+- `POST /api/v1/control/requery/rules/save`
+- `POST /api/v1/control/requery/rules/flush`
+- `GET /api/v1/control/requery/stats/source_file_counts`
 
 分流记忆库保存 / 清空 / 校验：
 
@@ -1267,9 +1295,9 @@
 - `POST /api/v1/rules/diversion/{type}/{name}/update`
 - `GET /api/v1/lists/{tag}`
 - `PUT /api/v1/lists/{tag}`
-- `GET /api/v1/clientname`
-- `PUT /api/v1/clientname`
-- `domain_output` 记忆库已统一到 `/api/v1/memory/{tag}/*`
+- `GET /api/v1/control/clientname`
+- `PUT /api/v1/control/clientname`
+- memory pool / stats pool 已统一到 `/api/v1/memory/{tag}/*`
 
 ## 6. 迁移说明
 
@@ -1277,9 +1305,9 @@
 
 文档和前端都应当只使用具名开关核心接口：
 
-- `GET /api/v1/switches`
-- `GET /api/v1/switches/{name}`
-- `PUT /api/v1/switches/{name}`
+- `GET /api/v1/control/switches`
+- `GET /api/v1/control/switches/{name}`
+- `PUT /api/v1/control/switches/{name}`
 
 ### 6.2 插件 tag 与插件类型不是一回事
 

@@ -1,6 +1,9 @@
 package coremain
 
-import "testing"
+import (
+	"net/http"
+	"testing"
+)
 
 func TestNormalizeVersion(t *testing.T) {
 	cases := map[string]string{
@@ -38,5 +41,49 @@ func TestPreferredReleaseTagUsesCanonicalTag(t *testing.T) {
 	m := &UpdateManager{currentVersion: "5.0.7"}
 	if got := m.preferredReleaseTag(); got != "msm-v5.0.7" {
 		t.Fatalf("preferredReleaseTag() = %q, want %q", got, "msm-v5.0.7")
+	}
+}
+
+func TestGetHttpClientForUpdatePrefersCustomConfig(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	if err := saveGlobalOverridesToCustomConfig(&GlobalOverrides{Socks5: "127.0.0.1:1080"}); err != nil {
+		t.Fatalf("saveGlobalOverridesToCustomConfig: %v", err)
+	}
+
+	m := &UpdateManager{httpClient: &http.Client{}}
+	client, isProxy, err := m.getHttpClientForUpdate()
+	if err != nil {
+		t.Fatalf("getHttpClientForUpdate() error = %v", err)
+	}
+	if !isProxy {
+		t.Fatal("expected proxy client from custom config")
+	}
+	if client == nil || client.Transport == nil {
+		t.Fatalf("unexpected proxy client: %#v", client)
+	}
+}
+
+func TestGetHttpClientForUpdateFallsBackToDirect(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	m := &UpdateManager{httpClient: &http.Client{}}
+	client, isProxy, err := m.getHttpClientForUpdate()
+	if err != nil {
+		t.Fatalf("getHttpClientForUpdate() error = %v", err)
+	}
+	if isProxy {
+		t.Fatal("expected direct client without runtime overrides")
+	}
+	if client == nil || client != m.httpClient {
+		t.Fatalf("unexpected proxy client: %#v", client)
 	}
 }

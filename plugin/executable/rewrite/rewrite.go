@@ -78,7 +78,7 @@ type Rewrite struct {
 	rules    []string
 }
 
-var _ coremain.RuntimeConfigReloader = (*Rewrite)(nil)
+var _ coremain.ControlConfigReloader = (*Rewrite)(nil)
 
 // Init initializes the plugin from the configuration.
 func Init(bp *coremain.BP, args any) (any, error) {
@@ -226,7 +226,7 @@ func (r *Rewrite) Exec(ctx context.Context, qCtx *query_context.Context, next se
 	return nil
 }
 
-func (r *Rewrite) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (r *Rewrite) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(r.pluginTag, r.baseArgs, effective, global); err != nil {
 		return err

@@ -1,284 +1,87 @@
-# ===============================================================
-# 主配置总览（请保留）
-# ===============================================================
-# 请求主路径:
-# 1) 客户端 -> `udp_all/tcp_all` (:53)
-# 2) 进入 `sequence_6666`
-# 3) 先执行 `sequence_common_precheck`（黑白名单、拦截、偏好、缓存前置）
-# 4) 再按 qtype 分流到:
-#    - A    -> `sequence_ipv4`
-#    - AAAA -> `sequence_ipv6`
-#    - 其他 -> `sequence_other`
+# mosdns V2 主入口配置
 #
-# 刷新路径:
-# - `udp_requery/tcp_requery`(:7766) 与 `udp_requery_refresh/tcp_requery_refresh`(:7767)
-# - 使用与主链路一致的 fast_mark 语义，但不参与 top_domains 统计。
+# 这个文件只保留“全局设置”和“子配置装配顺序”：
+# 1. 日志、HTTP API、审计、控制库路径
+# 2. sub_config 的 include 顺序
 #
-# 维护原则:
-# - include 顺序不要随意调整；后续子配置会引用前面定义的 tag。
-# - 新增 fast_mark/mark 编号前，先核对 `rule_set.yaml`、主链路与快路径实现。
-# ===============================================================
+# 纯 V2 主线下，不再使用旧版 include / plugins 语法。
+# 这里通过 `rule_providers.type=include` 顺序装载各个 V2 子文档。
+# 装载顺序必须遵守依赖关系：
+# - control 先于 sequence，因为 sequence 会读取 switch 状态
+# - data / upstream 先于 sequence，因为 sequence 会引用它们
+# - listener 最后加载，因为它们依赖前面已经注册完成的 entry
+
+version: v2
+
+# 日志配置：
+# - 当前仍然输出到 /tmp，便于本机调试
+# - 如果部署到长期运行环境，可改为专用日志目录
 log:
   level: warn
-  file: "/tmp/mosdns.log"
+  file: /tmp/mosdns.log
 
-#跟web ui绑定，不要修改此端口
+# HTTP 管理接口：
+# - UI、control API、运行时操作都走这里
 api:
-  http: "0.0.0.0:9099"
+  http: 0.0.0.0:9099
 
-#子配置，不要调整顺序
-include:
-  - "sub_config/adguard.yaml"               #Adguard插件
-  - "sub_config/domain_output.yaml"         #域名规则生成输出插件定义
-  - "sub_config/rule_set.yaml"              #数据插件定义
-  - "sub_config/cache.yaml"                 #缓存插件定义
-  - "sub_config/forward_local.yaml"         #带过期缓存的内部使用国内dns服务器
-  - "sub_config/forward_nocn.yaml"          #带过期缓存的内部使用国外dns服务器
-  - "sub_config/forward_nocn_ecs.yaml"      #带过期缓存的内部使用国外dns服务器（带ecs）节点使用
-  - "sub_config/forward_1.yaml"             #使用前面定义的内部dns服务器定义序列 1代表调用层级 大的调用小的
-  - "sub_config/switch.yaml"                #切换开关定义
-  - "sub_config/not_in_list_ipmatch.yaml"   #列表外的域名获取上游dns响应结果后进行ip对比
-  - "sub_config/not_in_list_leak_v4.yaml"   #列表外的域名泄露版的处理逻辑
-  - "sub_config/not_in_list_leak_v6.yaml"   #列表外的域名泄露版的处理逻辑
-  - "sub_config/not_in_list_noleak_v4.yaml" #列表外的域名不泄露版的处理逻辑
-  - "sub_config/not_in_list_noleak_v6.yaml" #列表外的域名不泄露版的处理逻辑
-  - "sub_config/process_ot.yaml"            #主分流序列-其它类型dns请求
-  - "sub_config/process_v4.yaml"            #主分流序列-IPV4类型dns请求
-  - "sub_config/process_v6.yaml"            #主分流序列-IPV6类型dns请求
-  - "sub_config/requery_refresh.yaml"       #分流记忆旁路刷新专用链路
-  - "sub_config/for_singbox.yaml"           #专供sing-box使用
-  - "sub_config/webinfo.yaml"               #前端信息与配置存储
-  - "sub_config/requery.yaml"               #分流与缓存刷新功能
+# 审计配置：
+# - 运行期概览走实时窗口，不再从全量日志表直接求平均值
+# - 原始日志与分钟/小时聚合统一写入 SQLite
+# - sqlite_path 固定写入 db/audit.db
+audit:
+  enabled: true
+  overview_window_seconds: 60
+  raw_retention_days: 7
+  aggregate_retention_days: 30
+  max_storage_mb: 128
+  sqlite_path: db/audit.db
+  flush_batch_size: 256
+  flush_interval_ms: 250
+  maintenance_interval_seconds: 60
 
-plugins:
-# ========================= 重要说明（请保留） =========================
-# 这里把“主链路 + requery 链路”共同的前置规则抽成 sequence_common_precheck。
-# 这不是删除功能，而是“等价重构”，目的是避免两份大段规则长期漂移。
-#
-# 等价关系:
-# - 旧配置中 sequence_6666 与 sequence_requery 里重复的:
-#   qtype/switch 拦截、unified_matcher1、黑白名单拦截、client_ip 逻辑、
-#   prefer_ipv4/prefer_ipv6、cache_all/cache_all_noleak
-#   现在都集中在 sequence_common_precheck 中执行。
-#
-# 执行顺序:
-# - sequence_6666: 先执行 $sequence_common_precheck，再执行 top_domains/rewrite/分流。
-# - sequence_requery: 先执行 $sequence_common_precheck，再执行 rewrite/分流。
-#
-# 差异点（有意保留）:
-# - sequence_6666 保留 top_domains 统计。
-# - sequence_requery 不做 top_domains 统计（避免刷新链路污染访问排行）。
-#
-# 维护规则:
-# - 以后如果要改这段前置逻辑，只改 sequence_common_precheck 一处即可。
-# ===================================================================
-  - tag: sequence_common_precheck
-    type: sequence
-    args:
-      - matches:                            #阻止SOA PTR HTTPS类型的dns查询
-        - "qtype 6 12 65"
-        - switch 'block_query_type:on'
-        exec: reject 0
-      - matches:                            #阻止AAAA类型的dns查询
-        - "qtype 28"
-        - switch 'block_ipv6:on'
-        exec: reject 0
-      - exec: $unified_matcher1             #匹配屏蔽域名表并设置相应的fast_mark
-      - matches:                            #屏蔽黑名单域名
-        - fast_mark 1
-        - switch 'block_response:on'
-        exec: reject 3
-      - matches:                            #屏蔽没有v4地址的域名
-        - fast_mark 2
-        - qtype 1
-        - switch 'block_response:on'
-        exec: reject 0
-      - matches:                            #屏蔽没有v6地址的域名
-        - fast_mark 3
-        - qtype 28
-        - switch 'block_response:on'
-        exec: reject 0
-      - matches:                            #屏蔽广告
-        - fast_mark 5
-        - switch 'ad_block:on'
-        exec: reject 3
-      - matches: fast_mark 6                #向上游请求ddns域名，无过期缓存
-        exec:
-          - $domestic
-          - exit
-      - matches:                            # 客户端代理模式=whitelist：只有 client_ip.txt 中的客户端允许走代理
-        - "!fast_mark 48"                   #在快速路径中没有比对过
-        - switch 'client_proxy_mode:whitelist'
-        - "!client_ip $client_ip"
-        exec: fast_mark 39
-      - matches:                            # 客户端代理模式=blacklist：client_ip.txt 中的客户端强制直连
-        - "!fast_mark 48"                   #在快速路径中没有比对过
-        - switch 'client_proxy_mode:blacklist'
-        - "client_ip $client_ip"
-        exec: fast_mark 39
-      - matches: fast_mark 39
-        exec:
-          - $sequence_local
-          - tag_setter 指定客户端直连
-          - exit
-      - matches:
-        - switch 'prefer_ipv4:on'
-        - switch 'prefer_ipv6:off'
-        exec: prefer_ipv4
-      - matches:
-        - switch 'prefer_ipv4:off'
-        - switch 'prefer_ipv6:on'
-        exec: prefer_ipv6
-      - matches:                            #web ui中选择泄露版（默认），用cache_all，否则用cache_all_noleak
-        - switch 'core_mode:compat'
-        - switch 'main_cache:on'
-        exec: $cache_all
-      - matches:
-        - switch 'core_mode:secure'
-        - switch 'main_cache:on'
-        exec: $cache_all_noleak
+# 运行态控制库：
+# - 所有运行态真源统一写入 db/control.db
+storage:
+  control_db: db/control.db
 
-  - tag: sequence_6666
-    type: sequence
-    args:
-      - exec: $sequence_common_precheck       # 等价于旧版中被提取的整段前置规则
-      - exec: $top_domains
-      - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
-      - matches: qtype 1                    #处理A请求
-        exec: $sequence_ipv4
-      - matches: qtype 28                   #处理AAAA请求
-        exec: $sequence_ipv6
-      - matches: "!qtype 1 28"              #处理非A、AAAA请求
-        exec: $sequence_other
-
-#对外服务器
-  - tag: udp_all
-    type: udp_server
-    args:
-      entry: sequence_6666
-      listen: ":53"
-      enable_audit: true
-      # fast_bypass_warmup_seconds 已下沉到代码默认:
-      # - requery 链路默认 1s
-      # - 其他链路默认 3s
-
-  - tag: tcp_all
-    type: tcp_server
-    args:
-      entry: sequence_6666
-      listen: ":53"
-      enable_audit: true
-      idle_timeout: 720
-
-  - tag: sequence_requery
-    type: sequence
-    args:
-      - exec: $sequence_common_precheck       # 与主链路复用同一前置规则，避免漂移
-      - exec: $rewrite                      #匹配成功重定向后直接结束不执行后续流程
-      - matches: qtype 1                    #处理A请求
-        exec: $sequence_ipv4
-      - matches: qtype 28                   #处理AAAA请求
-        exec: $sequence_ipv6
-      - matches: "!qtype 1 28"              #处理非A、AAAA请求
-        exec: $sequence_other
-
-                                                  #刷新分流与缓存的服务器，不记录日志，不计算tom_domains请求数
-  - tag: udp_requery
-    type: udp_server
-    args:
-      entry: sequence_requery
-      listen: ":7766"
-
-  - tag: tcp_requery
-    type: tcp_server
-    args:
-      entry: sequence_requery
-      listen: ":7766"
-
-  - tag: sequence_for_stash
-    type: sequence
-    args:
-      - exec: try $sequence_6666                  #捕获exit动作后继续后续流程
-      - matches: "resp_ip 30.0.0.0/8 2400::1/64"  #如果主路由返回了国内fakeip
-        exec:
-          - $sequence_local
-          - tag_setter stash国内
-          - exit
-      - matches: "resp_ip 28.0.0.0/8 f2b0::/18"
-        exec:
-          - tag_setter stash国外
-          - exit
-      - exec: tag_setter stash国内
-
-#  - tag: udp_stash                                #给stash回家用的dns服务器
-#    type: udp_server
-#    args:
-#      entry: sequence_for_stash
-#      listen: ":7772"
-#      enable_audit: true
-#
-#  - tag: tcp_stash
-#    type: tcp_server
-#    args:
-#      entry: sequence_for_stash
-#      listen: ":7772"
-#      enable_audit: true
-
-  - tag: sequence_for_clashmi                      #给clashmi回家用的服务器
-    type: sequence
-    args:
-      - exec: try $sequence_6666
-      - matches: "resp_ip 28.0.0.0/8 f2b0::/18"
-        exec:
-          - fast_mark 26
-          - tag_setter clashmi国外
-          - exit
-      - matches: "!resp_ip 0.0.0.0/0 2000::/3"     #给clashmi透传屏蔽的域名响应
-        exec: exit
-      - matches: "!fast_mark 26"
-        exec:
-          - $sequence_local_fake
-          - tag_setter clashmi国内
-          - exit
-
-  - tag: udp_clashmi                               #给clashmi回家用的dns服务器
-    type: udp_server
-    args:
-      entry: sequence_for_clashmi
-      listen: ":7799"
-      enable_audit: true
-
-  - tag: tcp_clashmi
-    type: tcp_server
-    args:
-      entry: sequence_for_clashmi
-      listen: ":7799"
-      enable_audit: true
-
-  - tag: sequence_for_singbox
-    type: sequence
-    args:
-      - exec: try $sequence_6666                  #捕获exit动作后继续后续流程
-      - matches: "resp_ip 30.0.0.0/8 2400::1/64"  #如果主路由返回了国内fakeip
-        exec:
-          - tag_setter sing-box国内
-          - exit
-      - matches: "resp_ip 28.0.0.0/8 f2b0::/18"
-        exec:
-          - tag_setter sing-box国外
-          - exit
-      - exec: tag_setter sing-box国内
-
-#  - tag: udp_singbox                               #给sing-box回家用的dns服务器
-#    type: udp_server
-#    args:
-#      entry: sequence_for_singbox
-#      listen: ":7771"
-#      enable_audit: true
-#
-#  - tag: tcp_singbox
-#    type: tcp_server
-#    args:
-#      entry: sequence_for_singbox
-#      listen: ":7771"
-#      enable_audit: true
+# 子配置加载顺序：
+# - 10: control 运行态定义
+# - 20/21: 数据源、规则集、缓存、上游
+# - 31~34: 主解析链
+# - 40~42: requery 刷新链
+# - 50: 所有监听入口
+rule_providers:
+  - name: control
+    type: include
+    source: sub_config/10-control.yaml
+  - name: data_sources
+    type: include
+    source: sub_config/20-data-sources.yaml
+  - name: data_cache_upstreams
+    type: include
+    source: sub_config/21-data-cache-upstreams.yaml
+  - name: main_resolution
+    type: include
+    source: sub_config/31-main-resolution.yaml
+  - name: main_routing
+    type: include
+    source: sub_config/32-main-not-in-list.yaml
+  - name: main_ipv4_ipv6
+    type: include
+    source: sub_config/33-main-ipv4v6.yaml
+  - name: main_entry
+    type: include
+    source: sub_config/34-main-entry.yaml
+  - name: refresh_resolution
+    type: include
+    source: sub_config/40-refresh-resolution.yaml
+  - name: refresh_routing
+    type: include
+    source: sub_config/41-refresh-not-in-list.yaml
+  - name: refresh_ipv4_ipv6
+    type: include
+    source: sub_config/42-refresh-ipv4v6.yaml
+  - name: listeners
+    type: include
+    source: sub_config/50-listeners.yaml

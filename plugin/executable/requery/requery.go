@@ -12,7 +12,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
@@ -21,6 +20,7 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/go-chi/chi/v5"
 	"github.com/miekg/dns"
 	"github.com/robfig/cron/v3"
@@ -45,24 +45,21 @@ func init() {
 
 // Args is the plugin's configuration arguments from the main YAML config.
 type Args struct {
-	File string `yaml:"file"` // Path to the requeryconfig.json file
+	Key string `yaml:"key"` // Logical runtime key stored in control.db
 }
 
 // newRequery is the plugin's initialization function.
 func newRequery(bp *coremain.BP, args any) (any, error) {
 	cfg := args.(*Args)
-	if cfg.File == "" {
-		return nil, errors.New("requery: 'file' for config json must be specified")
-	}
-
-	dir := filepath.Dir(cfg.File)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("requery: failed to create directory %s: %w", dir, err)
+	if strings.TrimSpace(cfg.Key) == "" {
+		return nil, errors.New("requery: 'key' must be specified")
 	}
 
 	p := &Requery{
 		m:          bp.M(),
-		filePath:   cfg.File,
+		pluginTag:  bp.Tag(),
+		runtimeKey: cfg.Key,
+		dbPath:     coremain.RuntimeStateDBPath(),
 		scheduler:  cron.New(),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		queue:      make(refreshJobHeap, 0),
@@ -72,7 +69,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	heap.Init(&p.queue)
 
 	if err := p.loadConfig(); err != nil {
-		return nil, fmt.Errorf("requery: failed to load initial config from %s: %w", p.filePath, err)
+		return nil, fmt.Errorf("requery: failed to load initial config for %s: %w", p.runtimeKey, err)
 	}
 
 	p.prepareRecoveryOnStartup()
@@ -88,9 +85,9 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 	p.scheduleRecoveryIfNeeded()
 
-	bp.M().GetAPIRouter().Mount("/api/v1/requery", p.api())
+	bp.M().GetAPIRouter().Mount("/api/v1/control/requery", p.api())
 
-	log.Printf("[requery] plugin instance created for config file: %s", p.filePath)
+	log.Printf("[requery] plugin instance created for runtime key: %s", p.runtimeKey)
 	return p, nil
 }
 
@@ -100,24 +97,28 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 
 // Requery is the main struct for the plugin.
 type Requery struct {
-	mu         sync.RWMutex
-	m          *coremain.Mosdns
-	filePath   string
-	config     *Config
-	status     Status
-	fullTask   *FullRebuildTask
-	lastError  string
-	scheduler  *cron.Cron
-	taskCtx    context.Context
-	taskCancel context.CancelFunc
-	httpClient *http.Client
-	queue      refreshJobHeap
-	queueIndex map[string]struct{}
-	queueKick  chan struct{}
-	resumeOnce sync.Once
+	mu                  sync.RWMutex
+	m                   *coremain.Mosdns
+	pluginTag           string
+	runtimeKey          string
+	dbPath              string
+	config              *Config
+	status              Status
+	fullTask            *FullRebuildTask
+	lastError           string
+	scheduler           *cron.Cron
+	taskCtx             context.Context
+	taskCancel          context.CancelFunc
+	activeRunID         string
+	activeTriggerSource string
+	httpClient          *http.Client
+	queue               refreshJobHeap
+	queueIndex          map[string]struct{}
+	queueKick           chan struct{}
+	resumeOnce          sync.Once
 }
 
-// Config maps directly to the requeryconfig.json file structure.
+// Config is the persisted requery runtime config stored in control.db.
 type Config struct {
 	DomainProcessing  DomainProcessing  `json:"domain_processing"`
 	URLActions        URLActions        `json:"url_actions"`
@@ -183,6 +184,7 @@ type ExecutionSettings struct {
 
 type Status struct {
 	TaskState          string    `json:"task_state"` // "idle", "running", "failed", "cancelled"
+	ActiveRunID        string    `json:"active_run_id,omitempty"`
 	TaskMode           string    `json:"task_mode,omitempty"`
 	TaskStage          string    `json:"task_stage,omitempty"`
 	TaskStageLabel     string    `json:"task_stage_label,omitempty"`
@@ -262,10 +264,11 @@ type memoryStatView struct {
 }
 
 type summaryResponse struct {
-	Config      *Config           `json:"config"`
-	Status      statusSnapshot    `json:"status"`
-	MemoryStats []memoryStatView  `json:"memory_stats"`
-	RuleTargets ruleActionTargets `json:"rule_targets"`
+	Config      *Config              `json:"config"`
+	Status      statusSnapshot       `json:"status"`
+	MemoryStats []memoryStatView     `json:"memory_stats"`
+	RuleTargets ruleActionTargets    `json:"rule_targets"`
+	RecentRuns  []requeryruntime.Run `json:"recent_runs,omitempty"`
 }
 
 type batchActionItem struct {
@@ -325,7 +328,7 @@ type refreshJob struct {
 	MemoryID   string    `json:"memory_id,omitempty"`
 	QTypeMask  uint8     `json:"qtype_mask,omitempty"`
 	Reason     string    `json:"reason,omitempty"`
-	VerifyURL  string    `json:"verify_url,omitempty"`
+	VerifyTag  string    `json:"verify_tag,omitempty"`
 	ObservedAt time.Time `json:"observed_at,omitempty"`
 	Priority   int       `json:"-"`
 }
@@ -380,16 +383,25 @@ func priorityForReason(reason string) int {
 // ----------------------------------------------------------------------------
 
 func (p *Requery) startTask(profile taskProfile) bool {
-	return p.startTaskWithRecovery(profile, nil)
+	return p.startTaskWithSource(profile, nil, "manual")
 }
 
 func (p *Requery) startTaskWithRecovery(profile taskProfile, recovery *FullRebuildTask) bool {
+	source := "manual"
+	if recovery != nil {
+		source = "recovery"
+	}
+	return p.startTaskWithSource(profile, recovery, source)
+}
+
+func (p *Requery) startTaskWithSource(profile taskProfile, recovery *FullRebuildTask, triggerSource string) bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if p.status.TaskState == "running" {
 		return false
 	}
+	p.activeTriggerSource = triggerSource
 	p.taskCtx, p.taskCancel = context.WithCancel(context.Background())
 	go p.runTask(p.taskCtx, profile, recovery)
 	return true
@@ -397,7 +409,7 @@ func (p *Requery) startTaskWithRecovery(profile taskProfile, recovery *FullRebui
 
 // runTask executes the entire requery workflow. It's designed to be run in a goroutine.
 func (p *Requery) runTask(ctx context.Context, profile taskProfile, recovery *FullRebuildTask) {
-	if !p.beginTaskExecution(profile) {
+	if !p.beginTaskExecution(profile, recovery) {
 		return
 	}
 	defer p.finishTaskExecution()
@@ -422,7 +434,13 @@ func (p *Requery) setTaskStage(stage, label string, total int64) {
 	p.status.TaskStageLabel = label
 	p.status.TaskStageProcessed = 0
 	p.status.TaskStageTotal = total
+	if err := p.saveStateUnlocked(); err != nil {
+		log.Printf("[requery] WARN: failed to persist stage state: %v", err)
+	}
 	p.mu.Unlock()
+	if err := p.persistRunSnapshot("running", time.Time{}); err != nil {
+		log.Printf("[requery] WARN: failed to persist stage snapshot: %v", err)
+	}
 }
 
 // mergeAndFilterDomains builds the effective candidate set for the task.
@@ -435,7 +453,10 @@ func (p *Requery) mergeAndFilterDomains(ctx context.Context, profile taskProfile
 }
 
 func (p *Requery) buildTaskCandidatePlan(ctx context.Context, profile taskProfile) (taskCandidatePlan, error) {
-	runtimeDomains := p.collectRuntimeCandidates(profile)
+	runtimeDomains, err := p.collectRuntimeCandidates(profile)
+	if err != nil {
+		return taskCandidatePlan{}, err
+	}
 	if profile.Mode != "full_rebuild" {
 		if len(runtimeDomains) > 0 {
 			return taskCandidatePlan{Primary: applyCandidateLimit(runtimeDomains, profile.Limit)}, nil
@@ -565,9 +586,9 @@ func (p *Requery) scanDomainsFromSourceFiles(ctx context.Context, limit int) ([]
 	return domains, nil
 }
 
-func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidate {
+func (p *Requery) collectRuntimeCandidates(profile taskProfile) ([]domainCandidate, error) {
 	if p.m == nil {
-		return nil
+		return nil, nil
 	}
 
 	req := coremain.DomainRefreshCandidateRequest{
@@ -588,9 +609,10 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidat
 		req.IncludeHot = true
 	}
 
-	p.mu.RLock()
-	tags := p.actionTagsLocked(p.config.URLActions.SaveRules, "save")
-	p.mu.RUnlock()
+	tags, err := p.memoryTargetTags()
+	if err != nil {
+		return nil, err
+	}
 
 	candidateSet := make(map[string]domainCandidate)
 	for _, tag := range tags {
@@ -616,7 +638,7 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidat
 	}
 
 	if len(candidateSet) == 0 {
-		return nil
+		return nil, nil
 	}
 
 	domains := make([]domainCandidate, 0, len(candidateSet))
@@ -629,7 +651,7 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) []domainCandidat
 		}
 		return domains[i].Weight > domains[j].Weight
 	})
-	return applyCandidateLimit(domains, req.Limit)
+	return applyCandidateLimit(domains, req.Limit), nil
 }
 
 func mergeDomainCandidates(primary []domainCandidate, secondary []domainCandidate) []domainCandidate {
@@ -1079,6 +1101,17 @@ func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
 	return true
 }
 
+func (p *Requery) EnqueueDomainRefresh(_ context.Context, job coremain.DomainRefreshJob) bool {
+	return p.enqueueRefreshJob(refreshJob{
+		Domain:     job.Domain,
+		MemoryID:   job.MemoryID,
+		QTypeMask:  job.QTypeMask,
+		Reason:     job.Reason,
+		VerifyTag:  job.VerifyTag,
+		ObservedAt: job.ObservedAt,
+	})
+}
+
 func (p *Requery) dequeueRefreshBatch(max int) []refreshJob {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -1163,7 +1196,7 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 	}
 
 	for _, job := range jobs {
-		if job.VerifyURL != "" {
+		if job.VerifyTag != "" {
 			if err := p.markDomainVerified(ctx, job); err != nil {
 				p.mu.Lock()
 				p.lastError = err.Error()
@@ -1188,35 +1221,15 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 }
 
 func (p *Requery) markDomainVerified(ctx context.Context, job refreshJob) error {
-	if tag, op, ok := pluginActionFromURL(job.VerifyURL); ok && op == "verify" {
-		if verifier, ok := p.m.GetPlugin(tag).(coremain.DomainVerifyPlugin); ok && verifier != nil {
-			_, err := verifier.MarkDomainVerified(ctx, job.Domain, time.Now().UTC().Format(time.RFC3339))
-			return err
-		}
+	if strings.TrimSpace(job.VerifyTag) == "" {
+		return nil
 	}
-
-	body, err := json.Marshal(map[string]string{
-		"domain":      job.Domain,
-		"verified_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		return err
+	verifier, ok := p.m.GetPlugin(job.VerifyTag).(coremain.DomainVerifyPlugin)
+	if !ok || verifier == nil {
+		return fmt.Errorf("verify target %s is not a DomainVerifyPlugin", job.VerifyTag)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, job.VerifyURL, strings.NewReader(string(body)))
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	_, _ = io.Copy(io.Discard, resp.Body)
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("verify url returned %d", resp.StatusCode)
-	}
-	return nil
+	_, err := verifier.MarkDomainVerified(ctx, job.Domain, time.Now().UTC().Format(time.RFC3339))
+	return err
 }
 
 func workflowBool(v *bool, defaultValue bool) bool {
@@ -1347,10 +1360,11 @@ func pluginActionFromURL(raw string) (tag string, action string, ok bool) {
 	}
 }
 
-func (p *Requery) collectMemoryStats(saveURLs []string) []memoryStatView {
-	p.mu.RLock()
-	tags := p.actionTagsLocked(saveURLs, "save")
-	p.mu.RUnlock()
+func (p *Requery) collectMemoryStats() ([]memoryStatView, error) {
+	tags, err := p.memoryTargetTags()
+	if err != nil {
+		return nil, err
+	}
 
 	views := make([]memoryStatView, 0, len(tags))
 	for _, tag := range tags {
@@ -1384,7 +1398,7 @@ func (p *Requery) collectMemoryStats(saveURLs []string) []memoryStatView {
 	sort.Slice(views, func(i, j int) bool {
 		return views[i].Name < views[j].Name
 	})
-	return views
+	return views, nil
 }
 
 func minInt(a, b int) int {
@@ -1521,6 +1535,9 @@ func (p *Requery) api() *chi.Mux {
 	r.Get("/", p.handleGetConfig)
 	r.Get("/status", p.handleGetStatus)
 	r.Get("/summary", p.handleGetSummary)
+	r.Get("/jobs", p.handleGetJobs)
+	r.Get("/runs", p.handleGetRuns)
+	r.Get("/checkpoints", p.handleGetCheckpoints)
 	r.Post("/trigger", p.handleTriggerTask)
 	r.Post("/enqueue", p.handleEnqueueRefresh)
 	r.Post("/cancel", p.handleCancelTask)
@@ -1537,13 +1554,23 @@ func (p *Requery) handleGetSummary(w http.ResponseWriter, r *http.Request) {
 	status := p.snapshotStatusLocked()
 	p.mu.RUnlock()
 
-	memoryStats := p.collectMemoryStats(cfg.URLActions.SaveRules)
+	memoryStats, err := p.collectMemoryStats()
+	if err != nil {
+		p.jsonError(w, "Failed to resolve memory pool targets", http.StatusInternalServerError)
+		return
+	}
 	status.MemoryStats = memoryStats
+	recentRuns, err := p.listRuntimeRuns(10)
+	if err != nil {
+		p.jsonError(w, "Failed to load recent run history", http.StatusInternalServerError)
+		return
+	}
 	summary := summaryResponse{
 		Config:      cfg,
 		Status:      status,
 		MemoryStats: memoryStats,
 		RuleTargets: status.BatchCapabilities,
+		RecentRuns:  recentRuns,
 	}
 	p.jsonResponse(w, summary, http.StatusOK)
 }
@@ -1557,6 +1584,36 @@ func (p *Requery) handleGetConfig(w http.ResponseWriter, r *http.Request) {
 
 func (p *Requery) handleGetStatus(w http.ResponseWriter, r *http.Request) {
 	p.jsonResponse(w, p.currentStatus(), http.StatusOK)
+}
+
+func (p *Requery) handleGetJobs(w http.ResponseWriter, r *http.Request) {
+	jobs, err := p.listRuntimeJobs()
+	if err != nil {
+		p.jsonError(w, "Failed to load runtime jobs", http.StatusInternalServerError)
+		return
+	}
+	p.jsonResponse(w, jobs, http.StatusOK)
+}
+
+func (p *Requery) handleGetRuns(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	runs, err := p.listRuntimeRuns(limit)
+	if err != nil {
+		p.jsonError(w, "Failed to load runtime runs", http.StatusInternalServerError)
+		return
+	}
+	p.jsonResponse(w, runs, http.StatusOK)
+}
+
+func (p *Requery) handleGetCheckpoints(w http.ResponseWriter, r *http.Request) {
+	limit, _ := strconv.Atoi(strings.TrimSpace(r.URL.Query().Get("limit")))
+	runID := strings.TrimSpace(r.URL.Query().Get("run_id"))
+	checkpoints, err := p.listRuntimeCheckpoints(runID, limit)
+	if err != nil {
+		p.jsonError(w, "Failed to load runtime checkpoints", http.StatusInternalServerError)
+		return
+	}
+	p.jsonResponse(w, checkpoints, http.StatusOK)
 }
 
 func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
@@ -1579,6 +1636,10 @@ func (p *Requery) handleTriggerTask(w http.ResponseWriter, r *http.Request) {
 		"message":   fmt.Sprintf("%s任务已开始。", profile.DisplayName),
 		"task_mode": profile.Mode,
 	}, http.StatusOK)
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "info", "triggered requery task", map[string]any{
+		"mode":  profile.Mode,
+		"limit": payload.Limit,
+	})
 }
 
 func (p *Requery) handleEnqueueRefresh(w http.ResponseWriter, r *http.Request) {
@@ -1612,6 +1673,10 @@ func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 
 	p.taskCancel()
 	log.Println("[requery] Task cancellation requested via API.")
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "warn", "cancelled running requery task", map[string]any{
+		"task_state": p.status.TaskState,
+		"task_mode":  p.status.TaskMode,
+	})
 
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "Task cancellation initiated."}, http.StatusOK)
 }
@@ -1678,6 +1743,11 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	p.rescheduleTasks()
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "info", "updated requery scheduler config", map[string]any{
+		"enabled":          p.config.Scheduler.Enabled,
+		"mode":             p.config.Workflow.Mode,
+		"interval_minutes": p.config.Scheduler.IntervalMinutes,
+	})
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "Scheduler configuration updated successfully."}, http.StatusOK)
 }
 
@@ -1782,7 +1852,7 @@ func (p *Requery) setupScheduler() error {
 	jobFunc := func() {
 		profile := p.profileForMode("quick_rebuild", 0)
 		log.Printf("[requery] Scheduler is triggering a task: %s.", profile.Mode)
-		if ok := p.startTask(profile); !ok {
+		if ok := p.startTaskWithSource(profile, nil, "scheduler"); !ok {
 			log.Println("[requery] Scheduler skipped: previous task is still running.")
 		}
 	}
@@ -1956,8 +2026,8 @@ func (p *Requery) setFailedState(format string, args ...any) {
 	if p.fullTask != nil {
 		p.fullTask.LastError = p.lastError
 		p.fullTask = nil
-		_ = p.saveStateUnlocked()
 	}
+	_ = p.saveStateUnlocked()
 	log.Printf("[requery] ERROR: Task failed: "+format, args...)
 }
 
@@ -1968,8 +2038,8 @@ func (p *Requery) setCancelledState(reason string) {
 	p.lastError = reason
 	if p.fullTask != nil {
 		p.fullTask = nil
-		_ = p.saveStateUnlocked()
 	}
+	_ = p.saveStateUnlocked()
 	log.Println("[requery] INFO: Task cancelled:", reason)
 }
 

@@ -20,6 +20,7 @@ release/
 # ide
 .vscode/
 .idea/
+.DS_Store
 
 # test utils
 testutils/
@@ -32,3 +33,17 @@ demo/
 /reports/
 /config/gen/*
 !/config/gen/.gitkeep
+/config/db/*
+!/config/db/.gitkeep
+/config/db/cache/*
+!/config/db/cache/.gitkeep
+/config/db/*.db
+/config/db/*.db-*
+/config/db/cache/*.dump
+/config/db/cache/*.wal
+/db/
+**/audit_logs/
+/bin/
+/adguard/
+/test-results/
+/.codex-tasks/

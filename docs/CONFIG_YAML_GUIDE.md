@@ -2,6 +2,13 @@
 
 本文档面向日常维护者，解释 `config/config.yaml` 与 `config/sub_config/*.yaml` 的职责、依赖顺序、关键标记语义与修改注意事项。
 
+补充说明：
+
+- 用户日常要改的 `socks5 / ecs / 上游 DNS 列表`，优先修改 `config/custom_config/*.yaml`
+- 用户日常要改的 `功能开关`，也优先修改 `config/custom_config/switches.yaml`
+- `config/sub_config/*.yaml` 里的对应项现在更偏向“基线配置”和结构定义
+- 前端控制面保存也会写入 `config/custom_config/*.yaml`
+
 ## 1. 主入口与 include 顺序
 
 主配置文件：`config/config.yaml`
@@ -24,7 +31,7 @@
    - 黑名单/无 A/无 AAAA/广告拦截
    - 指定 client_ip 直连判定
    - prefer_ipv4/prefer_ipv6
-   - cache 选择（`cache_all` / `cache_all_noleak`）
+   - 主缓存总开关（`main_cache:on` 时启用 `cache_all_noleak`）
 4. 按 qtype 分流到：
    - A: `sequence_ipv4`
    - AAAA: `sequence_ipv6`
@@ -39,29 +46,17 @@
 
 | 文件 | 主要职责 | 被谁引用 |
 |---|---|---|
-| `sub_config/adguard.yaml` | 广告规则源插件 `adguard_rule` | `rule_set.yaml` 的 `unified_matcher1` |
-| `sub_config/domain_output.yaml` | 访问统计与动态规则生成（realip/fakeip/nov4/nov6） | `rule_set.yaml` 读取生成规则；`requery` 消费 dirty 信号 |
-| `sub_config/rule_set.yaml` | 数据集与统一匹配器（`unified_matcher1`） | 主链路与刷新链路核心依赖 |
-| `sub_config/cache.yaml` | 各链路 cache 实例 | `sequence_common_precheck`、`forward_1.yaml` |
-| `sub_config/forward_local.yaml` | 国内上游 `domestic` | `forward_1.yaml`、刷新链路 |
-| `sub_config/forward_nocn.yaml` | 国外上游 `foreign`（无 ECS） | `forward_1.yaml`、列表外处理 |
-| `sub_config/forward_nocn_ecs.yaml` | 国外上游 `foreignecs`（带 ECS） | `forward_1.yaml`、刷新链路 |
-| `sub_config/forward_1.yaml` | 一级复用序列（local/google/fakeip） | `process_v4/v6`、主配置 |
-| `sub_config/switch.yaml` | 运行时开关定义与持久化 | 主链路与刷新链路 |
-| `sub_config/not_in_list_ipmatch.yaml` | 列表外域名 IP 归类（直连/代理记忆） | leak/noleak v4/v6 子链路 |
-| `sub_config/not_in_list_leak_v4.yaml` | 列表外 IPv4（泄露模式） | `process_v4.yaml` |
-| `sub_config/not_in_list_leak_v6.yaml` | 列表外 IPv6（泄露模式） | `process_v6.yaml` |
-| `sub_config/not_in_list_noleak_v4.yaml` | 列表外 IPv4（不泄露模式） | `process_v4.yaml` |
-| `sub_config/not_in_list_noleak_v6.yaml` | 列表外 IPv6（不泄露模式） | `process_v6.yaml` |
-| `sub_config/process_ot.yaml` | 非 A/AAAA 分流 | `sequence_6666` / `sequence_requery` |
-| `sub_config/process_v4.yaml` | A 请求核心分流 | `sequence_6666` / `sequence_requery` |
-| `sub_config/process_v6.yaml` | AAAA 请求核心分流 | `sequence_6666` / `sequence_requery` |
-| `sub_config/requery_refresh.yaml` | 刷新专用链路（7767） | requery 任务回放 |
-| `sub_config/for_singbox.yaml` | sing-box / 节点专用链路（8888/9999） | 外部客户端专用 |
-| `sub_config/webinfo.yaml` | Web UI 客户端名存储 | UI 数据持久化 |
-| `sub_config/requery.yaml` | requery 插件实例定义 | 刷新调度 |
-| `examples/con_match.yaml` | 统一 mark 示例序列（非主入口） | 规则实验/辅助 |
-| `examples/forward_2.yaml` | 本机主分流聚合入口（5656） | 旁路/内部转发示例 |
+| `sub_config/10-control.yaml` | 控制面对象注册（switch / webinfo / requery） | 主链路、UI、control API |
+| `sub_config/20-data-sources.yaml` | 规则源、动态规则生成、统一匹配器 | 主链路与刷新链路 |
+| `sub_config/21-data-cache-upstreams.yaml` | cache、国内/国外上游、fakeip 相关基础序列 | 主链路与刷新链路 |
+| `sub_config/31-main-resolution.yaml` | 主链路基础解析 helper | `33`、`34` |
+| `sub_config/32-main-not-in-list.yaml` | 主链路列表外 IP 二次判断 | `33-main-ipv4v6.yaml` |
+| `sub_config/33-main-ipv4v6.yaml` | 主链路 A / AAAA 核心分流 | `34-main-entry.yaml` |
+| `sub_config/34-main-entry.yaml` | 主入口、主缓存、stash/clashmeta/sing-box 入口 | listeners |
+| `sub_config/40-refresh-resolution.yaml` | 刷新链基础解析 helper | `42` |
+| `sub_config/41-refresh-not-in-list.yaml` | 刷新链列表外 IP 二次判断 | `42-refresh-ipv4v6.yaml` |
+| `sub_config/42-refresh-ipv4v6.yaml` | 刷新链 A / AAAA 核心分流 | requery |
+| `sub_config/50-listeners.yaml` | 所有对外监听端口与入口序列 | 最终装配 |
 
 ## 4. fast_mark 对照（配置侧）
 
@@ -122,7 +117,7 @@
 2. tag 名称是否与引用处一致。
 3. fast_mark 编号是否与现有语义冲突。
 4. 主链路与刷新链路是否保持语义一致。
-5. `switch*.txt` 对应开关注释是否仍准确。
+5. `config/custom_config/switches.yaml` 的开关取值是否与预期一致。
 6. 启动校验：`./bin/mosdns start -c config/config.yaml`。
 
 ## 7. 相关文档
@@ -131,4 +126,3 @@
 - `docs/DNS_FLOW_VISUAL_ORDER.md`
 - `docs/SWITCH_1_15_FUNCTIONS.md`
 - `docs/STRESS_TEST_GUIDE.md`
-- `config/source/README.md`

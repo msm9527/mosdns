@@ -1,12 +1,9 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -15,37 +12,35 @@ import (
 	"go.uber.org/zap"
 )
 
-const upstreamOverridesFilename = "upstream_overrides.json"
-
 // UpstreamOverrideConfig 定义 UI/API 交互的完整数据结构
 type UpstreamOverrideConfig struct {
-	Tag      string `json:"tag"`      // 上游名称 (Upstream Name)
-	Enabled  bool   `json:"enabled"`  // 是否启用
-	Protocol string `json:"protocol"` // UI类型: aliapi, udp, tcp, dot, doh...
+	Tag      string `json:"tag" yaml:"tag"`           // 上游名称 (Upstream Name)
+	Enabled  bool   `json:"enabled" yaml:"enabled"`   // 是否启用
+	Protocol string `json:"protocol" yaml:"protocol"` // UI类型: aliapi, udp, tcp, dot, doh...
 
 	// 通用字段
-	Addr                 string `json:"addr,omitempty"`
-	DialAddr             string `json:"dial_addr,omitempty"`
-	IdleTimeout          int    `json:"idle_timeout,omitempty"`
-	UpstreamQueryTimeout int    `json:"upstream_query_timeout,omitempty"`
+	Addr                 string `json:"addr,omitempty" yaml:"addr,omitempty"`
+	DialAddr             string `json:"dial_addr,omitempty" yaml:"dial_addr,omitempty"`
+	IdleTimeout          int    `json:"idle_timeout,omitempty" yaml:"idle_timeout,omitempty"`
+	UpstreamQueryTimeout int    `json:"upstream_query_timeout,omitempty" yaml:"upstream_query_timeout,omitempty"`
 
 	// DNS (DoT/DoH/TCP/UDP) 专用
-	EnablePipeline     bool   `json:"enable_pipeline,omitempty"`
-	EnableHTTP3        bool   `json:"enable_http3,omitempty"`
-	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty"`
-	Socks5             string `json:"socks5,omitempty"`
-	SoMark             int    `json:"so_mark,omitempty"`
-	BindToDevice       string `json:"bind_to_device,omitempty"`
-	Bootstrap          string `json:"bootstrap,omitempty"`
-	BootstrapVer       int    `json:"bootstrap_version,omitempty"`
+	EnablePipeline     bool   `json:"enable_pipeline,omitempty" yaml:"enable_pipeline,omitempty"`
+	EnableHTTP3        bool   `json:"enable_http3,omitempty" yaml:"enable_http3,omitempty"`
+	InsecureSkipVerify bool   `json:"insecure_skip_verify,omitempty" yaml:"insecure_skip_verify,omitempty"`
+	Socks5             string `json:"socks5,omitempty" yaml:"socks5,omitempty"`
+	SoMark             int    `json:"so_mark,omitempty" yaml:"so_mark,omitempty"`
+	BindToDevice       string `json:"bind_to_device,omitempty" yaml:"bind_to_device,omitempty"`
+	Bootstrap          string `json:"bootstrap,omitempty" yaml:"bootstrap,omitempty"`
+	BootstrapVer       int    `json:"bootstrap_version,omitempty" yaml:"bootstrap_version,omitempty"`
 
 	// AliAPI 专用
-	AccountID       string `json:"account_id,omitempty"`
-	AccessKeyID     string `json:"access_key_id,omitempty"`
-	AccessKeySecret string `json:"access_key_secret,omitempty"`
-	ServerAddr      string `json:"server_addr,omitempty"`
-	EcsClientIP     string `json:"ecs_client_ip,omitempty"`
-	EcsClientMask   uint8  `json:"ecs_client_mask,omitempty"`
+	AccountID       string `json:"account_id,omitempty" yaml:"account_id,omitempty"`
+	AccessKeyID     string `json:"access_key_id,omitempty" yaml:"access_key_id,omitempty"`
+	AccessKeySecret string `json:"access_key_secret,omitempty" yaml:"access_key_secret,omitempty"`
+	ServerAddr      string `json:"server_addr,omitempty" yaml:"server_addr,omitempty"`
+	EcsClientIP     string `json:"ecs_client_ip,omitempty" yaml:"ecs_client_ip,omitempty"`
+	EcsClientMask   uint8  `json:"ecs_client_mask,omitempty" yaml:"ecs_client_mask,omitempty"`
 }
 
 // GlobalUpstreamOverrides 映射关系: 插件Tag -> 上游配置列表
@@ -56,20 +51,11 @@ var (
 	upstreamOverrides     GlobalUpstreamOverrides
 )
 
-func getUpstreamOverridesPath() (dir string, path string) {
-	dir = MainConfigBaseDir
-	if dir == "" {
-		dir = "."
-	}
-	path = filepath.Join(dir, upstreamOverridesFilename)
-	return dir, path
-}
-
 // RegisterUpstreamAPI 注册路由
 func RegisterUpstreamAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/upstream", func(r chi.Router) {
-		r.Get("/tags", handleGetAliAPITags)
-		r.Get("/config", handleGetUpstreamConfig)
+		r.Get("/tags", handleGetControlUpstreamTags(m))
+		r.Get("/config", handleGetControlUpstreamConfig(m))
 		r.Put("/config", func(w http.ResponseWriter, r *http.Request) {
 			handleReplaceUpstreamConfigWithMosdns(w, r, m)
 		})
@@ -134,40 +120,23 @@ func loadUpstreamOverrides() error {
 }
 
 func loadUpstreamOverridesLocked() error {
-	dir, path := getUpstreamOverridesPath()
-	// 获取绝对路径用于 Debug
-	absDir, _ := filepath.Abs(dir)
-
 	mlog.L().Info("[Debug UpstreamAPI] Loading overrides",
-		zap.String("MainConfigBaseDir", dir),
-		zap.String("AbsoluteDir", absDir),
-		zap.String("File", path))
+		zap.String("MainConfigBaseDir", MainConfigBaseDir),
+		zap.String("File", upstreamOverridesConfigPath()))
 
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			mlog.L().Info("[Debug UpstreamAPI] File not found, creating new map", zap.String("path", path))
-			upstreamOverrides = make(GlobalUpstreamOverrides)
-			return nil
+	if cfg, ok, err := loadUpstreamOverridesFromCustomConfig(); err == nil && ok {
+		count := 0
+		for _, v := range cfg {
+			count += len(v)
 		}
-		mlog.L().Error("[Debug UpstreamAPI] Failed to read file", zap.Error(err))
-		return err
+		mlog.L().Info("[Debug UpstreamAPI] Loaded success from custom config", zap.Int("groups", len(cfg)), zap.Int("total_items", count))
+		upstreamOverrides = cfg
+		return nil
+	} else if err != nil {
+		mlog.L().Warn("[Debug UpstreamAPI] Custom config load failed", zap.Error(err))
 	}
-
-	var cfg GlobalUpstreamOverrides
-	if err := json.Unmarshal(data, &cfg); err != nil {
-		mlog.L().Error("[Debug UpstreamAPI] JSON parse error", zap.Error(err))
-		return err
-	}
-
-	// Count items for debug
-	count := 0
-	for _, v := range cfg {
-		count += len(v)
-	}
-	mlog.L().Info("[Debug UpstreamAPI] Loaded success", zap.Int("groups", len(cfg)), zap.Int("total_items", count))
-
-	upstreamOverrides = cfg
+	mlog.L().Info("[Debug UpstreamAPI] Custom config empty, creating new map", zap.String("path", upstreamOverridesConfigPath()))
+	upstreamOverrides = make(GlobalUpstreamOverrides)
 	return nil
 }
 
@@ -179,36 +148,23 @@ func saveUpstreamOverrides() error {
 }
 
 func saveUpstreamOverridesLocked() error {
-	dir, path := getUpstreamOverridesPath()
-
-	// 确保配置目录存在
-	if dir != "." {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			mlog.L().Error("[Debug UpstreamAPI] Failed to mkdir", zap.String("dir", dir), zap.Error(err))
-			return err
-		}
-	}
-
-	absPath, _ := filepath.Abs(path)
-
-	data, err := json.MarshalIndent(upstreamOverrides, "", "  ")
-	if err != nil {
-		mlog.L().Error("[Debug UpstreamAPI] JSON marshal failed", zap.Error(err))
+	if err := saveUpstreamOverridesToCustomConfig(upstreamOverrides); err != nil {
+		mlog.L().Error("[Debug UpstreamAPI] Custom config save failed", zap.Error(err))
 		return err
 	}
-
-	mlog.L().Info("[Debug UpstreamAPI] Writing to file",
-		zap.String("path", path),
-		zap.String("abs_path", absPath),
-		zap.Int("bytes", len(data)))
-
-	err = os.WriteFile(path, data, 0644)
-	if err != nil {
-		mlog.L().Error("[Debug UpstreamAPI] WriteFile FAILED", zap.Error(err))
-	} else {
-		mlog.L().Info("[Debug UpstreamAPI] WriteFile SUCCESS")
+	mlog.L().Info("[Debug UpstreamAPI] Saved upstream overrides to custom config",
+		zap.String("path", upstreamOverridesConfigPath()),
+	)
+	totalItems := 0
+	for _, items := range upstreamOverrides {
+		totalItems += len(items)
 	}
-	return err
+	_ = RecordSystemEvent("control.upstreams", "info", "saved upstream overrides", map[string]any{
+		"groups":      len(upstreamOverrides),
+		"total_items": totalItems,
+		"path":        upstreamOverridesConfigPath(),
+	})
+	return nil
 }
 
 func ensureUpstreamOverridesLoaded() error {
@@ -300,7 +256,7 @@ func applyUpstreamRuntimeReload(m *Mosdns, pluginTag string) error {
 	if m == nil {
 		return nil
 	}
-	return m.ReloadRuntimeConfig(pluginTag)
+	return m.ReloadControlConfig(pluginTag)
 }
 
 func parseQueryBool(r *http.Request, key string) bool {
@@ -319,8 +275,29 @@ func handleGetAliAPITags(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, tags)
 }
 
+func handleGetControlUpstreamTags(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		tags := collectRuntimeUpstreamTags(m)
+		if len(tags) == 0 {
+			handleGetAliAPITags(w, r)
+			return
+		}
+		writeJSON(w, http.StatusOK, tags)
+	}
+}
+
 // handleGetUpstreamConfig 获取当前所有配置
 func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
+	handleGetUpstreamConfigResponse(w, nil)
+}
+
+func handleGetControlUpstreamConfig(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		handleGetUpstreamConfigResponse(w, m)
+	}
+}
+
+func handleGetUpstreamConfigResponse(w http.ResponseWriter, m *Mosdns) {
 	if err := ensureUpstreamOverridesLoaded(); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
 		return
@@ -335,10 +312,7 @@ func handleGetUpstreamConfig(w http.ResponseWriter, r *http.Request) {
 	}
 	upstreamOverridesLock.RUnlock()
 
-	if safeData == nil {
-		safeData = make(GlobalUpstreamOverrides)
-	}
-	writeJSON(w, http.StatusOK, safeData)
+	writeJSON(w, http.StatusOK, mergeRuntimeAndOverrideUpstreams(collectRuntimeUpstreamConfigs(m), safeData))
 }
 
 func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m *Mosdns) {
@@ -718,7 +692,7 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 	}
 
 	if m != nil {
-		if err := m.ReloadRuntimeConfig(payload.PluginTag); err != nil {
+		if err := m.ReloadControlConfig(payload.PluginTag); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}

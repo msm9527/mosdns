@@ -1,7 +1,6 @@
 package coremain
 
 import (
-	"context"
 	"encoding/json"
 	"net/http"
 	"strings"
@@ -9,51 +8,38 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-type JSONStoreController interface {
-	SnapshotJSONValue() any
-	ReplaceJSONValue(ctx context.Context, value any) error
-}
-
 type ReverseLookupController interface {
 	LookupIPString(ip string) (string, error)
 }
 
 func RegisterMiscAPI(router *chi.Mux, m *Mosdns) {
-	router.Get("/api/v1/clientname", handleGetClientname(m))
-	router.Put("/api/v1/clientname", handlePutClientname(m))
 	router.Get("/api/v1/reverse_lookup", handleReverseLookup(m))
 }
 
-func handleGetClientname(m *Mosdns) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		controller, ok := m.GetPlugin("clientname").(JSONStoreController)
-		if !ok || controller == nil {
-			writeAPIError(w, http.StatusNotFound, "clientname_not_found", "clientname controller not found")
+func handleGetClientname(_ *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, _ *http.Request) {
+		values, _, err := LoadClientNamesFromCustomConfig()
+		if err != nil {
+			writeAPIErrorFromErr(w, http.StatusInternalServerError, "clientname_load_failed", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, controller.SnapshotJSONValue())
+		writeJSON(w, http.StatusOK, values)
 	}
 }
 
-func handlePutClientname(m *Mosdns) http.HandlerFunc {
+func handlePutClientname(_ *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		controller, ok := m.GetPlugin("clientname").(JSONStoreController)
-		if !ok || controller == nil {
-			writeAPIError(w, http.StatusNotFound, "clientname_not_found", "clientname controller not found")
-			return
-		}
-
-		var body any
+		var body map[string]string
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			writeAPIError(w, http.StatusBadRequest, "invalid_request_body", "invalid request body")
 			return
 		}
 
-		if err := controller.ReplaceJSONValue(r.Context(), body); err != nil {
+		if err := SaveClientNamesToCustomConfig(body); err != nil {
 			writeAPIErrorFromErr(w, http.StatusInternalServerError, "clientname_update_failed", err)
 			return
 		}
-		writeJSON(w, http.StatusOK, controller.SnapshotJSONValue())
+		writeJSON(w, http.StatusOK, body)
 	}
 }
 

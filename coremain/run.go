@@ -22,15 +22,14 @@ package coremain
 import (
 	"fmt"
 	"github.com/IrineSistiana/mosdns/v5/mlog"
-	"github.com/go-viper/mapstructure/v2"
 	"github.com/kardianos/service"
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 	"go.uber.org/zap"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"syscall"
 )
 
@@ -101,6 +100,8 @@ func init() {
 		newSvcStatusCmd(),
 	)
 	rootCmd.AddCommand(serviceCmd)
+	rootCmd.AddCommand(newConfigCmd())
+	rootCmd.AddCommand(newControlCmd())
 }
 
 func AddSubCmd(c *cobra.Command) {
@@ -149,9 +150,10 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 		}
 	}
 	mlog.L().Info("main config base directory set", zap.String("path", MainConfigBaseDir))
+	setRuntimeStateDBPath(cfg.ControlDBPath)
 
 	// <<< ADDED: Explicitly initialize the audit collector with the correct base path.
-	InitializeAuditCollector(MainConfigBaseDir)
+	InitializeAuditCollector(MainConfigBaseDir, cfg.Audit)
 	// <<< END ADDED SECTION
 
 	mlog.L().Info("main config loaded", zap.String("file", fileUsed))
@@ -159,34 +161,28 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 	return NewMosdns(cfg)
 }
 
-// loadConfig load a config from a file. If filePath is empty, it will
+// loadConfig loads a v2 config from a file. If filePath is empty, it will
 // automatically search and load a file which name start with "config".
 func loadConfig(filePath string) (*Config, string, error) {
-	v := viper.New()
-
-	if len(filePath) > 0 {
-		v.SetConfigFile(filePath)
-	} else {
-		v.SetConfigName("config")
-		v.AddConfigPath(".")
+	_, raw, fileUsed, err := resolveConfigInput(filePath)
+	if err != nil {
+		return nil, "", err
 	}
 
-	if err := v.ReadInConfig(); err != nil {
-		return nil, "", fmt.Errorf("failed to read config: %w", err)
+	isV2, err := isConfigV2Document(raw)
+	if err != nil {
+		return nil, "", err
+	}
+	if !isV2 {
+		return nil, "", fmt.Errorf("only config v2 is supported: %s", fileUsed)
+	}
+	cfg, err := compileConfigV2(raw)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to compile config v2: %w", err)
 	}
 
-	decoderOpt := func(cfg *mapstructure.DecoderConfig) {
-		cfg.ErrorUnused = true
-		cfg.TagName = "yaml"
-		cfg.WeaklyTypedInput = true
-	}
-
-	cfg := new(Config)
-	if err := v.Unmarshal(cfg, decoderOpt); err != nil {
-		return nil, "", fmt.Errorf("failed to unmarshal config: %w", err)
-	}
-	fileUsed := v.ConfigFileUsed()
 	cfg.baseDir = resolveBaseDir(fileUsed)
+	cfg.ControlDBPath = resolveRuntimeStateDBPathForConfig(cfg.baseDir, cfg.ControlDBPath)
 	return cfg, fileUsed, nil
 }
 
@@ -201,4 +197,14 @@ func resolveBaseDir(fileUsed string) string {
 		return wd
 	}
 	return ""
+}
+
+func resolveRuntimeStateDBPathForConfig(baseDir, configured string) string {
+	if strings.TrimSpace(configured) == "" {
+		return filepath.Join(baseDir, runtimeStateDBFilename)
+	}
+	if filepath.IsAbs(configured) {
+		return configured
+	}
+	return filepath.Join(baseDir, configured)
 }

@@ -217,7 +217,7 @@ func Test_sequence_Exec(t *testing.T) {
 	}
 }
 
-func TestSequenceReloadRuntimeConfigRebuildsFromRawArgs(t *testing.T) {
+func TestSequenceReloadControlConfigRebuildsFromRawArgs(t *testing.T) {
 	registerCaptureExecQuickSetup()
 
 	m := coremain.NewTestMosdnsWithPlugins(make(map[string]any))
@@ -239,8 +239,8 @@ func TestSequenceReloadRuntimeConfigRebuildsFromRawArgs(t *testing.T) {
 		t.Fatalf("unexpected overridden plugin name: %q", got)
 	}
 
-	if err := s.ReloadRuntimeConfig(nil, nil); err != nil {
-		t.Fatalf("ReloadRuntimeConfig failed: %v", err)
+	if err := s.ReloadControlConfig(nil, nil); err != nil {
+		t.Fatalf("ReloadControlConfig failed: %v", err)
 	}
 	if got := s.chain[0].PluginName; got != "anonymous_exec(capture_exec_arg: old)" {
 		t.Fatalf("unexpected rebuilt plugin name: %q", got)

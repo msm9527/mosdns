@@ -56,28 +56,37 @@
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
-| `POST` | `/api/v1/audit/start` | 审计 | `stable` | 开始采集 |
-| `POST` | `/api/v1/audit/stop` | 审计 | `stable` | 停止采集 |
-| `GET` | `/api/v1/audit/status` | 审计 | `stable` | 获取采集状态 |
-| `GET` | `/api/v1/audit/logs` | 审计 | `compat` | v1 日志获取，建议逐步弱化 |
-| `POST` | `/api/v1/audit/clear` | 审计 | `stable` | 清空审计数据 |
-| `GET` | `/api/v1/audit/capacity` | 审计存储 | `stable` | 获取审计存储设置 |
-| `POST` | `/api/v1/audit/capacity` | 审计存储 | `stable` | 更新审计存储设置 |
-| `GET` | `/api/v2/audit/stats` | 审计 | `stable` | 概览统计 |
-| `GET` | `/api/v2/audit/rank/domain` | 审计 | `stable` | 域名排行 |
-| `GET` | `/api/v2/audit/rank/client` | 审计 | `stable` | 客户端排行 |
-| `GET` | `/api/v2/audit/rank/domain_set` | 审计 | `stable` | 规则集排行 |
-| `GET` | `/api/v2/audit/rank/slowest` | 审计 | `stable` | 慢查询排行 |
-| `GET` | `/api/v2/audit/logs` | 审计 | `stable` | 分页日志查询 |
+| `GET` | `/api/v3/audit/overview` | 审计 | `stable` | 获取当前窗口实时指标 |
+| `GET` | `/api/v3/audit/timeseries` | 审计 | `stable` | 获取分钟/小时趋势 |
+| `GET` | `/api/v3/audit/rank/domain` | 审计 | `stable` | 域名排行 |
+| `GET` | `/api/v3/audit/rank/client` | 审计 | `stable` | 客户端排行 |
+| `GET` | `/api/v3/audit/rank/domain_set` | 审计 | `stable` | 规则集排行 |
+| `GET` | `/api/v3/audit/logs/slow` | 审计 | `stable` | 慢查询日志 |
+| `GET` | `/api/v3/audit/logs` | 审计 | `stable` | cursor 日志查询 |
+| `GET` | `/api/v3/audit/settings` | 审计存储 | `stable` | 获取审计开关与存储设置 |
+| `PUT` | `/api/v3/audit/settings` | 审计存储 | `stable` | 更新审计开关与存储设置 |
+| `POST` | `/api/v3/audit/clear` | 审计 | `stable` | 清空审计数据 |
 
-## 3.4 覆盖配置
+## 3.4 运行态聚合
+
+| 方法 | 路径 | 模块 | 等级 | 说明 |
+| --- | --- | --- | --- | --- |
+| `GET` | `/api/v1/control/summary` | 运行态聚合 | `stable` | 获取 SQLite 运行态摘要与命名空间概览 |
+| `GET` | `/api/v1/control/health` | 运行态聚合 | `stable` | 获取运行态自检结果 |
+| `GET` | `/api/v1/control/events` | 运行态聚合 | `stable` | 获取 runtime system events |
+| `GET` | `/api/v1/control/requery/jobs` | requery 任务 | `stable` | 获取任务定义 |
+| `GET` | `/api/v1/control/requery/runs` | requery 任务 | `stable` | 获取最近运行历史 |
+| `GET` | `/api/v1/control/requery/checkpoints` | requery 任务 | `stable` | 获取 checkpoint，可按 `run_id` 过滤 |
+| `POST` | `/api/v1/control/requery/enqueue` | requery 任务 | `stable` | 触发运行态 requery 入队 |
+
+## 3.5 覆盖配置
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/overrides/` | 覆盖配置 | `stable` | 读取全局覆盖配置 |
 | `POST` | `/api/v1/overrides/` | 覆盖配置 | `stable` | 保存并应用全局覆盖配置 |
 
-## 3.5 配置管理
+## 3.6 配置管理
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -85,7 +94,7 @@
 | `POST` | `/api/v1/config/export` | 配置管理 | `stable` | 导出当前配置 |
 | `POST` | `/api/v1/config/update_from_url` | 配置管理 | `stable` | 拉取远程配置并覆盖更新 |
 
-## 3.6 更新
+## 3.7 更新
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -93,13 +102,13 @@
 | `POST` | `/api/v1/update/check` | 更新 | `stable` | 强制检查 |
 | `POST` | `/api/v1/update/apply` | 更新 | `stable` | 执行更新 |
 
-## 3.7 系统
+## 3.8 系统
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
 | `POST` | `/api/v1/system/restart` | 系统 | `stable` | 计划自重启 |
 
-## 3.8 上游配置
+## 3.9 上游配置
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -113,7 +122,7 @@
 | `DELETE` | `/api/v1/upstream/items/{upstreamTag}` | 上游配置 | `stable` | 删除上游项 |
 | `POST` | `/api/v1/upstream/config` | 上游配置 | `compat` | 旧兼容入口，建议弱化 |
 
-## 3.9 运行时聚合统计
+## 3.10 运行时聚合统计
 
 | 方法 | 路径 | 模块 | 等级 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -128,33 +137,33 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/switches` | `stable` | 获取全部开关 |
-| `GET` | `/api/v1/switches/{name}` | `stable` | 获取单开关 |
-| `PUT` | `/api/v1/switches/{name}` | `stable` | 更新单开关 |
+| `GET` | `/api/v1/control/switches` | `stable` | 获取全部开关 |
+| `GET` | `/api/v1/control/switches/{name}` | `stable` | 获取单开关 |
+| `PUT` | `/api/v1/control/switches/{name}` | `stable` | 更新单开关 |
 
 说明：
 
 - `switches` 旧插件接口已移除
-- 开关能力只保留 `/api/v1/switches/*`
+- 开关能力只保留 `/api/v1/control/switches/*`
 
 ## 4.2 分流刷新（requery）
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/requery/summary` | `stable` | 聚合状态与配置 |
-| `GET` | `/api/v1/requery` | `stable` | 配置读取 |
-| `GET` | `/api/v1/requery/status` | `stable` | 运行状态 |
-| `POST` | `/api/v1/requery/trigger` | `stable` | 触发任务 |
-| `POST` | `/api/v1/requery/enqueue` | `stable` | 入队按需刷新 |
-| `POST` | `/api/v1/requery/cancel` | `stable` | 取消任务 |
-| `POST` | `/api/v1/requery/scheduler/config` | `stable` | 更新调度配置 |
-| `POST` | `/api/v1/requery/rules/save` | `stable` | 批量保存分流规则 |
-| `POST` | `/api/v1/requery/rules/flush` | `stable` | 批量清空分流规则 |
-| `GET` | `/api/v1/requery/stats/source_file_counts` | `stable` | 刷新源统计 |
+| `GET` | `/api/v1/control/requery/summary` | `stable` | 聚合状态与配置 |
+| `GET` | `/api/v1/control/requery` | `stable` | 配置读取 |
+| `GET` | `/api/v1/control/requery/status` | `stable` | 运行状态 |
+| `POST` | `/api/v1/control/requery/trigger` | `stable` | 触发任务 |
+| `POST` | `/api/v1/control/requery/enqueue` | `stable` | 入队按需刷新 |
+| `POST` | `/api/v1/control/requery/cancel` | `stable` | 取消任务 |
+| `POST` | `/api/v1/control/requery/scheduler/config` | `stable` | 更新调度配置 |
+| `POST` | `/api/v1/control/requery/rules/save` | `stable` | 批量保存分流规则 |
+| `POST` | `/api/v1/control/requery/rules/flush` | `stable` | 批量清空分流规则 |
+| `GET` | `/api/v1/control/requery/stats/source_file_counts` | `stable` | 刷新源统计 |
 
 建议：
 
-- 旧的 `/plugins/requery/*` 已移除，只保留 `/api/v1/requery/*`
+- 旧的 `/plugins/requery/*` 与 `/api/v1/control/requery/*` 已移除，只保留 `/api/v1/control/requery/*`
 
 ## 4.3 缓存插件
 
@@ -179,14 +188,15 @@
 - `domain_set_light`
 - `ip_set`
 - `rewrite`
-- 部分 `domain_output`
+- `domain_memory_pool`
+- `domain_stats_pool`
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
 | `GET` | `/api/v1/lists/{tag}` | `stable` | 查看可编辑列表内容 |
 | `PUT` | `/api/v1/lists/{tag}` | `stable` | 替换可编辑列表内容 |
 | `GET` | `/api/v1/memory/{tag}/entries` | `stable` | 查看分流记忆库内容 |
-| `POST` | `/api/v1/memory/{tag}/save` | `stable` | 保存分流记忆库 |
+| `POST` | `/api/v1/memory/{tag}/save` | `stable` | 立即把当前分流记忆刷入 SQLite |
 | `POST` | `/api/v1/memory/{tag}/flush` | `stable` | 清空分流记忆库 |
 | `POST` | `/api/v1/memory/{tag}/verify` | `stable` | 按域名验证/发布 |
 | `GET` | `/api/v1/memory/{tag}/stats` | `stable` | 某些记忆库统计 |
@@ -194,7 +204,7 @@
 问题：
 
 - 可编辑列表已完成核心 API 收口
-- `domain_output` 已完成核心 API 收口
+- memory pool / stats pool 已完成核心 API 收口
 
 ## 4.5 在线分流规则源
 
@@ -237,9 +247,8 @@
 
 | 方法 | 路径 | 等级 | 说明 |
 | --- | --- | --- | --- |
-| `GET` | `/api/v1/clientname` | `stable` | 获取客户端别名配置 |
-| `PUT` | `/api/v1/clientname` | `stable` | 更新客户端别名配置 |
-| `GET` | `/api/v1/switches/core_mode` | `stable` | 当前核心模式 |
+| `GET` | `/api/v1/control/clientname` | `stable` | 获取客户端别名配置 |
+| `PUT` | `/api/v1/control/clientname` | `stable` | 更新客户端别名配置 |
 | `GET` | `/api/v1/reverse_lookup?ip=...` | `stable` | 反查 IP 对应域名 |
 
 说明：

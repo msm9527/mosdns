@@ -63,7 +63,7 @@ curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
 ```bash
 ./bin/mosdns stress dns \
   --server 127.0.0.1:53 \
-  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --domains-file '/Users/doumao/code/github/mosdns/config/gen/top_domains.txt' \
   --count 8000 \
   --unique-count 2000 \
   --concurrency 100 \
@@ -76,7 +76,7 @@ curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
 ```bash
 ./bin/mosdns stress dns \
   --server 127.0.0.1:53 \
-  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --domains-file '/Users/doumao/code/github/mosdns/config/gen/top_domains.txt' \
   --count 16000 \
   --unique-count 2000 \
   --concurrency 100 \

@@ -534,6 +534,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	c.queryTotal.Inc()
 	c.queryCount.Add(1)
 	q := qCtx.Q()
+	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheBypass)
 
 	// 补丁：获取 Key 的字节切片和原始 Pool 指针
 	msgKeyBuf, bufPtr := getMsgKeyBytes(q, qCtx, c.args.EnableECS)
@@ -562,6 +563,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	now := time.Now()
 	if ok1 && now.Before(v1.expirationTime) {
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 		c.hitTotal.Inc()
 		c.hitCount.Add(1)
 		c.l1HitTotalMetric.Inc()
@@ -604,6 +606,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 				refreshedResp, refreshedLazy, refreshedDomainSet := getRespFromCache(msgKey, c.backend, false, expiredMsgTtl)
 				if refreshedResp != nil && !refreshedLazy {
+					coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 					c.hitTotal.Inc()
 					c.hitCount.Add(1)
 					c.l2HitTotalMetric.Inc()
@@ -624,6 +627,11 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		}
 	}
 	if cachedResp != nil {
+		if lazyHit {
+			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheLazy)
+		} else {
+			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
+		}
 		c.hitTotal.Inc()
 		c.hitCount.Add(1)
 		c.l2HitTotalMetric.Inc()
@@ -650,6 +658,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 			refreshedResp, refreshedLazy, refreshedDomainSet := getRespFromCache(msgKey, c.backend, false, expiredMsgTtl)
 			if refreshedResp != nil && !refreshedLazy {
+				coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 				c.hitTotal.Inc()
 				c.hitCount.Add(1)
 				c.l2HitTotalMetric.Inc()
@@ -664,6 +673,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		}
 	}
 
+	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
 	err := next.ExecNext(ctx, qCtx)
 	r := qCtx.R()
 

@@ -4,7 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -206,20 +205,13 @@ func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 
 // downloadWithFallback 尝试使用配置的 Socks5 下载，失败则直连
 func downloadWithFallback(url string) ([]byte, error) {
-	// 1. 尝试获取代理配置
 	var proxyAddr string
-	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-	data, err := os.ReadFile(overridesPath)
-	if err == nil {
-		var temp struct {
-			Socks5 string `json:"socks5"`
-		}
-		if json.Unmarshal(data, &temp) == nil {
-			proxyAddr = temp.Socks5
-		}
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+		proxyAddr = strings.TrimSpace(overrides.Socks5)
+	} else if err != nil {
+		mlog.L().Warn("failed to load custom overrides for config download, falling back to direct", zap.Error(err))
 	}
 
-	// 2. 如果有代理，先尝试代理下载
 	if proxyAddr != "" {
 		mlog.L().Info("attempting download via proxy", zap.String("proxy", proxyAddr))
 		data, err := doDownload(url, proxyAddr)
@@ -229,7 +221,6 @@ func downloadWithFallback(url string) ([]byte, error) {
 		mlog.L().Warn("download via proxy failed, falling back to direct", zap.Error(err))
 	}
 
-	// 3. 直连下载 (Fallback)
 	mlog.L().Info("attempting direct download")
 	return doDownload(url, "")
 }

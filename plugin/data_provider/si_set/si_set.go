@@ -49,8 +49,9 @@ import (
 )
 
 const (
-	PluginType      = "si_set"
-	downloadTimeout = 60 * time.Second
+	PluginType       = "si_set"
+	downloadTimeout  = 60 * time.Second
+	runtimeNamespace = "diversion_rule"
 )
 
 func init() {
@@ -118,7 +119,7 @@ type SiSet struct {
 // Ensure SiSet implements required interfaces.
 var _ data_provider.IPMatcherProvider = (*SiSet)(nil)
 var _ io.Closer = (*SiSet)(nil)
-var _ coremain.RuntimeConfigReloader = (*SiSet)(nil)
+var _ coremain.ControlConfigReloader = (*SiSet)(nil)
 
 var _ netlist.Matcher = (*SiSet)(nil)
 
@@ -345,7 +346,7 @@ func (p *SiSet) TriggerDiversionRuleUpdate(name string) error {
 	return nil
 }
 
-func (p *SiSet) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (p *SiSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
 		return err
@@ -381,6 +382,25 @@ func (p *SiSet) Close() error {
 func (p *SiSet) loadConfig() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if key := p.runtimeConfigKey(); key != "" {
+		var sources []*RuleSource
+		ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeNamespace, key, &sources)
+		if err == nil && ok {
+			p.sources = make(map[string]*RuleSource, len(sources))
+			for _, src := range sources {
+				if src == nil || src.Name == "" {
+					continue
+				}
+				p.sources[src.Name] = src
+			}
+			log.Printf("[%s] loaded %d rule sources from runtime store", PluginType, len(p.sources))
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	data, err := os.ReadFile(p.localConfigFile)
 	if err != nil {
@@ -434,6 +454,11 @@ func (p *SiSet) saveConfig() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to json: %w", err)
 	}
+	if key := p.runtimeConfigKey(); key != "" {
+		if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeNamespace, key, sourcesSnapshot); err != nil {
+			return fmt.Errorf("failed to save config to runtime store: %w", err)
+		}
+	}
 
 	// Atomic write: write to a temporary file then rename.
 	tmpFile := p.localConfigFile + ".tmp"
@@ -444,6 +469,17 @@ func (p *SiSet) saveConfig() error {
 		return fmt.Errorf("failed to rename temporary config to final: %w", err)
 	}
 	return nil
+}
+
+func (p *SiSet) runtimeDBPath() string {
+	return coremain.RuntimeStateDBPathForPath(p.localConfigFile)
+}
+
+func (p *SiSet) runtimeConfigKey() string {
+	if p.localConfigFile == "" {
+		return ""
+	}
+	return filepath.Clean(p.localConfigFile)
 }
 
 // reloadAllRules re-parses all enabled local SRS files into a new matcher.

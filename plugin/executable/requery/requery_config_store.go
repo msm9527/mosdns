@@ -1,13 +1,13 @@
 package requery
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
 
 const (
@@ -24,6 +24,7 @@ const (
 	defaultFullRebuildPriorityLimit = 4000
 	defaultCheckpointBatchSize      = 256
 	defaultResumeDelayMS            = 1500
+	runtimeStateNamespaceRequery    = "requery"
 )
 
 type persistedConfig struct {
@@ -174,14 +175,6 @@ func applyConfigDefaults(cfg *Config) bool {
 	return configChanged
 }
 
-func stateFilePath(configPath string) string {
-	ext := filepath.Ext(configPath)
-	if ext == "" {
-		return configPath + ".state.json"
-	}
-	return strings.TrimSuffix(configPath, ext) + ".state" + ext
-}
-
 func configFromPersisted(cfg *Config) persistedConfig {
 	return persistedConfig{
 		DomainProcessing:  cfg.DomainProcessing,
@@ -204,28 +197,10 @@ func (p *Requery) loadConfig() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	dataBytes, err := os.ReadFile(p.filePath)
+	cfg, configInitialized, err := p.loadPersistedConfigUnlocked()
 	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[requery] config file %s not found, initializing with default empty config.", p.filePath)
-			p.config = newDefaultConfig()
-			p.status = Status{TaskState: "idle"}
-			p.fullTask = nil
-			if err := p.saveConfigUnlocked(); err != nil {
-				return err
-			}
-			return p.saveStateUnlocked()
-		}
 		return err
 	}
-
-	var cfg Config
-	if err := json.Unmarshal(dataBytes, &cfg); err != nil {
-		return fmt.Errorf("failed to parse json from config file %s: %w", p.filePath, err)
-	}
-	legacyStatus := cfg.Status
-	legacyTask := cloneFullRebuildTask(cfg.FullRebuildTask)
-	legacyEmbeddedState := legacyStatus.TaskState != "" || legacyTask != nil
 	p.config = &Config{
 		DomainProcessing:  cfg.DomainProcessing,
 		URLActions:        cfg.URLActions,
@@ -239,12 +214,12 @@ func (p *Requery) loadConfig() error {
 		log.Println("[requery] Configuration defaults applied, saving updated config.")
 	}
 
-	stateChanged, err := p.loadStateUnlocked(legacyStatus, legacyTask)
+	stateChanged, err := p.loadStateUnlocked()
 	if err != nil {
 		return err
 	}
 
-	if configChanged || legacyEmbeddedState {
+	if configChanged || configInitialized {
 		if err := p.saveConfigUnlocked(); err != nil {
 			return fmt.Errorf("failed to save config after applying defaults: %w", err)
 		}
@@ -254,6 +229,9 @@ func (p *Requery) loadConfig() error {
 			return fmt.Errorf("failed to save requery state: %w", err)
 		}
 	}
+	if err := p.syncRuntimeJobsLocked(); err != nil {
+		return fmt.Errorf("failed to sync runtime requery jobs: %w", err)
+	}
 	return nil
 }
 
@@ -261,65 +239,103 @@ func (p *Requery) saveConfigUnlocked() error {
 	if p.config == nil {
 		return errors.New("requery config is nil")
 	}
-	dataBytes, err := json.MarshalIndent(configFromPersisted(p.config), "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal config to json: %w", err)
+	payload := configFromPersisted(p.config)
+	if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), payload); err != nil {
+		return fmt.Errorf("failed to save runtime config state: %w", err)
 	}
-
-	tmpFile := p.filePath + ".tmp"
-	if err := os.WriteFile(tmpFile, dataBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write to temporary config file: %w", err)
+	if err := p.syncRuntimeJobsLocked(); err != nil {
+		return fmt.Errorf("failed to sync runtime requery jobs: %w", err)
 	}
-	if err := os.Rename(tmpFile, p.filePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to rename temporary config file: %w", err)
-	}
-
 	return nil
 }
 
-func (p *Requery) loadStateUnlocked(legacyStatus Status, legacyTask *FullRebuildTask) (bool, error) {
-	statePath := stateFilePath(p.filePath)
-	dataBytes, err := os.ReadFile(statePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			p.status = legacyStatus
-			if p.status.TaskState == "" {
-				p.status.TaskState = "idle"
-			}
-			p.fullTask = cloneFullRebuildTask(legacyTask)
+func (p *Requery) loadStateUnlocked() (bool, error) {
+	var runtimeState persistedState
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeStateKey(), &runtimeState); err == nil && ok {
+		p.status = runtimeState.Status
+		if p.status.TaskState == "" {
+			p.status.TaskState = "idle"
+		}
+		p.fullTask = cloneFullRebuildTask(runtimeState.FullRebuildTask)
+		p.activeRunID = p.status.ActiveRunID
+		if p.activeRunID == "" && p.fullTask != nil {
+			p.activeRunID = p.fullTask.TaskID
+			p.status.ActiveRunID = p.activeRunID
 			return true, nil
 		}
-		return false, fmt.Errorf("failed to read state file %s: %w", statePath, err)
+		return false, nil
+	} else if err != nil {
+		return false, fmt.Errorf("failed to load runtime requery state: %w", err)
 	}
 
-	var state persistedState
-	if err := json.Unmarshal(dataBytes, &state); err != nil {
-		return false, fmt.Errorf("failed to parse json from state file %s: %w", statePath, err)
-	}
-	p.status = state.Status
-	if p.status.TaskState == "" {
-		p.status.TaskState = "idle"
-	}
-	p.fullTask = cloneFullRebuildTask(state.FullRebuildTask)
-	return false, nil
+	p.status = Status{TaskState: "idle"}
+	p.fullTask = nil
+	p.activeRunID = ""
+	return true, nil
 }
 
 func (p *Requery) saveStateUnlocked() error {
-	dataBytes, err := json.MarshalIndent(cloneState(p.status, p.fullTask), "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal state to json: %w", err)
+	payload := cloneState(p.status, p.fullTask)
+	if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeStateKey(), payload); err != nil {
+		return fmt.Errorf("failed to save runtime requery state: %w", err)
 	}
-
-	statePath := stateFilePath(p.filePath)
-	tmpFile := statePath + ".tmp"
-	if err := os.WriteFile(tmpFile, dataBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write temporary state file: %w", err)
-	}
-	if err := os.Rename(tmpFile, statePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to rename temporary state file: %w", err)
-	}
-
 	return nil
+}
+
+func (p *Requery) runtimeConfigKey() string {
+	key := p.normalizedRuntimeKey()
+	if key == "" {
+		return ""
+	}
+	return key + ":config"
+}
+
+func (p *Requery) runtimeDBPath() string {
+	if strings.TrimSpace(p.dbPath) != "" {
+		return filepath.Clean(strings.TrimSpace(p.dbPath))
+	}
+	return coremain.RuntimeStateDBPath()
+}
+
+func (p *Requery) runtimeStateKey() string {
+	key := p.normalizedRuntimeKey()
+	if key == "" {
+		return ""
+	}
+	return key + ":state"
+}
+
+func (p *Requery) normalizedRuntimeKey() string {
+	key := strings.TrimSpace(p.runtimeKey)
+	if key == "" {
+		return ""
+	}
+	return filepath.Clean(key)
+}
+
+func (p *Requery) loadPersistedConfigUnlocked() (Config, bool, error) {
+	var persisted persistedConfig
+	if ok, err := coremain.LoadRuntimeStateJSONFromPath(p.runtimeDBPath(), runtimeStateNamespaceRequery, p.runtimeConfigKey(), &persisted); err == nil && ok {
+		return Config{
+			DomainProcessing:  persisted.DomainProcessing,
+			URLActions:        persisted.URLActions,
+			Workflow:          persisted.Workflow,
+			Scheduler:         persisted.Scheduler,
+			Recovery:          persisted.Recovery,
+			ExecutionSettings: persisted.ExecutionSettings,
+		}, false, nil
+	} else if err != nil {
+		return Config{}, false, fmt.Errorf("failed to load runtime requery config: %w", err)
+	}
+
+	log.Printf("[requery] runtime config %s not found, initializing with default config.", p.normalizedRuntimeKey())
+	cfg := newDefaultConfig()
+	return Config{
+		DomainProcessing:  cfg.DomainProcessing,
+		URLActions:        cfg.URLActions,
+		Workflow:          cfg.Workflow,
+		Scheduler:         cfg.Scheduler,
+		Recovery:          cfg.Recovery,
+		ExecutionSettings: cfg.ExecutionSettings,
+	}, true, nil
 }

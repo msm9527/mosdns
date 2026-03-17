@@ -20,7 +20,6 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -84,23 +83,16 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	// This maintains the original logic for API fallbacks.
 	DiscoverAndCacheSettings(cfg)
 
-	// Step 2: Load overrides from file.
-	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-	data, err := os.ReadFile(overridesPath)
-	if err == nil {
-		var overrides GlobalOverrides
-		if json.Unmarshal(data, &overrides) == nil {
-			// Prepare the lookup map for new generic replacements
-			overrides.Prepare()
-			m.setGlobalOverrides(&overrides)
-			mlog.L().Info("loaded global overrides from file",
-				zap.String("path", overridesPath),
-				zap.String("socks5", overrides.Socks5),
-				zap.String("ecs", overrides.ECS),
-				zap.Int("replacements", len(overrides.Replacements)))
-		} else {
-			mlog.L().Error("failed to parse config_overrides.json, it will be ignored", zap.Error(err))
-		}
+	// Step 2: Load user-editable overrides from custom_config.
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+		m.setGlobalOverrides(overrides)
+		mlog.L().Info("loaded global overrides from custom config",
+			zap.String("path", globalOverridesConfigPath()),
+			zap.String("socks5", overrides.Socks5),
+			zap.String("ecs", overrides.ECS),
+			zap.Int("replacements", len(overrides.Replacements)))
+	} else if err != nil {
+		mlog.L().Warn("failed to load global overrides from custom config", zap.Error(err))
 	}
 	// <<< END OF MODIFICATIONS >>>
 
@@ -109,14 +101,14 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 
 	// Register our new APIs.
 	RegisterCaptureAPI(m.httpMux)      // For process logs
-	RegisterAuditAPI(m.httpMux)        // For audit logs v1
-	RegisterAuditAPIV2(m.httpMux)      // For audit logs v2
+	RegisterAuditAPI(m.httpMux)        // For audit logs
 	RegisterOverridesAPI(m.httpMux, m) // <<< MODIFIED: Pass 'm'
 	RegisterConfigManagerAPI(m.httpMux)
 	RegisterCacheAPI(m.httpMux, m)
 	RegisterListsAPI(m.httpMux, m)
 	RegisterMiscAPI(m.httpMux, m)
 	RegisterMemoryAPI(m.httpMux, m)
+	RegisterRuntimeAPI(m.httpMux, m)
 	RegisterRuntimeStatsAPI(m.httpMux, m)
 	RegisterRulesAPI(m.httpMux, m)
 	RegisterUpdateAPI(m.httpMux)    // For binary updates

@@ -72,6 +72,26 @@ func TestHandleAggregatedCacheStats(t *testing.T) {
 }
 
 func TestHandleAggregatedDomainStats(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+	if err := SaveMemoryPoolPoliciesToCustomConfig(map[string]DomainPoolPolicy{
+		"my_fakeiplist": DefaultDomainPoolPolicy("my_fakeiplist"),
+		"custom_hotlist": {
+			Kind:                 DomainPoolKindMemory,
+			MaxDomains:           1000,
+			MaxVariantsPerDomain: 4,
+			EvictionPolicy:       "lru",
+			FlushIntervalMS:      1000,
+			PublishDebounceMS:    0,
+			PruneIntervalSec:     60,
+		},
+	}); err != nil {
+		t.Fatalf("SaveMemoryPoolPoliciesToCustomConfig: %v", err)
+	}
+
 	m := NewTestMosdnsWithPlugins(map[string]any{
 		"my_fakeiplist": mockDomainStatsProvider{
 			snapshot: DomainStatsSnapshot{
@@ -79,6 +99,13 @@ func TestHandleAggregatedDomainStats(t *testing.T) {
 				Kind:         "fakeip",
 				TotalEntries: 101,
 				DirtyEntries: 4,
+			},
+		},
+		"custom_hotlist": mockDomainStatsProvider{
+			snapshot: DomainStatsSnapshot{
+				MemoryID:     "generic",
+				Kind:         "memory",
+				TotalEntries: 7,
 			},
 		},
 	})
@@ -98,18 +125,31 @@ func TestHandleAggregatedDomainStats(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response failed: %v", err)
 	}
-	if len(resp.Items) != len(runtimeDomainProfiles) {
-		t.Fatalf("unexpected item count: got %d want %d", len(resp.Items), len(runtimeDomainProfiles))
+	profiles, err := loadRuntimeDomainProfiles()
+	if err != nil {
+		t.Fatalf("loadRuntimeDomainProfiles: %v", err)
 	}
-	if resp.Items[0].Key != "fakeip" || resp.Items[0].Tag != "my_fakeiplist" || resp.Items[0].TotalEntries != 101 {
-		t.Fatalf("unexpected first domain item: %+v", resp.Items[0])
+	if len(resp.Items) != len(profiles) {
+		t.Fatalf("unexpected item count: got %d want %d", len(resp.Items), len(profiles))
 	}
+	foundFakeip := false
+	foundCustom := false
 	foundMissing := false
 	for _, item := range resp.Items {
-		if item.Tag == "my_realiplist" && item.Error != "" {
-			foundMissing = true
-			break
+		switch item.Tag {
+		case "my_fakeiplist":
+			foundFakeip = item.Key == "fakeip" && item.TotalEntries == 101
+		case "custom_hotlist":
+			foundCustom = item.Key == "custom_hotlist" && item.TotalEntries == 7
+		case "my_realiplist":
+			foundMissing = item.Error != ""
 		}
+	}
+	if !foundFakeip {
+		t.Fatal("expected fakeip item to be present with snapshot values")
+	}
+	if !foundCustom {
+		t.Fatal("expected custom runtime profile to be discovered from memory_pools config")
 	}
 	if !foundMissing {
 		t.Fatal("expected missing domain plugin to return error")

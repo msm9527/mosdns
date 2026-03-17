@@ -1,7 +1,6 @@
 package coremain
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -12,20 +11,6 @@ import (
 	"github.com/go-chi/chi/v5"
 )
 
-type mockJSONStoreController struct {
-	value any
-	err   error
-}
-
-func (m *mockJSONStoreController) SnapshotJSONValue() any { return m.value }
-func (m *mockJSONStoreController) ReplaceJSONValue(_ context.Context, value any) error {
-	if m.err != nil {
-		return m.err
-	}
-	m.value = value
-	return nil
-}
-
 type mockReverseLookupController struct {
 	result string
 	err    error
@@ -33,36 +18,6 @@ type mockReverseLookupController struct {
 
 func (m *mockReverseLookupController) LookupIPString(_ string) (string, error) {
 	return m.result, m.err
-}
-
-func TestMiscAPI_ClientnameGetPut(t *testing.T) {
-	m := NewTestMosdnsWithPlugins(map[string]any{
-		"clientname": &mockJSONStoreController{value: map[string]any{"1.1.1.1": "router"}},
-	})
-	router := chi.NewRouter()
-	RegisterMiscAPI(router, m)
-
-	getReq := httptest.NewRequest(http.MethodGet, "/api/v1/clientname", nil)
-	getRec := httptest.NewRecorder()
-	router.ServeHTTP(getRec, getReq)
-	if getRec.Code != http.StatusOK {
-		t.Fatalf("unexpected get status: %d", getRec.Code)
-	}
-
-	putReq := httptest.NewRequest(http.MethodPut, "/api/v1/clientname", strings.NewReader(`{"8.8.8.8":"dns"}`))
-	putRec := httptest.NewRecorder()
-	router.ServeHTTP(putRec, putReq)
-	if putRec.Code != http.StatusOK {
-		t.Fatalf("unexpected put status: %d", putRec.Code)
-	}
-
-	var body map[string]string
-	if err := json.Unmarshal(putRec.Body.Bytes(), &body); err != nil {
-		t.Fatalf("failed to decode response: %v", err)
-	}
-	if got := body["8.8.8.8"]; got != "dns" {
-		t.Fatalf("unexpected updated value: %q", got)
-	}
 }
 
 func TestMiscAPI_ReverseLookup(t *testing.T) {
@@ -100,5 +55,52 @@ func TestMiscAPI_ReverseLookupError(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("unexpected status: %d", rec.Code)
+	}
+}
+
+func TestClientnameAPI_ReadsAndWritesCustomConfig(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	if err := SaveClientNamesToCustomConfig(map[string]string{"127.0.0.1": "laptop"}); err != nil {
+		t.Fatalf("SaveClientNamesToCustomConfig: %v", err)
+	}
+
+	router := chi.NewRouter()
+	router.Get("/api/v1/control/clientname", handleGetClientname(nil))
+	router.Put("/api/v1/control/clientname", handlePutClientname(nil))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/clientname", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	var payload map[string]string
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if payload["127.0.0.1"] != "laptop" {
+		t.Fatalf("unexpected payload: %+v", payload)
+	}
+
+	req = httptest.NewRequest(http.MethodPut, "/api/v1/control/clientname", strings.NewReader(`{"127.0.0.1":"desktop","192.168.1.2":"tv"}`))
+	req.Header.Set("Content-Type", "application/json")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("unexpected put status: %d body=%s", rec.Code, rec.Body.String())
+	}
+
+	values, ok, err := LoadClientNamesFromCustomConfig()
+	if err != nil {
+		t.Fatalf("LoadClientNamesFromCustomConfig: %v", err)
+	}
+	if !ok || values["127.0.0.1"] != "desktop" || values["192.168.1.2"] != "tv" {
+		t.Fatalf("unexpected stored client names: ok=%v values=%+v", ok, values)
 	}
 }

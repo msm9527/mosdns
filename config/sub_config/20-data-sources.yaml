@@ -1,0 +1,233 @@
+# 数据源与规则提供者
+#
+# 这一层只放“提供数据”的插件，不承担主流程编排：
+# - adguard 规则
+# - 动态生成/记忆类 domain_memory_pool / domain_stats_pool
+# - 本地文件规则集
+# - SRS / JSON 远程规则源
+# - 统一命中标记器 unified_matcher1
+#
+# 主解析链会通过 fast_mark 和这些 provider 的 tag 来做后续分流。
+
+version: v2
+
+policies:
+  # 广告规则目录。
+  - name: adguard
+    type: adguard_rule
+    args:
+      dir: adguard/
+      socks5: 127.0.0.1:7891
+
+  # 热门域名统计。
+  # 说明：
+  # - 统计累计写入 db/control.db 的 domain_pool_* 表
+  # - 长期策略在 config/custom_config/memory_pools.yaml 中维护
+  # - 这里只保留插件拓扑，不再重复写 max_entries / persist_interval 这类参数
+  - name: top_domains
+    type: domain_stats_pool
+    args: {}
+
+  # 记忆直连域名。
+  # 说明：
+  # - 运行态累计、候选规则与脏状态写入 db/control.db 的 domain_pool_* 表
+  # - 策略参数统一在 config/custom_config/memory_pools.yaml 中维护
+  # - 下游 provider 通过 generated_from 直接订阅源插件，不走 loopback HTTP
+  - name: my_realiplist
+    type: domain_memory_pool
+    args: {}
+
+  # 记忆代理域名。
+  - name: my_fakeiplist
+    type: domain_memory_pool
+    args: {}
+
+  # 记忆无 IPv6 域名。
+  - name: my_nov6list
+    type: domain_memory_pool
+    args: {}
+
+  # 记忆无 IPv4 域名。
+  - name: my_nov4list
+    type: domain_memory_pool
+    args: {}
+
+  # 节点模式下的无 IPv6 记忆域名。
+  - name: my_nodenov6list
+    type: domain_memory_pool
+    args: {}
+
+  # 节点模式下的无 IPv4 记忆域名。
+  - name: my_nodenov4list
+    type: domain_memory_pool
+    args: {}
+
+  # 强制直连 IP 段。
+  - name: direct_ip
+    type: ip_set
+    args:
+      files:
+        - rule/direct_ip.txt
+
+  # 响应重写规则。
+  - name: rewrite
+    type: rewrite
+    args:
+      files:
+        - rule/rewrite.txt
+      dns: 127.0.0.1:2222
+
+  # 订阅补充：代理补充规则。
+  - name: cusnocn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/cusnocn.json
+
+  # 订阅补充：直连补充规则。
+  - name: cuscn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/cuscn.json
+
+  # 记忆类规则 provider。
+  # 说明：
+  # - `generated_from` 表示直接订阅对应 memory pool 插件的规则导出接口
+  # - 运行态累计与发布状态完全来自 SQLite 的 domain_pool_* 表
+  - name: my_realiprule
+    type: domain_set_light
+    args:
+      generated_from: my_realiplist
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      generated_from: my_fakeiplist
+  - name: my_nov6rule
+    type: domain_set_light
+    args:
+      generated_from: my_nov6list
+  - name: my_nov4rule
+    type: domain_set_light
+    args:
+      generated_from: my_nov4list
+
+  # 节点模式记忆规则 provider。
+  - name: my_nodenov6rule
+    type: domain_set
+    args:
+      generated_from: my_nodenov6list
+  - name: my_nodenov4rule
+    type: domain_set
+    args:
+      generated_from: my_nodenov4list
+
+  # 规则源：国内域名集、国内 IP 集、国外域名集。
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/geositecn.json
+  - name: geoip_cn
+    type: si_set
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/geoipcn.json
+  - name: geosite_no_cn
+    type: sd_set_light
+    args:
+      socks5: 127.0.0.1:7891
+      local_config: srs/geositenocn.json
+
+  # 客户端 IP 白黑名单。
+  - name: client_ip
+    type: ip_set
+    args:
+      files:
+        - rule/client_ip.txt
+
+  # 静态规则集。
+  - name: whitelist
+    type: domain_set_light
+    args:
+      files:
+        - rule/whitelist.txt
+  - name: cnfakeipfilter
+    type: domain_set_light
+    args:
+      files:
+        - rule/cnfakeipfilter.txt
+  - name: blocklist
+    type: domain_set_light
+    args:
+      files:
+        - rule/blocklist.txt
+  - name: realiplist
+    type: domain_set_light
+    args:
+      files:
+        - rule/realiplist.txt
+  - name: greylist
+    type: domain_set_light
+    args:
+      files:
+        - rule/greylist.txt
+  - name: ddnslist
+    type: domain_set_light
+    args:
+      files:
+        - rule/ddnslist.txt
+
+  # 统一命中标记器。
+  # 所有基础规则先在这里收敛为 fast_mark，后续 sequence 再按 fast_mark 走分支。
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: blocklist
+          mark: 1
+          output_tag: 黑名单
+        - tag: my_nov4rule
+          mark: 2
+          output_tag: 记忆无V4
+        - tag: my_nov6rule
+          mark: 3
+          output_tag: 记忆无V6
+        - tag: adguard
+          mark: 5
+          output_tag: 广告屏蔽
+        - tag: ddnslist
+          mark: 6
+          output_tag: DDNS域名
+        - tag: greylist
+          mark: 7
+          output_tag: 灰名单
+        - tag: whitelist
+          mark: 8
+          output_tag: 白名单
+        - tag: realiplist
+          mark: 9
+          output_tag: '!CN fakeip filter'
+        - tag: cnfakeipfilter
+          mark: 10
+          output_tag: CN fakeip filter
+        - tag: my_realiprule
+          mark: 11
+          output_tag: 记忆直连
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+        - tag: cuscn
+          mark: 13
+          output_tag: 订阅直连补充
+        - tag: geosite_no_cn
+          mark: 14
+          output_tag: 订阅代理
+        - tag: cusnocn
+          mark: 15
+          output_tag: 订阅代理补充
+        - tag: geosite_cn
+          mark: 16
+          output_tag: 订阅直连

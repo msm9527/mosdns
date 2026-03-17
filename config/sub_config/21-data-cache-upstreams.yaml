@@ -1,0 +1,129 @@
+# 缓存与上游定义
+#
+# 这一层放“被 sequence 直接调用的基础执行单元”：
+# - 各类 cache
+# - 国内/国外/假 IP 所需的 aliapi 上游组
+#
+# 这些插件不负责分流判断，只负责真正发起查询或承接缓存。
+#
+# 重要：
+# - 用户平时需要改的上游 DNS / socks5 / ecs，不建议直接改这里
+# - 这份文件现在只保留“基线配置”
+# - 实际长期维护入口在 `config/custom_config/`
+#   - `custom_config/global_overrides.yaml`
+#   - `custom_config/upstreams.yaml`
+# - 前端 API 保存和手工修改，优先都针对上述 custom_config 文件
+
+version: v2
+
+policies:
+  # 全局主缓存：兼容模式下使用。
+  - name: cache_all
+    type: cache
+    args:
+      size: 800000
+      lazy_cache_ttl: 259200000
+      dump_file: db/cache/cache_all.dump
+      dump_interval: 36000
+
+  # 全局主缓存（防泄漏链路）。
+  - name: cache_all_noleak
+    type: cache
+    args:
+      size: 800000
+      lazy_cache_ttl: 259200000
+      exclude_ip: null
+      dump_file: db/cache/cache_all_noleak.dump
+      dump_interval: 36000
+
+  # 国内链路缓存。
+  - name: cache_cn
+    type: cache
+    args:
+      size: 500000
+      lazy_cache_ttl: 259200000
+      dump_file: db/cache/cache_cn.dump
+      dump_interval: 36000
+
+  # 国外普通链路缓存。
+  - name: cache_google
+    type: cache
+    args:
+      size: 300000
+      lazy_cache_ttl: 259200000
+      dump_file: db/cache/cache_google.dump
+      dump_interval: 36000
+
+  # 国外带 ECS 链路缓存。
+  - name: cache_google_node
+    type: cache
+    args:
+      size: 300000
+      lazy_cache_ttl: 259200000
+      enable_ecs: true
+      dump_file: db/cache/cache_google_node.dump
+      dump_interval: 36000
+
+  # 节点探测链路缓存。
+  - name: cache_node
+    type: cache
+    args:
+      size: 300000
+      lazy_cache_ttl: 259200000
+      dump_file: db/cache/cache_node.dump
+      dump_interval: 36000
+
+  # 国内 fakeip 链路缓存。
+  - name: cache_cnmihomo
+    type: cache
+    args:
+      size: 300000
+      lazy_cache_ttl: 259200000
+      dump_file: db/cache/cache_cnmihomo.dump
+      dump_interval: 36000
+
+  # 国内真实解析上游。
+  - name: domestic
+    type: aliapi
+    args:
+      concurrent: 3
+      upstreams:
+        - addr: 223.5.5.5
+        - addr: 223.6.6.6
+
+  # 国外解析上游。
+  - name: foreign
+    type: aliapi
+    args:
+      concurrent: 2
+      upstreams:
+        - addr: https://1.1.1.1/dns-query
+          socks5: 127.0.0.1:7891
+        - addr: https://8.8.8.8/dns-query
+          socks5: 127.0.0.1:7891
+          upstream_query_timeout: 1000
+
+  # 国外带 ECS 的专用上游。
+  - name: foreignecs
+    type: aliapi
+    args:
+      concurrent: 1
+      upstreams:
+        - addr: https://8.8.8.8/dns-query
+          socks5: 127.0.0.1:7891
+
+  # 国外 fakeip 生成器入口。
+  - name: nocnfake
+    type: aliapi
+    args:
+      concurrent: 1
+      upstreams:
+        - addr: udp://127.0.0.1:6666
+
+  # 国内 fakeip 生成器入口。
+  - name: cnfake
+    type: aliapi
+    args:
+      concurrent: 1
+      upstreams:
+        - addr: udp://127.0.0.1:1053

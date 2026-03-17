@@ -1,12 +1,9 @@
 package coremain
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/go-chi/chi/v5"
@@ -72,38 +69,29 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 
-	loadedFromRuntime := false
-	// Logic: Runtime memory -> File -> Discovery fallback
+	loadedFromFile := false
+	// Logic: Runtime memory -> custom_config file -> Discovery fallback
 	if m != nil {
 		if current := m.GetGlobalOverrides(); current != nil {
 			resp.Socks5 = current.Socks5
 			resp.ECS = current.ECS
 			populateReplacements(current, true)
-			loadedFromRuntime = true
+			loadedFromFile = true
 		}
 	}
-	if !loadedFromRuntime {
-		// Not in memory, try file.
-		overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-		data, err := os.ReadFile(overridesPath)
-		var fileObj GlobalOverrides
-		fileLoaded := false
-
-		if err == nil && json.Unmarshal(data, &fileObj) == nil {
+	if !loadedFromFile {
+		if fileObj, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
 			resp.Socks5 = fileObj.Socks5
 			resp.ECS = fileObj.ECS
-			populateReplacements(&fileObj, false)
-			fileLoaded = true
+			populateReplacements(fileObj, false)
+			loadedFromFile = true
+		} else if err != nil {
+			mlog.L().Warn("failed to load overrides from custom config", zap.Error(err))
 		}
-
-		// Fallback for Socks5/ECS if file didn't exist or parsing failed (or fields empty? - preserving original logic)
-		// Original logic: "falling back to discovered settings" if Parse failed or File not exist.
-		// If file loaded but values are empty, we might keep them empty?
-		// Let's stick to strict fallback: if file not loaded, use discovered.
-		if !fileLoaded {
-			resp.Socks5 = discoveredSocks5
-			resp.ECS = discoveredECS
-		}
+	}
+	if !loadedFromFile {
+		resp.Socks5 = discoveredSocks5
+		resp.ECS = discoveredECS
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -124,20 +112,10 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		return
 	}
 
-	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-
-	// We only save original/new/comment for replacements (via json tags in struct)
-	updatedData, err := json.MarshalIndent(payload, "", "  ")
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "MARSHAL_SETTINGS_FAILED", "Failed to marshal settings: "+err.Error())
+	if err := saveGlobalOverridesToCustomConfig(&payload); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "WRITE_CUSTOM_CONFIG_FAILED", "Failed to save custom config: "+err.Error())
 		return
 	}
-
-	if err := os.WriteFile(overridesPath, updatedData, 0644); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "WRITE_SETTINGS_FILE_FAILED", "Failed to write settings file: "+err.Error())
-		return
-	}
-
 	mlog.L().Info("global overrides saved via API",
 		zap.String("socks5", payload.Socks5),
 		zap.String("ecs", payload.ECS),
@@ -146,7 +124,7 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	payload.Prepare()
 	if m != nil {
 		m.setGlobalOverrides(CloneGlobalOverrides(&payload))
-		if err := m.ReloadRuntimeConfig(""); err != nil {
+		if err := m.ReloadControlConfig(""); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_RELOAD_FAILED", "Settings saved but runtime apply failed: "+err.Error())
 			return
 		}
@@ -156,6 +134,12 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	if m != nil {
 		message = "全局覆盖配置已保存并生效。"
 	}
+	_ = RecordSystemEvent("control.overrides", "info", "saved global overrides", map[string]any{
+		"socks5":       payload.Socks5,
+		"ecs":          payload.ECS,
+		"replacements": len(payload.Replacements),
+		"path":         globalOverridesConfigPath(),
+	})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": message,
 	})

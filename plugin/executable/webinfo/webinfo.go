@@ -2,11 +2,9 @@ package webinfo
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
-	"os"
 	"path/filepath"
 	"sync"
 
@@ -15,7 +13,8 @@ import (
 )
 
 const (
-	PluginType = "webinfo"
+	PluginType                   = "webinfo"
+	runtimeStateNamespaceWebinfo = "webinfo"
 )
 
 // 注册插件
@@ -32,7 +31,7 @@ type Args struct {
 type WebInfo struct {
 	mu       sync.RWMutex
 	filePath string
-	// Replaced 'any' with 'interface{}' for backward compatibility.
+	// data stores arbitrary JSON/YAML-compatible payloads.
 	data interface{}
 }
 
@@ -43,11 +42,6 @@ func newWebinfo(_ *coremain.BP, args any) (any, error) {
 		return nil, errors.New("webinfo: 'file' must be specified")
 	}
 
-	dir := filepath.Dir(cfg.File)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return nil, fmt.Errorf("webinfo: failed to create directory %s: %w", dir, err)
-	}
-
 	p := &WebInfo{
 		filePath: cfg.File,
 	}
@@ -55,57 +49,53 @@ func newWebinfo(_ *coremain.BP, args any) (any, error) {
 	if err := p.loadData(); err != nil {
 		return nil, fmt.Errorf("webinfo: failed to load initial data from %s: %w", p.filePath, err)
 	}
-	log.Printf("[webinfo] plugin instance created for file: %s", p.filePath)
+	log.Printf("[webinfo] plugin instance created for state key: %s", p.filePath)
 
 	return p, nil
 }
 
-// loadData 从文件加载 JSON 数据到内存
+// loadData 从数据库加载 JSON 数据到内存
 func (p *WebInfo) loadData() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	dataBytes, err := os.ReadFile(p.filePath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			log.Printf("[webinfo] file %s not found, initializing with empty data.", p.filePath)
-			p.data = make(map[string]interface{})
+	if key := p.runtimeStateKey(); key != "" {
+		dbPath := coremain.RuntimeStateDBPathForPath(p.filePath)
+		var d interface{}
+		ok, err := coremain.LoadRuntimeStateJSONFromPath(dbPath, runtimeStateNamespaceWebinfo, key, &d)
+		if err == nil && ok {
+			if d == nil {
+				p.data = make(map[string]interface{})
+			} else {
+				p.data = d
+			}
 			return nil
 		}
-		return err
+		if err != nil {
+			return err
+		}
 	}
-
-	if len(dataBytes) == 0 {
-		p.data = make(map[string]interface{})
-		return nil
-	}
-
-	var d interface{}
-	if err := json.Unmarshal(dataBytes, &d); err != nil {
-		return fmt.Errorf("failed to parse json from file %s: %w", p.filePath, err)
-	}
-	p.data = d
-
+	log.Printf("[webinfo] runtime state %s not found, initializing with empty data.", p.filePath)
+	p.data = make(map[string]interface{})
 	return nil
 }
 
-// saveData 将内存中的数据保存到文件（原子写入）
+// saveData 将内存中的数据保存到数据库
 func (p *WebInfo) saveData() error {
-	dataBytes, err := json.MarshalIndent(p.data, "", "  ")
-	if err != nil {
-		return fmt.Errorf("failed to marshal data to json: %w", err)
+	if key := p.runtimeStateKey(); key != "" {
+		dbPath := coremain.RuntimeStateDBPathForPath(p.filePath)
+		if err := coremain.SaveRuntimeStateJSONToPath(dbPath, runtimeStateNamespaceWebinfo, key, p.data); err != nil {
+			return err
+		}
 	}
-
-	tmpFile := p.filePath + ".tmp"
-	if err := os.WriteFile(tmpFile, dataBytes, 0644); err != nil {
-		return fmt.Errorf("failed to write to temporary file: %w", err)
-	}
-	if err := os.Rename(tmpFile, p.filePath); err != nil {
-		_ = os.Remove(tmpFile)
-		return fmt.Errorf("failed to rename temporary file to final destination: %w", err)
-	}
-
 	return nil
+}
+
+func (p *WebInfo) runtimeStateKey() string {
+	if p.filePath == "" {
+		return ""
+	}
+	return filepath.Clean(p.filePath)
 }
 
 func (p *WebInfo) SnapshotJSONValue() any {
@@ -120,9 +110,9 @@ func (p *WebInfo) ReplaceJSONValue(_ context.Context, newData any) error {
 
 	p.data = newData
 	if err := p.saveData(); err != nil {
-		log.Printf("[webinfo] ERROR: failed to save data to file %s: %v", p.filePath, err)
+		log.Printf("[webinfo] ERROR: failed to save runtime state %s: %v", p.filePath, err)
 		return err
 	}
-	log.Printf("[webinfo] data updated successfully for file: %s", p.filePath)
+	log.Printf("[webinfo] runtime state updated successfully: %s", p.filePath)
 	return nil
 }

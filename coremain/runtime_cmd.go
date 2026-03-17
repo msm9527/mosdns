@@ -1,0 +1,294 @@
+package coremain
+
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+
+	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
+	"github.com/spf13/cobra"
+)
+
+type runtimeCmdContext struct {
+	configPath string
+	baseDir    string
+	limit      int
+	runID      string
+	keepRuns   int
+	keepChecks int
+	ageDays    int
+	checkAge   int
+}
+
+func newControlCmd() *cobra.Command {
+	ctx := &runtimeCmdContext{}
+
+	runtimeCmd := &cobra.Command{
+		Use:   "control",
+		Short: "Inspect and operate mosdns control state stored in SQLite.",
+	}
+	runtimeCmd.PersistentFlags().StringVarP(&ctx.configPath, "config", "c", "", "config file used to resolve the control database directory")
+	runtimeCmd.PersistentFlags().StringVarP(&ctx.baseDir, "dir", "d", "", "control base directory, defaults to config directory or current working directory")
+
+	summaryCmd := &cobra.Command{
+		Use:   "summary",
+		Short: "Print control namespace summary as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeSummaryJSON(dbPath)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	runtimeCmd.AddCommand(summaryCmd)
+
+	healthCmd := &cobra.Command{
+		Use:   "health",
+		Short: "Run control health/self-check as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeHealthJSON(dbPath)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	runtimeCmd.AddCommand(healthCmd)
+
+	eventsCmd := &cobra.Command{
+		Use:   "events",
+		Short: "List recent control system events as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeEventsJSON(dbPath, ctx.limit)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	eventsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of events to print")
+	runtimeCmd.AddCommand(eventsCmd)
+
+	requeryCmd := &cobra.Command{
+		Use:   "requery",
+		Short: "Inspect requery jobs, runs, and checkpoints stored in control SQLite.",
+	}
+	requeryJobsCmd := &cobra.Command{
+		Use:   "jobs",
+		Short: "List requery job definitions as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryJobsJSON(dbPath)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryRunsCmd := &cobra.Command{
+		Use:   "runs",
+		Short: "List recent requery runs as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryRunsJSON(dbPath, ctx.limit)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryRunsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of runs to print")
+	requeryCheckpointsCmd := &cobra.Command{
+		Use:   "checkpoints",
+		Short: "List recent requery checkpoints as JSON.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryCheckpointsJSON(dbPath, ctx.runID, ctx.limit)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryCheckpointsCmd.Flags().StringVar(&ctx.runID, "run-id", "", "specific run id to filter checkpoints")
+	requeryCheckpointsCmd.Flags().IntVar(&ctx.limit, "limit", 20, "number of checkpoints to print")
+	requeryPruneCmd := &cobra.Command{
+		Use:   "prune",
+		Short: "Prune old requery run/checkpoint history.",
+		RunE: func(cmd *cobra.Command, args []string) error {
+			dbPath, err := resolveRuntimeCommandDBPath(ctx.configPath, ctx.baseDir)
+			if err != nil {
+				return err
+			}
+			data, err := runtimeRequeryPruneJSON(dbPath, requeryruntime.PruneOptions{
+				KeepRuns:              ctx.keepRuns,
+				KeepCheckpointsPerRun: ctx.keepChecks,
+				MaxRunAgeDays:         ctx.ageDays,
+				MaxCheckpointAgeDays:  ctx.checkAge,
+			})
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintln(cmd.OutOrStdout(), string(data))
+			return err
+		},
+		SilenceUsage: true,
+	}
+	requeryPruneCmd.Flags().IntVar(&ctx.keepRuns, "keep-runs", 50, "keep at most this many recent runs")
+	requeryPruneCmd.Flags().IntVar(&ctx.keepChecks, "keep-checkpoints", 20, "keep at most this many recent checkpoints per run")
+	requeryPruneCmd.Flags().IntVar(&ctx.ageDays, "max-run-age-days", 0, "delete runs older than this many days before count trimming")
+	requeryPruneCmd.Flags().IntVar(&ctx.checkAge, "max-checkpoint-age-days", 0, "delete checkpoints older than this many days before count trimming")
+	requeryCmd.AddCommand(requeryJobsCmd, requeryRunsCmd, requeryCheckpointsCmd, requeryPruneCmd)
+	runtimeCmd.AddCommand(requeryCmd)
+	runtimeCmd.AddCommand(newRuntimeShuntCmd())
+
+	return runtimeCmd
+}
+
+func resolveRuntimeCommandBaseDir(configPath, baseDir string) (string, error) {
+	if baseDir != "" {
+		if abs, err := filepath.Abs(baseDir); err == nil {
+			return abs, nil
+		}
+		return baseDir, nil
+	}
+	if configPath != "" {
+		_, fileUsed, err := loadConfig(configPath)
+		if err != nil {
+			return "", err
+		}
+		return resolveBaseDir(fileUsed), nil
+	}
+	if MainConfigBaseDir != "" {
+		return MainConfigBaseDir, nil
+	}
+	wd, err := os.Getwd()
+	if err != nil {
+		return "", err
+	}
+	return wd, nil
+}
+
+func resolveRuntimeCommandDBPath(configPath, baseDir string) (string, error) {
+	if configPath != "" {
+		cfg, _, err := loadConfig(configPath)
+		if err != nil {
+			return "", err
+		}
+		return cfg.ControlDBPath, nil
+	}
+	baseDir, err := resolveRuntimeCommandBaseDir(configPath, baseDir)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(baseDir, runtimeStateDBFilename), nil
+}
+
+func runtimeSummaryJSON(dbPath string) ([]byte, error) {
+	namespaces := []string{
+		runtimeStateNamespaceAudit,
+		runtimeNamespaceWebinfo,
+		runtimeNamespaceRequery,
+		runtimeNamespaceAdguard,
+		runtimeNamespaceDiversion,
+	}
+	resp := runtimeSummaryResponse{
+		StorageEngine: "sqlite",
+		DBPath:        dbPath,
+		Namespaces:    make([]runtimeNamespaceSummary, 0, len(namespaces)),
+	}
+	for _, namespace := range namespaces {
+		entries, err := ListRuntimeStateByNamespace(dbPath, namespace)
+		if err != nil {
+			return nil, err
+		}
+		resp.Namespaces = append(resp.Namespaces, runtimeNamespaceSummary{
+			Namespace: namespace,
+			Keys:      len(entries),
+		})
+	}
+	return json.Marshal(resp)
+}
+
+func runtimeHealthJSON(dbPath string) ([]byte, error) {
+	resp, err := runtimeHealthReport(dbPath, nil)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(resp)
+}
+
+func runtimeEventsJSON(dbPath string, limit int) ([]byte, error) {
+	events, err := ListSystemEvents(dbPath, "", limit)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(events)
+}
+
+func runtimeRequeryJobsJSON(dbPath string) ([]byte, error) {
+	jobs, err := requeryruntime.ListJobs(dbPath, "")
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(jobs)
+}
+
+func runtimeRequeryRunsJSON(dbPath string, limit int) ([]byte, error) {
+	runs, err := requeryruntime.ListRuns(dbPath, "", limit)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(runs)
+}
+
+func runtimeRequeryCheckpointsJSON(dbPath, runID string, limit int) ([]byte, error) {
+	checkpoints, err := requeryruntime.ListCheckpoints(dbPath, "", runID, limit)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(checkpoints)
+}
+
+func runtimeRequeryPruneJSON(dbPath string, opts requeryruntime.PruneOptions) ([]byte, error) {
+	summary, err := requeryruntime.PruneHistory(dbPath, opts)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(summary)
+}

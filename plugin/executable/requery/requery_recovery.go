@@ -114,9 +114,21 @@ func (p *Requery) resumeDelay() time.Duration {
 
 func (p *Requery) persistFullRebuildTask(task *FullRebuildTask) error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.fullTask = cloneFullRebuildTask(task)
-	return p.saveStateUnlocked()
+	p.activeRunID = task.TaskID
+	p.status.ActiveRunID = task.TaskID
+	err := p.saveStateUnlocked()
+	p.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if err := p.persistRunSnapshot("running", time.Time{}); err != nil {
+		return err
+	}
+	if err := p.persistCheckpoint(task); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *Requery) clearFullRebuildTask() {
@@ -156,6 +168,8 @@ func (p *Requery) prepareRecoveryOnStartup() {
 		p.status.Progress.Processed = int64(task.Completed)
 		p.status.LastRunDomainCount = task.Total
 		p.status.LastRunEndTime = time.Now().UTC()
+		p.activeRunID = task.TaskID
+		p.status.ActiveRunID = task.TaskID
 		p.lastError = "检测到中断的完整重建任务，等待恢复。"
 		_ = p.saveStateUnlocked()
 		return

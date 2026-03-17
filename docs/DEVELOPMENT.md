@@ -95,10 +95,8 @@ go build -o ./bin/mosdns .
 dig @127.0.0.1 -p 53 example.com A +time=2 +tries=1
 
 # HTTP 管理接口验证（默认 9099）
-curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
+curl -sS http://127.0.0.1:9099/api/v3/audit/settings
 ```
-
-该接口现在返回审计存储设置和当前磁盘占用，而不是单一“容量”数字。
 
 ### 4.2 压测（stress dns）
 
@@ -109,7 +107,7 @@ curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
 ```bash
 ./bin/mosdns stress dns \
   --server 127.0.0.1:53 \
-  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --domains-file '/Users/doumao/code/github/mosdns/config/gen/top_domains.txt' \
   --count 8000 \
   --unique-count 2000 \
   --concurrency 100 \
@@ -122,7 +120,7 @@ curl -sS http://127.0.0.1:9099/api/v1/audit/capacity
 ```bash
 ./bin/mosdns stress dns \
   --server 127.0.0.1:53 \
-  --domains-file '/Users/doumao/code/github/mosdns/config/unpack/geosite_geolocation-!cn.txt' \
+  --domains-file '/Users/doumao/code/github/mosdns/config/gen/top_domains.txt' \
   --count 16000 \
   --unique-count 2000 \
   --concurrency 100 \

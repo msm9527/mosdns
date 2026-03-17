@@ -1,6 +1,9 @@
 package coremain
 
-import "context"
+import (
+	"context"
+	"time"
+)
 
 // SaveablePlugin is implemented by plugins that can persist their current state.
 type SaveablePlugin interface {
@@ -45,4 +48,17 @@ type DomainRefreshCandidateRequest struct {
 // prioritized refresh candidates from runtime state.
 type DomainRefreshCandidateProvider interface {
 	SnapshotRefreshCandidates(req DomainRefreshCandidateRequest) []DomainRefreshCandidate
+}
+
+type DomainRefreshJob struct {
+	Domain     string
+	MemoryID   string
+	QTypeMask  uint8
+	Reason     string
+	VerifyTag  string
+	ObservedAt time.Time
+}
+
+type DomainRefreshJobEnqueuer interface {
+	EnqueueDomainRefresh(ctx context.Context, job DomainRefreshJob) bool
 }

@@ -32,8 +32,9 @@ function closeAndUnlock(dialogElement) {
 
 
 document.addEventListener('DOMContentLoaded', () => {
-    const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: '', clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, avgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440, AUDIT_WINDOW_MIN: 1, AUDIT_WINDOW_MAX: 86400, AUDIT_RAW_RETENTION_MAX: 365, AUDIT_AGG_RETENTION_MAX: 3650, AUDIT_STORAGE_MAX_MB: 10240 };
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: { query: '', exact: false }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    const actionLocks = new Set();
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
         colorSwatches: document.querySelectorAll('.color-swatch'),
@@ -46,12 +47,16 @@ document.addEventListener('DOMContentLoaded', () => {
         independentChartPanel: document.getElementById('independent-chart-panel'),
         bigSparklineMerged: document.getElementById('big-sparkline-merged'), lastUpdated: document.getElementById('last-updated'),
         autoRefreshToggle: document.getElementById('auto-refresh-toggle'), autoRefreshIntervalInput: document.getElementById('auto-refresh-interval'), autoRefreshForm: document.getElementById('auto-refresh-form'),
-        totalQueries: document.getElementById('total-queries'), avgDuration: document.getElementById('avg-duration'),
-        totalQueriesChange: document.getElementById('total-queries-change'), avgDurationChange: document.getElementById('avg-duration-change'),
-        sparklineTotal: document.getElementById('sparkline-total'), sparklineAvg: document.getElementById('sparkline-avg'),
+        totalQueries: document.getElementById('total-queries'), totalAvgDuration: document.getElementById('total-avg-duration'), recentQueries: document.getElementById('recent-queries'), recentAvgDuration: document.getElementById('recent-avg-duration'),
+        totalQueriesChange: document.getElementById('total-queries-change'), totalAvgDurationChange: document.getElementById('total-avg-duration-change'), recentQueriesChange: document.getElementById('recent-queries-change'), recentAvgDurationChange: document.getElementById('recent-avg-duration-change'),
+        recentQueriesLabel: document.getElementById('recent-queries-label'), recentAvgLabel: document.getElementById('recent-avg-label'),
+        sparklineRecentQueries: document.getElementById('sparkline-recent-queries'), sparklineRecentAvg: document.getElementById('sparkline-recent-avg'),
         auditStatus: document.getElementById('audit-status'), toggleAuditBtn: document.getElementById('toggle-audit-btn'), clearAuditBtn: document.getElementById('clear-audit-btn'),
-        auditCapacity: document.getElementById('audit-capacity'), auditCurrentCount: document.getElementById('audit-current-count'), auditDiskUsage: document.getElementById('audit-disk-usage'), capacityForm: document.getElementById('capacity-form'), newCapacityInput: document.getElementById('new-capacity'),
-        auditRetentionDaysInput: document.getElementById('audit-retention-days'), auditMaxDiskSizeInput: document.getElementById('audit-max-disk-size'),
+        auditQueueDepth: document.getElementById('audit-queue-depth'), auditDegradedState: document.getElementById('audit-degraded-state'), auditDroppedEvents: document.getElementById('audit-dropped-events'),
+        auditCapacity: document.getElementById('audit-capacity'), auditOverviewScope: document.getElementById('audit-overview-scope'),
+        auditRawRetention: document.getElementById('audit-raw-retention'), auditAggregateRetention: document.getElementById('audit-aggregate-retention'), auditDiskUsage: document.getElementById('audit-disk-usage'), auditStorageLimit: document.getElementById('audit-storage-limit'),
+        auditStorageForm: document.getElementById('audit-storage-form'), auditOverviewForm: document.getElementById('audit-overview-form'), auditOverviewWindowInput: document.getElementById('audit-overview-window-input'),
+        auditRetentionDaysInput: document.getElementById('audit-retention-days'), auditAggregateRetentionDaysInput: document.getElementById('audit-aggregate-retention-days'), auditMaxDiskSizeInput: document.getElementById('audit-max-disk-size'),
         cacheStatsTbody: document.getElementById('cache-stats-tbody'),
         topDomainsBody: document.getElementById('top-domains-body'), topClientsBody: document.getElementById('top-clients-body'), slowestQueriesBody: document.getElementById('slowest-queries-body'),
         shuntResultsBody: document.getElementById('shunt-results-body'),
@@ -116,6 +121,7 @@ document.addEventListener('DOMContentLoaded', () => {
         requeryFullPriorityLimitInput: document.getElementById('requery-full-priority-limit-input'),
         requeryRefreshResolverPoolInput: document.getElementById('requery-refresh-resolver-pool-input'),
         requeryMemoryStatsTbody: document.getElementById('requery-memory-stats-tbody'),
+        requeryRunsTbody: document.getElementById('requery-runs-tbody'),
         updateModule: document.getElementById('update-module'),
         updateCurrentVersion: document.getElementById('update-current-version'),
         updateLatestVersion: document.getElementById('update-latest-version'),
@@ -163,7 +169,6 @@ document.addEventListener('DOMContentLoaded', () => {
         listMgmtRewriteHint: document.getElementById('list-mgmt-rewrite-hint'),
 
         featureSwitchesModule: document.getElementById('feature-switches-module'),
-        coreModeSwitchGroup: document.getElementById('core-mode-switch-group'),
         secondarySwitchesContainer: document.getElementById('secondary-switches-container'),
         systemInfoContainer: document.getElementById('system-info-container'),
     };
@@ -171,19 +176,90 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const debounce = (func, wait) => { let timeout; return function executedFunction(...args) { const later = () => { clearTimeout(timeout); func(...args); }; clearTimeout(timeout); timeout = setTimeout(later, wait); }; };
 
+    const buildQueryString = (params = {}) => {
+        const searchParams = new URLSearchParams();
+        Object.entries(params).forEach(([key, value]) => {
+            if (value === undefined || value === null || value === '') return;
+            searchParams.set(key, String(value));
+        });
+        const query = searchParams.toString();
+        return query ? `?${query}` : '';
+    };
+
     // 轻量级请求器 + /metrics 简易缓存，减少同一时段的重复请求
     let __metricsInflight = null; let __metricsStamp = 0;
-    const api = { fetch: async (url, options = {}) => { try { const response = await fetch(url, { ...options, signal: options.signal }); if (!response.ok) { let errorMsg = `API Error: ${response.status} ${response.statusText}`; try { const errorBody = await response.json(); if (errorBody && errorBody.error) { errorMsg = errorBody.error; } } catch (e) { try { errorMsg = await response.text() || errorMsg; } catch (textErr) { } } if (response.status !== 404) { ui.showToast(errorMsg, 'error'); } throw new Error(errorMsg); } const tc = response.headers.get('X-Total-Count'); const ct = response.headers.get('content-type'); const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text(); return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data; } catch (error) { if (error.name !== 'AbortError') { console.error(error); } throw error; } }, getStatus: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/status`, { signal }), getCapacity: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { signal }), start: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/start`, { method: 'POST' }), stop: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/stop`, { method: 'POST' }), clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/clear`, { method: 'POST' }), setCapacity: (memoryEntries, retentionDays, maxDiskSizeMB) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v1/audit/capacity`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ memory_entries: parseInt(memoryEntries, 10), retention_days: parseInt(retentionDays, 10), max_disk_size_mb: parseInt(maxDiskSizeMB, 10) }) }), getMetrics: (signal) => { const now = Date.now(); if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight; __metricsInflight = api.fetch('/metrics', { signal }); __metricsStamp = now; return __metricsInflight; }, getCoreMode: (signal) => api.fetch('/api/v1/switches/core_mode', { signal }).then(response => response?.value || 'secure'), getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }), getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }), getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }), clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }), getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }), v2: { getStats: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/stats`, { signal }), getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain?limit=${limit}`, { signal }), getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/client?limit=${limit}`, { signal }), getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/slowest?limit=${limit}`, { signal }), getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/rank/domain_set?limit=${limit}`, { signal }), getLogs: (signal, params = {}) => { const queryParams = new URLSearchParams({ page: 1, limit: CONSTANTS.LOGS_PER_PAGE, ...params }); for (let [key, value] of queryParams.entries()) { if (!value) { queryParams.delete(key); } } return api.fetch(`${CONSTANTS.API_BASE_URL}/api/v2/audit/logs?${queryParams}`, { signal }); } } };
+    const api = {
+        fetch: async (url, options = {}) => {
+            try {
+                const response = await fetch(url, { ...options, signal: options.signal });
+                if (!response.ok) {
+                    let errorMsg = `API Error: ${response.status} ${response.statusText}`;
+                    try {
+                        const errorBody = await response.json();
+                        if (errorBody && errorBody.error) {
+                            errorMsg = errorBody.error;
+                        }
+                    } catch (e) {
+                        try {
+                            errorMsg = await response.text() || errorMsg;
+                        } catch (textErr) {
+                        }
+                    }
+                    if (response.status !== 404) {
+                        ui.showToast(errorMsg, 'error');
+                    }
+                    throw new Error(errorMsg);
+                }
+                const tc = response.headers.get('X-Total-Count');
+                const ct = response.headers.get('content-type');
+                const data = (ct && ct.includes('application/json')) ? await response.json() : await response.text();
+                return tc !== null ? { body: data, totalCount: parseInt(tc, 10) } : data;
+            } catch (error) {
+                if (error.name !== 'AbortError') {
+                    console.error(error);
+                }
+                throw error;
+            }
+        },
+        audit: {
+            getOverview: (signal, windowSeconds) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/overview${buildQueryString({ window: windowSeconds })}`, { signal }),
+            getTimeseries: (signal, params = {}) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/timeseries${buildQueryString(params)}`, { signal }),
+            getSettings: (signal) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/settings`, { signal }),
+            updateSettings: (payload) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/settings`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+            }),
+            clear: () => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/clear`, { method: 'POST' }),
+            getTopDomains: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/rank/domain${buildQueryString({ limit })}`, { signal }),
+            getTopClients: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/rank/client${buildQueryString({ limit })}`, { signal }),
+            getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/rank/domain_set${buildQueryString({ limit })}`, { signal }),
+            getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/logs/slow${buildQueryString({ limit })}`, { signal }),
+            getLogs: (signal, params = {}) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/logs${buildQueryString({ limit: CONSTANTS.LOGS_PER_PAGE, ...params })}`, { signal }),
+        },
+        getMetrics: (signal) => {
+            const now = Date.now();
+            if (__metricsInflight && (now - __metricsStamp) < 3000) return __metricsInflight;
+            __metricsInflight = api.fetch('/metrics', { signal });
+            __metricsStamp = now;
+            return __metricsInflight;
+        },
+        getAllCacheStats: (signal) => api.fetch('/api/v1/cache/stats', { signal }),
+        getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }),
+        getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }),
+        clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }),
+        getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }),
+    };
 
     const requeryApi = {
-        getSummary: (signal) => api.fetch(`/api/v1/requery/summary`, { signal }),
-        getConfig: (signal) => api.fetch(`/api/v1/requery`, { signal }),
-        getStatus: (signal) => api.fetch(`/api/v1/requery/status`, { signal }),
-        trigger: (mode = 'full_rebuild', limit = 0) => api.fetch(`/api/v1/requery/trigger`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, limit }) }),
-        cancel: () => api.fetch(`/api/v1/requery/cancel`, { method: 'POST' }),
-        updateSchedulerConfig: (config) => api.fetch(`/api/v1/requery/scheduler/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }),
-        saveRules: () => api.fetch(`/api/v1/requery/rules/save`, { method: 'POST' }),
-        flushRules: () => api.fetch(`/api/v1/requery/rules/flush`, { method: 'POST' }),
+        getSummary: (signal) => api.fetch(`/api/v1/control/requery/summary`, { signal }),
+        getConfig: (signal) => api.fetch(`/api/v1/control/requery`, { signal }),
+        getStatus: (signal) => api.fetch(`/api/v1/control/requery/status`, { signal }),
+        trigger: (mode = 'full_rebuild', limit = 0) => api.fetch(`/api/v1/control/requery/trigger`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mode, limit }) }),
+        cancel: () => api.fetch(`/api/v1/control/requery/cancel`, { method: 'POST' }),
+        updateSchedulerConfig: (config) => api.fetch(`/api/v1/control/requery/scheduler/config`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(config) }),
+        saveRules: () => api.fetch(`/api/v1/control/requery/rules/save`, { method: 'POST' }),
+        flushRules: () => api.fetch(`/api/v1/control/requery/rules/flush`, { method: 'POST' }),
     };
 
     const updateApi = {
@@ -200,30 +276,44 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const clientnameApi = {
-        get: () => api.fetch(`/api/v1/clientname`),
-        update: (data) => api.fetch(`/api/v1/clientname`, {
+        get: () => api.fetch(`/api/v1/control/clientname`),
+        update: (data) => api.fetch(`/api/v1/control/clientname`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(data),
         }),
     };
 
-    const coreApi = {
-        getMode: async () => {
-            try {
-                const response = await api.fetch('/api/v1/switches/core_mode');
-                return response?.value || 'secure';
-            } catch (e) {
-                console.error("无法获取核心模式状态:", e);
-                return 'secure';
-            }
-        }
-    };
-
     const ui = {
         showToast(message, type = 'success') { if (!elements.toast) return; clearTimeout(toastTimeout); const icon = type === 'success' ? `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 15l-5-5 1.41-1.41L10 14.17l7.59-7.59L19 8l-9 9z"></path></svg>` : `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm1 15h-2v-2h2v2zm0-4h-2V7h2v6z"></path></svg>`; elements.toast.innerHTML = `${icon}<span>${message}</span>`; elements.toast.className = `show ${type}`; const hideToast = () => { elements.toast.className = elements.toast.className.replace('show', ''); }; elements.toast.onmouseenter = () => clearTimeout(toastTimeout); elements.toast.onmouseleave = () => toastTimeout = setTimeout(hideToast, CONSTANTS.TOAST_DURATION); toastTimeout = setTimeout(hideToast, CONSTANTS.TOAST_DURATION); },
-        setLoading(button, isLoading) { if (!button) return; const textSpan = button.querySelector('span'); button.disabled = isLoading; button.setAttribute('aria-busy', String(isLoading)); if (textSpan) { if (isLoading) { if (!button.dataset.defaultText) { button.dataset.defaultText = textSpan.textContent; } textSpan.textContent = '处理中...'; } else { if (button.dataset.defaultText) { textSpan.textContent = button.dataset.defaultText; } } } },
-        updateStatus(isCapturing) { if (!elements.toggleAuditBtn || !elements.auditStatus) return; this.setLoading(elements.toggleAuditBtn, false); const statusIndicator = elements.systemControlTabIndicator; if (statusIndicator) statusIndicator.className = 'status-indicator'; if (typeof isCapturing === 'boolean') { state.isCapturing = isCapturing; elements.auditStatus.textContent = isCapturing ? '运行中' : '已停止'; elements.auditStatus.style.color = isCapturing ? 'var(--color-success)' : 'var(--color-danger)'; const actionText = isCapturing ? '关闭审计' : '开启审计'; elements.toggleAuditBtn.querySelector('span').textContent = actionText; elements.toggleAuditBtn.dataset.defaultText = actionText; elements.toggleAuditBtn.className = `button ${isCapturing ? 'danger' : 'primary'}`; if (statusIndicator) statusIndicator.classList.add(isCapturing ? 'running' : 'stopped'); } else { elements.auditStatus.textContent = '未知'; elements.auditStatus.style.color = 'var(--color-text-secondary)'; elements.toggleAuditBtn.querySelector('span').textContent = '刷新状态'; elements.toggleAuditBtn.dataset.defaultText = '刷新状态'; } },
+        bindClickOnce(button, handler) { if (!button || button.dataset.bound === 'true') return; button.dataset.bound = 'true'; button.addEventListener('click', handler); },
+        isBusyButton(target) { const button = target?.closest?.('button, input[type="button"], input[type="submit"]'); return Boolean(button && (button.disabled || button.getAttribute('aria-busy') === 'true' || button.dataset.inflight === 'true')); },
+        async runExclusive(lockKey, action) { if (!lockKey) return await action(); if (actionLocks.has(lockKey)) return; actionLocks.add(lockKey); try { return await action(); } finally { actionLocks.delete(lockKey); } },
+        setLoading(button, isLoading) { if (!button) return; const textSpan = button.querySelector('span'); button.disabled = isLoading; button.setAttribute('aria-busy', String(isLoading)); if (isLoading) { button.dataset.inflight = 'true'; } else { delete button.dataset.inflight; } if (textSpan) { if (isLoading) { if (!button.dataset.defaultText) { button.dataset.defaultText = textSpan.textContent; } textSpan.textContent = '处理中...'; } else { if (button.dataset.defaultText) { textSpan.textContent = button.dataset.defaultText; } } } },
+        setText(element, text) {
+            if (element) element.textContent = text;
+        },
+        updateStatus(isCapturing) {
+            if (!elements.toggleAuditBtn || !elements.auditStatus) return;
+            this.setLoading(elements.toggleAuditBtn, false);
+            const statusIndicator = elements.systemControlTabIndicator;
+            if (statusIndicator) statusIndicator.className = 'status-indicator';
+            if (typeof isCapturing === 'boolean') {
+                state.isCapturing = isCapturing;
+                elements.auditStatus.textContent = isCapturing ? '运行中' : '已停止';
+                elements.auditStatus.style.color = isCapturing ? 'var(--color-success)' : 'var(--color-danger)';
+                const actionText = isCapturing ? '停用审计' : '启用审计';
+                elements.toggleAuditBtn.querySelector('span').textContent = actionText;
+                elements.toggleAuditBtn.dataset.defaultText = actionText;
+                elements.toggleAuditBtn.className = `button ${isCapturing ? 'danger' : 'primary'}`;
+                if (statusIndicator) statusIndicator.classList.add(isCapturing ? 'running' : 'stopped');
+                return;
+            }
+            elements.auditStatus.textContent = '未知';
+            elements.auditStatus.style.color = 'var(--color-text-secondary)';
+            elements.toggleAuditBtn.querySelector('span').textContent = '刷新状态';
+            elements.toggleAuditBtn.dataset.defaultText = '刷新状态';
+        },
         formatBytes(bytes) {
             if (typeof bytes !== 'number' || Number.isNaN(bytes) || bytes < 0) return '查询失败';
             if (bytes < 1024) return `${bytes} B`;
@@ -231,36 +321,83 @@ document.addEventListener('DOMContentLoaded', () => {
             if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
             return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
         },
-        updateCapacity(storage) {
-            if (elements.auditCapacity) {
-                elements.auditCapacity.textContent = storage?.memory_entries != null ? `${storage.memory_entries.toLocaleString()} 条` : '查询失败';
+        formatOverviewWindowPhrase(windowSeconds) {
+            const seconds = Number(windowSeconds || 60);
+            if (seconds === 60) return '近 1 分钟';
+            if (seconds % 3600 === 0) return `近 ${seconds / 3600} 小时`;
+            if (seconds % 60 === 0) return `近 ${seconds / 60} 分钟`;
+            return `近 ${seconds} 秒`;
+        },
+        updateAuditRuntime(overview, settings) {
+            const queueDepth = settings?.queue_depth ?? overview?.queue_depth;
+            const degraded = settings?.degraded ?? overview?.degraded;
+            const droppedEvents = overview?.dropped_events;
+            this.setText(elements.auditQueueDepth, Number.isFinite(queueDepth) ? `${queueDepth.toLocaleString()} 条` : '查询失败');
+            this.setText(elements.auditDroppedEvents, Number.isFinite(droppedEvents) ? `${droppedEvents.toLocaleString()} 条` : '查询失败');
+            if (!elements.auditDegradedState) return;
+            if (typeof degraded !== 'boolean') {
+                elements.auditDegradedState.textContent = '查询失败';
+                elements.auditDegradedState.style.color = 'var(--color-text-secondary)';
+                return;
             }
-            if (elements.auditCurrentCount) {
-                elements.auditCurrentCount.textContent = storage?.current_memory_entries != null ? `${storage.current_memory_entries.toLocaleString()} 条` : '查询失败';
+            elements.auditDegradedState.textContent = degraded ? '降级中' : '正常';
+            elements.auditDegradedState.style.color = degraded ? 'var(--color-warning)' : 'var(--color-success)';
+        },
+        updateAuditStorage(settings) {
+            this.setText(elements.auditRawRetention, settings?.raw_retention_days != null ? `${settings.raw_retention_days.toLocaleString()} 天` : '查询失败');
+            this.setText(elements.auditAggregateRetention, settings?.aggregate_retention_days != null ? `${settings.aggregate_retention_days.toLocaleString()} 天` : '查询失败');
+            this.setText(elements.auditDiskUsage, this.formatBytes(settings?.current_storage_bytes));
+            this.setText(elements.auditStorageLimit, settings?.max_storage_mb != null ? `${settings.max_storage_mb.toLocaleString()} MB` : '查询失败');
+            if (elements.auditRetentionDaysInput && settings?.raw_retention_days != null) {
+                elements.auditRetentionDaysInput.value = settings.raw_retention_days;
             }
-            if (elements.auditDiskUsage) {
-                elements.auditDiskUsage.textContent = this.formatBytes(storage?.current_disk_size_bytes);
+            if (elements.auditAggregateRetentionDaysInput && settings?.aggregate_retention_days != null) {
+                elements.auditAggregateRetentionDaysInput.value = settings.aggregate_retention_days;
             }
-            if (elements.newCapacityInput && storage?.memory_entries != null) {
-                elements.newCapacityInput.value = storage.memory_entries;
+            if (elements.auditMaxDiskSizeInput && settings?.max_storage_mb != null) {
+                elements.auditMaxDiskSizeInput.value = settings.max_storage_mb;
             }
-            if (elements.auditRetentionDaysInput && storage?.retention_days != null) {
-                elements.auditRetentionDaysInput.value = storage.retention_days;
+        },
+        updateAuditOverviewScope(settings, overview) {
+            const windowSeconds = settings?.overview_window_seconds ?? overview?.window_seconds;
+            this.setText(elements.auditCapacity, windowSeconds != null ? `${windowSeconds.toLocaleString()} 秒` : '查询失败');
+            this.setText(elements.auditOverviewScope, windowSeconds != null ? `首页概览与趋势使用${this.formatOverviewWindowPhrase(windowSeconds)}实时窗口` : '查询失败');
+            if (elements.auditOverviewWindowInput && windowSeconds != null) {
+                elements.auditOverviewWindowInput.value = windowSeconds;
             }
-            if (elements.auditMaxDiskSizeInput && storage?.max_disk_size_mb != null) {
-                elements.auditMaxDiskSizeInput.value = storage.max_disk_size_mb;
+        },
+        formatOverviewWindowLabel(windowSeconds, suffix) {
+            return `${this.formatOverviewWindowPhrase(windowSeconds)}${suffix}`;
+        },
+        updateOverviewLabels(windowSeconds) {
+            if (elements.recentQueriesLabel) {
+                elements.recentQueriesLabel.textContent = this.formatOverviewWindowLabel(windowSeconds, '请求数');
+            }
+            if (elements.recentAvgLabel) {
+                elements.recentAvgLabel.textContent = this.formatOverviewWindowLabel(windowSeconds, '平均处理时间 (ms)');
             }
         },
         updateOverviewStats() {
-            const { totalQueries, avgDuration } = state.data;
+            const {
+                totalQueries,
+                totalAvgDuration,
+                recentQueries,
+                recentAvgDuration
+            } = state.data;
+            this.updateOverviewLabels(state.auditOverview?.window_seconds || state.auditSettings?.overview_window_seconds || 60);
+
             animateValue(elements.totalQueries, totalQueries.previous, totalQueries.current, CONSTANTS.ANIMATION_DURATION);
-            animateValue(elements.avgDuration, avgDuration.previous, avgDuration.current, CONSTANTS.ANIMATION_DURATION, 2);
+            animateValue(elements.totalAvgDuration, totalAvgDuration.previous, totalAvgDuration.current, CONSTANTS.ANIMATION_DURATION, 2);
+            animateValue(elements.recentQueries, recentQueries.previous, recentQueries.current, CONSTANTS.ANIMATION_DURATION);
+            animateValue(elements.recentAvgDuration, recentAvgDuration.previous, recentAvgDuration.current, CONSTANTS.ANIMATION_DURATION, 2);
             updateStatChange(elements.totalQueriesChange, totalQueries.previous, totalQueries.current);
-            updateStatChange(elements.avgDurationChange, avgDuration.previous, avgDuration.current, true);
+            updateStatChange(elements.totalAvgDurationChange, totalAvgDuration.previous, totalAvgDuration.current, true);
+            updateStatChange(elements.recentQueriesChange, recentQueries.previous, recentQueries.current);
+            updateStatChange(elements.recentAvgDurationChange, recentAvgDuration.previous, recentAvgDuration.current, true);
 
             // Standard small charts
-            if (elements.sparklineTotal) elements.sparklineTotal.innerHTML = generateSparklineSVG(state.history.totalQueries);
-            if (elements.sparklineAvg) elements.sparklineAvg.innerHTML = generateSparklineSVG(state.history.avgDuration, true);
+            if (elements.sparklineRecentQueries) elements.sparklineRecentQueries.innerHTML = generateSparklineSVG(state.history.totalQueries);
+            if (elements.sparklineRecentAvg) elements.sparklineRecentAvg.innerHTML = generateSparklineSVG(state.history.avgDuration, true);
 
             // Independent mode merged big chart
             const isIndependent = document.querySelector('.stats-grid')?.classList.contains('independent-mode');
@@ -303,7 +440,17 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             renderChunk();
         },
-        updateSearchResultsInfo(pagination) { if (!elements.searchResultsInfo) return; if (state.currentLogSearchTerm?.query && pagination) { elements.searchResultsInfo.innerHTML = `为您找到 <strong>${pagination.total_items.toLocaleString()}</strong> 条相关结果`; } else { elements.searchResultsInfo.innerHTML = ''; } },
+        updateSearchResultsInfo(summary) {
+            if (!elements.searchResultsInfo) return;
+            if (!summary) {
+                elements.searchResultsInfo.innerHTML = '';
+                return;
+            }
+            const matchedCount = Number(summary.matched_count || 0).toLocaleString();
+            const avgDuration = Number(summary.average_duration_ms || 0).toFixed(2);
+            const maxDuration = Number(summary.max_duration_ms || 0).toFixed(2);
+            elements.searchResultsInfo.innerHTML = `匹配 <strong>${matchedCount}</strong> 条，平均耗时 <strong>${avgDuration} ms</strong>，最慢 <strong>${maxDuration} ms</strong>`;
+        },
         openLogDetailModal(triggerElement) {
             const logIndex = triggerElement.dataset.logIndex ? parseInt(triggerElement.dataset.logIndex, 10) : null;
             const source = triggerElement.dataset.logSource || 'log';
@@ -399,9 +546,9 @@ document.addEventListener('DOMContentLoaded', () => {
     const requeryManager = {
         init() {
             const debouncedUpdate = debounce(this.handleUpdateSchedulerConfig.bind(this), 1500);
-            elements.requeryPrewarmBtn.addEventListener('click', (e) => this.handleTrigger(e, 'quick_prewarm'));
-            elements.requeryQuickTriggerBtn.addEventListener('click', (e) => this.handleTrigger(e, 'quick_rebuild'));
-            elements.requeryTriggerBtn.addEventListener('click', (e) => this.handleTrigger(e, 'full_rebuild'));
+            [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach((button) => {
+                button.addEventListener('click', (e) => this.handleTrigger(e));
+            });
             elements.requeryCancelBtn.addEventListener('click', this.handleCancel.bind(this));
             elements.requeryModeSelect.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
             elements.requerySchedulerToggle.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
@@ -420,11 +567,13 @@ document.addEventListener('DOMContentLoaded', () => {
                 state.requery.status = summary.status || null;
                 state.requery.config = summary.config || null;
                 state.requery.memoryStats = Array.isArray(summary.memory_stats) ? summary.memory_stats : [];
+                state.requery.recentRuns = Array.isArray(summary.recent_runs) ? summary.recent_runs : [];
                 updateDomainListStats(signal);
                 this.render();
             } catch (error) {
                 if (error.name !== 'AbortError') {
                     state.requery.memoryStats = [];
+                    state.requery.recentRuns = [];
                     this.render();
                 }
             }
@@ -439,6 +588,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 elements.requeryStatusText.style.color = 'var(--color-danger)';
                 [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach(btn => btn.disabled = true);
                 this.renderMemoryStats();
+                this.renderRecentRuns();
                 return;
             }
 
@@ -546,6 +696,7 @@ document.addEventListener('DOMContentLoaded', () => {
             elements.requeryCancelBtn.hidden = !isRunning;
 
             this.renderMemoryStats();
+            this.renderRecentRuns();
         },
 
         renderMemoryStats() {
@@ -572,8 +723,42 @@ document.addEventListener('DOMContentLoaded', () => {
             `).join('');
         },
 
+        renderRecentRuns() {
+            const tbody = elements.requeryRunsTbody;
+            if (!tbody) return;
+            const runs = Array.isArray(state.requery.recentRuns) ? state.requery.recentRuns : [];
+            if (!runs.length) {
+                tbody.innerHTML = `<tr><td colspan="6" class="requery-history-empty">暂时还没有可展示的运行历史。</td></tr>`;
+                return;
+            }
+
+            tbody.innerHTML = runs.map((run) => {
+                const updatedAt = this.formatUnixMillis(run.updated_at_unix_ms);
+                const progress = `${this.formatCount(run.completed)} / ${this.formatCount(run.total)}`;
+                return `
+                    <tr>
+                        <td>${this.modeLabel(run.mode)}</td>
+                        <td>${this.triggerLabel(run.trigger_source)}</td>
+                        <td>${this.runStateLabel(run.state)}</td>
+                        <td>${run.stage_label || run.stage || '—'}</td>
+                        <td class="text-right">${progress}</td>
+                        <td>${updatedAt}</td>
+                    </tr>
+                `;
+            }).join('');
+        },
+
         formatCount(value) {
             return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '--';
+        },
+
+        formatUnixMillis(value) {
+            if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) return '—';
+            try {
+                return new Date(value).toLocaleString('zh-CN', { hour12: false }).replace(/\//g, '-');
+            } catch (_) {
+                return '—';
+            }
         },
 
         modeLabel(mode) {
@@ -586,6 +771,33 @@ document.addEventListener('DOMContentLoaded', () => {
                     return '完整重建';
                 default:
                     return '任务';
+            }
+        },
+
+        triggerLabel(source) {
+            switch ((source || '').toLowerCase()) {
+                case 'scheduler':
+                    return '定时';
+                case 'recovery':
+                    return '恢复';
+                default:
+                    return '手动';
+            }
+        },
+
+        runStateLabel(stateValue) {
+            switch ((stateValue || '').toLowerCase()) {
+                case 'running':
+                    return '运行中';
+                case 'completed':
+                case 'idle':
+                    return '已完成';
+                case 'failed':
+                    return '失败';
+                case 'cancelled':
+                    return '已取消';
+                default:
+                    return stateValue || '—';
             }
         },
 
@@ -602,27 +814,39 @@ document.addEventListener('DOMContentLoaded', () => {
         },
 
         async handleTrigger(e, mode = 'full_rebuild', silent = false) {
-            const modeLabel = this.modeLabel(mode);
-            const limit = mode === 'quick_prewarm'
+            const resolvedMode = e?.currentTarget?.dataset?.mode || mode;
+            const targetButton = e?.currentTarget || this.buttonForMode(resolvedMode);
+            const modeLabel = this.modeLabel(resolvedMode);
+            const limit = resolvedMode === 'quick_prewarm'
                 ? parseInt(elements.requeryPrewarmLimitInput.value, 10) || 0
-                : (mode === 'quick_rebuild' ? parseInt(elements.requeryQuickLimitInput.value, 10) || 0 : 0);
-            const hint = mode === 'quick_prewarm'
+                : (resolvedMode === 'quick_rebuild' ? parseInt(elements.requeryQuickLimitInput.value, 10) || 0 : 0);
+            const hint = resolvedMode === 'quick_prewarm'
                 ? '这会通过常规解析链快速预热缓存，不会重写分流规则。'
-                : (mode === 'quick_rebuild'
+                : (resolvedMode === 'quick_rebuild'
                     ? '这会只处理热点域名，优先提升速度。'
                     : '这会执行完整重建，适合规则整体重算。');
             const confirmed = silent ? true : confirm(`确定要开始${modeLabel}吗？\n${hint}`);
             if (confirmed) {
-                const btn = e ? e.currentTarget : elements.requeryTriggerBtn;
-                ui.setLoading(btn, true);
+                ui.setLoading(targetButton, true);
                 try {
-                    const result = await requeryApi.trigger(mode, limit);
+                    const result = await requeryApi.trigger(resolvedMode, limit);
                     ui.showToast(result.message || `${modeLabel}已开始`, 'success');
                     await this.updateStatus();
                 } catch (error) {
                 } finally {
-                    ui.setLoading(btn, false);
+                    ui.setLoading(targetButton, false);
                 }
+            }
+        },
+
+        buttonForMode(mode) {
+            switch (mode) {
+                case 'quick_prewarm':
+                    return elements.requeryPrewarmBtn;
+                case 'quick_rebuild':
+                    return elements.requeryQuickTriggerBtn;
+                default:
+                    return elements.requeryTriggerBtn;
             }
         },
 
@@ -722,13 +946,6 @@ document.addEventListener('DOMContentLoaded', () => {
         profiles: window.MOSDNS_SWITCH_PROFILES || [],
 
         init() {
-            elements.coreModeSwitchGroup.addEventListener('click', e => {
-                const btn = e.target.closest('button');
-                if (btn && !btn.classList.contains('active')) {
-                    this.handleCoreSwitch(btn);
-                }
-            });
-
             elements.secondarySwitchesContainer.addEventListener('change', e => {
                 const input = e.target.closest('input[type="checkbox"]');
                 if (input) {
@@ -739,7 +956,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async loadStatus(signal) {
             try {
-                const results = await api.fetch('/api/v1/switches', { signal });
+                const results = await api.fetch('/api/v1/control/switches', { signal });
                 const values = new Map(results.map(item => [item.name, item.value]));
                 this.profiles.forEach(profile => {
                     state.featureSwitches[profile.tag] = values.get(profile.tag) || 'error';
@@ -753,13 +970,7 @@ document.addEventListener('DOMContentLoaded', () => {
         },
 
         render() {
-            const coreStatus = state.featureSwitches['core_mode'];
-            elements.coreModeSwitchGroup.querySelectorAll('button').forEach(btn => {
-                btn.classList.toggle('active', btn.dataset.mode === coreStatus);
-                btn.disabled = coreStatus === 'error';
-            });
-
-            const modeProfiles = this.profiles.filter(p => p.modes && p.tag !== 'core_mode');
+            const modeProfiles = this.profiles.filter(p => p.modes);
             const secondaryProfiles = this.profiles.filter(p => !p.modes);
             let html = '';
             modeProfiles.forEach(profile => {
@@ -837,29 +1048,6 @@ document.addEventListener('DOMContentLoaded', () => {
             bindInfoIconTooltips();
         },
 
-        async handleCoreSwitch(button) {
-            const tag = 'core_mode';
-            const valueToPost = button.dataset.mode;
-            ui.setLoading(button, true);
-            button.parentElement.querySelectorAll('button').forEach(b => b.disabled = true);
-
-            try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
-                state.featureSwitches[tag] = result.value;
-                this.render();
-                ui.showToast('核心模式已切换，即将开始快速预热缓存...', 'success');
-                await requeryManager.handleTrigger(null, 'quick_prewarm', true);
-
-            } catch (error) {
-                ui.showToast('切换核心模式失败!', 'error');
-                this.render();
-            } finally {
-                ui.setLoading(button, false);
-                button.parentElement.querySelectorAll('button').forEach(b => b.disabled = false);
-                this.render();
-            }
-        },
-
         async handleSecondarySwitch(checkbox) {
             const tag = checkbox.dataset.switchTag;
             const profile = this.profiles.find(p => p.tag === tag);
@@ -869,7 +1057,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const valueToPost = checkbox.checked ? profile.valueForOn : profile.valueForOff;
 
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已${checkbox.checked ? '启用' : '禁用'}`);
                 if (tag === 'cn_answer_mode') {
@@ -905,7 +1093,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             button.parentElement.querySelectorAll('button').forEach(btn => btn.disabled = true);
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已切换为 ${profile.modes[result.value]?.name || result.value}`);
                 this.render();
@@ -925,7 +1113,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             select.disabled = true;
             try {
-                const result = await api.fetch(`/api/v1/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
+                const result = await api.fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已切换为 ${profile.modes[result.value]?.name || result.value}`);
             } catch (error) {
@@ -1283,7 +1471,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!elements.aliasListContainer) return;
             elements.aliasListContainer.innerHTML = '<p>正在加载客户端列表...</p>';
             try {
-                const topClients = await api.v2.getTopClients(null, 200);
+                const topClients = await api.audit.getTopClients(null, 200);
                 const uniqueIps = [...new Set(topClients.map(client => client.key))].sort();
                 if (uniqueIps.length === 0) {
                     elements.aliasListContainer.innerHTML = '<p>日志中暂无客户端 IP 记录。</p>';
@@ -1354,27 +1542,20 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const historyManager = {
-        load: () => {
-            const saved = JSON.parse(localStorage.getItem('mosdnsHistory'));
-            if (saved) {
-                state.history.totalQueries = saved.totalQueries || [];
-                state.history.avgDuration = saved.avgDuration || [];
-                state.history.timestamps = saved.timestamps || [];
+        reset() {
+            state.history.totalQueries = [];
+            state.history.avgDuration = [];
+            state.history.timestamps = [];
+        },
+        replace(points) {
+            if (!Array.isArray(points) || points.length === 0) {
+                this.reset();
+                return;
             }
-        },
-        add(total, avg) {
-            state.history.totalQueries.push(total ?? 0);
-            state.history.avgDuration.push(avg ?? 0);
-            state.history.timestamps.push(Date.now());
-            // Ensure all arrays same length
-            const maxLen = CONSTANTS.HISTORY_LENGTH;
-            if (state.history.totalQueries.length > maxLen) state.history.totalQueries.shift();
-            if (state.history.avgDuration.length > maxLen) state.history.avgDuration.shift();
-            if (state.history.timestamps.length > maxLen) state.history.timestamps.shift();
-            this.save();
-        },
-        save: () => {
-            localStorage.setItem('mosdnsHistory', JSON.stringify(state.history));
+            const normalized = points.slice(-CONSTANTS.HISTORY_LENGTH);
+            state.history.totalQueries = normalized.map(point => Number(point.query_count || 0));
+            state.history.avgDuration = normalized.map(point => Number(point.average_duration_ms || 0));
+            state.history.timestamps = normalized.map(point => point.bucket_start);
         }
     };
 
@@ -1460,7 +1641,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const animateValue = (element, start, end, duration, decimals = 0) => { if (!element || start === null || end === null) return; if (start === end) { element.textContent = (decimals > 0 ? parseFloat(end).toFixed(decimals) : Math.floor(end).toLocaleString()); return; } let startTimestamp = null; const step = (timestamp) => { if (!startTimestamp) startTimestamp = timestamp; const progress = Math.min((timestamp - startTimestamp) / duration, 1); const current = start + progress * (end - start); element.textContent = (decimals > 0 ? parseFloat(current).toFixed(decimals) : Math.floor(current).toLocaleString()); if (progress < 1) window.requestAnimationFrame(step); }; window.requestAnimationFrame(step); };
-    const updateStatChange = (element, prev, curr, isTime = false) => { if (prev === null || curr === null || prev === 0) { element.style.visibility = 'hidden'; return; } const diff = curr - prev; const change = (diff / prev) * 100; if (Math.abs(change) < 0.1) { element.style.visibility = 'hidden'; return; } const direction = isTime ? (diff < 0 ? 'up' : 'down') : (diff > 0 ? 'up' : 'down'); const icon = direction === 'up' ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8L18 14H6L12 8Z"></path></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 16L6 10H18L12 16Z"></path></svg>'; element.className = `stat-change ${direction}`; element.innerHTML = `${icon} ${Math.abs(change).toFixed(1)}%`; element.style.visibility = 'visible'; };
+    const updateStatChange = (element, prev, curr, isTime = false) => { if (!element) return; if (prev === null || curr === null || prev === 0) { element.style.visibility = 'hidden'; return; } const diff = curr - prev; const change = (diff / prev) * 100; if (Math.abs(change) < 0.1) { element.style.visibility = 'hidden'; return; } const direction = isTime ? (diff < 0 ? 'up' : 'down') : (diff > 0 ? 'up' : 'down'); const icon = direction === 'up' ? '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 8L18 14H6L12 8Z"></path></svg>' : '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor"><path d="M12 16L6 10H18L12 16Z"></path></svg>'; element.className = `stat-change ${direction}`; element.innerHTML = `${icon} ${Math.abs(change).toFixed(1)}%`; element.style.visibility = 'visible'; };
     const setupGlowEffect = () => { elements.container?.addEventListener('mousemove', (e) => { const card = e.target.closest('.card:not(dialog)'); if (card) { const rect = card.getBoundingClientRect(); card.style.setProperty('--glow-x', `${e.clientX - rect.left}px`); card.style.setProperty('--glow-y', `${e.clientY - rect.top}px`); } }); };
 
     // 双波段图表生成器 (独立模式使用 - 增强版)
@@ -1722,30 +1903,51 @@ document.addEventListener('DOMContentLoaded', () => {
             // 概览页首屏：尽量少拉数据，避免阻塞渲染
             const shallowOnOverview = (activeTab === 'overview' && !forceAll);
             const basePromises = [
-                api.getStatus(signal),
-                api.getCapacity(signal),
-                api.v2.getStats(signal)
+                api.audit.getSettings(signal),
+                api.audit.getOverview(signal),
+                api.audit.getTimeseries(signal, { step: 'minute' })
             ];
-            if (!shallowOnOverview) basePromises.push(api.v2.getDomainSetRank(signal, 100));
+            if (!shallowOnOverview) basePromises.push(api.audit.getDomainSetRank(signal, 100));
 
             const results = await Promise.allSettled(basePromises);
-            const statusRes = results[0];
-            const capacityRes = results[1];
-            const statsRes = results[2];
+            const settingsRes = results[0];
+            const overviewRes = results[1];
+            const timeseriesRes = results[2];
             const domainSetRankRes = results[3]; // 只有在非浅加载时才存在
 
-            ui.updateStatus(statusRes.status === 'fulfilled' ? statusRes.value?.capturing : null);
-            ui.updateCapacity(capacityRes.status === 'fulfilled' ? capacityRes.value : null);
-
-            if (statsRes.status === 'fulfilled' && statsRes.value) {
-                const stats = statsRes.value;
-                state.data.totalQueries.previous = state.data.totalQueries.current === null ? stats.total_queries : state.data.totalQueries.current;
-                state.data.avgDuration.previous = state.data.avgDuration.current === null ? stats.average_duration_ms : state.data.avgDuration.current;
-                state.data.totalQueries.current = stats.total_queries;
-                state.data.avgDuration.current = stats.average_duration_ms;
-                ui.updateOverviewStats();
-                historyManager.add(stats.total_queries, stats.average_duration_ms);
+            if (settingsRes.status === 'fulfilled') {
+                state.auditSettings = settingsRes.value;
             }
+            if (overviewRes.status === 'fulfilled') {
+                state.auditOverview = overviewRes.value;
+            }
+
+            const auditSettings = settingsRes.status === 'fulfilled' ? settingsRes.value : null;
+            const auditOverview = overviewRes.status === 'fulfilled' ? overviewRes.value : null;
+
+            ui.updateStatus(auditSettings?.enabled ?? null);
+            ui.updateAuditRuntime(auditOverview, auditSettings);
+            ui.updateAuditStorage(auditSettings);
+            ui.updateAuditOverviewScope(auditSettings, auditOverview);
+
+            if (overviewRes.status === 'fulfilled' && overviewRes.value) {
+                const overview = overviewRes.value;
+                state.data.totalQueries.previous = state.data.totalQueries.current === null ? overview.total_query_count : state.data.totalQueries.current;
+                state.data.totalAvgDuration.previous = state.data.totalAvgDuration.current === null ? overview.total_average_duration_ms : state.data.totalAvgDuration.current;
+                state.data.recentQueries.previous = state.data.recentQueries.current === null ? overview.query_count : state.data.recentQueries.current;
+                state.data.recentAvgDuration.previous = state.data.recentAvgDuration.current === null ? overview.average_duration_ms : state.data.recentAvgDuration.current;
+                state.data.totalQueries.current = overview.total_query_count;
+                state.data.totalAvgDuration.current = overview.total_average_duration_ms;
+                state.data.recentQueries.current = overview.query_count;
+                state.data.recentAvgDuration.current = overview.average_duration_ms;
+            }
+
+            if (timeseriesRes.status === 'fulfilled') {
+                historyManager.replace(timeseriesRes.value);
+            } else if (!state.history.timestamps.length) {
+                historyManager.reset();
+            }
+            ui.updateOverviewStats();
 
             if (domainSetRankRes && domainSetRankRes.status === 'fulfilled') {
                 state.domainSetRank = domainSetRankRes.value || [];
@@ -1777,7 +1979,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
 
             if (forceAll) {
-                const [topDomainsRes, topClientsRes, slowestRes] = await Promise.allSettled([api.v2.getTopDomains(signal, 100), api.v2.getTopClients(signal, 100), api.v2.getSlowest(signal, 100)]);
+                const [topDomainsRes, topClientsRes, slowestRes] = await Promise.allSettled([
+                    api.audit.getTopDomains(signal, 100),
+                    api.audit.getTopClients(signal, 100),
+                    api.audit.getSlowest(signal, 100)
+                ]);
 
                 if (topDomainsRes.status === 'fulfilled') { state.topDomains = topDomainsRes.value || []; renderTopDomains(state.topDomains); }
                 if (topClientsRes.status === 'fulfilled') { state.topClients = topClientsRes.value || []; renderTopClients(state.topClients); }
@@ -1804,22 +2010,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let logRequestController;
-    async function fetchAndRenderLogs(page = 1, append = false) {
+    async function fetchAndRenderLogs(cursor = '', append = false) {
         if (state.isLogLoading && !append) return;
         state.isLogLoading = true;
         if (elements.logLoader) elements.logLoader.style.display = 'block';
         if (!append) renderSkeletonRows(elements.logTableBody, Math.min(20, CONSTANTS.LOGS_PER_PAGE), state.isMobile ? 1 : 5);
         if (!append && logRequestController) logRequestController.abort();
         logRequestController = new AbortController();
-        const params = { page, limit: CONSTANTS.LOGS_PER_PAGE, q: state.currentLogSearchTerm.query, exact: state.currentLogSearchTerm.exact };
+        const params = {
+            cursor: append ? cursor : '',
+            limit: CONSTANTS.LOGS_PER_PAGE,
+            q: state.currentLogSearchTerm.query,
+            exact: state.currentLogSearchTerm.exact
+        };
         try {
-            const response = await api.v2.getLogs(logRequestController.signal, params);
-            if (!response?.pagination) throw new Error("Invalid response from logs API");
-            const { pagination, logs } = response;
-            state.logPaginationInfo = pagination;
-            state.currentLogPage = pagination.current_page;
-            if (!append) ui.updateSearchResultsInfo(pagination);
-            ui.renderLogTable(logs || [], append);
+            const response = await api.audit.getLogs(logRequestController.signal, params);
+            if (!response?.summary || !Array.isArray(response.logs)) {
+                throw new Error("Invalid response from logs API");
+            }
+            state.logPaginationInfo = {
+                matchedCount: Number(response.summary.matched_count || 0),
+                nextCursor: response.next_cursor || ''
+            };
+            if (!append) {
+                ui.updateSearchResultsInfo(response.summary);
+            }
+            ui.renderLogTable(response.logs || [], append);
         } catch (error) {
             if (error.name !== 'AbortError') { console.error("Failed to fetch logs:", error); ui.showToast('获取日志失败', 'error'); }
         } finally { state.isLogLoading = false; if (elements.logLoader) elements.logLoader.style.display = 'none'; }
@@ -1864,7 +2080,10 @@ document.addEventListener('DOMContentLoaded', () => {
         fetchAndRenderLogs(1, false);
     }
 
-    function loadMoreLogs() { if (state.isLogLoading || !state.logPaginationInfo || state.currentLogPage >= state.logPaginationInfo.total_pages) return; fetchAndRenderLogs(state.currentLogPage + 1, true); }
+    function loadMoreLogs() {
+        if (state.isLogLoading || !state.logPaginationInfo?.nextCursor) return;
+        fetchAndRenderLogs(state.logPaginationInfo.nextCursor, true);
+    }
     function formatDate(isoString) { return isoString ? new Date(isoString).toLocaleString('zh-CN', { hour12: false, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }).replace(/\//g, '-') : 'N/A'; }
     function formatRelativeTime(isoString) { if (!isoString) return 'N/A'; const diffInSeconds = Math.max(0, Math.round((new Date() - new Date(isoString)) / 1000)); if (diffInSeconds < 5) return '刚刚'; if (diffInSeconds < 60) return `${diffInSeconds}秒前`; if (diffInSeconds < 3600) return `${Math.floor(diffInSeconds / 60)}分钟前`; if (diffInSeconds < 86400) return `${Math.floor(diffInSeconds / 3600)}小时前`; if (diffInSeconds < 86400 * 2) return `昨天`; return new Date(isoString).toLocaleDateString('zh-CN', { month: '2-digit', day: '2-digit' }); }
 
@@ -1983,23 +2202,32 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function getAuditDomainSetName(data) {
+        return data?.domain_set_norm || data?.domain_set_raw || '';
+    }
+
     function getDetailContentHTML(data) {
         if (!data) return '';
         const queryInfo = {}, responseInfo = {}; let answers = [];
         const { ra, aa, tc } = data.response_flags || {}; const flagItems = [ra && 'RA', aa && 'AA', tc && 'TC'].filter(Boolean);
+        const domainSet = getAuditDomainSetName(data);
         queryInfo['域名'] = createInteractiveLine(data.query_name, data.query_name, data.query_name, false);
         queryInfo['时间'] = `<span>${formatDate(data.query_time)}</span>`;
         queryInfo['客户端'] = createInteractiveLine(aliasManager.getDisplayName(data.client_ip) + ` (${data.client_ip})`, data.client_ip, data.client_ip, true);
         queryInfo['类型'] = `<span>${data.query_type || 'N/A'}</span>`;
         if (data.query_class) queryInfo['类别'] = `<span>${data.query_class}</span>`;
-        if (data.domain_set) queryInfo['分流规则'] = createInteractiveLine(data.domain_set, data.domain_set, data.domain_set, true);
+        if (domainSet) queryInfo['分流规则'] = createInteractiveLine(domainSet, domainSet, domainSet, true);
         if (data.trace_id) queryInfo['Trace ID'] = createInteractiveLine(data.trace_id, data.trace_id, data.trace_id, true);
+        if (data.transport) queryInfo['传输协议'] = `<span>${data.transport}</span>`;
 
         responseInfo['耗时'] = `<span>${data.duration_ms.toFixed(2)} ms</span>`;
-        let statusText = data.response_code || 'N/A';
-        if (data.is_blocked) statusText += ' (已拦截)';
-        responseInfo['状态'] = `<span>${statusText}</span>`;
+        responseInfo['状态'] = `<span>${data.response_code || 'N/A'}</span>`;
         if (flagItems.length) responseInfo['标志'] = `<span>${flagItems.join(', ')}</span>`;
+        if (data.cache_status) responseInfo['缓存状态'] = `<span>${data.cache_status}</span>`;
+        if (data.upstream_tag) responseInfo['上游'] = `<span>${data.upstream_tag}</span>`;
+        if (data.server_name) responseInfo['SNI'] = `<span>${data.server_name}</span>`;
+        if (data.url_path) responseInfo['路径'] = `<span>${data.url_path}</span>`;
+        responseInfo['应答数'] = `<span>${data.answer_count ?? 0}</span>`;
         answers = data.answers || [];
         const buildList = (obj) => Object.entries(obj).map(([key, value]) => `<li><strong>${key}</strong> ${value}</li>`).join('');
         let html = '<h5>查询信息</h5><ul>' + buildList(queryInfo) + '</ul>';
@@ -2009,7 +2237,18 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     const getContrastingTextColor = (hexColor) => { if (!hexColor || hexColor.length < 4) return '#0f172a'; let r = parseInt(hexColor.substr(1, 2), 16), g = parseInt(hexColor.substr(3, 2), 16), b = parseInt(hexColor.substr(5, 2), 16); const yiq = ((r * 299) + (g * 587) + (b * 114)) / 1000; return (yiq >= 128) ? '#0f172a' : '#ffffff'; };
-    function getRuleTagHTML(log) { if (!log || !log.domain_set) return ''; const ruleName = log.domain_set; let bgColor = state.shuntColors[ruleName]; if (!bgColor) { let hash = 0; for (let i = 0; i < ruleName.length; i++) hash = ruleName.charCodeAt(i) + ((hash << 5) - hash); bgColor = `hsl(${Math.abs(hash % 360)}, 70%, 45%)`; } const textColor = '#ffffff'; return `<span class="rule-tag" style="background-color: ${bgColor}; color: ${textColor};" title="分流规则: ${ruleName}">${ruleName}</span>`; }
+    function getRuleTagHTML(log) {
+        const ruleName = getAuditDomainSetName(log);
+        if (!ruleName) return '';
+        let bgColor = state.shuntColors[ruleName];
+        if (!bgColor) {
+            let hash = 0;
+            for (let i = 0; i < ruleName.length; i++) hash = ruleName.charCodeAt(i) + ((hash << 5) - hash);
+            bgColor = `hsl(${Math.abs(hash % 360)}, 70%, 45%)`;
+        }
+        const textColor = '#ffffff';
+        return `<span class="rule-tag" style="background-color: ${bgColor}; color: ${textColor};" title="分流规则: ${ruleName}">${ruleName}</span>`;
+    }
     function getResponseTagHTML(log) { if (!log) return ''; const code = log.response_code || 'UNKNOWN'; let tagClass = 'other'; if (code === 'NOERROR') tagClass = 'noerror'; else if (code === 'NXDOMAIN') tagClass = 'nxdomain'; else if (code === 'SERVFAIL') tagClass = 'servfail'; else if (code === 'REFUSED') tagClass = 'refused'; return `<span class="response-tag ${tagClass}">${code}</span>`; }
     function getResponseSummary(log) { if (!log) return ''; if (log.response_code !== 'NOERROR') return getResponseTagHTML(log); if (log.answers?.length > 0) { const firstIp = log.answers.find(a => a.type === 'A' || a.type === 'AAAA'); const firstCname = log.answers.find(a => a.type === 'CNAME'); let mainText = firstIp?.data ?? firstCname?.data ?? log.answers[0].data; if (mainText.length > 25) mainText = mainText.substring(0, 22) + '...'; if (log.answers.length > 1) mainText += ` (+${log.answers.length - 1})`; return `<span class="truncate-text">${mainText}</span>`; } return '<span>(empty)</span>'; }
 
@@ -2019,7 +2258,10 @@ document.addEventListener('DOMContentLoaded', () => {
         return `<div class="domain-response-cell"><span class="domain-name truncate-text" title="${log.query_name}">${log.query_name}</span><div class="response-meta"><span class="response-summary">${getResponseSummary(log)}</span>${ruleTag}</div></div>`;
     }
 
-    function getLogRowClass(log) { if (log.is_blocked) return 'is-blocked'; if (['SERVFAIL', 'NXDOMAIN', 'REFUSED'].includes(log.response_code)) return 'is-fail'; return ''; }
+    function getLogRowClass(log) {
+        if (['SERVFAIL', 'NXDOMAIN', 'REFUSED'].includes(log.response_code)) return 'is-fail';
+        return '';
+    }
 
     function renderLogItemHTML(log, globalIndex) {
         const tr = document.createElement('tr'); tr.dataset.logIndex = globalIndex; tr.className = getLogRowClass(log);
@@ -2078,15 +2320,18 @@ document.addEventListener('DOMContentLoaded', () => {
         const queryInfo = {}, responseInfo = {}; let answers = [];
         if (['domain', 'client', 'domain_set'].includes(source)) { queryInfo['请求数'] = data.count.toLocaleString(); } else {
             const { ra, aa, tc } = data.response_flags || {}; const flagItems = [ra && 'RA', aa && 'AA', tc && 'TC'].filter(Boolean);
+            const domainSet = getAuditDomainSetName(data);
             queryInfo['完整域名'] = createInteractiveLine(data.query_name, data.query_name, data.query_name, false, true);
             queryInfo['精确时间'] = `<small>${formatDate(data.query_time)}</small>`;
             queryInfo['客户端'] = createInteractiveLine(aliasManager.getDisplayName(data.client_ip), data.client_ip, data.client_ip, true, true);
             queryInfo['类型'] = `<small>${data.query_type || 'N/A'}</small>`;
             if (data.query_class) queryInfo['类别'] = `<small>${data.query_class}</small>`;
-            if (data.domain_set) queryInfo['规则'] = createInteractiveLine(data.domain_set, data.domain_set, data.domain_set, true, true);
+            if (domainSet) queryInfo['规则'] = createInteractiveLine(domainSet, domainSet, domainSet, true, true);
             responseInfo['耗时'] = `<small>${data.duration_ms.toFixed(2)} ms</small>`;
-            responseInfo['状态'] = `<small>${data.response_code || 'N/A'}${data.is_blocked ? ' (Blocked)' : ''}</small>`;
+            responseInfo['状态'] = `<small>${data.response_code || 'N/A'}</small>`;
             if (flagItems.length) responseInfo['标志'] = `<small>${flagItems.join(', ')}</small>`;
+            if (data.cache_status) responseInfo['缓存'] = `<small>${data.cache_status}</small>`;
+            if (data.upstream_tag) responseInfo['上游'] = `<small>${data.upstream_tag}</small>`;
             if (data.trace_id) { queryInfo['Trace ID'] = createInteractiveLine(data.trace_id, data.trace_id, data.trace_id, true, true); }
             answers = data.answers || [];
         }
@@ -2767,7 +3012,7 @@ const cacheManager = {
 
             const table = tbody.closest('table');
             if (table) {
-                // 关键：根据设备状态切换 CSS 类，触发 log.html 中的高权重样式覆盖
+                // 关键：根据设备状态切换 CSS 类，触发 index.html 中的高权重样式覆盖
                 if (state.isMobile) {
                     table.classList.add('mobile-card-view');
                     table.classList.remove('mobile-card-layout'); 
@@ -3172,17 +3417,8 @@ const cacheManager = {
             // 1. 注入新板块
             this.injectNewCard();
 
-            if (els.oldLoadBtn && !els.oldLoadBtn.dataset.bound) {
-                els.oldLoadBtn.dataset.bound = 'true';
-                els.oldLoadBtn.addEventListener('click', () => this.load());
-            }
-            if (els.oldSaveBtn && !els.oldSaveBtn.dataset.bound) {
-                els.oldSaveBtn.dataset.bound = 'true';
-                els.oldSaveBtn.addEventListener('click', () => this.save(els.oldSaveBtn, { restart: false }));
-            }
-
             try {
-                const data = await api.fetch('/api/v1/overrides');
+                const data = await api.fetch('/api/v1/control/overrides');
 
                 if (els.socks5) els.socks5.value = (data && data.socks5) || '';
                 if (els.ecs) els.ecs.value = (data && data.ecs) || '';
@@ -3376,48 +3612,51 @@ renderReplacementsTable() {
         },
 
         async save(triggerBtn, options = {}) {
-            const els = this.getElements();
-            if (!els.socks5 || !els.ecs) return;
             const restart = Boolean(options.restart);
-            if (restart && !confirm('保存后将重启 MosDNS，是否继续？')) return;
+            const lockKey = restart ? 'overrides:save-and-restart' : 'overrides:save';
+            return ui.runExclusive(lockKey, async () => {
+                const els = this.getElements();
+                if (!els.socks5 || !els.ecs) return;
+                if (restart && !confirm('保存后将重启 MosDNS，是否继续？')) return;
 
-            const repBtn = document.getElementById('rep-save-btn');
-            const btns = [triggerBtn, repBtn].filter(Boolean);
-            btns.forEach((btn) => ui.setLoading(btn, true));
+                const repBtn = document.getElementById('rep-save-btn');
+                const btns = [triggerBtn, repBtn].filter(Boolean);
+                btns.forEach((btn) => ui.setLoading(btn, true));
 
-            const socks5 = els.socks5.value.trim();
-            const ecs = els.ecs.value.trim();
-            // 过滤掉空行
-            const validReplacements = this.state.replacements
-                .map(r => ({
-                    original: r.original.trim(),
-                    new: r.new.trim(),
-                    comment: r.comment ? r.comment.trim() : ''
-                }))
-                .filter(r => r.original);
+                const socks5 = els.socks5.value.trim();
+                const ecs = els.ecs.value.trim();
+                // 过滤掉空行
+                const validReplacements = this.state.replacements
+                    .map(r => ({
+                        original: r.original.trim(),
+                        new: r.new.trim(),
+                        comment: r.comment ? r.comment.trim() : ''
+                    }))
+                    .filter(r => r.original);
 
-            const payload = {
-                socks5: socks5,
-                ecs: ecs,
-                replacements: validReplacements
-            };
+                const payload = {
+                    socks5: socks5,
+                    ecs: ecs,
+                    replacements: validReplacements
+                };
 
-            try {
-                const result = await api.fetch('/api/v1/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-                if (restart) {
-                    await this.requestRestart();
-                } else {
-                    const msg = (result && typeof result === 'object' && result.message) ? result.message : '配置已保存并生效';
-                    ui.showToast(msg, 'success');
-                    await this.load(true);
+                try {
+                    const result = await api.fetch('/api/v1/control/overrides', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+                    if (restart) {
+                        await this.requestRestart();
+                    } else {
+                        const msg = (result && typeof result === 'object' && result.message) ? result.message : '配置已保存并生效';
+                        ui.showToast(msg, 'success');
+                        await this.load(true);
+                    }
+                } catch (e) {
+                    const msg = restart ? '保存或重启失败' : '保存配置失败';
+                    ui.showToast(msg, 'error');
+                    console.error("Save Error:", e);
+                } finally {
+                    btns.forEach((btn) => ui.setLoading(btn, false));
                 }
-            } catch (e) {
-                const msg = restart ? '保存或重启失败' : '保存配置失败';
-                ui.showToast(msg, 'error');
-                console.error("Save Error:", e);
-            } finally {
-                btns.forEach((btn) => ui.setLoading(btn, false));
-            }
+            });
         }
     };
 
@@ -3429,6 +3668,7 @@ renderReplacementsTable() {
             serverConfig: {},
             draftConfig: {},
             metrics: {},
+            health: {},
             dirty: false,
             filters: { group: '', keyword: '' }
         },
@@ -3542,19 +3782,22 @@ renderReplacementsTable() {
             try {
                 const shouldLoadConfig = forceConfig || !this.state.dirty;
                 const reqs = [
-                    api.fetch('/api/v1/upstream/tags'),
-                    api.getMetrics()
+                    api.fetch('/api/v1/control/upstreams/tags'),
+                    api.getMetrics(),
+                    api.fetch('/api/v1/control/upstreams/health')
                 ];
                 if (shouldLoadConfig) {
-                    reqs.push(api.fetch('/api/v1/upstream/config'));
+                    reqs.push(api.fetch('/api/v1/control/upstreams'));
                 }
                 const result = await Promise.all(reqs);
                 const tagsRes = result[0];
                 const metricsRaw = result[1];
-                const configRes = shouldLoadConfig ? result[2] : null;
+                const healthRaw = result[2];
+                const configRes = shouldLoadConfig ? result[3] : null;
 
                 this.state.tags = Array.isArray(tagsRes) ? tagsRes : [];
                 this.parseMetrics(metricsRaw);
+                this.parseHealth(healthRaw);
                 if (shouldLoadConfig) {
                     this.state.serverConfig = this.normalizeConfig(configRes);
                     this.state.draftConfig = this.cloneConfig(this.state.serverConfig);
@@ -3569,25 +3812,38 @@ renderReplacementsTable() {
         },
 
         parseMetrics(rawText) {
-            const parse = (prefix) => {
-                const regex = new RegExp(`${prefix}\\{[^}]*metrics_tag="([^"]+)"[^}]*tag="([^"]+)"[^}]*\\} ([0-9.eE+-]+)`, 'g');
+            const prefixes = ['mosdns_aliapi_', 'mosdns_forward_'];
+            const parse = (metric) => {
                 const map = {};
-                let match;
-                while ((match = regex.exec(rawText)) !== null) {
-                    const group = match[1];
-                    const name = match[2];
-                    const val = parseFloat(match[3]);
-                    map[`${group}|${name}`] = val;
-                }
+                prefixes.forEach((prefix) => {
+                    const regex = new RegExp(`${prefix}${metric}\\{[^}]*metrics_tag="([^"]+)"[^}]*tag="([^"]+)"[^}]*\\} ([0-9.eE+-]+)`, 'g');
+                    let match;
+                    while ((match = regex.exec(rawText)) !== null) {
+                        const group = match[1];
+                        const name = match[2];
+                        const val = parseFloat(match[3]);
+                        map[`${group}|${name}`] = val;
+                    }
+                });
                 return map;
             };
             this.state.metrics = {
-                latSum: parse('mosdns_aliapi_response_latency_millisecond_sum'),
-                latCount: parse('mosdns_aliapi_response_latency_millisecond_count'),
-                queryTotal: parse('mosdns_aliapi_query_total'),
-                errorTotal: parse('mosdns_aliapi_error_total'),
-                winnerTotal: parse('mosdns_aliapi_upstream_winner_total')
+                latSum: parse('response_latency_millisecond_sum'),
+                latCount: parse('response_latency_millisecond_count'),
+                queryTotal: parse('query_total'),
+                errorTotal: parse('error_total'),
+                winnerTotal: parse('upstream_winner_total')
             };
+        },
+
+        parseHealth(raw) {
+            const map = {};
+            const items = Array.isArray(raw?.items) ? raw.items : [];
+            items.forEach((item) => {
+                const key = `${item.plugin_tag || ''}|${item.upstream_tag || ''}`;
+                if (key !== '|') map[key] = item;
+            });
+            this.state.health = map;
         },
 
         syncGroupFilters() {
@@ -3625,17 +3881,24 @@ renderReplacementsTable() {
             return u.addr || '-';
         },
 
-        getStats(key) {
+        getStats(group, tag, enabled) {
+            const key = `${group}|${tag}`;
             const m = this.state.metrics;
+            const health = this.state.health[key] || null;
             const q = m.queryTotal[key] || 0;
             const e = m.errorTotal[key] || 0;
             const w = m.winnerTotal[key] || 0;
             const lSum = m.latSum[key] || 0;
             const lCount = m.latCount[key] || 0;
-            const avg = lCount > 0 ? (lSum / lCount).toFixed(2) + ' ms' : '0 ms';
+            const avgFromMetrics = lCount > 0 ? (lSum / lCount).toFixed(2) + ' ms' : '0 ms';
+            const avgFromHealth = health && typeof health.average_latency_ms === 'number' && health.average_latency_ms > 0
+                ? `${health.average_latency_ms.toFixed(2)} ms`
+                : avgFromMetrics;
             const rate = q > 0 ? ((e / q) * 100).toFixed(2) + '%' : '0.00%';
             const winRate = q > 0 ? ((w / q) * 100).toFixed(2) + '%' : '0.00%';
-            return { avgLat: avg, query: q, rate: rate, winRate: winRate };
+            const healthText = !enabled ? '已禁用' : (health ? (health.healthy ? (health.consecutive_failures > 0 || health.inflight > 0 ? '降级' : '健康') : '退避中') : '未知');
+            const healthColor = !enabled ? 'var(--color-text-secondary)' : (health ? (health.healthy ? ((health.consecutive_failures > 0 || health.inflight > 0) ? 'var(--color-warning)' : 'var(--color-success)') : 'var(--color-danger)') : 'var(--color-text-secondary)');
+            return { avgLat: avgFromHealth, query: q, rate: rate, winRate: winRate, healthText, healthColor, inflight: health?.inflight || 0, score: health?.score || 0 };
         },
 
         renderTable() {
@@ -3677,8 +3940,7 @@ renderReplacementsTable() {
             });
 
             rows.forEach(({ u, group, originalIndex }) => {
-                const key = `${group}|${u.tag}`;
-                const stats = u.enabled ? this.getStats(key) : { avgLat: '-', query: '-', rate: '-', winRate: '-' };
+                const stats = u.enabled ? this.getStats(group, u.tag, true) : this.getStats(group, u.tag, false);
                 const endpoint = this.composeEndpoint(u);
                 const tr = document.createElement('tr');
                 tr.dataset.group = group;
@@ -3694,6 +3956,7 @@ renderReplacementsTable() {
                                         <span class="card-title">${u.tag || '-'}</span>
                                         <small style="color:var(--color-text-secondary); margin-top:4px;">${group} · ${u.protocol || '-'}</small>
                                         <small style="color:var(--color-text-secondary); margin-top:4px;">${endpoint}</small>
+                                        <small style="margin-top:4px; color:${stats.healthColor};">${stats.healthText} · inflight ${stats.inflight} · score ${stats.score}</small>
                                     </div>
                                     <label class="switch">
                                         <input type="checkbox" class="upstream-enable-toggle" ${u.enabled ? 'checked' : ''}>
@@ -3724,7 +3987,7 @@ renderReplacementsTable() {
                         <td>${group}</td>
                         <td>${u.tag || '-'}</td>
                         <td>${u.protocol || '-'}</td>
-                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${endpoint}">${endpoint}</td>
+                        <td style="max-width: 300px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${endpoint}">${endpoint}<div style="font-size:0.75rem; color:${stats.healthColor}; margin-top:4px;">${stats.healthText} · inflight ${stats.inflight} · score ${stats.score}</div></td>
                         <td class="text-center">${stats.avgLat}</td>
                         <td class="text-center">${stats.query}</td>
                         <td class="text-center">${stats.winRate}</td>
@@ -3939,49 +4202,63 @@ renderReplacementsTable() {
         },
 
         async applyCurrentConfig() {
-            const btn = document.getElementById('upstream-apply-btn');
-            if (!this.state.dirty) {
-                ui.showToast('没有需要提交的更改', 'success');
-                return;
-            }
+            return ui.runExclusive('upstreams:apply', async () => {
+                const btn = document.getElementById('upstream-apply-btn');
+                if (!this.state.dirty) {
+                    ui.showToast('没有需要提交的更改', 'success');
+                    return;
+                }
 
-            ui.setLoading(btn, true);
-            try {
-                const payload = {
-                    config: this.cloneConfig(this.state.draftConfig),
-                    apply: true
-                };
-                const resp = await api.fetch('/api/v1/upstream/config', {
-                    method: 'PUT',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                const msg = (resp && typeof resp === 'object' && resp.message) ? resp.message : '上游配置已保存并生效';
-                this.state.serverConfig = this.cloneConfig(this.state.draftConfig);
-                this.setDirty(false);
-                ui.showToast(msg, 'success');
-                await this.loadData({ forceConfig: true });
-            } catch (e) {
-                ui.showToast('上游配置保存失败: ' + e.message, 'error');
-            } finally {
-                ui.setLoading(btn, false);
-            }
+                ui.setLoading(btn, true);
+                try {
+                    const payload = {
+                        config: this.cloneConfig(this.state.draftConfig),
+                        apply: true
+                    };
+                    const resp = await api.fetch('/api/v1/control/upstreams', {
+                        method: 'PUT',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    const msg = (resp && typeof resp === 'object' && resp.message) ? resp.message : '上游配置已保存并生效';
+                    this.state.serverConfig = this.cloneConfig(this.state.draftConfig);
+                    this.setDirty(false);
+                    ui.showToast(msg, 'success');
+                    await this.loadData({ forceConfig: true });
+                } catch (e) {
+                    ui.showToast('上游配置保存失败: ' + e.message, 'error');
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            });
         },
 
         async restartService() {
-            if (!confirm('确定要重启 MosDNS 吗？')) return;
-            try {
-                await api.fetch('/api/v1/system/restart', { method: 'POST', body: JSON.stringify({ delay_ms: 500 }) });
-                ui.showToast('正在重启...', 'success');
-                setTimeout(() => location.reload(), 4000);
-            } catch (e) {
-                ui.showToast('重启请求失败', 'error');
-            }
+            return ui.runExclusive('system:restart', async () => {
+                const btn = document.getElementById('global-restart-btn');
+                if (!confirm('确定要重启 MosDNS 吗？')) return;
+                ui.setLoading(btn, true);
+                try {
+                    await api.fetch('/api/v1/system/restart', { method: 'POST', body: JSON.stringify({ delay_ms: 500 }) });
+                    ui.showToast('正在重启...', 'success');
+                    setTimeout(() => location.reload(), 4000);
+                } catch (e) {
+                    ui.showToast('重启请求失败', 'error');
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            });
         }
     };
     // [插入点结束]
 
     function setupEventListeners() {
+        document.addEventListener('click', (event) => {
+            if (!ui.isBusyButton(event.target)) return;
+            event.preventDefault();
+            event.stopImmediatePropagation();
+        }, true);
+
         // -- [修改] -- 统一处理所有弹窗的关闭行为（遮罩层点击和ESC键）
         document.querySelectorAll('dialog').forEach(dialog => {
             // 1. 点击遮罩层时关闭
@@ -4003,8 +4280,8 @@ renderReplacementsTable() {
 
         elements.tabLinks.forEach(link => link.addEventListener('click', (e) => { e.preventDefault(); handleNavigation(link); }));
         // 覆盖配置：按钮事件
-        if (elements.overridesLoadBtn) elements.overridesLoadBtn.addEventListener('click', () => overridesManager.load(false));
-        if (elements.overridesSaveBtn) elements.overridesSaveBtn.addEventListener('click', () => overridesManager.save());
+        ui.bindClickOnce(elements.overridesLoadBtn, () => overridesManager.load(false));
+        ui.bindClickOnce(elements.overridesSaveBtn, () => overridesManager.save(elements.overridesSaveBtn));
         window.addEventListener('popstate', () => { const hash = window.location.hash || '#overview'; const targetLink = document.querySelector(`.tab-link[href="${hash}"]`); handleNavigation(targetLink || elements.tabLinks[0]); });
         window.addEventListener('resize', debounce(handleResize, 150));
         elements.globalRefreshBtn?.addEventListener('click', () => updatePageData(true));
@@ -4012,11 +4289,27 @@ renderReplacementsTable() {
         [elements.autoRefreshToggle, elements.autoRefreshIntervalInput].forEach(el => el && el.addEventListener('change', () => { const enabled = elements.autoRefreshToggle.checked; elements.autoRefreshIntervalInput.disabled = !enabled; autoRefreshManager.updateSettings(enabled, parseInt(elements.autoRefreshIntervalInput.value, 10) || 15); }));
         document.addEventListener('visibilitychange', () => document.hidden ? autoRefreshManager.stop() : autoRefreshManager.start());
 
+        const ensureAuditSettings = async () => {
+            if (!state.auditSettings) {
+                state.auditSettings = await api.audit.getSettings();
+            }
+            return state.auditSettings;
+        };
+
+        const saveAuditSettings = async (patch) => {
+            const currentSettings = await ensureAuditSettings();
+            const nextSettings = await api.audit.updateSettings({ ...currentSettings, ...patch });
+            state.auditSettings = nextSettings;
+            return nextSettings;
+        };
+
+        const isValidAuditNumber = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+
         elements.toggleAuditBtn?.addEventListener('click', async (e) => {
             const btn = e.currentTarget;
             ui.setLoading(btn, true);
             try {
-                await (state.isCapturing ? api.stop() : api.start());
+                await saveAuditSettings({ enabled: !state.isCapturing });
                 await updatePageData(true);
             } catch (error) {
                 console.error("操作失败:", error);
@@ -4029,7 +4322,7 @@ renderReplacementsTable() {
                 const btn = e.currentTarget;
                 ui.setLoading(btn, true);
                 try {
-                    await api.clear();
+                    await api.audit.clear();
                     ui.showToast('日志已清空', 'success');
                     if (elements.logSearch) elements.logSearch.value = '';
                     await updatePageData(true);
@@ -4041,33 +4334,55 @@ renderReplacementsTable() {
             }
         });
 
-        elements.capacityForm?.addEventListener('submit', async (e) => {
+        elements.auditStorageForm?.addEventListener('submit', async (e) => {
             e.preventDefault();
-            const newCapacity = parseInt(elements.newCapacityInput.value, 10);
-            const retentionDays = parseInt(elements.auditRetentionDaysInput.value, 10);
-            const maxDiskSizeMB = parseInt(elements.auditMaxDiskSizeInput.value, 10);
-            if (!newCapacity || newCapacity <= 0 || newCapacity > 400000) {
-                ui.showToast('请输入1到400000之间的有效内存窗口条数', 'error');
+            const rawRetentionDays = parseInt(elements.auditRetentionDaysInput.value, 10);
+            const aggregateRetentionDays = parseInt(elements.auditAggregateRetentionDaysInput.value, 10);
+            const maxStorageMB = parseInt(elements.auditMaxDiskSizeInput.value, 10);
+            if (!isValidAuditNumber(rawRetentionDays, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_RAW_RETENTION_MAX)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_RAW_RETENTION_MAX}之间的有效原始日志保留天数`, 'error');
                 return;
             }
-            if (!retentionDays || retentionDays <= 0 || retentionDays > 365) {
-                ui.showToast('请输入1到365之间的有效保留天数', 'error');
+            if (!isValidAuditNumber(aggregateRetentionDays, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_AGG_RETENTION_MAX)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_AGG_RETENTION_MAX}之间的有效聚合保留天数`, 'error');
                 return;
             }
-            if (!maxDiskSizeMB || maxDiskSizeMB <= 0 || maxDiskSizeMB > 10240) {
-                ui.showToast('请输入1到10240之间的有效磁盘上限', 'error');
+            if (!isValidAuditNumber(maxStorageMB, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_STORAGE_MAX_MB)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_STORAGE_MAX_MB}之间的有效存储上限`, 'error');
                 return;
             }
-            if (confirm(`确定要将审计存储设置更新为：\n\n内存窗口上限：${newCapacity.toLocaleString()} 条\n保留天数：${retentionDays} 天\n磁盘上限：${maxDiskSizeMB} MB\n\n设置会立即生效，无需重启。现有日志会尽量保留，仅在超限时裁剪最老日志。`)) {
+            if (confirm(`确定要更新审计存储策略吗？\n\n原始日志保留：${rawRetentionDays} 天\n聚合保留：${aggregateRetentionDays} 天\n存储上限：${maxStorageMB} MB\n\n设置会立即生效，无需重启。超出保留策略或空间上限的旧数据会自动清理。`)) {
                 const btn = e.currentTarget.querySelector('button');
                 ui.setLoading(btn, true);
                 try {
-                    await api.setCapacity(newCapacity, retentionDays, maxDiskSizeMB);
-                    ui.showToast('审计存储设置已立即生效', 'success');
+                    await saveAuditSettings({ raw_retention_days: rawRetentionDays, aggregate_retention_days: aggregateRetentionDays, max_storage_mb: maxStorageMB });
+                    ui.showToast('审计存储策略已立即生效', 'success');
                     if (elements.logSearch) elements.logSearch.value = '';
                     await updatePageData(true);
                 } catch (error) {
-                    console.error("Set audit storage failed:", error);
+                    console.error("Set audit storage settings failed:", error);
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            }
+        });
+
+        elements.auditOverviewForm?.addEventListener('submit', async (e) => {
+            e.preventDefault();
+            const overviewWindowSeconds = parseInt(elements.auditOverviewWindowInput.value, 10);
+            if (!isValidAuditNumber(overviewWindowSeconds, CONSTANTS.AUDIT_WINDOW_MIN, CONSTANTS.AUDIT_WINDOW_MAX)) {
+                ui.showToast(`请输入${CONSTANTS.AUDIT_WINDOW_MIN}到${CONSTANTS.AUDIT_WINDOW_MAX}之间的有效概览窗口秒数`, 'error');
+                return;
+            }
+            if (confirm(`确定要更新概览口径吗？\n\n概览窗口：${overviewWindowSeconds.toLocaleString()} 秒\n\n设置会立即生效，无需重启。首页概览和趋势分析会使用新的实时窗口。`)) {
+                const btn = e.currentTarget.querySelector('button');
+                ui.setLoading(btn, true);
+                try {
+                    await saveAuditSettings({ overview_window_seconds: overviewWindowSeconds });
+                    ui.showToast('概览口径已立即生效', 'success');
+                    await updatePageData(true);
+                } catch (error) {
+                    console.error("Set audit overview settings failed:", error);
                 } finally {
                     ui.setLoading(btn, false);
                 }
@@ -4319,10 +4634,10 @@ const handleInteractiveClick = (e) => {
                     const card = entry.target;
                     const cardId = card.id;
                     switch (cardId) {
-                        case 'top-domains-card': api.v2.getTopDomains(null, 100).then(data => { state.topDomains = data || []; renderTopDomains(state.topDomains); }).catch(console.error); break;
-                        case 'top-clients-card': api.v2.getTopClients(null, 100).then(data => { state.topClients = data || []; renderTopClients(state.topClients); }).catch(console.error); break;
-                        case 'slowest-queries-card': api.v2.getSlowest(null, 100).then(data => { state.slowestQueries = data || []; renderSlowestQueries(state.slowestQueries); }).catch(console.error); break;
-                        case 'shunt-results-card': api.v2.getDomainSetRank(null, 100).then(data => { state.domainSetRank = data || []; renderDonutChart(state.domainSetRank); }).catch(console.error); break;
+                        case 'top-domains-card': api.audit.getTopDomains(null, 100).then(data => { state.topDomains = data || []; renderTopDomains(state.topDomains); }).catch(console.error); break;
+                        case 'top-clients-card': api.audit.getTopClients(null, 100).then(data => { state.topClients = data || []; renderTopClients(state.topClients); }).catch(console.error); break;
+                        case 'slowest-queries-card': api.audit.getSlowest(null, 100).then(data => { state.slowestQueries = data || []; renderSlowestQueries(state.slowestQueries); }).catch(console.error); break;
+                        case 'shunt-results-card': api.audit.getDomainSetRank(null, 100).then(data => { state.domainSetRank = data || []; renderDonutChart(state.domainSetRank); }).catch(console.error); break;
                     }
                     observer.unobserve(card);
                 }
@@ -4400,7 +4715,7 @@ const handleInteractiveClick = (e) => {
             if ('requestIdleCallback' in window) requestIdleCallback(loadAliasesAsync);
             else setTimeout(loadAliasesAsync, 1500);
         }
-        historyManager.load();
+        historyManager.reset();
         autoRefreshManager.loadSettings();
         tableSorter.init();
         switchManager.init();

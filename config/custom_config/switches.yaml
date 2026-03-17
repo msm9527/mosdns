@@ -1,0 +1,41 @@
+# 用户自定义功能开关配置
+#
+# 这个文件是全部功能开关的长期配置真源。
+# - 前端功能开关 API 的修改会直接写入这里，并立即同步到运行中的开关实例。
+# - 你也可以手工修改这个文件，然后重启 mosdns 生效。
+# - 这里不再走 control.db；数据库只保留运行态和生成态数据。
+#
+# 字段说明：
+# - block_response: on/off，是否拦截黑名单和空响应结果。
+# - client_proxy_mode: all/blacklist/whitelist，控制哪些客户端允许走代理链路。
+# - branch_cache: on/off，控制国内/国外分支缓存。
+# - main_cache: on/off，控制主缓存总开关。
+# - block_query_type: on/off，控制 SOA/PTR/HTTPS 等类型屏蔽。
+# - block_ipv6: on/off，控制 AAAA 请求屏蔽。
+# - ad_block: on/off，控制 AdGuard 在线规则拦截。
+# - cn_answer_mode: realip/fakeip，控制国内域名返回真实 IP 还是 FakeIP。
+# - prefer_ipv4: on/off，开启后优先返回 IPv4。
+# - prefer_ipv6: on/off，开启后优先返回 IPv6。
+# - udp_fast_path: on/off，控制 UDP 极限缓存快路径。
+
+block_response: "on"
+
+client_proxy_mode: "all"
+
+branch_cache: "on"
+
+block_query_type: "on"
+
+block_ipv6: "off"
+
+ad_block: "off"
+
+prefer_ipv4: "off"
+
+cn_answer_mode: "realip"
+
+prefer_ipv6: "off"
+
+main_cache: "on"
+
+udp_fast_path: "on"

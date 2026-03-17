@@ -1,0 +1,6 @@
+id,task,status,acceptance_criteria,validation_command,completed_at,retry_count,notes
+1,盘点单机商用级剩余缺口并固化执行清单,DONE,PROGRESS.md 写清差距与执行范围,test -f .codex-tasks/20260316-single-node-commercial-hardening/PROGRESS.md,2026-03-16T10:49:30+08:00,0,已完成代码重构、测试与E2E回归
+2,补强上游健康观测与控制面自检,DONE,control health/summary 能直接暴露上游健康与建议,go test ./coremain ./plugin/executable/forward ./plugin/executable/aliapi,2026-03-16T10:49:30+08:00,0,已完成代码重构、测试与E2E回归
+3,清理关键大文件并提升可维护性,DONE,核心高风险文件拆分到职责边界内,go test ./plugin/executable/forward ./coremain,2026-03-16T10:49:30+08:00,0,已完成代码重构、测试与E2E回归
+4,强化单机运维易用性与数据库运行期行为,DONE,DB/self-check/事件/接口可用且无动态状态文件回退,go test ./coremain ./internal/store/sqlite,2026-03-16T10:49:30+08:00,0,已完成代码重构、测试与E2E回归
+5,执行全量测试与真实域名E2E回归,DONE,go test ./... 与真实域名/API/UI 回归通过,go test ./...,2026-03-16T10:49:30+08:00,0,已完成代码重构、测试与E2E回归

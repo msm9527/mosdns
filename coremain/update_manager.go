@@ -170,51 +170,40 @@ func NewUpdateManager() *UpdateManager {
 // It returns the client and a boolean indicating if a proxy was configured.
 func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy bool, err error) {
 	if MainConfigBaseDir == "" {
-		m.logWarn("MainConfigBaseDir is not set, cannot find overrides file, using direct connection", nil)
+		m.logWarn("MainConfigBaseDir is not set, cannot load custom overrides, using direct connection", nil)
 		return m.httpClient, false, nil
 	}
 
-	overridesPath := filepath.Join(MainConfigBaseDir, overridesFilename)
-	data, err := os.ReadFile(overridesPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			// File not found is normal, just use the default direct client.
-			return m.httpClient, false, nil
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+		if strings.TrimSpace(overrides.Socks5) != "" {
+			m.logger().Info("using socks5 proxy for update from custom config", zap.String("proxy", overrides.Socks5))
+			return m.newSocks5Client(overrides.Socks5)
 		}
-		// Other read errors are problematic but we fall back to direct connection.
-		m.logWarn("failed to read config_overrides.json, falling back to direct connection", err)
 		return m.httpClient, false, nil
+	} else if err != nil {
+		m.logWarn("failed to load custom overrides, falling back to direct connection", err)
 	}
-
-	var overrides GlobalOverrides
-	if err := json.Unmarshal(data, &overrides); err != nil {
-		m.logWarn("failed to parse config_overrides.json, falling back to direct connection", err)
-		return m.httpClient, false, nil
-	}
-
-	if overrides.Socks5 != "" {
-		m.logger().Info("using socks5 proxy for update", zap.String("proxy", overrides.Socks5))
-		dialer, err := proxy.SOCKS5("tcp", overrides.Socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, true, fmt.Errorf("failed to create socks5 dialer: %w", err)
-		}
-
-		contextDialer, ok := dialer.(proxy.ContextDialer)
-		if !ok {
-			return nil, true, errors.New("proxy dialer does not support context")
-		}
-
-		httpTransport := &http.Transport{
-			DialContext: contextDialer.DialContext,
-		}
-		return &http.Client{
-			Transport: httpTransport,
-			Timeout:   httpTimeout,
-		}, true, nil
-	}
-
-	// No socks5 config found in the file, use direct connection.
 	return m.httpClient, false, nil
+}
+
+func (m *UpdateManager) newSocks5Client(addr string) (*http.Client, bool, error) {
+	dialer, err := proxy.SOCKS5("tcp", addr, nil, proxy.Direct)
+	if err != nil {
+		return nil, true, fmt.Errorf("failed to create socks5 dialer: %w", err)
+	}
+
+	contextDialer, ok := dialer.(proxy.ContextDialer)
+	if !ok {
+		return nil, true, errors.New("proxy dialer does not support context")
+	}
+
+	httpTransport := &http.Transport{
+		DialContext: contextDialer.DialContext,
+	}
+	return &http.Client{
+		Transport: httpTransport,
+		Timeout:   httpTimeout,
+	}, true, nil
 }
 
 // doRequestWithFallback handles the entire request lifecycle including proxy and fallback.

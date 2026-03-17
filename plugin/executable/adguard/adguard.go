@@ -31,6 +31,7 @@ const (
 	configFile        = "config.json"
 	downloadTimeout   = 30 * time.Second
 	reloadDebounceDur = 500 * time.Millisecond // 防抖延迟
+	runtimeNamespace  = "adguard_rule"
 )
 
 // 注册插件
@@ -102,7 +103,7 @@ type AdguardRule struct {
 // 确保实现了必要的接口
 var _ data_provider.RuleExporter = (*AdguardRule)(nil)          // 新增接口
 var _ data_provider.DomainMatcherProvider = (*AdguardRule)(nil) // 原有接口
-var _ coremain.RuntimeConfigReloader = (*AdguardRule)(nil)
+var _ coremain.ControlConfigReloader = (*AdguardRule)(nil)
 
 // RuleReceiver 接口用于解耦解析和存储逻辑，使 parseRules 既能用于构建 Matcher 也能用于导出
 type RuleReceiver interface {
@@ -290,6 +291,11 @@ func (p *AdguardRule) CreateAdguardRule(item coremain.AdguardRuleItem) (coremain
 	if err := p.saveConfig(); err != nil {
 		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
 	}
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "info", "created adguard rule", map[string]any{
+		"id":      newRule.ID,
+		"name":    newRule.Name,
+		"enabled": newRule.Enabled,
+	})
 
 	go func(ruleID string, enabled bool) {
 		if !enabled {
@@ -351,6 +357,11 @@ func (p *AdguardRule) UpdateAdguardRule(id string, item coremain.AdguardRuleItem
 	if err := p.saveConfig(); err != nil {
 		return coremain.AdguardRuleItem{}, coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
 	}
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "info", "updated adguard rule", map[string]any{
+		"id":      out.ID,
+		"name":    out.Name,
+		"enabled": out.Enabled,
+	})
 
 	p.triggerReload(context.Background())
 	return out, nil
@@ -373,12 +384,16 @@ func (p *AdguardRule) DeleteAdguardRule(id string) error {
 	if err := p.saveConfig(); err != nil {
 		return coremain.NewRuleAPIError(http.StatusInternalServerError, "RULES_ADGUARD_SAVE_FAILED", "failed to save config")
 	}
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "warn", "deleted adguard rule", map[string]any{
+		"id": id,
+	})
 
 	p.triggerReload(context.Background())
 	return nil
 }
 
 func (p *AdguardRule) TriggerAdguardUpdate() error {
+	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.rules.adguard", "info", "triggered adguard rule update", map[string]any{})
 	go func() {
 		log.Println("[adguard_rule] Manual update triggered for all enabled rules.")
 
@@ -487,7 +502,7 @@ func (p *AdguardRule) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
 }
 
-func (p *AdguardRule) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (p *AdguardRule) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
 		return err
@@ -521,6 +536,24 @@ func (p *AdguardRule) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []
 func (p *AdguardRule) loadConfig() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+
+	if key := p.runtimeConfigKey(); key != "" {
+		dbPath := p.runtimeDBPath()
+		var rules []*OnlineRule
+		ok, err := coremain.LoadRuntimeStateJSONFromPath(dbPath, runtimeNamespace, key, &rules)
+		if err == nil && ok {
+			p.onlineRules = make(map[string]*OnlineRule, len(rules))
+			for _, rule := range rules {
+				rule.localPath = filepath.Join(p.dir, rule.ID+".rules")
+				p.onlineRules[rule.ID] = rule
+			}
+			log.Printf("[adguard_rule] loaded %d rule configurations from runtime store %s", len(p.onlineRules), dbPath)
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
 
 	data, err := os.ReadFile(p.configFile)
 	if err != nil {
@@ -562,6 +595,11 @@ func (p *AdguardRule) saveConfig() error {
 	if err != nil {
 		return fmt.Errorf("failed to marshal config to json: %w", err)
 	}
+	if key := p.runtimeConfigKey(); key != "" {
+		if err := coremain.SaveRuntimeStateJSONToPath(p.runtimeDBPath(), runtimeNamespace, key, rules); err != nil {
+			return fmt.Errorf("failed to save config to runtime store: %w", err)
+		}
+	}
 
 	// 原子写入：先写入临时文件，再重命名
 	tmpFile := p.configFile + ".tmp"
@@ -573,6 +611,17 @@ func (p *AdguardRule) saveConfig() error {
 	}
 
 	return nil
+}
+
+func (p *AdguardRule) runtimeDBPath() string {
+	return coremain.RuntimeStateDBPathForPath(p.configFile)
+}
+
+func (p *AdguardRule) runtimeConfigKey() string {
+	if p.configFile == "" {
+		return ""
+	}
+	return filepath.Clean(p.configFile)
 }
 
 // reloadAllRules 重新加载所有启用的规则到内存中的匹配器

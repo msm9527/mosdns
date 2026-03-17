@@ -1,0 +1,206 @@
+# 刷新链：IPv4 / IPv6 核心路由
+#
+# 刷新任务最终仍然要回到 A / AAAA 主流程，
+# 只是把调用的 helper 全部换成 refresh 版本。
+
+version: v2
+
+policies:
+  - name: sequence_ipv4_known_domain_refresh
+    type: sequence
+    args:
+      - matches: fast_mark 7
+        exec: $sequence_fakeip_refresh
+      - matches: fast_mark 8
+        exec: $sequence_local_refresh
+      - matches:
+          - fast_mark 8
+          - rcode 0 3
+          - '!resp_ip 0.0.0.0/0'
+        exec: $my_nov4list
+      - matches:
+          - fast_mark 8
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit_refresh
+      - matches: fast_mark 8
+        exec: exit
+      - matches: fast_mark 11
+        exec: $sequence_local_divert_refresh
+      - matches: fast_mark 12
+        exec: $sequence_fakeip_refresh
+      - matches: fast_mark 13
+        exec: $sequence_local_refresh
+      - matches:
+          - fast_mark 14
+          - '!fast_mark 13'
+        exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 15
+        exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 16
+        exec: $sequence_local_refresh
+
+  - name: sequence_ipv4_realip_finalize_refresh
+    type: sequence
+    args:
+      - matches: '!fast_mark 11'
+        exec: $my_realiplist
+      - matches:
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit_refresh
+      - exec: exit
+
+  - name: sequence_ipv6_known_domain_refresh
+    type: sequence
+    args:
+      - matches: fast_mark 7
+        exec: $sequence_fakeip_refresh
+      - matches: fast_mark 8
+        exec: $sequence_local_refresh
+      - matches:
+          - fast_mark 8
+          - rcode 0 3
+          - '!resp_ip 2000::/3'
+        exec: $my_nov6list
+      - matches:
+          - fast_mark 8
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit_refresh
+      - matches: fast_mark 8
+        exec: exit
+      - matches: fast_mark 11
+        exec: $sequence_local_divert_refresh
+      - matches: fast_mark 12
+        exec: $sequence_fakeip_refresh
+      - matches: fast_mark 13
+        exec: $sequence_local_refresh
+      - matches:
+          - fast_mark 14
+          - '!fast_mark 13'
+        exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 15
+        exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 16
+        exec: $sequence_local_refresh
+
+  - name: sequence_ipv6_realip_finalize_refresh
+    type: sequence
+    args:
+      - matches: '!fast_mark 11'
+        exec: $my_realiplist
+      - matches:
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_exit_refresh
+      - exec: exit
+
+  - name: sequence_ipv4_refresh
+    type: sequence
+    args:
+      - exec: $sequence_ipv4_known_domain_refresh
+      - matches: resp_ip $direct_ip
+        exec: fast_mark 18
+      - matches: fast_mark 18
+        exec: $sequence_ipv4_realip_finalize_refresh
+      - matches:
+          - resp_ip 0.0.0.0/0
+          - '!resp_ip 0.0.0.0 127.0.0.1 127.0.0.2 127.0.0.3'
+        exec: fast_mark 19
+      - matches: fast_mark 19
+        exec: $sequence_ipv4_realip_finalize_refresh
+      - exec: $sequence_not_in_list_noleak_v4_refresh
+
+  - name: sequence_ipv6_refresh
+    type: sequence
+    args:
+      - exec: $sequence_ipv6_known_domain_refresh
+      - matches: resp_ip $direct_ip
+        exec: fast_mark 18
+      - matches: fast_mark 18
+        exec: $sequence_ipv6_realip_finalize_refresh
+      - matches:
+          - rcode 0 3
+          - '!resp_ip 2000::/3'
+          - '!resp_ip ::1 ::2 ::3'
+        exec: fast_mark 20
+      - matches: fast_mark 20
+        exec: $my_nov6list
+      - matches:
+          - resp_ip 2000::/3
+          - '!resp_ip ::1 ::2 ::3'
+        exec: fast_mark 21
+      - matches: fast_mark 20
+        exec:
+          - drop_resp
+          - reject 0
+      - matches: fast_mark 20
+        exec: exit
+      - matches:
+          - fast_mark 21
+          - '!fast_mark 17'
+        exec: $sequence_ipv6_realip_finalize_refresh
+      - exec: $sequence_not_in_list_noleak_v6_refresh
+
+  # 刷新专用入口。
+  - name: sequence_requery_refresh
+    type: sequence
+    args:
+      - matches:
+          - qtype 6 12 65
+          - switch 'block_query_type:on'
+        exec: reject 0
+      - matches:
+          - qtype 28
+          - switch 'block_ipv6:on'
+        exec: reject 0
+      - exec: $unified_matcher1
+      - matches:
+          - fast_mark 1
+          - switch 'block_response:on'
+        exec: reject 3
+      - matches:
+          - fast_mark 2
+          - qtype 1
+          - switch 'block_response:on'
+        exec: reject 0
+      - matches:
+          - fast_mark 3
+          - qtype 28
+          - switch 'block_response:on'
+        exec: reject 0
+      - matches:
+          - fast_mark 5
+          - switch 'ad_block:on'
+        exec: reject 3
+      - matches: fast_mark 6
+        exec:
+          - $domestic
+          - exit
+      - matches:
+          - '!fast_mark 48'
+          - switch 'client_proxy_mode:whitelist'
+          - '!client_ip $client_ip'
+        exec: fast_mark 39
+      - matches:
+          - '!fast_mark 48'
+          - switch 'client_proxy_mode:blacklist'
+          - client_ip $client_ip
+        exec: fast_mark 39
+      - matches: fast_mark 39
+        exec:
+          - $sequence_local_refresh
+          - tag_setter 指定客户端直连
+          - exit
+      - matches:
+          - switch 'prefer_ipv4:on'
+          - switch 'prefer_ipv6:off'
+        exec: prefer_ipv4
+      - matches:
+          - switch 'prefer_ipv4:off'
+          - switch 'prefer_ipv6:on'
+        exec: prefer_ipv6
+      - exec: $rewrite
+      - matches: qtype 1
+        exec: $sequence_ipv4_refresh
+      - matches: qtype 28
+        exec: $sequence_ipv6_refresh
+      - matches: '!qtype 1 28'
+        exec: $sequence_other

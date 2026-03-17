@@ -1,8 +1,0 @@
-# 文件用途:
-# - 提供 Web UI 客户端名称映射存储。
-# - 仅负责状态持久化，不参与 DNS 分流判断。
-plugins:
-  - tag: clientname
-    type: webinfo
-    args:
-      file: "webinfo/clientname.json"

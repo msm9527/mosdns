@@ -1,0 +1,132 @@
+# 刷新链：未命中列表后的补判逻辑
+#
+# 这部分与主链的 not_in_list 逻辑一一对应，
+# 但全部调用 refresh 专用 helper，避免走到主链版本。
+
+version: v2
+
+policies:
+  - name: sequence_not_in_list_direct_finalize_refresh
+    type: sequence
+    args:
+      - exec: $my_realiplist
+      - matches:
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_refresh
+      - exec: exit
+
+  - name: sequence_not_in_list_cn_finalize_refresh
+    type: sequence
+    args:
+      - exec: $my_realiplist
+      - matches:
+          - switch 'cn_answer_mode:fakeip'
+        exec: $sequence_local_fake_refresh
+
+  - name: sequence_not_in_list_ipmatch_refresh
+    type: sequence
+    args:
+      - matches: resp_ip $direct_ip
+        exec: fast_mark 24
+      - matches: fast_mark 24
+        exec: $sequence_not_in_list_direct_finalize_refresh
+      - matches: '!resp_ip $geoip_cn'
+        exec: fast_mark 25
+      - matches: fast_mark 25
+        exec: $sequence_fakeip_addlist_refresh
+      - matches: '!fast_mark 25'
+        exec: $sequence_not_in_list_cn_finalize_refresh
+
+  - name: sequence_not_in_list_leak_v4_refresh
+    type: sequence
+    args:
+      - exec: $sequence_local_refresh
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: fast_mark 22
+      - matches: resp_ip 127.0.0.1 0.0.0.0
+        exec: fast_mark 22
+      - matches: fast_mark 22
+        exec: $sequence_google_refresh
+      - matches:
+          - rcode 0 3
+          - '!resp_ip 0.0.0.0/0'
+        exec: $my_nov4list
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: exit
+      - matches: resp_ip 127.0.0.1 0.0.0.0
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch_refresh
+
+  - name: sequence_not_in_list_leak_v6_refresh
+    type: sequence
+    args:
+      - exec: $sequence_local_refresh
+      - matches:
+          - rcode 0 3
+          - '!resp_ip 2000::/3'
+          - '!resp_ip ::1'
+        exec: $my_nov6list
+      - matches:
+          - rcode 0 2 3 5
+          - '!resp_ip 2000::/3'
+          - '!resp_ip ::1'
+        exec: fast_mark 23
+      - matches: fast_mark 23
+        exec:
+          - drop_resp
+          - reject 0
+      - matches: fast_mark 23
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch_refresh
+
+  - name: sequence_not_in_list_noleak_v4_refresh
+    type: sequence
+    args:
+      - exec: $sequence_google_node_refresh
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: $sequence_google_refresh
+      - matches: rcode 3
+        exec:
+          - $my_nov4list
+          - exit
+      - matches: rcode 2 5
+        exec: $sequence_local_refresh
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: fast_mark 27
+      - matches:
+          - rcode 0 3
+          - fast_mark 27
+        exec: $my_nov4list
+      - matches: rcode 2 3 5
+        exec: exit
+      - matches: fast_mark 27
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch_refresh
+
+  - name: sequence_not_in_list_noleak_v6_refresh
+    type: sequence
+    args:
+      - exec: $sequence_google_node_refresh
+      - matches: '!resp_ip 2000::/3'
+        exec: $sequence_google_refresh
+      - matches: rcode 3
+        exec:
+          - $my_nov6list
+          - exit
+      - matches: rcode 2 5
+        exec: $sequence_local_refresh
+      - matches: '!resp_ip 2000::/3'
+        exec: fast_mark 28
+      - matches:
+          - rcode 0 3
+          - fast_mark 28
+        exec: $my_nov6list
+      - matches: rcode 2 3 5
+        exec: exit
+      - matches: fast_mark 28
+        exec:
+          - drop_resp
+          - reject 0
+      - matches: fast_mark 28
+        exec: exit
+      - exec: $sequence_not_in_list_ipmatch_refresh

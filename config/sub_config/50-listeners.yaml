@@ -1,0 +1,108 @@
+# 对外监听入口
+#
+# 这个文件只负责暴露端口，不承载分流逻辑。
+# 每个 listener 只绑定：
+# - listen 端口
+# - entry sequence
+# - 是否开启审计
+#
+# 真正的业务决策都在前面的 sequence 文件中完成。
+
+version: v2
+
+listeners:
+  # 默认主入口：所有系统 DNS 请求都先走这里。
+  - name: udp_all
+    protocol: udp
+    listen: :53
+    entry: sequence_6666
+    audit: true
+  - name: tcp_all
+    protocol: tcp
+    listen: :53
+    entry: sequence_6666
+    audit: true
+    options:
+      idle_timeout: 720
+
+  # requery 专用入口。
+  - name: udp_requery
+    protocol: udp
+    listen: :7766
+    entry: sequence_requery
+  - name: tcp_requery
+    protocol: tcp
+    listen: :7766
+    entry: sequence_requery
+
+  # clash.meta 客户端专用入口。
+  - name: udp_clashmi
+    protocol: udp
+    listen: :7799
+    entry: sequence_for_clashmi
+    audit: true
+  - name: tcp_clashmi
+    protocol: tcp
+    listen: :7799
+    entry: sequence_for_clashmi
+    audit: true
+
+  # 国外查询观察入口。
+  - name: udp_google
+    protocol: udp
+    listen: :7733
+    entry: sequence_google_in
+  - name: tcp_google
+    protocol: tcp
+    listen: :7733
+    entry: sequence_google_in
+
+  # 国外 ECS 查询入口。
+  - name: udp_google_ecs
+    protocol: udp
+    listen: :7744
+    entry: sequence_google_node
+  - name: tcp_google_ecs
+    protocol: tcp
+    listen: :7744
+    entry: sequence_google_node
+
+  # 国内直连链路入口。
+  - name: udp_local
+    protocol: udp
+    listen: :7722
+    entry: sequence_local
+  - name: tcp_local
+    protocol: tcp
+    listen: :7722
+    entry: sequence_local
+
+  # requery 刷新回放入口。
+  - name: udp_requery_refresh
+    protocol: udp
+    listen: :7767
+    entry: sequence_requery_refresh
+  - name: tcp_requery_refresh
+    protocol: tcp
+    listen: :7767
+    entry: sequence_requery_refresh
+
+  # 节点探测入口。
+  - name: sbnode_udp
+    protocol: udp
+    listen: :9999
+    entry: sequence_sbnode
+  - name: sbnode_tcp
+    protocol: tcp
+    listen: :9999
+    entry: sequence_sbnode
+
+  # sing-box 本地 DNS 入口。
+  - name: sb_udp
+    protocol: udp
+    listen: :8888
+    entry: sequence_local
+  - name: sb_tcp
+    protocol: tcp
+    listen: :8888
+    entry: sequence_local

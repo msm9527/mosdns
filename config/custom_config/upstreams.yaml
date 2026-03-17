@@ -1,0 +1,78 @@
+# 用户自定义上游配置
+#
+# 这个文件是各个 aliapi 上游组的长期配置真源。
+# - key 必须是插件 tag，例如 domestic / foreign / foreignecs / cnfake / nocnfake
+# - value 是该插件实际使用的上游列表
+# - 前端保存会直接改这个文件，并在运行中热重载
+# - 你也可以手工修改这个文件，然后重启 mosdns 生效
+#
+# 字段说明：
+# - tag: 上游名称，只要求在同一组内唯一
+# - enabled: 是否启用；false 表示保留但不参与运行
+# - protocol: aliapi / udp / tcp / tls / https 等
+# - addr: 普通 DNS 上游地址，例如 udp://1.1.1.1:53 或 https://dns.google/dns-query
+# - dial_addr: DoH/DoT 可选拨号地址，用来避免额外解析
+# - socks5: 只给这一条上游单独指定代理；不填则按插件/全局配置处理
+# - ecs_client_ip / ecs_client_mask: 仅 aliapi 私享接口等场景使用
+
+cnfake:
+  - tag: cnfake
+    enabled: false
+    protocol: udp
+    addr: udp://127.0.0.1:1053
+
+domestic:
+  - tag: 阿里私享DOH
+    enabled: false
+    protocol: aliapi
+    server_addr: 223.5.5.5
+    ecs_client_mask: 32
+  - tag: 阿里UDP
+    enabled: true
+    protocol: udp
+    addr: 223.5.5.5
+  - tag: 阿里TCP
+    enabled: true
+    protocol: tcp
+    addr: tcp://223.5.5.5
+  - tag: 阿里DOH
+    enabled: true
+    protocol: https
+    addr: https://dns.alidns.com/dns-query
+    dial_addr: 223.5.5.5
+  - tag: 阿里DOT
+    enabled: true
+    protocol: tls
+    addr: tls://223.5.5.5
+  - tag: 运营商
+    enabled: false
+    protocol: udp
+    addr: 114.114.114.114
+
+foreign:
+  - tag: google
+    enabled: true
+    protocol: https
+    addr: https://dns.google/dns-query
+    dial_addr: 8.8.8.8
+    socks5: 127.0.0.1:7891
+  - tag: cloudflare
+    enabled: true
+    protocol: https
+    addr: https://1.1.1.1/dns-query
+    dial_addr: 1.1.1.1
+    socks5: 127.0.0.1:7891
+
+foreignecs:
+  - tag: google
+    enabled: true
+    protocol: https
+    addr: https://dns.google/dns-query
+    dial_addr: 8.8.8.8
+    socks5: 127.0.0.1:7891
+
+nocnfake:
+  - tag: nocnfake
+    enabled: true
+    protocol: udp
+    addr: udp://127.0.0.1:6666

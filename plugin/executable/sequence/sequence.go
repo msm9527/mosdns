@@ -277,7 +277,7 @@ func (s *Sequence) Exec(ctx context.Context, qCtx *query_context.Context) error 
 	return walker.ExecNext(ctx, qCtx)
 }
 
-func (s *Sequence) ReloadRuntimeConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (s *Sequence) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	s.mu.RLock()
 	bq := s.bq
 	baseArgs := cloneRuleArgs(s.baseArgs)
