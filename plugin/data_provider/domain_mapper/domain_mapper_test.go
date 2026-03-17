@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/miekg/dns"
@@ -27,7 +28,25 @@ func newTestMapper(defaultMark uint8, defaultTag string, result *MatchResult, na
 	}
 	dm.matcher = atomic.Value{}
 	dm.matcher.Store(m)
+	dm.hotLookup = atomic.Value{}
+	dm.hotLookup.Store(make(map[string]*MatchResult))
+	dm.hotRules = make(map[string]map[string]struct{})
 	return dm
+}
+
+type mockRuleExporter struct {
+	rules    []string
+	hotRules []string
+}
+
+func (m *mockRuleExporter) GetRules() ([]string, error) {
+	return append([]string(nil), m.rules...), nil
+}
+
+func (m *mockRuleExporter) Subscribe(func()) {}
+
+func (m *mockRuleExporter) SnapshotHotRules() ([]string, error) {
+	return append([]string(nil), m.hotRules...), nil
 }
 
 func newTestQueryContext(name string) *query_context.Context {
@@ -117,6 +136,81 @@ func TestDomainMapperExecSkipsWhenFastBypassAlreadyMatched(t *testing.T) {
 	}
 }
 
+func TestDomainMapperLoadsHotRulesFromProviderSnapshot(t *testing.T) {
+	provider := &mockRuleExporter{hotRules: []string{"full:hot.example"}}
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiprule": provider,
+	})
+	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
+		Rules: []RuleConfig{{
+			Tag:       "my_realiprule",
+			Mark:      11,
+			OutputTag: "记忆直连",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper: %v", err)
+	}
+	dm := dmAny.(*DomainMapper)
+
+	marks, tags, ok := dm.FastMatch("hot.example.")
+	if !ok {
+		t.Fatal("expected hot rule match")
+	}
+	if len(marks) != 1 || marks[0] != 11 {
+		t.Fatalf("unexpected hot marks: %v", marks)
+	}
+	if tags != "记忆直连" {
+		t.Fatalf("unexpected hot tags: %q", tags)
+	}
+}
+
+func TestDomainMapperHotRulesMergeWithMainMatcher(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiprule": &mockRuleExporter{hotRules: []string{"full:combo.example"}},
+		"whitelist":     &mockRuleExporter{rules: []string{"full:combo.example"}},
+	})
+	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
+		Rules: []RuleConfig{
+			{Tag: "my_realiprule", Mark: 11, OutputTag: "记忆直连"},
+			{Tag: "whitelist", Mark: 8, OutputTag: "白名单"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper: %v", err)
+	}
+	dm := dmAny.(*DomainMapper)
+
+	marks, tags, ok := dm.FastMatch("combo.example.")
+	if !ok {
+		t.Fatal("expected combined match")
+	}
+	if len(marks) != 2 || marks[0] != 8 || marks[1] != 11 {
+		t.Fatalf("unexpected combined marks: %v", marks)
+	}
+	if tags != "白名单|记忆直连" && tags != "记忆直连|白名单" {
+		t.Fatalf("unexpected combined tags: %q", tags)
+	}
+}
+
+func TestDomainMapperReplaceHotRulesClearsMatch(t *testing.T) {
+	dm := newTestMapper(17, "未命中", nil)
+	dm.ruleConfigs = []RuleConfig{{Tag: "my_realiprule", Mark: 11, OutputTag: "记忆直连"}}
+
+	if err := dm.ReplaceHotRules("my_realiprule", []string{"full:hot-clear.example"}); err != nil {
+		t.Fatalf("ReplaceHotRules add: %v", err)
+	}
+	if _, _, ok := dm.FastMatch("hot-clear.example."); !ok {
+		t.Fatal("expected hot rule after replace")
+	}
+	if err := dm.ReplaceHotRules("my_realiprule", nil); err != nil {
+		t.Fatalf("ReplaceHotRules clear: %v", err)
+	}
+	if _, _, ok := dm.FastMatch("hot-clear.example."); ok {
+		t.Fatal("expected hot rule to be cleared")
+	}
+}
+
 func newBenchmarkMapper(ruleCount int) *DomainMapper {
 	dm := &DomainMapper{
 		logger:      zap.NewNop(),
@@ -136,6 +230,9 @@ func newBenchmarkMapper(ruleCount int) *DomainMapper {
 	}
 	dm.matcher = atomic.Value{}
 	dm.matcher.Store(m)
+	dm.hotLookup = atomic.Value{}
+	dm.hotLookup.Store(make(map[string]*MatchResult))
+	dm.hotRules = make(map[string]map[string]struct{})
 	return dm
 }
 

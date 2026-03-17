@@ -295,6 +295,7 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	nowDate := now.Format("2006-01-02")
 	nowStamp := now.Format(time.RFC3339)
 	var notify *coremain.DomainRefreshJob
+	var hotRules []string
 
 	d.mu.Lock()
 	entry, exists := d.stats[storageKey]
@@ -317,7 +318,11 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	if qmask != 0 {
 		entry.QTypeMask |= qmask
 	}
+	wasPromoted := entry.Promoted
 	entry.Promoted = d.shouldPromote(entry)
+	if !wasPromoted && entry.Promoted {
+		hotRules = []string{"full:" + bareDomain}
+	}
 	if item.source == "live" {
 		reason := d.nextDirtyReason(entry, now)
 		if reason != "" {
@@ -345,6 +350,9 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	atomic.AddInt64(&d.totalCount, 1)
 	if notify != nil {
 		go d.notifyDirty(*notify)
+	}
+	if len(hotRules) > 0 {
+		go d.pushHotRulesAdd(hotRules)
 	}
 }
 
@@ -477,6 +485,9 @@ func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 	d.mu.Lock()
 	d.rules = append([]string(nil), snapshot.rules...)
 	d.mu.Unlock()
+	if err := d.pushHotRulesReplace(snapshot.rules); err != nil {
+		return err
+	}
 
 	if mode != WriteModeShutdown && rulesChanged {
 		d.notifySubscribers()
