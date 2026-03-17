@@ -30,61 +30,36 @@
 # - auto_update / update_interval_hours: 仅 remote 源有效。
 
 sources:
-  - id: geosite_cn
-    name: 国内域名集
-    bind_to: geosite_cn
-    enabled: true
-    behavior: domain
-    match_mode: domain_set
-    format: srs
-    source_kind: remote
-    path: diversion/geosite-cn.srs
-    url: https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/cn.srs
-    auto_update: false
-    update_interval_hours: 24
-
-  - id: geoip_cn
-    name: 国内 IP 集
-    bind_to: geoip_cn
-    enabled: true
-    behavior: ipcidr
-    match_mode: ip_cidr_set
-    format: srs
-    source_kind: remote
-    path: diversion/geoip-cn.srs
-    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geoip/cn.srs
-    auto_update: false
-    update_interval_hours: 24
-
-  - id: geosite_no_cn
-    name: 非国内域名集
-    bind_to: geosite_no_cn
-    enabled: true
-    behavior: domain
-    match_mode: domain_set
-    format: srs
-    source_kind: remote
-    path: diversion/geolocation-!cn.srs
-    url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geosite/geolocation-!cn.srs
-    auto_update: false
-    update_interval_hours: 24
-
-  - id: cuscn
-    name: 自定义直连补充
-    bind_to: cuscn
-    enabled: true
-    behavior: domain
-    match_mode: domain_set
-    format: list
-    source_kind: local
-    path: diversion/cuscn.list
-
-  - id: cusnocn
-    name: 自定义代理补充
-    bind_to: cusnocn
-    enabled: true
-    behavior: domain
-    match_mode: domain_set
-    format: list
-    source_kind: local
-    path: diversion/cusnocn.list
+    - id: geoip_cn
+      name: 国内 IP 集
+      bind_to: geoip_cn
+      enabled: true
+      behavior: ipcidr
+      match_mode: ip_cidr_set
+      format: srs
+      source_kind: remote
+      path: diversion/geoip-cn.srs
+      url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geoip/cn.srs
+      update_interval_hours: 24
+    - id: geosite_cn
+      name: 国内域名集
+      bind_to: geosite_cn
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: srs
+      source_kind: remote
+      path: diversion/geosite-cn.srs
+      url: https://github.com/MetaCubeX/meta-rules-dat/raw/sing/geo/geosite/cn.srs
+      update_interval_hours: 24
+    - id: geosite_no_cn
+      name: 非国内域名集
+      bind_to: geosite_no_cn
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: srs
+      source_kind: remote
+      path: diversion/geolocation-!cn.srs
+      url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geosite/geolocation-!cn.srs
+      update_interval_hours: 24
