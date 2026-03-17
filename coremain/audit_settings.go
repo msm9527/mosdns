@@ -91,7 +91,7 @@ func normalizeAuditSettings(settings AuditSettings) AuditSettings {
 func loadAuditSettings(configBaseDir string, base *AuditSettings) AuditSettings {
 	settings := defaultAuditSettings()
 	if base != nil {
-		settings = *base
+		settings = mergeAuditSettings(settings, *base)
 	}
 	if runtimeSettings, ok, err := loadAuditSettingsFromRuntimeStore(configBaseDir); err == nil && ok {
 		settings = mergeAuditSettings(settings, runtimeSettings)

@@ -576,16 +576,19 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		case hasUsableAnswer(r):
 			f.clearFailure(failureKey)
 			u.mWinnerTotal.Inc()
+			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, nil
 		case r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError:
 			f.clearFailure(failureKey)
 			u.mWinnerTotal.Inc()
+			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, nil
 		default:
 			if r.Rcode == dns.RcodeServerFailure {
 				f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 			}
 			u.mWinnerTotal.Inc()
+			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, nil
 		}
 	}
@@ -603,6 +606,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		if hasUsableAnswer(r) {
 			f.clearFailure(failureKey)
 			u.mWinnerTotal.Inc()
+			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, true
 		}
 
@@ -682,10 +686,12 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		case <-ctx.Done():
 			if lastSuccessOrNXRes != nil {
 				lastSuccessOrNXResUpstream.mWinnerTotal.Inc()
+				coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())
 				return lastSuccessOrNXRes, nil
 			}
 			if lastOtherRes != nil {
 				lastOtherResUpstream.mWinnerTotal.Inc()
+				coremain.SetAuditUpstreamTag(qCtx, lastOtherResUpstream.name())
 				return lastOtherRes, nil
 			}
 			if lastError != nil {
@@ -698,6 +704,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 	if lastSuccessOrNXRes != nil {
 		f.clearFailure(failureKey)
 		lastSuccessOrNXResUpstream.mWinnerTotal.Inc()
+		coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())
 		return lastSuccessOrNXRes, nil
 	}
 	if lastOtherRes != nil {
@@ -705,6 +712,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 			f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 		}
 		lastOtherResUpstream.mWinnerTotal.Inc()
+		coremain.SetAuditUpstreamTag(qCtx, lastOtherResUpstream.name())
 		return lastOtherRes, nil
 	}
 	if lastError != nil {
@@ -1158,6 +1166,16 @@ func (w *upstreamWrapper) OnEvent(e upstream.Event) {
 	case upstream.EventConnClose:
 		w.mConnClosed.Inc()
 	}
+}
+
+func (w *upstreamWrapper) name() string {
+	if w == nil {
+		return ""
+	}
+	if w.cfg.Tag != "" {
+		return w.cfg.Tag
+	}
+	return w.cfg.Addr
 }
 
 func newWrapper(idx int, c UpstreamConfig, metricsTag string) *upstreamWrapper {

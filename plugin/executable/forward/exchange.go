@@ -6,7 +6,9 @@ import (
 	"sort"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
+	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/miekg/dns"
 )
 
@@ -26,12 +28,15 @@ const (
 type exchangeResult struct {
 	resp *dns.Msg
 	err  error
+	tag  string
 }
 
 type responsePicker struct {
-	successOrNX *dns.Msg
-	other       *dns.Msg
-	firstErr    error
+	successOrNX    *dns.Msg
+	successOrNXTag string
+	other          *dns.Msg
+	otherTag       string
+	firstErr       error
 }
 
 func normalizeConcurrent(requested, total int) int {
@@ -61,39 +66,41 @@ func pickUpstreams(us []*upstreamWrapper, concurrent int, now time.Time) []*upst
 	return append([]*upstreamWrapper(nil), candidates[:concurrent]...)
 }
 
-func (p *responsePicker) add(resp *dns.Msg, err error) (*dns.Msg, bool) {
+func (p *responsePicker) add(resp *dns.Msg, err error, tag string) (*dns.Msg, string, bool) {
 	if err != nil {
 		if p.firstErr == nil {
 			p.firstErr = err
 		}
-		return nil, false
+		return nil, "", false
 	}
 	if hasUsableAnswer(resp) {
-		return resp, true
+		return resp, tag, true
 	}
 	if resp != nil && (resp.Rcode == dns.RcodeSuccess || resp.Rcode == dns.RcodeNameError) {
 		if p.successOrNX == nil {
 			p.successOrNX = resp
+			p.successOrNXTag = tag
 		}
-		return nil, false
+		return nil, "", false
 	}
 	if resp != nil && p.other == nil {
 		p.other = resp
+		p.otherTag = tag
 	}
-	return nil, false
+	return nil, "", false
 }
 
-func (p *responsePicker) final() (*dns.Msg, error) {
+func (p *responsePicker) final() (*dns.Msg, string, error) {
 	if p.successOrNX != nil {
-		return p.successOrNX, nil
+		return p.successOrNX, p.successOrNXTag, nil
 	}
 	if p.other != nil {
-		return p.other, nil
+		return p.other, p.otherTag, nil
 	}
 	if p.firstErr != nil {
-		return nil, p.firstErr
+		return nil, "", p.firstErr
 	}
-	return nil, errors.New("all upstreams failed or returned no usable response")
+	return nil, "", errors.New("all upstreams failed or returned no usable response")
 }
 
 func hasUsableAnswer(resp *dns.Msg) bool {
@@ -121,6 +128,13 @@ func decodeResponse(payload *[]byte) (*dns.Msg, error) {
 		return nil, err
 	}
 	return resp, nil
+}
+
+func setAuditWinnerTag(qCtx *query_context.Context, tag string) {
+	if qCtx == nil || tag == "" {
+		return
+	}
+	coremain.SetAuditUpstreamTag(qCtx, tag)
 }
 
 func (f *Forward) queryUpstream(
@@ -178,7 +192,7 @@ func (f *Forward) startExchangeWorker(
 
 		resp, err := f.queryUpstream(ctx, queryPayload, u)
 		select {
-		case results <- exchangeResult{resp: resp, err: err}:
+		case results <- exchangeResult{resp: resp, err: err, tag: u.name()}:
 		case <-ctx.Done():
 		case <-done:
 		}

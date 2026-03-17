@@ -233,17 +233,21 @@ func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, run
 	for range selected {
 		select {
 		case result := <-results:
-			if winner, done := picker.add(result.resp, result.err); done {
+			if winner, tag, done := picker.add(result.resp, result.err, result.tag); done {
 				cancel()
+				setAuditWinnerTag(qCtx, tag)
 				return winner, nil
 			}
 		case <-ctx.Done():
 			cancel()
-			if fallback, err := picker.final(); err == nil && fallback != nil {
+			if fallback, tag, err := picker.final(); err == nil && fallback != nil {
+				setAuditWinnerTag(qCtx, tag)
 				return fallback, nil
 			}
 			return nil, context.Cause(ctx)
 		}
 	}
-	return picker.final()
+	resp, tag, err := picker.final()
+	setAuditWinnerTag(qCtx, tag)
+	return resp, err
 }
