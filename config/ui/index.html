@@ -706,6 +706,88 @@
                 min-width: 0 !important;
             }
         }
+
+        /* 系统控制页面显示不全修复 - 最小化修复 */
+        #system-control-tab {
+            min-height: 100vh;
+            padding-bottom: 2rem;
+        }
+
+        .control-panel-grid {
+            width: 100%;
+            overflow: visible;
+        }
+
+        @media (max-width: 768px) {
+            .control-panel-grid {
+                display: block !important;
+            }
+
+            .control-module {
+                margin-bottom: 1rem;
+                width: 100%;
+                box-sizing: border-box;
+            }
+
+            /* 存储策略模块表单优化 */
+            #audit-storage-form {
+                margin-top: 1rem;
+            }
+
+            .form-group {
+                margin-bottom: 1rem;
+            }
+
+            .form-group label {
+                display: block;
+                margin-bottom: 0.25rem;
+                font-weight: 500;
+                color: var(--color-text-secondary);
+                font-size: 0.85rem;
+            }
+
+            #audit-storage-form input {
+                width: 100%;
+                padding: 0.5rem;
+                border: 1px solid var(--color-border);
+                border-radius: 4px;
+                background: var(--color-bg-input);
+                color: var(--color-text-primary);
+                font-size: 0.9rem;
+                box-sizing: border-box;
+            }
+
+            #audit-storage-form input:focus {
+                outline: none;
+                border-color: var(--color-primary);
+                box-shadow: 0 0 0 2px rgba(var(--color-primary-rgb), 0.2);
+            }
+
+            #audit-storage-form button {
+                width: 100%;
+                margin-top: 0.5rem;
+            }
+
+            /* 提示信息样式优化 */
+            .tip-inline {
+                margin-top: 0.75rem !important;
+                padding: 0.5rem;
+                background: rgba(var(--color-info-rgb), 0.1);
+                border-radius: 4px;
+                border-left: 3px solid var(--color-info);
+            }
+
+            .tip-inline .info-inline {
+                margin-right: 0.5rem;
+                color: var(--color-info);
+            }
+
+            .tip-text {
+                color: var(--color-text-secondary);
+                font-size: 0.8rem;
+                line-height: 1.4;
+            }
+        }
     </style>
 </head>
 
@@ -1466,9 +1548,18 @@
                         <strong>存储上限:</strong> <span id="audit-storage-limit">查询中...</span>
                     </div>
                     <form id="audit-storage-form">
-                        <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="原始保留(天)">
-                        <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="聚合保留(天)">
-                        <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="存储上限(MB)">
+                        <div class="form-group">
+                            <label for="audit-retention-days">原始日志保留天数:</label>
+                            <input type="number" id="audit-retention-days" required min="1" max="365" placeholder="输入天数 (1-365)">
+                        </div>
+                        <div class="form-group">
+                            <label for="audit-aggregate-retention-days">聚合数据保留天数:</label>
+                            <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="输入天数 (1-3650)">
+                        </div>
+                        <div class="form-group">
+                            <label for="audit-max-disk-size">存储空间上限 (MB):</label>
+                            <input type="number" id="audit-max-disk-size" required min="1" max="10240" placeholder="输入大小 (1-10240)">
+                        </div>
                         <button type="submit" class="button primary" data-default-text="保存策略"><span>保存策略</span></button>
                     </form>
                     <div class="control-item tip-inline" style="margin-top: -0.25rem;">
