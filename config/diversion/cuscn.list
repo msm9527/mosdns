@@ -1,0 +1,2 @@
+# 自定义直连补充规则。
+# 一行一条，支持纯域名、+.suffix、full:、domain:、keyword:、regexp: 等常见写法。
