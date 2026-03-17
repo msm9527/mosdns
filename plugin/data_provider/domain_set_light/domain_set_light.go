@@ -274,10 +274,6 @@ func (d *DomainSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _
 
 	d.subscribeGeneratedSource(effective.GeneratedFrom, exporter)
 	d.notifySubscribers()
-	go func() {
-		time.Sleep(1 * time.Second)
-		coremain.ManualGC()
-	}()
 	return nil
 }
 

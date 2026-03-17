@@ -268,11 +268,6 @@ func (dm *DomainMapper) rebuild() {
 		zap.Int("rules", totalRules),
 		zap.Int("pooled_results", len(pool)),
 		zap.Duration("duration", time.Since(start)))
-
-	go func() {
-		time.Sleep(3 * time.Second)
-		coremain.ManualGC()
-	}()
 }
 
 func normalizeRuleKey(rule string) string {

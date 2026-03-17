@@ -211,7 +211,6 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	ds.generatedExporter = exporter
 	ds.rules = loadedRules
 	ds.updateWatchedFilesLocked(cfg.Files)
-	coremain.ManualGC()
 
 	for _, tag := range cfg.Sets {
 		provider, ok := bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
@@ -300,10 +299,6 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 
 	d.subscribeGeneratedSource(effective.GeneratedFrom, exporter)
 	d.notifySubscribers()
-	go func() {
-		time.Sleep(1 * time.Second)
-		coremain.ManualGC()
-	}()
 	return nil
 }
 
@@ -470,7 +465,6 @@ func (d *DomainSet) ReplaceListRuntime(_ context.Context, values []string) (int,
 		return 0, err
 	}
 	d.notifySubscribers()
-	coremain.ManualGC()
 	return len(tmpRules), nil
 }
 

@@ -260,10 +260,6 @@ func (r *Rewrite) ReloadControlConfig(global *coremain.GlobalOverrides, _ []core
 	r.rules = loadedRules
 	r.mu.Unlock()
 
-	go func() {
-		time.Sleep(1 * time.Second)
-		coremain.ManualGC()
-	}()
 	return nil
 }
 
@@ -399,7 +395,6 @@ func (r *Rewrite) ReplaceListRuntime(ctx context.Context, values []string) (int,
 		return 0, fmt.Errorf("in-memory rules updated, but failed to write to file: %s", err)
 	}
 
-	coremain.ManualGC()
 	return len(r.rules), nil
 }
 

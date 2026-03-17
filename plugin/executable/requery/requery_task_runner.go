@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"log"
 	"time"
-
-	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
 
 func (p *Requery) beginTaskExecution(profile taskProfile, recovery *FullRebuildTask) bool {
@@ -109,8 +107,7 @@ func (p *Requery) finishTaskExecution() {
 		}
 	}
 
-	log.Println("[requery] Task finished, triggering background memory release...")
-	coremain.ManualGC()
+	log.Println("[requery] Task finished.")
 }
 
 func (p *Requery) logTaskStart(profile taskProfile, recovery *FullRebuildTask) {
