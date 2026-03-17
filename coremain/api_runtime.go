@@ -33,6 +33,7 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 		r.Get("/health", handleRuntimeHealth(m))
 		r.Get("/summary", handleRuntimeSummary(m))
 		r.Get("/events", handleRuntimeEvents)
+		registerControlShuntAPI(r, m)
 		r.Get("/overrides", func(w http.ResponseWriter, r *http.Request) {
 			handleGetOverrides(w, r, m)
 		})

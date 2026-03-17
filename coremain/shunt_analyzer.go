@@ -13,6 +13,7 @@ import (
 
 type shuntAnalyzer struct {
 	baseDir     string
+	manager     *Mosdns
 	switches    map[string]string
 	defaultMark uint8
 	defaultTag  string
@@ -78,8 +79,13 @@ type shuntDomainProviderArgs struct {
 }
 
 func newShuntAnalyzer(baseDir string) (*shuntAnalyzer, error) {
+	return newShuntAnalyzerWithManager(baseDir, nil)
+}
+
+func newShuntAnalyzerWithManager(baseDir string, manager *Mosdns) (*shuntAnalyzer, error) {
 	a := &shuntAnalyzer{
 		baseDir:   baseDir,
+		manager:   manager,
 		switches:  make(map[string]string),
 		providers: make(map[string]*shuntProvider),
 	}
@@ -255,13 +261,11 @@ func (a *shuntAnalyzer) loadStaticDomainProvider(
 		addRulesToMatcher(matcher, rules, ruleSet)
 	}
 	if strings.TrimSpace(args.GeneratedFrom) != "" {
-		rules, sourceRef, err := a.loadGeneratedDomainRules(args.GeneratedFrom)
+		rules, sourceRefs, err := a.loadGeneratedDomainRules(args.GeneratedFrom)
 		if err != nil {
 			return nil, err
 		}
-		if sourceRef != "" {
-			sourceFiles = append(sourceFiles, sourceRef)
-		}
+		sourceFiles = append(sourceFiles, sourceRefs...)
 		addRulesToMatcher(matcher, rules, ruleSet)
 	}
 	return newMatcherProvider(tag, pluginType, matcher, mapKeys(ruleSet), sourceFiles), nil
@@ -339,21 +343,53 @@ func (a *shuntAnalyzer) loadAdguardProvider(tag string, args adguardPolicyArgs) 
 	}, nil
 }
 
-func (a *shuntAnalyzer) loadGeneratedDomainRules(poolTag string) ([]string, string, error) {
+func (a *shuntAnalyzer) loadGeneratedDomainRules(poolTag string) ([]string, []string, error) {
 	state, ok, err := LoadDomainPoolStateFromPath(runtimeStateDBPathForBaseDir(a.baseDir), strings.TrimSpace(poolTag))
 	if err != nil {
-		return nil, "", fmt.Errorf("load generated domain rules %s: %w", poolTag, err)
-	}
-	if !ok {
-		return nil, "", nil
+		return nil, nil, fmt.Errorf("load generated domain rules %s: %w", poolTag, err)
 	}
 	rules := make([]string, 0, len(state.Domains))
-	for _, item := range state.Domains {
-		if item.Promoted {
-			rules = append(rules, "full:"+domain.NormalizeDomain(item.Domain))
+	sourceRefs := make([]string, 0, 2)
+	if ok {
+		for _, item := range state.Domains {
+			if item.Promoted {
+				rules = append(rules, "full:"+domain.NormalizeDomain(item.Domain))
+			}
 		}
+		sourceRefs = append(sourceRefs, "db://domain_pool/"+strings.TrimSpace(poolTag))
 	}
-	return rules, "db://domain_pool/" + strings.TrimSpace(poolTag), nil
+	if hotRules, ok := a.loadRuntimeHotRules(poolTag); ok {
+		rules = append(rules, hotRules...)
+		sourceRefs = append(sourceRefs, "live://domain_pool_hot/"+strings.TrimSpace(poolTag))
+	}
+	if len(rules) == 0 && !ok {
+		return nil, nil, nil
+	}
+	return rules, sourceRefs, nil
+}
+
+func (a *shuntAnalyzer) loadRuntimeHotRules(poolTag string) ([]string, bool) {
+	if a.manager == nil {
+		return nil, false
+	}
+	provider, ok := a.manager.GetPlugin(strings.TrimSpace(poolTag)).(HotRuleSnapshotProvider)
+	if !ok || provider == nil {
+		return nil, false
+	}
+	rules, err := provider.SnapshotHotRules()
+	if err != nil {
+		a.warnings = append(a.warnings, fmt.Sprintf("load live hot rules %s failed: %v", poolTag, err))
+		return nil, false
+	}
+	normalized := make([]string, 0, len(rules))
+	for _, rule := range rules {
+		key := strings.TrimSpace(rule)
+		if key == "" {
+			continue
+		}
+		normalized = append(normalized, key)
+	}
+	return normalized, len(normalized) > 0
 }
 
 func (a *shuntAnalyzer) readRuleSourceFile(

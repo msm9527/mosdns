@@ -8,6 +8,14 @@ import (
 	"testing"
 )
 
+type mockHotRuleSnapshotProvider struct {
+	rules []string
+}
+
+func (m *mockHotRuleSnapshotProvider) SnapshotHotRules() ([]string, error) {
+	return append([]string(nil), m.rules...), nil
+}
+
 func TestShuntAnalyzerExplain(t *testing.T) {
 	baseDir := t.TempDir()
 	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
@@ -151,6 +159,45 @@ policies:
 	}
 	if result.Decision.Matched != 12 || result.Decision.Action != "sequence_fakeip" {
 		t.Fatalf("unexpected decision: %+v", result.Decision)
+	}
+}
+
+func TestShuntAnalyzerUsesLiveHotRulesFromManager(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      generated_from: my_fakeiplist
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+`)
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"my_fakeiplist": &mockHotRuleSnapshotProvider{rules: []string{"full:live-proxy.example"}},
+	})
+
+	analyzer, err := newShuntAnalyzerWithManager(baseDir, m)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzerWithManager: %v", err)
+	}
+	result, err := analyzer.Explain("live-proxy.example", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 12 || result.Decision.Action != "sequence_fakeip" {
+		t.Fatalf("unexpected live decision: %+v matches=%+v", result.Decision, result.Matches)
+	}
+	if len(result.Matches) != 1 || len(result.Matches[0].SourceFiles) != 1 || !strings.Contains(result.Matches[0].SourceFiles[0], "live://domain_pool_hot/") {
+		t.Fatalf("expected live source ref in matches, got %+v", result.Matches)
 	}
 }
 
