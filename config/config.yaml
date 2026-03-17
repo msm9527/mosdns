@@ -26,15 +26,19 @@ api:
   http: 0.0.0.0:9099
 
 # 审计配置：
-# - 使用 SQLite 做审计持久化
-# - 审计数据库固定写入 db/audit.db
+# - 运行期概览走实时窗口，不再从全量日志表直接求平均值
+# - 原始日志与分钟/小时聚合统一写入 SQLite
+# - sqlite_path 固定写入 db/audit.db
 audit:
-  memory_entries: 100000
-  retention_days: 30
-  max_disk_size_mb: 10
-  max_db_size_mb: 10
-  storage_engine: sqlite
+  enabled: true
+  overview_window_seconds: 60
+  raw_retention_days: 7
+  aggregate_retention_days: 30
+  max_storage_mb: 128
   sqlite_path: db/audit.db
+  flush_batch_size: 256
+  flush_interval_ms: 250
+  maintenance_interval_seconds: 60
 
 # 运行态控制库：
 # - 所有运行态真源统一写入 db/control.db

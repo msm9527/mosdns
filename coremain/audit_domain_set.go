@@ -95,13 +95,13 @@ func hasAuditDomainSet(tagSet map[string]struct{}, tag string) bool {
 	return ok
 }
 
-func buildSortedRankItems(counts map[string]int, limit int) []V2RankItem {
+func buildSortedRankItems(counts map[string]int, limit int) []AuditRankItem {
 	if limit <= 0 || len(counts) == 0 {
-		return []V2RankItem{}
+		return []AuditRankItem{}
 	}
-	items := make([]V2RankItem, 0, len(counts))
+	items := make([]AuditRankItem, 0, len(counts))
 	for key, count := range counts {
-		items = append(items, V2RankItem{Key: key, Count: count})
+		items = append(items, AuditRankItem{Key: key, Count: count})
 	}
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Count == items[j].Count {

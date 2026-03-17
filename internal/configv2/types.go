@@ -25,12 +25,15 @@ type APIConfig struct {
 }
 
 type AuditConfig struct {
-	MemoryEntries int    `yaml:"memory_entries,omitempty"`
-	RetentionDays int    `yaml:"retention_days,omitempty"`
-	MaxDiskSizeMB int    `yaml:"max_disk_size_mb,omitempty"`
-	MaxDBSizeMB   int    `yaml:"max_db_size_mb,omitempty"`
-	StorageEngine string `yaml:"storage_engine,omitempty"`
-	SQLitePath    string `yaml:"sqlite_path,omitempty"`
+	Enabled                    bool   `yaml:"enabled,omitempty"`
+	OverviewWindowSeconds      int    `yaml:"overview_window_seconds,omitempty"`
+	RawRetentionDays           int    `yaml:"raw_retention_days,omitempty"`
+	AggregateRetentionDays     int    `yaml:"aggregate_retention_days,omitempty"`
+	MaxStorageMB               int    `yaml:"max_storage_mb,omitempty"`
+	SQLitePath                 string `yaml:"sqlite_path,omitempty"`
+	FlushBatchSize             int    `yaml:"flush_batch_size,omitempty"`
+	FlushIntervalMs            int    `yaml:"flush_interval_ms,omitempty"`
+	MaintenanceIntervalSeconds int    `yaml:"maintenance_interval_seconds,omitempty"`
 }
 
 type ServerConfig struct {

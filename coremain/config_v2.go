@@ -94,11 +94,14 @@ func compileAuditSettings(a configv2.AuditConfig) *AuditSettings {
 		return nil
 	}
 	return &AuditSettings{
-		MemoryEntries: a.MemoryEntries,
-		RetentionDays: a.RetentionDays,
-		MaxDiskSizeMB: a.MaxDiskSizeMB,
-		MaxDBSizeMB:   a.MaxDBSizeMB,
-		StorageEngine: a.StorageEngine,
-		SQLitePath:    a.SQLitePath,
+		Enabled:                    a.Enabled,
+		OverviewWindowSeconds:      a.OverviewWindowSeconds,
+		RawRetentionDays:           a.RawRetentionDays,
+		AggregateRetentionDays:     a.AggregateRetentionDays,
+		MaxStorageMB:               a.MaxStorageMB,
+		SQLitePath:                 a.SQLitePath,
+		FlushBatchSize:             a.FlushBatchSize,
+		FlushIntervalMs:            a.FlushIntervalMs,
+		MaintenanceIntervalSeconds: a.MaintenanceIntervalSeconds,
 	}
 }
