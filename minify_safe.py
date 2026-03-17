@@ -36,7 +36,7 @@ def minify_js_safe(content):
 
 # 1. Compress CSS
 css_files = [
-    r"coremain/www/assets/css/log_refactored.css",
+    r"config/ui/assets/css/log_refactored.css",
     # Add other CSS files if you want to compress them too
 ]
 
@@ -56,7 +56,7 @@ for rel_path in css_files:
 
 # 2. Compress JS
 js_files = [
-    r"coremain/www/assets/js/log.js"
+    r"config/ui/assets/js/log.js"
 ]
 
 for rel_path in js_files:

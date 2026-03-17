@@ -2800,7 +2800,7 @@ const cacheManager = {
 
             const table = tbody.closest('table');
             if (table) {
-                // 关键：根据设备状态切换 CSS 类，触发 log.html 中的高权重样式覆盖
+                // 关键：根据设备状态切换 CSS 类，触发 index.html 中的高权重样式覆盖
                 if (state.isMobile) {
                     table.classList.add('mobile-card-view');
                     table.classList.remove('mobile-card-layout'); 
