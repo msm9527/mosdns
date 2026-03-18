@@ -81,7 +81,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	globalRegistry.instances[def.Name] = sw
 
 	globalRegistry.apiOnce.Do(func() {
-		bp.M().GetAPIRouter().Mount("/api/v1/control/switches", coreSwitchesAPI())
+		bp.MountAPI("/api/v1/control/switches", coreSwitchesAPI())
 	})
 
 	return sw, nil

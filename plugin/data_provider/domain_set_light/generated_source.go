@@ -31,7 +31,7 @@ func (d *DomainSetLight) resolveGeneratedExporter(generatedFrom string) (data_pr
 	if d.bp == nil || d.bp.M() == nil {
 		return nil, false, fmt.Errorf("generated_from source %s requires a running plugin manager", tag)
 	}
-	pluginInterface := d.bp.M().GetPlugin(tag)
+	pluginInterface := d.bp.Plugin(tag)
 	if pluginInterface == nil {
 		return nil, false, fmt.Errorf("generated_from source plugin %s not found", tag)
 	}

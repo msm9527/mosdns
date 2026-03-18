@@ -108,7 +108,7 @@ func StartServer(bp *coremain.BP, args *Args) (*TcpServer, error) {
 		defer l.Close()
 		serverOpts := server.TCPServerOpts{Logger: bp.L(), IdleTimeout: time.Duration(args.IdleTimeout) * time.Second}
 		err := server.ServeTCP(l, dh, serverOpts)
-		bp.M().GetSafeClose().SendCloseSignal(err)
+		bp.CloseWithErr(err)
 	}()
 	return &TcpServer{
 		args: args,

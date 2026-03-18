@@ -41,14 +41,14 @@ func init() {
 }
 
 type Args struct {
-	Entry       string `yaml:"entry"`
-	Listen      string `yaml:"listen"`
-	Cert        string `yaml:"cert"`
-	Key         string `yaml:"key"`
-	IdleTimeout int    `yaml:"idle_timeout"`
-	MaxStreamData   int    `yaml:"max_stream_data"` // original field
-	MaxConnectionData int  `yaml:"max_connection_data"` // original field
-	EnableAudit bool   `yaml:"enable_audit"` // ADDED: Flag to enable audit logging for this server instance.
+	Entry             string `yaml:"entry"`
+	Listen            string `yaml:"listen"`
+	Cert              string `yaml:"cert"`
+	Key               string `yaml:"key"`
+	IdleTimeout       int    `yaml:"idle_timeout"`
+	MaxStreamData     int    `yaml:"max_stream_data"`     // original field
+	MaxConnectionData int    `yaml:"max_connection_data"` // original field
+	EnableAudit       bool   `yaml:"enable_audit"`        // ADDED: Flag to enable audit logging for this server instance.
 }
 
 func (a *Args) init() {
@@ -130,7 +130,7 @@ func StartServer(bp *coremain.BP, args *Args) (*QuicServer, error) {
 		defer quicListener.Close()
 		serverOpts := server.DoQServerOpts{Logger: bp.L(), IdleTimeout: idleTimeout}
 		err := server.ServeDoQ(quicListener, dh, serverOpts)
-		bp.M().GetSafeClose().SendCloseSignal(err)
+		bp.CloseWithErr(err)
 	}()
 	return &QuicServer{
 		args: args,

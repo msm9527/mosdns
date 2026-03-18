@@ -88,7 +88,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
 		baseArgs = cloneRuleArgs(*rawArgs)
 	}
-	effectiveArgs := buildEffectiveRuleArgs(bp.Tag(), baseArgs, bp.M().GetGlobalOverrides())
+	effectiveArgs := buildEffectiveRuleArgs(bp.Tag(), baseArgs, bp.GlobalOverrides())
 	return newSequenceWithBase(NewBQ(bp.M(), bp.L()), bp.Tag(), baseArgs, effectiveArgs)
 }
 

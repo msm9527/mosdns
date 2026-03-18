@@ -29,11 +29,11 @@ func (s *ruleSourceService) List() ([]RuleSourceItem, error) {
 	if err != nil {
 		return nil, err
 	}
-	statuses, err := ListRuleSourceStatusByScope(RuntimeStateDBPath(), s.scope)
+	statuses, err := ListRuleSourceStatusByScope(s.controlDBPath(), s.scope)
 	if err != nil {
 		return nil, err
 	}
-	bindings, err := listRuleSourceBindings(MainConfigBaseDir, s.scope)
+	bindings, err := listRuleSourceBindings(s.baseDir(), s.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (s *ruleSourceService) Update(id string, item RuleSourceItem) (RuleSourceIt
 		return RuleSourceItem{}, err
 	}
 	if source.ID != id {
-		if err := DeleteRuleSourceStatus(RuntimeStateDBPath(), s.scope, id); err != nil {
+		if err := DeleteRuleSourceStatus(s.controlDBPath(), s.scope, id); err != nil {
 			return RuleSourceItem{}, err
 		}
 	}
@@ -112,7 +112,7 @@ func (s *ruleSourceService) Delete(id string) error {
 	if err := s.saveConfig(cfg); err != nil {
 		return err
 	}
-	if err := DeleteRuleSourceStatus(RuntimeStateDBPath(), s.scope, id); err != nil {
+	if err := DeleteRuleSourceStatus(s.controlDBPath(), s.scope, id); err != nil {
 		return err
 	}
 	return s.reload()
@@ -271,7 +271,7 @@ func (s *ruleSourceService) refreshSource(source rulesource.Source) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ruleSourceManualSyncTimeout)
 	defer cancel()
-	_, err = SyncRuleSource(ctx, client, RuntimeStateDBPath(), MainConfigBaseDir, s.scope, source, true)
+	_, err = SyncRuleSource(ctx, client, s.controlDBPath(), s.baseDir(), s.scope, source, true)
 	if err != nil {
 		return NewRuleAPIError(http.StatusBadGateway, "RULE_SOURCE_REFRESH_FAILED", err.Error())
 	}
@@ -286,6 +286,14 @@ func (s *ruleSourceService) reload() error {
 		return NewRuleAPIError(http.StatusInternalServerError, "RULE_SOURCE_RELOAD_FAILED", err.Error())
 	}
 	return nil
+}
+
+func (s *ruleSourceService) baseDir() string {
+	return runtimeBaseDir(s.manager)
+}
+
+func (s *ruleSourceService) controlDBPath() string {
+	return runtimeControlDBPath(s.manager)
 }
 
 func behaviorFromMatchMode(matchMode rulesource.MatchMode) rulesource.Behavior {

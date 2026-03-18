@@ -79,7 +79,7 @@ func StartServer(bp *coremain.BP, args *Args) (*HttpServer, error) {
 	for _, entry := range args.Entries {
 		// MODIFIED: Pass the EnableAudit flag from HTTP server args.
 		// Note: HTTP server args contain a list of entries, so we pass the main EnableAudit flag for all sub-entries.
-		dh, err := server_utils.NewHandler(bp, entry.Exec, args.EnableAudit) 
+		dh, err := server_utils.NewHandler(bp, entry.Exec, args.EnableAudit)
 		if err != nil {
 			return nil, fmt.Errorf("failed to init dns handler for path %s, %w", entry.Path, err)
 		}
@@ -129,7 +129,7 @@ func StartServer(bp *coremain.BP, args *Args) (*HttpServer, error) {
 		} else {
 			err = hs.Serve(l)
 		}
-		bp.M().GetSafeClose().SendCloseSignal(err)
+		bp.CloseWithErr(err)
 	}()
 	return &HttpServer{
 		args:   args,

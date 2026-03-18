@@ -85,7 +85,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 	p.scheduleRecoveryIfNeeded()
 
-	bp.M().GetAPIRouter().Mount("/api/v1/control/requery", p.api())
+	bp.MountAPI("/api/v1/control/requery", p.api())
 
 	log.Printf("[requery] plugin instance created for runtime key: %s", p.runtimeKey)
 	return p, nil

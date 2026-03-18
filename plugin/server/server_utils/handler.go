@@ -30,7 +30,7 @@ import (
 
 // MODIFIED: Function signature now accepts the enableAudit flag.
 func NewHandler(bp *coremain.BP, entry string, enableAudit bool) (server.Handler, error) {
-	p := bp.M().GetPlugin(entry)
+	p := bp.Plugin(entry)
 	exec := sequence.ToExecutable(p)
 	if exec == nil {
 		return nil, fmt.Errorf("cannot find executable entry by tag %s", entry)

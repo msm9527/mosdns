@@ -329,7 +329,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 		MetricsTag: bp.Tag(),
 	})
 
-	if err := c.RegMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.M().GetMetricsReg())); err != nil {
+	if err := c.RegMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.MetricsRegisterer())); err != nil {
 		return nil, fmt.Errorf("failed to register metrics, %w", err)
 	}
 	return c, nil

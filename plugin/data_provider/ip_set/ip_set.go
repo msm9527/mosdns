@@ -125,7 +125,7 @@ func NewIPSet(bp *coremain.BP, args *Args) (*IPSet, error) {
 
 	// load other sets by tag
 	for _, tag := range args.Sets {
-		provider, _ := bp.M().GetPlugin(tag).(data_provider.IPMatcherProvider)
+		provider, _ := bp.Plugin(tag).(data_provider.IPMatcherProvider)
 		if provider == nil {
 			return nil, fmt.Errorf("%s is not an IPMatcherProvider", tag)
 		}
@@ -176,7 +176,7 @@ func (d *IPSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []corema
 
 	otherSets := make([]netlist.Matcher, 0, len(effective.Sets))
 	for _, tag := range effective.Sets {
-		provider, _ := d.bp.M().GetPlugin(tag).(data_provider.IPMatcherProvider)
+		provider, _ := d.bp.Plugin(tag).(data_provider.IPMatcherProvider)
 		if provider == nil {
 			return fmt.Errorf("%s is not an IPMatcherProvider", tag)
 		}

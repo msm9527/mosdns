@@ -41,6 +41,7 @@ import (
 
 type Mosdns struct {
 	logger *zap.Logger // non-nil logger.
+	env    RuntimeEnv
 
 	// Plugins
 	plugins map[string]any
@@ -71,8 +72,10 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	// Start the audit log collector's background worker.
 	GlobalAuditCollector.StartWorker()
 
+	env := newRuntimeEnvFromConfig(cfg)
 	m := &Mosdns{
 		logger:     lg,
+		env:        env,
 		plugins:    make(map[string]any),
 		httpMux:    chi.NewRouter(),
 		metricsReg: newMetricsReg(),
@@ -126,7 +129,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	RegisterCaptureAPI(m.httpMux)      // For process logs
 	RegisterAuditAPI(m.httpMux)        // For audit logs
 	RegisterOverridesAPI(m.httpMux, m) // <<< MODIFIED: Pass 'm'
-	RegisterConfigManagerAPI(m.httpMux)
+	RegisterConfigManagerAPI(m.httpMux, m)
 	RegisterCacheAPI(m.httpMux, m)
 	RegisterListsAPI(m.httpMux, m)
 	RegisterMiscAPI(m.httpMux, m)
@@ -204,6 +207,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 func NewTestMosdnsWithPlugins(p map[string]any) *Mosdns {
 	return &Mosdns{
 		logger:     mlog.Nop(),
+		env:        runtimeEnvFromGlobals(),
 		httpMux:    chi.NewRouter(),
 		plugins:    p,
 		metricsReg: newMetricsReg(),
@@ -266,6 +270,28 @@ func (m *Mosdns) GetGlobalOverrides() *GlobalOverrides {
 	return CloneGlobalOverrides(m.globalOverrides)
 }
 
+func (m *Mosdns) RuntimeEnv() RuntimeEnv {
+	if m == nil {
+		return runtimeEnvFromGlobals()
+	}
+	if m.env == (RuntimeEnv{}) {
+		return runtimeEnvFromGlobals()
+	}
+	return m.env
+}
+
+func (m *Mosdns) BaseDir() string {
+	return m.RuntimeEnv().BaseDir
+}
+
+func (m *Mosdns) MainConfigPath() string {
+	return m.RuntimeEnv().MainConfigPath
+}
+
+func (m *Mosdns) ControlDBPath() string {
+	return m.RuntimeEnv().ControlDBPath
+}
+
 func newMetricsReg() *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -304,7 +330,7 @@ func (m *Mosdns) initHttpMux() {
 	m.httpMux.Method(http.MethodGet, "/metrics", wrappedMetricsHandler)
 
 	// 外置 UI 模式：不再内置任何前端资源，只挂载配置目录下的 ui 文件。
-	uiBaseDir := filepath.Join(MainConfigBaseDir, "ui")
+	uiBaseDir := filepath.Join(m.BaseDir(), "ui")
 	m.httpMux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if info, err := os.Stat(uiBaseDir); err == nil && info.IsDir() {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
