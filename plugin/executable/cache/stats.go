@@ -123,17 +123,26 @@ func (c *Cache) snapshotStats() cacheStatsResponse {
 		LastDump:   lastDump,
 		LastLoad:   lastLoad,
 		LastReplay: lastReplay,
-		Config: map[string]interface{}{
-			"size":              c.args.Size,
-			"lazy_cache_ttl":    c.args.LazyCacheTTL,
-			"l1_enabled":        c.l1Enabled,
-			"l1_total_cap":      c.args.L1TotalCap,
-			"l1_shard_cap":      c.l1ShardCap,
-			"enable_ecs":        c.args.EnableECS,
-			"dump_interval":     c.args.DumpInterval,
-			"wal_sync_interval": c.args.WALSyncInterval,
-		},
+		Config:     c.snapshotConfig(snapshotPath, walPath),
 	}
+}
+
+func (c *Cache) snapshotConfig(snapshotPath, walPath string) map[string]interface{} {
+	cfg := map[string]interface{}{
+		"size":           c.args.Size,
+		"lazy_cache_ttl": c.args.LazyCacheTTL,
+		"l1_enabled":     c.l1Enabled,
+		"l1_total_cap":   c.args.L1TotalCap,
+		"l1_shard_cap":   c.l1ShardCap,
+		"enable_ecs":     c.args.EnableECS,
+		"persist":        snapshotPath != "" || walPath != "",
+	}
+	if snapshotPath == "" && walPath == "" {
+		return cfg
+	}
+	cfg["dump_interval"] = c.args.DumpInterval
+	cfg["wal_sync_interval"] = c.args.WALSyncInterval
+	return cfg
 }
 
 func cacheOpStatusToMap(op cacheOpStatus) map[string]any {

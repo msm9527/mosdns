@@ -57,6 +57,11 @@ func TestHandleRuntimeSummary(t *testing.T) {
 	if len(resp.Namespaces) == 0 {
 		t.Fatalf("expected namespace summary, got %+v", resp)
 	}
+	for _, item := range resp.Namespaces {
+		if item.Namespace == "audit" {
+			t.Fatalf("unexpected audit namespace in runtime summary: %+v", resp.Namespaces)
+		}
+	}
 	if resp.Upstreams.Total != 1 || len(resp.Upstreams.Items) != 1 {
 		t.Fatalf("expected upstream summary in response, got %+v", resp.Upstreams)
 	}

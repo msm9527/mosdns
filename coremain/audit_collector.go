@@ -117,7 +117,7 @@ func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) e
 	c.settings = next
 	c.configBaseDir = configBaseDir
 	c.mu.Unlock()
-	return saveAuditSettings(configBaseDir, next)
+	return nil
 }
 
 func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir string) error {
@@ -129,7 +129,6 @@ func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir str
 	c.mu.Lock()
 	oldStorage := c.storage
 	c.storage = storage
-	c.settings.SQLitePath = path
 	c.mu.Unlock()
 	if oldStorage != nil {
 		_ = oldStorage.Close()

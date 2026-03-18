@@ -12,19 +12,16 @@
 # - listener 最后加载，因为它们依赖前面已经注册完成的 entry
 
 version: v2
-
 # 日志配置：
 # - 当前仍然输出到 /tmp，便于本机调试
 # - 如果部署到长期运行环境，可改为专用日志目录
 log:
   level: warn
   file: /tmp/mosdns.log
-
 # HTTP 管理接口：
 # - UI、control API、运行时操作都走这里
 api:
   http: 0.0.0.0:9099
-
 # 审计配置：
 # - 运行期概览走实时窗口，不再从全量日志表直接求平均值
 # - 原始日志与分钟/小时聚合统一写入 SQLite
@@ -39,12 +36,10 @@ audit:
   flush_batch_size: 256
   flush_interval_ms: 250
   maintenance_interval_seconds: 60
-
 # 运行态控制库：
 # - 所有运行态真源统一写入 db/control.db
 storage:
   control_db: db/control.db
-
 # 子配置加载顺序：
 # - 10: control 运行态定义
 # - 20/21: 数据源、规则集、缓存、上游

@@ -31,7 +31,7 @@
    - 黑名单/无 A/无 AAAA/广告拦截
    - 指定 client_ip 直连判定
    - prefer_ipv4/prefer_ipv6
-   - 主缓存总开关（`main_cache:on` 时启用 `cache_all_noleak`）
+   - 注意：`main_cache` 已下沉到真实解析链内部，入口层不再直接缓存 fakeip 应答
 4. 按 qtype 分流到：
    - A: `sequence_ipv4`
    - AAAA: `sequence_ipv6`
@@ -48,11 +48,11 @@
 |---|---|---|
 | `sub_config/10-control.yaml` | 控制面对象注册（switch / webinfo / requery） | 主链路、UI、control API |
 | `sub_config/20-data-sources.yaml` | 规则源、动态规则生成、统一匹配器 | 主链路与刷新链路 |
-| `sub_config/21-data-cache-upstreams.yaml` | cache、国内/国外上游、fakeip 相关基础序列 | 主链路与刷新链路 |
+| `sub_config/21-data-cache-upstreams.yaml` | 响应缓存定义、国内/国外上游、fakeip 生成器入口 | 主链路与刷新链路 |
 | `sub_config/31-main-resolution.yaml` | 主链路基础解析 helper | `33`、`34` |
 | `sub_config/32-main-not-in-list.yaml` | 主链路列表外 IP 二次判断 | `33-main-ipv4v6.yaml` |
 | `sub_config/33-main-ipv4v6.yaml` | 主链路 A / AAAA 核心分流 | `34-main-entry.yaml` |
-| `sub_config/34-main-entry.yaml` | 主入口、主缓存、stash/clashmeta/sing-box 入口 | listeners |
+| `sub_config/34-main-entry.yaml` | 主入口、前置检查、stash/clashmeta/sing-box 入口 | listeners |
 | `sub_config/40-refresh-resolution.yaml` | 刷新链基础解析 helper | `42` |
 | `sub_config/41-refresh-not-in-list.yaml` | 刷新链列表外 IP 二次判断 | `42-refresh-ipv4v6.yaml` |
 | `sub_config/42-refresh-ipv4v6.yaml` | 刷新链 A / AAAA 核心分流 | requery |

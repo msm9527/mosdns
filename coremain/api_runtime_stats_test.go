@@ -25,9 +25,9 @@ func (m mockDomainStatsProvider) SnapshotDomainStats() DomainStatsSnapshot {
 
 func TestHandleAggregatedCacheStats(t *testing.T) {
 	m := NewTestMosdnsWithPlugins(map[string]any{
-		"cache_all": mockCacheStatsProvider{
+		"cache_main": mockCacheStatsProvider{
 			snapshot: CacheStatsSnapshot{
-				Tag:         "cache_all",
+				Tag:         "cache_main",
 				BackendSize: 12,
 				L1Size:      3,
 				Counters: map[string]uint64{
@@ -56,12 +56,12 @@ func TestHandleAggregatedCacheStats(t *testing.T) {
 	if len(resp.Items) != len(runtimeCacheProfiles) {
 		t.Fatalf("unexpected item count: got %d want %d", len(resp.Items), len(runtimeCacheProfiles))
 	}
-	if resp.Items[0].Key != "cache_all" || resp.Items[0].BackendSize != 12 {
+	if resp.Items[0].Key != "cache_main" || resp.Items[0].BackendSize != 12 {
 		t.Fatalf("unexpected first cache item: %+v", resp.Items[0])
 	}
 	foundMissing := false
 	for _, item := range resp.Items {
-		if item.Tag == "cache_cn" && item.Error != "" {
+		if item.Tag == "cache_branch_domestic" && item.Error != "" {
 			foundMissing = true
 			break
 		}

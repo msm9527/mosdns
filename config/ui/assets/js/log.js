@@ -1105,8 +1105,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     (async () => {
                         ui.showToast('附加操作：正在清空核心缓存...', 'info');
                         const results = await Promise.allSettled([
-                            api.fetch('/api/v1/cache/cache_all/flush', { method: 'POST' }),
-                            api.fetch('/api/v1/cache/cache_all_noleak/flush', { method: 'POST' })
+                            api.fetch('/api/v1/cache/cache_main/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_branch_domestic/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_branch_foreign/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_branch_foreign_ecs/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_fakeip_domestic/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_fakeip_proxy/flush', { method: 'POST' })
                         ]);
 
                         const failedCount = results.filter(r => r.status === 'rejected').length;
@@ -3131,13 +3135,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 const cacheManager = {
         config: [
-            { key: 'cache_all', name: '全部缓存 (兼容)', tag: 'cache_all' },
-            { key: 'cache_cn', name: '国内缓存', tag: 'cache_cn' },
-            { key: 'cache_node', name: '节点缓存', tag: 'cache_node' },
-            { key: 'cache_google', name: '国外缓存 (兼容)', tag: 'cache_google' },
-            { key: 'cache_all_noleak', name: '全部缓存 (安全)', tag: 'cache_all_noleak' },
-            { key: 'cache_google_node', name: '国外缓存 (安全)', tag: 'cache_google_node' },
-            { key: 'cache_cnmihomo', name: '国内域名fakeip', tag: 'cache_cnmihomo' }
+            { key: 'cache_main', name: '主缓存', tag: 'cache_main' },
+            { key: 'cache_branch_domestic', name: '国内分支缓存', tag: 'cache_branch_domestic' },
+            { key: 'cache_branch_foreign', name: '国外分支缓存', tag: 'cache_branch_foreign' },
+            { key: 'cache_branch_foreign_ecs', name: '国外 ECS 分支缓存', tag: 'cache_branch_foreign_ecs' },
+            { key: 'cache_fakeip_domestic', name: '国内 FakeIP 缓存', tag: 'cache_fakeip_domestic' },
+            { key: 'cache_fakeip_proxy', name: '代理 FakeIP 缓存', tag: 'cache_fakeip_proxy' },
+            { key: 'cache_probe', name: '节点探测缓存', tag: 'cache_probe' }
         ],
 
         emptyStats(cacheTag = '') {
@@ -3257,6 +3261,22 @@ const cacheManager = {
             return `<span style="font-weight:700; color:${stateInfo.color}; display:inline-block;">${stateInfo.label}</span>`;
         },
 
+        renderPersistenceCell(stats) {
+            const persist = stats?.config?.persist === true;
+            if (!persist) {
+                return `<span style="font-weight:600; color: var(--color-text-secondary);">仅内存</span>`;
+            }
+            const parts = [];
+            const dumpInterval = Number(stats?.config?.dump_interval || 0);
+            const walSyncInterval = Number(stats?.config?.wal_sync_interval || 0);
+            if (dumpInterval > 0) parts.push(`快照 ${dumpInterval}s`);
+            if (walSyncInterval > 0) parts.push(`WAL ${walSyncInterval}s`);
+            return this.renderStack([
+                `<span style="font-weight:700; color: var(--color-success);">持久化</span>`,
+                parts.length ? `<small style="color: var(--color-text-secondary);">${parts.join(' / ')}</small>` : ''
+            ], 'center');
+        },
+
         async updateStats(signal) {
             try {
                 const res = await api.getAllCacheStats(signal);
@@ -3305,7 +3325,7 @@ const cacheManager = {
             tbody.innerHTML = '';
 
             if (isError) {
-                const cols = state.isMobile ? 1 : 9;
+                const cols = state.isMobile ? 1 : 10;
                 tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center; color: var(--color-danger);">缓存数据加载失败</td></tr>`;
                 return;
             }
@@ -3328,6 +3348,7 @@ const cacheManager = {
                                 </div>
                                 <div class="mobile-stats-grid">
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">状态</span><span class="mobile-stat-value">${stateInfo.label}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">持久化</span><span class="mobile-stat-value">${stats?.config?.persist === true ? '是' : '否'}</span></div>
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">请求总数</span><span class="mobile-stat-value">${this.formatCount(counters.query_total)}</span></div>
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">缓存命中</span><span class="mobile-stat-value">${this.formatCount(counters.hit_total)}</span></div>
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">过期命中</span><span class="mobile-stat-value">${this.formatCount(counters.lazy_hit_total)}</span></div>
@@ -3344,6 +3365,7 @@ const cacheManager = {
                             <div class="cache-name-wrapper" style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${cache.name}">${cache.name}</div>
                         </td>
                         <td class="text-center">${this.renderStateCell(stats)}</td>
+                        <td class="text-center">${this.renderPersistenceCell(stats)}</td>
                         <td class="text-right">${this.formatCount(counters.query_total)}</td>
                         <td class="text-right">${this.formatCount(counters.hit_total)}</td>
                         <td class="text-right">${this.formatCount(counters.lazy_hit_total)}</td>

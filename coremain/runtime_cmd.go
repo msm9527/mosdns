@@ -221,7 +221,6 @@ func resolveRuntimeCommandDBPath(configPath, baseDir string) (string, error) {
 
 func runtimeSummaryJSON(dbPath string) ([]byte, error) {
 	namespaces := []string{
-		runtimeStateNamespaceAudit,
 		runtimeNamespaceWebinfo,
 		runtimeNamespaceRequery,
 		runtimeNamespaceAdguard,

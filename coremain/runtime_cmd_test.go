@@ -48,6 +48,11 @@ func TestRuntimeCommandHelpers(t *testing.T) {
 	if summary.DBPath != dbPath || len(summary.Namespaces) == 0 {
 		t.Fatalf("unexpected summary: %+v", summary)
 	}
+	for _, item := range summary.Namespaces {
+		if item.Namespace == "audit" {
+			t.Fatalf("unexpected audit namespace in runtime summary: %+v", summary.Namespaces)
+		}
+	}
 
 	healthJSON, err := runtimeHealthJSON(dbPath)
 	if err != nil {

@@ -33,7 +33,7 @@ import (
 	"syscall"
 )
 
-// <<< ADDED: Global variable to store the base directory for other packages to use.
+// <<< ADDED: Global variables to store the resolved config location for other packages to use.
 var MainConfigBaseDir string
 
 type serverFlags struct {
@@ -134,6 +134,11 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 	// This ensures the path is absolute and available for other packages.
 	if fileUsed != "" {
 		if absPath, err := filepath.Abs(fileUsed); err == nil {
+			MainConfigFilePath = absPath
+		} else {
+			MainConfigFilePath = fileUsed
+		}
+		if absPath, err := filepath.Abs(fileUsed); err == nil {
 			MainConfigBaseDir = filepath.Dir(absPath)
 		} else {
 			MainConfigBaseDir = filepath.Dir(fileUsed)
@@ -148,6 +153,7 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 		if wd, err := os.Getwd(); err == nil {
 			MainConfigBaseDir = wd
 		}
+		MainConfigFilePath = ""
 	}
 	mlog.L().Info("main config base directory set", zap.String("path", MainConfigBaseDir))
 	setRuntimeStateDBPath(cfg.ControlDBPath)

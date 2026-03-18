@@ -1,0 +1,119 @@
+# 系统级缓存策略配置
+#
+# 这个文件是响应缓存与 UDP 快路径缓存的系统基线真源。
+# - 它属于 sub_config，不属于用户业务配置。
+# - 前端当前不直接改这个文件；需要调整时，修改后重启 mosdns 生效。
+# - 不走数据库；数据库只保存运行态统计、日志和其他生成态数据。
+# - 缓存开关只控制“是否启用某类缓存”，这里控制“启用后怎么缓存”。
+#
+# 顶层结构：
+# - response: 各类 DNS 响应缓存策略，key 必须是内置缓存插件 tag。
+# - udp_fast_path: UDP 极限快路径缓存策略。
+#
+# response 下每个缓存策略支持：
+# - size: 最大缓存条目数；超出后按 LRU 自动淘汰旧条目，不会整库清空。
+# - lazy_cache_ttl: 真实 TTL 过期后，最多还能返回 stale 结果多久，单位秒；0 表示禁用。
+# - nxdomain_ttl / servfail_ttl: 负面结果缓存秒数，用于收敛重复失败查询。
+# - l1_enabled: 是否启用进程内 L1 热缓存。
+# - l1_total_cap / l1_shard_cap: L1 热缓存容量上限；不设 shard 时按实现自动分配。
+# - persist: 是否启用 dump + WAL 持久化。
+# - dump_file: 周期性快照文件路径。
+# - dump_interval: 多久写一次快照，单位秒。
+# - wal_file: 可选，自定义 WAL 文件路径；不写则按 dump_file 自动推导。
+# - wal_sync_interval: WAL flush/fsync 周期，单位秒；越小越安全，磁盘写入越频繁。
+#
+# 内置缓存 tag 说明：
+# - cache_main: 真实解析主缓存，跨国内/国外真实链共享。
+# - cache_branch_domestic: 国内真实解析分支缓存。
+# - cache_branch_foreign: 国外真实解析分支缓存。
+# - cache_branch_foreign_ecs: 国外 ECS 真实解析分支缓存。
+# - cache_fakeip_domestic: 国内 fakeip 响应缓存。
+# - cache_fakeip_proxy: 代理 fakeip 响应缓存。
+# - cache_probe: 节点探测专用缓存。
+#
+# 设计默认值：
+# - fakeip 缓存默认不持久化，且不使用 lazy stale。
+# - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
+# - UDP 快路径默认只保留极短时间热点结果。
+# - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
+
+response:
+  cache_main:
+    size: 400000
+    lazy_cache_ttl: 86400
+    nxdomain_ttl: 300
+    servfail_ttl: 30
+    l1_enabled: true
+    l1_total_cap: 8192
+    persist: true
+    dump_file: db/cache/cache_main.dump
+    dump_interval: 3600
+    wal_sync_interval: 1
+
+  cache_branch_domestic:
+    size: 200000
+    lazy_cache_ttl: 21600
+    nxdomain_ttl: 180
+    servfail_ttl: 30
+    l1_enabled: true
+    l1_total_cap: 4096
+    persist: true
+    dump_file: db/cache/cache_branch_domestic.dump
+    dump_interval: 3600
+    wal_sync_interval: 1
+
+  cache_branch_foreign:
+    size: 150000
+    lazy_cache_ttl: 21600
+    nxdomain_ttl: 180
+    servfail_ttl: 30
+    l1_enabled: true
+    l1_total_cap: 4096
+    persist: true
+    dump_file: db/cache/cache_branch_foreign.dump
+    dump_interval: 3600
+    wal_sync_interval: 1
+
+  cache_branch_foreign_ecs:
+    size: 100000
+    lazy_cache_ttl: 7200
+    nxdomain_ttl: 120
+    servfail_ttl: 20
+    l1_enabled: true
+    l1_total_cap: 2048
+    persist: true
+    dump_file: db/cache/cache_branch_foreign_ecs.dump
+    dump_interval: 1800
+    wal_sync_interval: 1
+
+  cache_fakeip_domestic:
+    size: 100000
+    lazy_cache_ttl: 0
+    nxdomain_ttl: 60
+    servfail_ttl: 15
+    l1_enabled: true
+    l1_total_cap: 2048
+    persist: false
+
+  cache_fakeip_proxy:
+    size: 120000
+    lazy_cache_ttl: 0
+    nxdomain_ttl: 60
+    servfail_ttl: 15
+    l1_enabled: true
+    l1_total_cap: 2048
+    persist: false
+
+  cache_probe:
+    size: 80000
+    lazy_cache_ttl: 600
+    nxdomain_ttl: 60
+    servfail_ttl: 15
+    l1_enabled: true
+    l1_total_cap: 2048
+    persist: false
+
+udp_fast_path:
+  internal_ttl: 5
+  ttl_min: 1
+  ttl_max: 5

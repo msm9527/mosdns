@@ -29,7 +29,10 @@ var ordered = []Definition{
 		"blacklist": "blacklist",
 		"whitelist": "whitelist",
 	}},
+	{Name: "main_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "branch_cache", DefaultValue: "on", aliases: onOffAliases()},
+	{Name: "fakeip_cache", DefaultValue: "off", aliases: onOffAliases()},
+	{Name: "probe_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_query_type", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_ipv6", DefaultValue: "off", aliases: onOffAliases()},
 	{Name: "ad_block", DefaultValue: "off", aliases: onOffAliases()},
@@ -39,7 +42,6 @@ var ordered = []Definition{
 		"fakeip": "fakeip",
 	}},
 	{Name: "prefer_ipv6", DefaultValue: "off", aliases: onOffAliases()},
-	{Name: "main_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "udp_fast_path", DefaultValue: "on", aliases: onOffAliases()},
 }
 

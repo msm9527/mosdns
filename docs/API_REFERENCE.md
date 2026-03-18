@@ -61,7 +61,7 @@
 | `POST` | `/api/v3/audit/logs/search` | 结构化原始日志搜索 | `AuditLogSearchRequest` | `AuditLogsResponse` |
 | `GET` | `/api/v3/audit/logs/slow` | 慢查询列表 | `from,to,limit` | `AuditLog[]` |
 | `GET` | `/api/v3/audit/settings` | 审计设置和当前存储状态 | 无 | `AuditSettingsResponse` |
-| `PUT` | `/api/v3/audit/settings` | 更新审计设置 | `AuditSettingsUpdateRequest` | `AuditSettingsResponse` |
+| `PUT` | `/api/v3/audit/settings` | 更新审计设置，并写回 `config/config.yaml` 的 `audit:` 段 | `AuditSettingsUpdateRequest` | `AuditSettingsResponse` |
 | `POST` | `/api/v3/audit/clear` | 清空原始日志和聚合数据 | 无 | `{ "message": "..." }` |
 
 说明：
@@ -310,6 +310,13 @@
 | `POST` | `/api/v1/cache/{tag}/flush` | 清空缓存实例 | 无 | `{ "message": "..." }` |
 | `POST` | `/api/v1/cache/{tag}/purge_domain` | 按域名清理缓存 | `PurgeDomainRequest` | `PurgeDomainResponse` |
 
+补充说明：
+
+- 当前缓存策略真源文件为 `config/sub_config/cache_policies.yaml`
+- `GET /api/v1/cache/stats` 和 `GET /api/v1/cache/{tag}/stats` 返回里的 `config.persist` 表示该缓存是否会做 dump + WAL 持久化
+- `config.persist=false` 表示该缓存只保存在内存中
+- `config.size` 表示最大缓存条目数，不是文件大小；超过后按 LRU 淘汰旧条目
+
 ### 10.3 Lists
 
 | 方法 | 路径 | 说明 | 请求体 | 返回 |
@@ -326,6 +333,11 @@
 | `POST` | `/api/v1/memory/{tag}/save` | 持久化记忆池 | 无 | `TagMessageResponse` |
 | `POST` | `/api/v1/memory/{tag}/flush` | 清空记忆池 | 无 | `TagMessageResponse` |
 | `POST` | `/api/v1/memory/{tag}/verify` | 标记某域名已验证 | `VerifyMemoryRequest` | `VerifyMemoryResponse` |
+
+补充说明：
+
+- `my_fakeiplist` 这类记忆池不是 DNS 响应缓存
+- 它们用于记录运行过程中观察到的域名决策结果，供统计、查看和规则候选发布使用
 
 ### 10.5 Misc
 
