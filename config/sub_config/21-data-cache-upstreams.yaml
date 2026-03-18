@@ -5,6 +5,7 @@
 # - 国内/国外/假 IP 所需的 aliapi 上游组
 #
 # 这些插件不负责分流判断，只负责真正发起查询或承接缓存。
+# 缓存策略参数的系统级真源在 `sub_config/cache_policies.yaml`。
 #
 # 重要：
 # - 用户平时需要改的上游 DNS / socks5 / ecs，不建议直接改这里
@@ -13,74 +14,48 @@
 #   - `custom_config/global_overrides.yaml`
 #   - `custom_config/upstreams.yaml`
 # - 前端 API 保存和手工修改，优先都针对上述 custom_config 文件
+# - 缓存策略本身属于系统调优基线，不放 custom_config，也不进数据库
 
 version: v2
 
 policies:
-  # 全局主缓存：兼容模式下使用。
-  - name: cache_all
+  # 真实解析主缓存：
+  # - 跨国内/国外真实解析链共享
+  # - 不再承担 fakeip 结果缓存
+  - name: cache_main
     type: cache
-    args:
-      size: 800000
-      lazy_cache_ttl: 259200000
-      dump_file: db/cache/cache_all.dump
-      dump_interval: 36000
+    args: {}
 
-  # 全局主缓存（防泄漏链路）。
-  - name: cache_all_noleak
+  # 国内真实解析分支缓存。
+  - name: cache_branch_domestic
     type: cache
-    args:
-      size: 800000
-      lazy_cache_ttl: 259200000
-      exclude_ip: null
-      dump_file: db/cache/cache_all_noleak.dump
-      dump_interval: 36000
+    args: {}
 
-  # 国内链路缓存。
-  - name: cache_cn
+  # 国外真实解析分支缓存。
+  - name: cache_branch_foreign
     type: cache
-    args:
-      size: 500000
-      lazy_cache_ttl: 259200000
-      dump_file: db/cache/cache_cn.dump
-      dump_interval: 36000
+    args: {}
 
-  # 国外普通链路缓存。
-  - name: cache_google
+  # 国外 ECS 真实解析分支缓存。
+  - name: cache_branch_foreign_ecs
     type: cache
     args:
-      size: 300000
-      lazy_cache_ttl: 259200000
-      dump_file: db/cache/cache_google.dump
-      dump_interval: 36000
-
-  # 国外带 ECS 链路缓存。
-  - name: cache_google_node
-    type: cache
-    args:
-      size: 300000
-      lazy_cache_ttl: 259200000
       enable_ecs: true
-      dump_file: db/cache/cache_google_node.dump
-      dump_interval: 36000
 
-  # 节点探测链路缓存。
-  - name: cache_node
+  # 国内 fakeip 响应缓存。
+  - name: cache_fakeip_domestic
     type: cache
-    args:
-      size: 300000
-      lazy_cache_ttl: 259200000
-      dump_file: db/cache/cache_node.dump
-      dump_interval: 36000
+    args: {}
 
-  # 国内 fakeip 链路缓存。
-  - name: cache_cnmihomo
+  # 代理 fakeip 响应缓存。
+  - name: cache_fakeip_proxy
     type: cache
-    args:
-      size: 300000
-      lazy_cache_ttl: 259200000
-      dump_file: db/cache/cache_cnmihomo.dump
-      dump_interval: 36000
+    args: {}
+
+  # 节点探测专用缓存。
+  - name: cache_probe
+    type: cache
+    args: {}
 
   # 国内真实解析上游。
   - name: domestic

@@ -14,7 +14,7 @@ policies:
   # - 屏蔽特殊 query type
   # - 屏蔽 AAAA
   # - 统一打 fast_mark
-  # - 按主缓存开关选择全局缓存
+  # - 主缓存已下沉到真实解析链内部，不再在入口层混入 fakeip
   - name: sequence_common_precheck
     type: sequence
     args:
@@ -72,8 +72,6 @@ policies:
           - switch 'prefer_ipv4:off'
           - switch 'prefer_ipv6:on'
         exec: prefer_ipv6
-      - matches: switch 'main_cache:on'
-        exec: $cache_all_noleak
 
   # 默认 53 入口。
   - name: sequence_6666

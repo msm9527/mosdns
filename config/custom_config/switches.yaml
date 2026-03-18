@@ -8,8 +8,10 @@
 # 字段说明：
 # - block_response: on/off，是否拦截黑名单和空响应结果。
 # - client_proxy_mode: all/blacklist/whitelist，控制哪些客户端允许走代理链路。
-# - branch_cache: on/off，控制国内/国外分支缓存。
-# - main_cache: on/off，控制主缓存总开关。
+# - main_cache: on/off，控制真实解析主缓存总开关。
+# - branch_cache: on/off，控制真实解析分支缓存（国内/国外/ECS）。
+# - fakeip_cache: on/off，控制 fakeip 响应缓存，不影响 fakeip 记忆池。
+# - probe_cache: on/off，控制节点探测专用缓存。
 # - block_query_type: on/off，控制 SOA/PTR/HTTPS 等类型屏蔽。
 # - block_ipv6: on/off，控制 AAAA 请求屏蔽。
 # - ad_block: on/off，控制 AdGuard 在线规则拦截。
@@ -22,7 +24,13 @@ block_response: "on"
 
 client_proxy_mode: "all"
 
+main_cache: "on"
+
 branch_cache: "on"
+
+fakeip_cache: "off"
+
+probe_cache: "on"
 
 block_query_type: "on"
 
@@ -35,7 +43,5 @@ prefer_ipv4: "off"
 cn_answer_mode: "realip"
 
 prefer_ipv6: "off"
-
-main_cache: "on"
 
 udp_fast_path: "on"

@@ -3,27 +3,28 @@
 ## 适用范围
 
 - 缓存插件：`type: cache`
-- 配置文件：`config/sub_config/cache.yaml`
+- 配置文件：`config/sub_config/21-data-cache-upstreams.yaml` + `config/sub_config/cache_policies.yaml`
 - 运行态接口：`/api/v1/cache/{cache_tag}/stats`
 
-本手册用于指导当前缓存实例从仅 snapshot 模式切换到 `snapshot + WAL` 模式，并提供观测与回滚步骤。
+本手册用于指导当前“可持久化响应缓存实例”启用或回滚 `snapshot + WAL` 模式，并提供观测步骤。
 
 ## 当前默认配置
 
-当前仓库中的缓存实例已经按生产推荐方式配置：
+当前仓库中的缓存实例按职责分为两类：
 
-- 保留 `dump_file` / `dump_interval` 作为 checkpoint
-- 追加 `wal_file` / `wal_sync_interval` 作为增量恢复链路
+- 持久化缓存：`cache_main`、`cache_branch_domestic`、`cache_branch_foreign`、`cache_branch_foreign_ecs`
+- 非持久化缓存：`cache_fakeip_domestic`、`cache_fakeip_proxy`、`cache_probe`
+
+其中只有持久化缓存需要关注 `dump_file` / `wal_file`。
 
 示例：
 
 ```yaml
-- tag: cache_all
-  type: cache
-  args:
-    dump_file: cache/cache_all.dump
-    wal_file: cache/cache_all.wal
-    dump_interval: 36000
+response:
+  cache_main:
+    persist: true
+    dump_file: db/cache/cache_main.dump
+    dump_interval: 3600
     wal_sync_interval: 1
 ```
 
@@ -39,9 +40,9 @@
 
 建议按缓存职责分批启用，而不是一次性覆盖全部实例：
 
-1. 低风险实例：`cache_node`、`cache_cnmihomo`
-2. 中风险实例：`cache_cn`、`cache_google`、`cache_google_node`
-3. 高流量入口实例：`cache_all`、`cache_all_noleak`
+1. 低风险实例：`cache_branch_foreign_ecs`
+2. 中风险实例：`cache_branch_domestic`、`cache_branch_foreign`
+3. 高流量入口实例：`cache_main`
 
 灰度方法：
 
@@ -64,8 +65,8 @@ python -X utf8 "scripts/check_cache_stats.py" --base-url "http://127.0.0.1:9099"
 ```bash
 python -X utf8 "scripts/check_cache_stats.py" \
   --base-url "http://127.0.0.1:9099" \
-  --tag "cache_all" \
-  --tag "cache_all_noleak" \
+  --tag "cache_main" \
+  --tag "cache_branch_domestic" \
   --strict
 ```
 

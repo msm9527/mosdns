@@ -151,8 +151,8 @@ policies:
   - name: sbnodefallback
     type: fallback
     args:
-      primary: sequence_google_node
-      secondary: sequence_local
+      primary: sequence_google_node_raw
+      secondary: sequence_local_raw
       threshold: 5
       always_standby: false
 
@@ -168,7 +168,8 @@ policies:
           - qtype 28
           - qname $my_nodenov6rule
         exec: reject 0
-      - exec: $cache_node
+      - matches: switch 'probe_cache:on'
+        exec: $cache_probe
       - exec: sleep 1000
       - exec: $sbnodefallback
       - matches:

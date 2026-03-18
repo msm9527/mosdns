@@ -3,6 +3,7 @@ package udp_server
 import (
 	"fmt"
 	"hash/maphash"
+	"net"
 	"net/netip"
 	"testing"
 	"time"
@@ -72,6 +73,11 @@ func makeAnswer(t *testing.T, name string, qtype uint16, id uint16, ttl uint32) 
 	return mustPack(t, r)
 }
 
+func makeAnswerWithIP(t *testing.T, name string, qtype uint16, id uint16, ttl uint32, ip string) []byte {
+	t.Helper()
+	return makeAnswerWithIPNoTest(name, qtype, id, ttl, ip)
+}
+
 func mustPackNoTest(m *dns.Msg) []byte {
 	b, err := m.Pack()
 	if err != nil {
@@ -106,6 +112,28 @@ func makeAnswerNoTest(name string, qtype uint16, id uint16, ttl uint32) []byte {
 		panic(err)
 	}
 	r.Answer = []dns.RR{rr}
+	return mustPackNoTest(r)
+}
+
+func makeAnswerWithIPNoTest(name string, qtype uint16, id uint16, ttl uint32, ip string) []byte {
+	q := new(dns.Msg)
+	q.SetQuestion(name, qtype)
+	q.Id = id
+
+	r := new(dns.Msg)
+	r.SetReply(q)
+	switch qtype {
+	case dns.TypeAAAA:
+		r.Answer = []dns.RR{&dns.AAAA{
+			Hdr:  dns.RR_Header{Name: name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
+			AAAA: net.ParseIP(ip),
+		}}
+	default:
+		r.Answer = []dns.RR{&dns.A{
+			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
+			A:   net.ParseIP(ip).To4(),
+		}}
+	}
 	return mustPackNoTest(r)
 }
 
@@ -157,13 +185,13 @@ func TestFastCacheCollisionProtection(t *testing.T) {
 		t.Fatal("failed to find collision candidate")
 	}
 
-	fc.Store(collisionName, qtype, makeAnswer(t, collisionName, qtype, 0x2222, 30), "")
+	fc.Store(collisionName, qtype, makeAnswer(t, collisionName, qtype, 0x2222, 30), "", false)
 
 	buf := make([]byte, 512)
 	query := makeQuery(t, baseName, qtype, 0x9999)
 	copy(buf, query)
 
-	action, _, _, _ := fc.GetOrUpdating(baseHash, buf, baseName, qtype)
+	action, _, _, _ := fc.GetOrUpdating(baseHash, buf, baseName, qtype, true)
 	if action != server.FastActionContinue {
 		t.Fatalf("expected cache miss due to collision protection, got action=%d", action)
 	}
@@ -183,14 +211,14 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	name := "ttl.example.org."
 	qtype := uint16(dns.TypeA)
 	resp := makeAnswer(t, name, qtype, 0x1111, 120)
-	fc.Store(name, qtype, resp, "dset")
+	fc.Store(name, qtype, resp, "dset", false)
 
 	query := makeQuery(t, name, qtype, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, query)
 
 	h := maphash.String(maphashSeed, name) ^ uint64(qtype)
-	action, respLen, _, _ := fc.GetOrUpdating(h, buf, name, qtype)
+	action, respLen, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache hit, got action=%d", action)
 	}
@@ -211,10 +239,10 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 
 	// Lower-bound clamp
 	respLow := makeAnswer(t, name, qtype, 0x1111, 1)
-	fc.Store(name, qtype, respLow, "dset")
+	fc.Store(name, qtype, respLow, "dset", false)
 	buf = make([]byte, len(respLow))
 	copy(buf, query)
-	action, respLen, _, _ = fc.GetOrUpdating(h, buf, name, qtype)
+	action, respLen, _, _ = fc.GetOrUpdating(h, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache hit after re-store, got action=%d", action)
 	}
@@ -223,6 +251,51 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	}
 	if out.Answer[0].Header().Ttl != 5 {
 		t.Fatalf("ttl should be clamped to 5, got %d", out.Answer[0].Header().Ttl)
+	}
+}
+
+func TestFastCacheRespectsFakeIPToggle(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+
+	name := "fake.example."
+	qtype := uint16(dns.TypeA)
+	resp := makeAnswerWithIP(t, name, qtype, 0x1111, 30, "28.1.2.3")
+	fc.Store(name, qtype, resp, "fakeip", true)
+
+	query := makeQuery(t, name, qtype, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	h := maphash.String(maphashSeed, name) ^ uint64(qtype)
+
+	action, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, false)
+	if action != server.FastActionContinue {
+		t.Fatalf("expected fakeip cache to be bypassed when disabled, got %d", action)
+	}
+
+	copy(buf, query)
+	action, respLen, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
+	if action != server.FastActionReply {
+		t.Fatalf("expected fakeip cache hit when enabled, got %d", action)
+	}
+	var out dns.Msg
+	if err := out.Unpack(buf[:respLen]); err != nil {
+		t.Fatalf("unpack fakeip response: %v", err)
+	}
+	if out.Id != 0x9999 {
+		t.Fatalf("expected txid from request, got %x", out.Id)
+	}
+}
+
+func TestIsFakeIPResponse(t *testing.T) {
+	if !isFakeIPResponse(makeAnswerWithIP(t, "fake.example.", dns.TypeA, 0x1111, 30, "30.2.3.4")) {
+		t.Fatal("expected fake response to be detected")
+	}
+	if isFakeIPResponse(makeAnswerWithIP(t, "real.example.", dns.TypeA, 0x1111, 30, "1.1.1.1")) {
+		t.Fatal("expected real response not to be detected as fake")
 	}
 }
 
@@ -364,7 +437,7 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	}, stats)
 	name := "cached.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	fc.Store(name, dns.TypeA, resp, "缓存命中")
+	fc.Store(name, dns.TypeA, resp, "缓存命中", false)
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"udp_fast_path": testSwitchPlugin{value: "on"},
@@ -402,7 +475,7 @@ func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
 	}, stats)
 	name := "warmup.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	fc.Store(name, dns.TypeA, resp, "warmup")
+	fc.Store(name, dns.TypeA, resp, "warmup", false)
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"udp_fast_path": testSwitchPlugin{value: "on"},
@@ -449,7 +522,7 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 	}, stats)
 	name := "bench-cache.example."
 	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
-	fc.Store(name, dns.TypeA, resp, "bench")
+	fc.Store(name, dns.TypeA, resp, "bench", false)
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"udp_fast_path": testSwitchPlugin{value: "on"},

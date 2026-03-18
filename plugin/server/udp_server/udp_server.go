@@ -113,6 +113,7 @@ type fastCacheItem struct {
 	resp      []byte
 	updating  uint32
 	domainSet string
+	fakeIP    bool
 	hash      uint64
 	qname     string
 	qtype     uint16
@@ -182,7 +183,7 @@ func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
 	return &fastCache{cfg: cfg, stats: stats}
 }
 
-func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16) (int, int, uint64, string) {
+func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string) {
 	ptr := fc.m[hash&cacheMask].Load()
 	if ptr == nil {
 		if fc.stats != nil {
@@ -193,6 +194,12 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 	if ptr.hash != hash || ptr.qtype != qtype || ptr.qname != qname {
 		if fc.stats != nil {
 			fc.stats.cacheCollision.Add(1)
+			fc.stats.cacheMiss.Add(1)
+		}
+		return server.FastActionContinue, 0, 0, ""
+	}
+	if ptr.fakeIP && !allowFakeIP {
+		if fc.stats != nil {
 			fc.stats.cacheMiss.Add(1)
 		}
 		return server.FastActionContinue, 0, 0, ""
@@ -227,7 +234,7 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 	return server.FastActionContinue, 0, 0, ""
 }
 
-func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string) {
+func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string, fakeIP bool) {
 	h := maphash.String(maphashSeed, qname) ^ uint64(qtype)
 
 	bakedResp := make([]byte, len(resp))
@@ -245,6 +252,7 @@ func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string)
 		expire:    time.Now().Add(fc.cfg.internalTTL).Unix(),
 		updating:  0,
 		domainSet: dset,
+		fakeIP:    fakeIP,
 		hash:      h,
 		qname:     qname,
 		qtype:     qtype,
@@ -256,10 +264,11 @@ func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string)
 }
 
 type fastHandler struct {
-	next server.Handler
-	fc   *fastCache
-	dm   DomainMapperPlugin
-	sw   SwitchPlugin
+	next            server.Handler
+	fc              *fastCache
+	dm              DomainMapperPlugin
+	sw              SwitchPlugin
+	fakeCacheSwitch SwitchPlugin
 }
 
 func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
@@ -274,7 +283,11 @@ func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryM
 		if dsetName == "" && h.dm != nil {
 			_, dsetName, _ = h.dm.FastMatch(q.Question[0].Name)
 		}
-		h.fc.Store(q.Question[0].Name, q.Question[0].Qtype, *payload, dsetName)
+		fakeIP := isFakeIPResponse(*payload)
+		if fakeIP && (h.fakeCacheSwitch == nil || h.fakeCacheSwitch.GetValue() != "on") {
+			return payload
+		}
+		h.fc.Store(q.Question[0].Name, q.Question[0].Qtype, *payload, dsetName, fakeIP)
 	}
 	return payload
 }
@@ -298,6 +311,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 
 	var sw15 SwitchPlugin
 	sw15 = findSwitchPlugin(bp, switchmeta.MustLookup("udp_fast_path"))
+	swFake := findSwitchPlugin(bp, switchmeta.MustLookup("fakeip_cache"))
 
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -305,7 +319,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		ttlMin:      args.FastCacheTTLMin,
 		ttlMax:      args.FastCacheTTLMax,
 	}, stats)
-	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, sw: sw15}
+	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, sw: sw15, fakeCacheSwitch: swFake}
 	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second)
 
 	socketOpt := server_utils.ListenerSocketOpts{
@@ -360,7 +374,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 
 func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool) {
 	var once sync.Once
-	var sw15, sw5, sw6, sw1, sw7, clientProxyMode SwitchPlugin
+	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache SwitchPlugin
 	var dm DomainMapperPlugin
 	var ipSet IPSetPlugin
 	readyAt := time.Now().Add(warmup)
@@ -382,6 +396,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			sw1 = findSwitchPlugin(bp, switchmeta.MustLookup("block_response"))
 			sw7 = findSwitchPlugin(bp, switchmeta.MustLookup("ad_block"))
 			clientProxyMode = findSwitchPlugin(bp, switchmeta.MustLookup("client_proxy_mode"))
+			fakeipCache = findSwitchPlugin(bp, switchmeta.MustLookup("fakeip_cache"))
 			if p := bp.M().GetPlugin("unified_matcher1"); p != nil {
 				dm, _ = p.(DomainMapperPlugin)
 			}
@@ -484,7 +499,8 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if stats != nil {
 				stats.cacheLookup.Add(1)
 			}
-			action, rLen, _, ds := fc.GetOrUpdating(hKey, buf, qname, qtype)
+			allowFakeIP := fakeipCache != nil && fakeipCache.GetValue() == "on"
+			action, rLen, _, ds := fc.GetOrUpdating(hKey, buf, qname, qtype, allowFakeIP)
 			if action == server.FastActionReply {
 				if stats != nil {
 					stats.bypassCacheReply.Add(1)

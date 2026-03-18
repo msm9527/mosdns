@@ -29,8 +29,10 @@ control:
   switches:
     - name: block_response
     - name: client_proxy_mode
-    - name: branch_cache
     - name: main_cache
+    - name: branch_cache
+    - name: fakeip_cache
+    - name: probe_cache
     - name: block_query_type
     - name: block_ipv6
     - name: ad_block

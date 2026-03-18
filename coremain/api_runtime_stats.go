@@ -67,13 +67,13 @@ type runtimeDomainProfile struct {
 }
 
 var runtimeCacheProfiles = []runtimeCacheProfile{
-	{Key: "cache_all", Name: "全部缓存 (兼容)", Tag: "cache_all"},
-	{Key: "cache_cn", Name: "国内缓存", Tag: "cache_cn"},
-	{Key: "cache_node", Name: "节点缓存", Tag: "cache_node"},
-	{Key: "cache_google", Name: "国外缓存 (兼容)", Tag: "cache_google"},
-	{Key: "cache_all_noleak", Name: "全部缓存 (安全)", Tag: "cache_all_noleak"},
-	{Key: "cache_google_node", Name: "国外缓存 (安全)", Tag: "cache_google_node"},
-	{Key: "cache_cnmihomo", Name: "国内域名fakeip", Tag: "cache_cnmihomo"},
+	{Key: "cache_main", Name: "主缓存", Tag: "cache_main"},
+	{Key: "cache_branch_domestic", Name: "国内分支缓存", Tag: "cache_branch_domestic"},
+	{Key: "cache_branch_foreign", Name: "国外分支缓存", Tag: "cache_branch_foreign"},
+	{Key: "cache_branch_foreign_ecs", Name: "国外 ECS 分支缓存", Tag: "cache_branch_foreign_ecs"},
+	{Key: "cache_fakeip_domestic", Name: "国内 FakeIP 缓存", Tag: "cache_fakeip_domestic"},
+	{Key: "cache_fakeip_proxy", Name: "代理 FakeIP 缓存", Tag: "cache_fakeip_proxy"},
+	{Key: "cache_probe", Name: "节点探测缓存", Tag: "cache_probe"},
 }
 
 func RegisterRuntimeStatsAPI(router *chi.Mux, m *Mosdns) {

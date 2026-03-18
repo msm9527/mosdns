@@ -6,44 +6,83 @@
 version: v2
 
 policies:
-  # 国外普通链路。
-  - name: sequence_google_in
+  # 无缓存的基础真实解析链。
+  - name: sequence_google_raw
     type: sequence
     args:
-      - matches: switch 'branch_cache:on'
-        exec: $cache_google
       - exec: $foreign
       - exec: cname_remover
 
-  # 国外带 ECS 链路。
-  - name: sequence_google_node
+  - name: sequence_google_node_raw
     type: sequence
     args:
       - exec: ecs 2408:8888::8
-      - exec: $cache_google_node
       - exec: $foreignecs
       - exec: cname_remover
 
-  # 国内真实解析链路。
-  - name: sequence_local
+  - name: sequence_local_raw
     type: sequence
     args:
-      - matches: switch 'branch_cache:on'
-        exec: $cache_cn
       - exec: $domestic
       - exec: cname_remover
 
-  # 国内 fakeip 链路。
+  # 国外普通真实解析链：
+  # - main_cache 负责跨真实链共享
+  # - branch_cache 负责国外分支局部缓存
+  - name: sequence_google
+    type: sequence
+    args:
+      - matches: switch 'main_cache:on'
+        exec: $cache_main
+      - matches: switch 'branch_cache:on'
+        exec: $cache_branch_foreign
+      - exec: $sequence_google_raw
+
+  # 提供给独立监听端口的国外真实解析入口。
+  - name: sequence_google_in
+    type: sequence
+    args:
+      - exec: $sequence_google
+
+  # 国外 ECS 真实解析链。
+  - name: sequence_google_node
+    type: sequence
+    args:
+      - matches: switch 'main_cache:on'
+        exec: $cache_main
+      - matches: switch 'branch_cache:on'
+        exec: $cache_branch_foreign_ecs
+      - exec: $sequence_google_node_raw
+
+  # 国内真实解析链。
+  - name: sequence_local
+    type: sequence
+    args:
+      - matches: switch 'main_cache:on'
+        exec: $cache_main
+      - matches: switch 'branch_cache:on'
+        exec: $cache_branch_domestic
+      - exec: $sequence_local_raw
+
+  # 仅负责真正生成国内 fakeip 的链路。
+  - name: sequence_local_fake_generated
+    type: sequence
+    args:
+      - matches: switch 'fakeip_cache:on'
+        exec: $cache_fakeip_domestic
+      - exec: $cnfake
+      - exec: ttl 5
+
+  # 国内 fakeip 链路：
+  # - fast_mark 10 时仍回到真实解析
+  # - 只有真正生成 fakeip 时才进入 fakeip 缓存
   - name: sequence_local_fake
     type: sequence
     args:
-      - matches: switch 'branch_cache:on'
-        exec: $cache_cnmihomo
       - matches: fast_mark 10
         exec: $sequence_local
       - matches: '!fast_mark 10'
-        exec: $cnfake
-      - exec: ttl 5
+        exec: $sequence_local_fake_generated
 
   # 国内 fakeip 后立即退出的版本。
   - name: sequence_local_fake_exit
@@ -51,10 +90,7 @@ policies:
     args:
       - matches: fast_mark 10
         exec: exit
-      - matches: switch 'branch_cache:on'
-        exec: $cache_cnmihomo
-      - exec: $cnfake
-      - exec: ttl 5
+      - exec: $sequence_local_fake_generated
 
   # 根据 cn_answer_mode 在 realip/fakeip 间切换。
   - name: sequence_local_divert
@@ -65,14 +101,25 @@ policies:
       - matches: switch 'cn_answer_mode:fakeip'
         exec: $sequence_local_fake
 
-  # 国外普通解析链路。
-  - name: sequence_google
+  # 仅负责真正生成代理 fakeip 的链路。
+  - name: sequence_fakeip_generated
     type: sequence
     args:
-      - matches: switch 'branch_cache:on'
-        exec: $cache_google
-      - exec: $foreign
-      - exec: cname_remover
+      - matches: switch 'fakeip_cache:on'
+        exec: $cache_fakeip_proxy
+      - exec: $nocnfake
+      - exec: exit
+
+  # 进入 fakeip 池并按需补记忆列表的实际生成链。
+  - name: sequence_fakeip_generated_addlist
+    type: sequence
+    args:
+      - matches: switch 'fakeip_cache:on'
+        exec: $cache_fakeip_proxy
+      - exec: $nocnfake
+      - matches: '!fast_mark 12'
+        exec: $my_fakeiplist
+      - exec: exit
 
   # 直接进入 fakeip 池。
   - name: sequence_fakeip
@@ -82,8 +129,7 @@ policies:
         exec:
           - $sequence_google
           - exit
-      - exec: $nocnfake
-      - exec: exit
+      - exec: $sequence_fakeip_generated
 
   # 进入 fakeip 池并按需补记忆列表。
   - name: sequence_fakeip_addlist
@@ -93,7 +139,4 @@ policies:
         exec:
           - $sequence_google
           - exit
-      - exec: $nocnfake
-      - matches: '!fast_mark 12'
-        exec: $my_fakeiplist
-      - exec: exit
+      - exec: $sequence_fakeip_generated_addlist

@@ -50,6 +50,7 @@ type Mosdns struct {
 	sc               *safe_close.SafeClose
 	overridesMu      sync.RWMutex
 	globalOverrides  *GlobalOverrides // <<< ADDED
+	cachePolicies    *CachePolicyConfig
 	restartScheduled atomic.Bool
 }
 
@@ -93,6 +94,17 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 			zap.Int("replacements", len(overrides.Replacements)))
 	} else if err != nil {
 		mlog.L().Warn("failed to load global overrides from custom config", zap.Error(err))
+	}
+	cachePolicies, ok, err := LoadCachePolicyConfigFromSubConfig()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load cache policies from sub config: %w", err)
+	}
+	m.cachePolicies = cachePolicies
+	if ok {
+		mlog.L().Info("loaded cache policies from sub config",
+			zap.String("path", cachePoliciesConfigPath()),
+			zap.Int("response_policies", len(cachePolicies.Response)),
+			zap.Int("udp_fast_internal_ttl", cachePolicies.UDPFastPath.InternalTTL))
 	}
 	// <<< END OF MODIFICATIONS >>>
 
@@ -383,6 +395,9 @@ func (m *Mosdns) loadPluginsFromCfg(cfg *Config, includeDepth int) error {
 		rawPC := pc
 		if overrides := m.getGlobalOverridesRef(); overrides != nil {
 			ApplyOverrides(pc.Tag, &pc, overrides)
+		}
+		if err := ApplyRuntimeCachePolicy(&pc, m.cachePolicies); err != nil {
+			return fmt.Errorf("failed to apply runtime cache policy to plugin %s, %w", pc.Tag, err)
 		}
 
 		if err := m.newPlugin(rawPC, pc); err != nil {

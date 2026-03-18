@@ -1105,8 +1105,12 @@ document.addEventListener('DOMContentLoaded', () => {
                     (async () => {
                         ui.showToast('附加操作：正在清空核心缓存...', 'info');
                         const results = await Promise.allSettled([
-                            api.fetch('/api/v1/cache/cache_all/flush', { method: 'POST' }),
-                            api.fetch('/api/v1/cache/cache_all_noleak/flush', { method: 'POST' })
+                            api.fetch('/api/v1/cache/cache_main/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_branch_domestic/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_branch_foreign/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_branch_foreign_ecs/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_fakeip_domestic/flush', { method: 'POST' }),
+                            api.fetch('/api/v1/cache/cache_fakeip_proxy/flush', { method: 'POST' })
                         ]);
 
                         const failedCount = results.filter(r => r.status === 'rejected').length;
@@ -3131,13 +3135,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
 const cacheManager = {
         config: [
-            { key: 'cache_all', name: '全部缓存 (兼容)', tag: 'cache_all' },
-            { key: 'cache_cn', name: '国内缓存', tag: 'cache_cn' },
-            { key: 'cache_node', name: '节点缓存', tag: 'cache_node' },
-            { key: 'cache_google', name: '国外缓存 (兼容)', tag: 'cache_google' },
-            { key: 'cache_all_noleak', name: '全部缓存 (安全)', tag: 'cache_all_noleak' },
-            { key: 'cache_google_node', name: '国外缓存 (安全)', tag: 'cache_google_node' },
-            { key: 'cache_cnmihomo', name: '国内域名fakeip', tag: 'cache_cnmihomo' }
+            { key: 'cache_main', name: '主缓存', tag: 'cache_main' },
+            { key: 'cache_branch_domestic', name: '国内分支缓存', tag: 'cache_branch_domestic' },
+            { key: 'cache_branch_foreign', name: '国外分支缓存', tag: 'cache_branch_foreign' },
+            { key: 'cache_branch_foreign_ecs', name: '国外 ECS 分支缓存', tag: 'cache_branch_foreign_ecs' },
+            { key: 'cache_fakeip_domestic', name: '国内 FakeIP 缓存', tag: 'cache_fakeip_domestic' },
+            { key: 'cache_fakeip_proxy', name: '代理 FakeIP 缓存', tag: 'cache_fakeip_proxy' },
+            { key: 'cache_probe', name: '节点探测缓存', tag: 'cache_probe' }
         ],
 
         emptyStats(cacheTag = '') {
