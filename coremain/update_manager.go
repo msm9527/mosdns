@@ -95,6 +95,7 @@ type UpdateManager struct {
 	pendingSignature      string
 	statePath             string
 	fixedTagMode          fixedTagFallbackMode
+	runtimeEnv            RuntimeEnv
 }
 
 type fixedTagFallbackMode int
@@ -162,17 +163,24 @@ func NewUpdateManager() *UpdateManager {
 	return mgr
 }
 
+func (m *UpdateManager) SetRuntimeEnv(env RuntimeEnv) {
+	m.mu.Lock()
+	m.runtimeEnv = normalizeRuntimeEnv(env)
+	m.mu.Unlock()
+}
+
 // <<< START OF ADDED CODE >>>
 
 // getHttpClientForUpdate dynamically creates an http.Client based on override settings.
 // It returns the client and a boolean indicating if a proxy was configured.
 func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy bool, err error) {
-	if MainConfigBaseDir == "" {
-		m.logWarn("MainConfigBaseDir is not set, cannot load custom overrides, using direct connection", nil)
+	baseDir := m.runtimeBaseDir()
+	if baseDir == "" {
+		m.logWarn("runtime base dir is not set, cannot load custom overrides, using direct connection", nil)
 		return m.httpClient, false, nil
 	}
 
-	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(baseDir); err == nil && ok {
 		if strings.TrimSpace(overrides.Socks5) != "" {
 			m.logger().Info("using socks5 proxy for update from custom config", zap.String("proxy", overrides.Socks5))
 			return m.newSocks5Client(overrides.Socks5)
@@ -182,6 +190,16 @@ func (m *UpdateManager) getHttpClientForUpdate() (client *http.Client, isProxy b
 		m.logWarn("failed to load custom overrides, falling back to direct connection", err)
 	}
 	return m.httpClient, false, nil
+}
+
+func (m *UpdateManager) runtimeBaseDir() string {
+	m.mu.Lock()
+	baseDir := m.runtimeEnv.BaseDir
+	m.mu.Unlock()
+	if baseDir != "" {
+		return baseDir
+	}
+	return strings.TrimSpace(MainConfigBaseDir)
 }
 
 func (m *UpdateManager) newSocks5Client(addr string) (*http.Client, bool, error) {

@@ -52,6 +52,7 @@ type Mosdns struct {
 	overridesMu      sync.RWMutex
 	globalOverrides  *GlobalOverrides // <<< ADDED
 	cachePolicies    *CachePolicyConfig
+	updateManager    *UpdateManager
 	restartScheduled atomic.Bool
 }
 
@@ -74,13 +75,16 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 
 	env := newRuntimeEnvFromConfig(cfg)
 	m := &Mosdns{
-		logger:     lg,
-		env:        env,
-		plugins:    make(map[string]any),
-		httpMux:    chi.NewRouter(),
-		metricsReg: newMetricsReg(),
-		sc:         safe_close.NewSafeClose(),
+		logger:        lg,
+		env:           env,
+		plugins:       make(map[string]any),
+		httpMux:       chi.NewRouter(),
+		metricsReg:    newMetricsReg(),
+		sc:            safe_close.NewSafeClose(),
+		updateManager: NewUpdateManager(),
 	}
+	m.updateManager.SetRuntimeEnv(env)
+	m.updateManager.SetCurrentVersion(GetBuildVersion())
 	SetConfiguredRestartEndpointFromHTTPAddr(cfg.API.HTTP)
 	unregisterRestartScheduler := registerInternalRestartScheduler(func(delayMs int) error {
 		_, err := m.ScheduleSelfRestart(delayMs)
@@ -127,7 +131,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 
 	// Register our new APIs.
 	RegisterCaptureAPI(m.httpMux)      // For process logs
-	RegisterAuditAPI(m.httpMux)        // For audit logs
+	RegisterAuditAPI(m.httpMux, m)     // For audit logs
 	RegisterOverridesAPI(m.httpMux, m) // <<< MODIFIED: Pass 'm'
 	RegisterConfigManagerAPI(m.httpMux, m)
 	RegisterCacheAPI(m.httpMux, m)
@@ -137,7 +141,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	RegisterRuntimeAPI(m.httpMux, m)
 	RegisterRuntimeStatsAPI(m.httpMux, m)
 	RegisterRulesAPI(m.httpMux, m)
-	RegisterUpdateAPI(m.httpMux)    // For binary updates
+	RegisterUpdateAPI(m.httpMux, m) // For binary updates
 	RegisterSystemAPI(m.httpMux, m) // For self-restart
 	RegisterUpstreamAPI(m.httpMux, m)
 
@@ -290,6 +294,13 @@ func (m *Mosdns) MainConfigPath() string {
 
 func (m *Mosdns) ControlDBPath() string {
 	return m.RuntimeEnv().ControlDBPath
+}
+
+func (m *Mosdns) GetUpdateManager() *UpdateManager {
+	if m == nil || m.updateManager == nil {
+		return GlobalUpdateManager
+	}
+	return m.updateManager
 }
 
 func newMetricsReg() *prometheus.Registry {

@@ -45,6 +45,10 @@ func globalOverridesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), globalOverridesConfigFilename)
 }
 
+func globalOverridesConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), globalOverridesConfigFilename)
+}
+
 func upstreamOverridesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), upstreamOverridesConfigFilename)
 }
@@ -70,7 +74,14 @@ func ClientNameConfigPath() string {
 }
 
 func loadGlobalOverridesFromCustomConfig() (*GlobalOverrides, bool, error) {
-	path := globalOverridesConfigPath()
+	return loadGlobalOverridesFromCustomConfigAtPath(globalOverridesConfigPath())
+}
+
+func loadGlobalOverridesFromCustomConfigForBaseDir(baseDir string) (*GlobalOverrides, bool, error) {
+	return loadGlobalOverridesFromCustomConfigAtPath(globalOverridesConfigPathForBaseDir(baseDir))
+}
+
+func loadGlobalOverridesFromCustomConfigAtPath(path string) (*GlobalOverrides, bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

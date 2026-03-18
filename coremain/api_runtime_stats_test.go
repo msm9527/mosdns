@@ -53,21 +53,14 @@ func TestHandleAggregatedCacheStats(t *testing.T) {
 	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
 		t.Fatalf("unmarshal response failed: %v", err)
 	}
-	if len(resp.Items) != len(runtimeCacheProfiles) {
-		t.Fatalf("unexpected item count: got %d want %d", len(resp.Items), len(runtimeCacheProfiles))
+	if len(resp.Items) != 1 {
+		t.Fatalf("unexpected item count: got %d want %d", len(resp.Items), 1)
 	}
 	if resp.Items[0].Key != "cache_main" || resp.Items[0].BackendSize != 12 {
 		t.Fatalf("unexpected first cache item: %+v", resp.Items[0])
 	}
-	foundMissing := false
-	for _, item := range resp.Items {
-		if item.Tag == "cache_branch_domestic" && item.Error != "" {
-			foundMissing = true
-			break
-		}
-	}
-	if !foundMissing {
-		t.Fatal("expected missing cache plugin to return error")
+	if resp.Items[0].Name != "主缓存" {
+		t.Fatalf("unexpected cache display name: %+v", resp.Items[0])
 	}
 }
 
