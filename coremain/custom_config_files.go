@@ -45,12 +45,20 @@ func globalOverridesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), globalOverridesConfigFilename)
 }
 
+func GlobalOverridesConfigPathForBaseDir(baseDir string) string {
+	return globalOverridesConfigPathForBaseDir(baseDir)
+}
+
 func globalOverridesConfigPathForBaseDir(baseDir string) string {
 	return filepath.Join(customConfigDirPathForBaseDir(baseDir), globalOverridesConfigFilename)
 }
 
 func upstreamOverridesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), upstreamOverridesConfigFilename)
+}
+
+func upstreamOverridesConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), upstreamOverridesConfigFilename)
 }
 
 func switchesConfigPath() string {
@@ -105,6 +113,14 @@ func loadGlobalOverridesFromCustomConfigAtPath(path string) (*GlobalOverrides, b
 }
 
 func saveGlobalOverridesToCustomConfig(payload *GlobalOverrides) error {
+	return saveGlobalOverridesToCustomConfigAtPath(globalOverridesConfigPath(), payload)
+}
+
+func saveGlobalOverridesToCustomConfigForBaseDir(baseDir string, payload *GlobalOverrides) error {
+	return saveGlobalOverridesToCustomConfigAtPath(globalOverridesConfigPathForBaseDir(baseDir), payload)
+}
+
+func saveGlobalOverridesToCustomConfigAtPath(path string, payload *GlobalOverrides) error {
 	if payload == nil {
 		payload = &GlobalOverrides{}
 	}
@@ -137,11 +153,18 @@ func saveGlobalOverridesToCustomConfig(payload *GlobalOverrides) error {
 	buf.WriteString("# - replacements: 可选的字符串替换表，适合少量精确替换\n\n")
 	buf.Write(body)
 
-	return writeTextFileAtomically(globalOverridesConfigPath(), buf.Bytes())
+	return writeTextFileAtomically(path, buf.Bytes())
 }
 
 func loadUpstreamOverridesFromCustomConfig() (GlobalUpstreamOverrides, bool, error) {
-	path := upstreamOverridesConfigPath()
+	return loadUpstreamOverridesFromCustomConfigAtPath(upstreamOverridesConfigPath())
+}
+
+func loadUpstreamOverridesFromCustomConfigForBaseDir(baseDir string) (GlobalUpstreamOverrides, bool, error) {
+	return loadUpstreamOverridesFromCustomConfigAtPath(upstreamOverridesConfigPathForBaseDir(baseDir))
+}
+
+func loadUpstreamOverridesFromCustomConfigAtPath(path string) (GlobalUpstreamOverrides, bool, error) {
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -335,6 +358,14 @@ func strconvQuote(value string) string {
 }
 
 func saveUpstreamOverridesToCustomConfig(cfg GlobalUpstreamOverrides) error {
+	return saveUpstreamOverridesToCustomConfigAtPath(upstreamOverridesConfigPath(), cfg)
+}
+
+func saveUpstreamOverridesToCustomConfigForBaseDir(baseDir string, cfg GlobalUpstreamOverrides) error {
+	return saveUpstreamOverridesToCustomConfigAtPath(upstreamOverridesConfigPathForBaseDir(baseDir), cfg)
+}
+
+func saveUpstreamOverridesToCustomConfigAtPath(path string, cfg GlobalUpstreamOverrides) error {
 	if cfg == nil {
 		cfg = make(GlobalUpstreamOverrides)
 	}
@@ -364,7 +395,7 @@ func saveUpstreamOverridesToCustomConfig(cfg GlobalUpstreamOverrides) error {
 	sort.Strings(keys)
 	if len(keys) == 0 {
 		buf.WriteString("{}\n")
-		return writeTextFileAtomically(upstreamOverridesConfigPath(), buf.Bytes())
+		return writeTextFileAtomically(path, buf.Bytes())
 	}
 
 	for i, key := range keys {
@@ -391,7 +422,7 @@ func saveUpstreamOverridesToCustomConfig(cfg GlobalUpstreamOverrides) error {
 		}
 	}
 
-	return writeTextFileAtomically(upstreamOverridesConfigPath(), buf.Bytes())
+	return writeTextFileAtomically(path, buf.Bytes())
 }
 
 func writeTextFileAtomically(path string, content []byte) error {

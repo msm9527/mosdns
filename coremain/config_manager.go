@@ -182,7 +182,7 @@ func handleConfigUpdateFromURLWithMosdns(m *Mosdns) http.HandlerFunc {
 		lg := mlog.L()
 
 		// --- 1. 下载文件 (包含代理检测和降级逻辑) ---
-		zipData, err := downloadWithFallback(sourceSpec.DownloadURL)
+		zipData, err := downloadWithFallback(runtimeBaseDir(m), sourceSpec.DownloadURL)
 		if err != nil {
 			lg.Error("download config failed", zap.Error(err))
 			writeAPIError(w, http.StatusInternalServerError, "DOWNLOAD_CONFIG_FAILED", "Download failed: "+err.Error())
@@ -227,9 +227,9 @@ func handleConfigUpdateFromURLWithMosdns(m *Mosdns) http.HandlerFunc {
 }
 
 // downloadWithFallback 尝试使用配置的 Socks5 下载，失败则直连
-func downloadWithFallback(url string) ([]byte, error) {
+func downloadWithFallback(baseDir, url string) ([]byte, error) {
 	var proxyAddr string
-	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(baseDir); err == nil && ok {
 		proxyAddr = strings.TrimSpace(overrides.Socks5)
 	} else if err != nil {
 		mlog.L().Warn("failed to load custom overrides for config download, falling back to direct", zap.Error(err))

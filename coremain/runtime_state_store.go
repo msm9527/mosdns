@@ -33,6 +33,10 @@ func RuntimeStateDBPath() string {
 	return defaultRuntimeStateDBPath()
 }
 
+func RuntimeStateDBPathForBaseDir(baseDir string) string {
+	return runtimeStateDBPathForBaseDir(baseDir)
+}
+
 func setRuntimeStateDBPath(path string) {
 	runtimeStateDBPathOverride = strings.TrimSpace(path)
 }

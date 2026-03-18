@@ -49,10 +49,12 @@ type GlobalUpstreamOverrides map[string][]UpstreamOverrideConfig
 var (
 	upstreamOverridesLock sync.RWMutex
 	upstreamOverrides     GlobalUpstreamOverrides
+	upstreamOverridesDir  string
 )
 
 // RegisterUpstreamAPI 注册路由
 func RegisterUpstreamAPI(router *chi.Mux, m *Mosdns) {
+	setUpstreamOverridesBaseDir(runtimeBaseDir(m))
 	router.Route("/api/v1/upstream", func(r chi.Router) {
 		r.Get("/tags", handleGetControlUpstreamTags(m))
 		r.Get("/config", handleGetControlUpstreamConfig(m))
@@ -120,11 +122,12 @@ func loadUpstreamOverrides() error {
 }
 
 func loadUpstreamOverridesLocked() error {
+	baseDir := currentUpstreamOverridesBaseDir()
 	mlog.L().Info("[Debug UpstreamAPI] Loading overrides",
-		zap.String("MainConfigBaseDir", MainConfigBaseDir),
-		zap.String("File", upstreamOverridesConfigPath()))
+		zap.String("base_dir", baseDir),
+		zap.String("file", upstreamOverridesConfigPathForBaseDir(baseDir)))
 
-	if cfg, ok, err := loadUpstreamOverridesFromCustomConfig(); err == nil && ok {
+	if cfg, ok, err := loadUpstreamOverridesFromCustomConfigForBaseDir(baseDir); err == nil && ok {
 		count := 0
 		for _, v := range cfg {
 			count += len(v)
@@ -135,7 +138,7 @@ func loadUpstreamOverridesLocked() error {
 	} else if err != nil {
 		mlog.L().Warn("[Debug UpstreamAPI] Custom config load failed", zap.Error(err))
 	}
-	mlog.L().Info("[Debug UpstreamAPI] Custom config empty, creating new map", zap.String("path", upstreamOverridesConfigPath()))
+	mlog.L().Info("[Debug UpstreamAPI] Custom config empty, creating new map", zap.String("path", upstreamOverridesConfigPathForBaseDir(baseDir)))
 	upstreamOverrides = make(GlobalUpstreamOverrides)
 	return nil
 }
@@ -148,12 +151,13 @@ func saveUpstreamOverrides() error {
 }
 
 func saveUpstreamOverridesLocked() error {
-	if err := saveUpstreamOverridesToCustomConfig(upstreamOverrides); err != nil {
+	baseDir := currentUpstreamOverridesBaseDir()
+	if err := saveUpstreamOverridesToCustomConfigForBaseDir(baseDir, upstreamOverrides); err != nil {
 		mlog.L().Error("[Debug UpstreamAPI] Custom config save failed", zap.Error(err))
 		return err
 	}
 	mlog.L().Info("[Debug UpstreamAPI] Saved upstream overrides to custom config",
-		zap.String("path", upstreamOverridesConfigPath()),
+		zap.String("path", upstreamOverridesConfigPathForBaseDir(baseDir)),
 	)
 	totalItems := 0
 	for _, items := range upstreamOverrides {
@@ -162,9 +166,22 @@ func saveUpstreamOverridesLocked() error {
 	_ = RecordSystemEvent("control.upstreams", "info", "saved upstream overrides", map[string]any{
 		"groups":      len(upstreamOverrides),
 		"total_items": totalItems,
-		"path":        upstreamOverridesConfigPath(),
+		"path":        upstreamOverridesConfigPathForBaseDir(baseDir),
 	})
 	return nil
+}
+
+func setUpstreamOverridesBaseDir(baseDir string) {
+	upstreamOverridesLock.Lock()
+	defer upstreamOverridesLock.Unlock()
+	upstreamOverridesDir = strings.TrimSpace(baseDir)
+}
+
+func currentUpstreamOverridesBaseDir() string {
+	if strings.TrimSpace(upstreamOverridesDir) != "" {
+		return upstreamOverridesDir
+	}
+	return strings.TrimSpace(MainConfigBaseDir)
 }
 
 func ensureUpstreamOverridesLoaded() error {

@@ -103,24 +103,24 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	DiscoverAndCacheSettings(cfg)
 
 	// Step 2: Load user-editable overrides from custom_config.
-	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(env.BaseDir); err == nil && ok {
 		m.setGlobalOverrides(overrides)
 		mlog.L().Info("loaded global overrides from custom config",
-			zap.String("path", globalOverridesConfigPath()),
+			zap.String("path", globalOverridesConfigPathForBaseDir(env.BaseDir)),
 			zap.String("socks5", overrides.Socks5),
 			zap.String("ecs", overrides.ECS),
 			zap.Int("replacements", len(overrides.Replacements)))
 	} else if err != nil {
 		mlog.L().Warn("failed to load global overrides from custom config", zap.Error(err))
 	}
-	cachePolicies, ok, err := LoadCachePolicyConfigFromSubConfig()
+	cachePolicies, ok, err := LoadCachePolicyConfigFromSubConfigForBaseDir(env.BaseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load cache policies from sub config: %w", err)
 	}
 	m.cachePolicies = cachePolicies
 	if ok {
 		mlog.L().Info("loaded cache policies from sub config",
-			zap.String("path", cachePoliciesConfigPath()),
+			zap.String("path", cachePoliciesConfigPathForBaseDir(env.BaseDir)),
 			zap.Int("response_policies", len(cachePolicies.Response)),
 			zap.Int("udp_fast_internal_ttl", cachePolicies.UDPFastPath.InternalTTL))
 	}

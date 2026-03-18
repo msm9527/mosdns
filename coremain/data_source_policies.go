@@ -66,7 +66,7 @@ func listRuleSourceBindings(baseDir string, scope rulesource.Scope) (map[string]
 }
 
 func resolveRuleSourceSocks5(m *Mosdns, scope rulesource.Scope, bindTo string) (string, error) {
-	baseDir := strings.TrimSpace(MainConfigBaseDir)
+	baseDir := runtimeBaseDir(m)
 	if baseDir == "" {
 		return "", nil
 	}

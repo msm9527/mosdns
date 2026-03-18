@@ -27,6 +27,7 @@ func TestHandleAggregatedCacheStats(t *testing.T) {
 	m := NewTestMosdnsWithPlugins(map[string]any{
 		"cache_main": mockCacheStatsProvider{
 			snapshot: CacheStatsSnapshot{
+				Name:        "主缓存",
 				Tag:         "cache_main",
 				BackendSize: 12,
 				L1Size:      3,

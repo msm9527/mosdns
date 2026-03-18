@@ -79,10 +79,13 @@ func handleAggregatedCacheStats(m *Mosdns) http.HandlerFunc {
 				item.Key = tag
 			}
 			if item.Name == "" {
-				item.Name = defaultRuntimeCacheName(tag)
+				item.Name = item.Tag
 			}
 			if item.Tag == "" {
 				item.Tag = tag
+			}
+			if item.Name == "" {
+				item.Name = tag
 			}
 			if item.Counters == nil {
 				item.Counters = map[string]uint64{}
@@ -106,27 +109,6 @@ func discoverRuntimeCacheTags(m *Mosdns) []string {
 	}
 	sort.Strings(tags)
 	return tags
-}
-
-func defaultRuntimeCacheName(tag string) string {
-	switch tag {
-	case "cache_main":
-		return "主缓存"
-	case "cache_branch_domestic":
-		return "国内分支缓存"
-	case "cache_branch_foreign":
-		return "国外分支缓存"
-	case "cache_branch_foreign_ecs":
-		return "国外 ECS 分支缓存"
-	case "cache_fakeip_domestic":
-		return "国内 FakeIP 缓存"
-	case "cache_fakeip_proxy":
-		return "代理 FakeIP 缓存"
-	case "cache_probe":
-		return "节点探测缓存"
-	default:
-		return tag
-	}
 }
 
 func handleAggregatedDomainStats(m *Mosdns) http.HandlerFunc {

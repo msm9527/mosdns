@@ -145,10 +145,14 @@ func ruleSourceConfigHeader(scope rulesource.Scope) string {
 }
 
 func ResolveMainConfigPath(path string) string {
-	if filepath.IsAbs(path) || strings.TrimSpace(MainConfigBaseDir) == "" {
+	return ResolveMainConfigPathForBaseDir(MainConfigBaseDir, path)
+}
+
+func ResolveMainConfigPathForBaseDir(baseDir, path string) string {
+	if filepath.IsAbs(path) || strings.TrimSpace(baseDir) == "" {
 		return path
 	}
-	return filepath.Join(MainConfigBaseDir, path)
+	return filepath.Join(baseDir, path)
 }
 
 type ruleSourceConfigEmptyError struct {

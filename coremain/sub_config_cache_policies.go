@@ -64,7 +64,11 @@ type cachePoliciesFile struct {
 }
 
 func cachePoliciesConfigPath() string {
-	baseDir := strings.TrimSpace(MainConfigBaseDir)
+	return cachePoliciesConfigPathForBaseDir(MainConfigBaseDir)
+}
+
+func cachePoliciesConfigPathForBaseDir(baseDir string) string {
+	baseDir = strings.TrimSpace(baseDir)
 	if baseDir == "" {
 		baseDir = "."
 	}
@@ -112,8 +116,12 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 }
 
 func LoadCachePolicyConfigFromSubConfig() (*CachePolicyConfig, bool, error) {
+	return LoadCachePolicyConfigFromSubConfigForBaseDir(MainConfigBaseDir)
+}
+
+func LoadCachePolicyConfigFromSubConfigForBaseDir(baseDir string) (*CachePolicyConfig, bool, error) {
 	cfg := defaultCachePolicyConfig()
-	path := cachePoliciesConfigPath()
+	path := cachePoliciesConfigPathForBaseDir(baseDir)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {

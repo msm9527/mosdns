@@ -105,10 +105,11 @@ func runtimeHealthReport(dbPath string, m *Mosdns) (*runtimeHealthResponse, erro
 	}
 
 	addNamespaceSummaryCheck(dbPath, addCheck)
-	addSwitchesHealthCheck(addCheck)
-	addMemoryPoolHealthCheck(addCheck)
-	addOverridesHealthCheck(addCheck)
-	addUpstreamOverrideHealthCheck(addCheck)
+	baseDir := runtimeBaseDir(m)
+	addSwitchesHealthCheck(baseDir, addCheck)
+	addMemoryPoolHealthCheck(baseDir, addCheck)
+	addOverridesHealthCheck(baseDir, addCheck)
+	addUpstreamOverrideHealthCheck(baseDir, addCheck)
 	addRequeryHealthCheck(dbPath, addCheck)
 	addUpstreamHealthCheck(m, addCheck)
 
@@ -140,8 +141,8 @@ func addNamespaceSummaryCheck(dbPath string, addCheck func(runtimeHealthCheck)) 
 	addCheck(runtimeHealthCheck{Name: "namespace_summary", Status: "ok", Details: map[string]any{"counts": counts}})
 }
 
-func addSwitchesHealthCheck(addCheck func(runtimeHealthCheck)) {
-	switches, ok, err := loadSwitchesFromCustomConfig()
+func addSwitchesHealthCheck(baseDir string, addCheck func(runtimeHealthCheck)) {
+	switches, ok, err := loadSwitchesFromCustomConfigForBaseDir(baseDir)
 	if err != nil {
 		addCheck(runtimeHealthCheck{Name: "control_switches", Status: "error", Message: err.Error()})
 		return
@@ -152,13 +153,13 @@ func addSwitchesHealthCheck(addCheck func(runtimeHealthCheck)) {
 		Details: map[string]any{
 			"present": ok,
 			"count":   len(switches),
-			"path":    switchesConfigPath(),
+			"path":    switchesConfigPathForBaseDir(baseDir),
 		},
 	})
 }
 
-func addMemoryPoolHealthCheck(addCheck func(runtimeHealthCheck)) {
-	policies, ok, err := LoadMemoryPoolPoliciesFromCustomConfig()
+func addMemoryPoolHealthCheck(baseDir string, addCheck func(runtimeHealthCheck)) {
+	policies, ok, err := LoadMemoryPoolPoliciesFromCustomConfigForBaseDir(baseDir)
 	if err != nil {
 		addCheck(runtimeHealthCheck{Name: "memory_pools", Status: "error", Message: err.Error()})
 		return
@@ -181,13 +182,13 @@ func addMemoryPoolHealthCheck(addCheck func(runtimeHealthCheck)) {
 			"count":   len(policies),
 			"memory":  memoryCount,
 			"stats":   statsCount,
-			"path":    MemoryPoolsConfigPath(),
+			"path":    memoryPoolsConfigPathForBaseDir(baseDir),
 		},
 	})
 }
 
-func addOverridesHealthCheck(addCheck func(runtimeHealthCheck)) {
-	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err != nil {
+func addOverridesHealthCheck(baseDir string, addCheck func(runtimeHealthCheck)) {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(baseDir); err != nil {
 		addCheck(runtimeHealthCheck{Name: "control_overrides", Status: "error", Message: err.Error()})
 		return
 	} else {
@@ -201,14 +202,14 @@ func addOverridesHealthCheck(addCheck func(runtimeHealthCheck)) {
 			Details: map[string]any{
 				"present": ok,
 				"count":   count,
-				"path":    globalOverridesConfigPath(),
+				"path":    globalOverridesConfigPathForBaseDir(baseDir),
 			},
 		})
 	}
 }
 
-func addUpstreamOverrideHealthCheck(addCheck func(runtimeHealthCheck)) {
-	if upstreams, ok, err := loadUpstreamOverridesFromCustomConfig(); err != nil {
+func addUpstreamOverrideHealthCheck(baseDir string, addCheck func(runtimeHealthCheck)) {
+	if upstreams, ok, err := loadUpstreamOverridesFromCustomConfigForBaseDir(baseDir); err != nil {
 		addCheck(runtimeHealthCheck{Name: "control_upstreams", Status: "error", Message: err.Error()})
 		return
 	} else {
@@ -223,7 +224,7 @@ func addUpstreamOverrideHealthCheck(addCheck func(runtimeHealthCheck)) {
 				"present": ok,
 				"groups":  len(upstreams),
 				"items":   total,
-				"path":    upstreamOverridesConfigPath(),
+				"path":    upstreamOverridesConfigPathForBaseDir(baseDir),
 			},
 		})
 	}

@@ -39,6 +39,7 @@ type Args struct {
 type SiSet struct {
 	pluginTag string
 	baseArgs  *Args
+	baseDir   string
 
 	matcher atomic.Value
 
@@ -66,6 +67,7 @@ func newSiSet(bp *coremain.BP, args any) (any, error) {
 	p := &SiSet{
 		pluginTag:  bp.Tag(),
 		baseArgs:   cfg,
+		baseDir:    bp.BaseDir(),
 		configFile: cfg.ConfigFile,
 		bindTo:     cfg.BindTo,
 		httpClient: client,
@@ -153,7 +155,7 @@ func (p *SiSet) loadSources() error {
 	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(bindTo) == "" {
 		return fmt.Errorf("%s: config_file and bind_to are required", PluginType)
 	}
-	sources, err := coremain.LoadRuleSourcesByBinding(configFile, scope, bindTo)
+	sources, err := coremain.LoadRuleSourcesByBindingForBaseDir(p.currentBaseDir(), configFile, scope, bindTo)
 	if err != nil {
 		return err
 	}
@@ -175,7 +177,7 @@ func (p *SiSet) reloadAllRules(forceRemote bool) error {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, forceRemote)
 		cancel()
 		if err != nil {
 			p.matcher.Store(netlist.NewList())
@@ -221,6 +223,17 @@ func (p *SiSet) sourceSnapshot() []rulesource.Source {
 }
 
 func (p *SiSet) runtimeDBPath() string {
+	baseDir := p.currentBaseDir()
+	if baseDir != "" {
+		return coremain.RuntimeStateDBPathForBaseDir(baseDir)
+	}
 	configFile, _ := p.currentBinding()
 	return coremain.RuntimeStateDBPathForPath(configFile)
+}
+
+func (p *SiSet) currentBaseDir() string {
+	if strings.TrimSpace(p.baseDir) != "" {
+		return p.baseDir
+	}
+	return strings.TrimSpace(coremain.MainConfigBaseDir)
 }
