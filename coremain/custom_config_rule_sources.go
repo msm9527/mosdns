@@ -18,32 +18,72 @@ func AdguardSourcesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), adguardSourcesConfigFilename)
 }
 
+func AdguardSourcesConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), adguardSourcesConfigFilename)
+}
+
 func DiversionSourcesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), diversionSourcesConfigFilename)
 }
 
+func DiversionSourcesConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), diversionSourcesConfigFilename)
+}
+
 func LoadAdguardSourcesFromCustomConfig() (rulesource.Config, bool, error) {
-	return rulesource.LoadConfig(AdguardSourcesConfigPath(), rulesource.ScopeAdguard)
+	return LoadAdguardSourcesConfigAtPath(AdguardSourcesConfigPath())
+}
+
+func LoadAdguardSourcesFromCustomConfigForBaseDir(baseDir string) (rulesource.Config, bool, error) {
+	return LoadAdguardSourcesConfigAtPath(AdguardSourcesConfigPathForBaseDir(baseDir))
 }
 
 func LoadDiversionSourcesFromCustomConfig() (rulesource.Config, bool, error) {
-	return rulesource.LoadConfig(DiversionSourcesConfigPath(), rulesource.ScopeDiversion)
+	return LoadDiversionSourcesConfigAtPath(DiversionSourcesConfigPath())
+}
+
+func LoadDiversionSourcesFromCustomConfigForBaseDir(baseDir string) (rulesource.Config, bool, error) {
+	return LoadDiversionSourcesConfigAtPath(DiversionSourcesConfigPathForBaseDir(baseDir))
+}
+
+func LoadAdguardSourcesConfigAtPath(path string) (rulesource.Config, bool, error) {
+	return loadRuleSourcesConfigAtPath(path, rulesource.ScopeAdguard)
+}
+
+func LoadDiversionSourcesConfigAtPath(path string) (rulesource.Config, bool, error) {
+	return loadRuleSourcesConfigAtPath(path, rulesource.ScopeDiversion)
 }
 
 func SaveAdguardSourcesToCustomConfig(cfg rulesource.Config) error {
+	return SaveAdguardSourcesToPath(AdguardSourcesConfigPath(), cfg)
+}
+
+func SaveAdguardSourcesToCustomConfigForBaseDir(baseDir string, cfg rulesource.Config) error {
+	return SaveAdguardSourcesToPath(AdguardSourcesConfigPathForBaseDir(baseDir), cfg)
+}
+
+func SaveAdguardSourcesToPath(path string, cfg rulesource.Config) error {
 	body, err := renderRuleSourceConfig(rulesource.ScopeAdguard, cfg)
 	if err != nil {
 		return err
 	}
-	return writeTextFileAtomically(AdguardSourcesConfigPath(), body)
+	return writeTextFileAtomically(path, body)
 }
 
 func SaveDiversionSourcesToCustomConfig(cfg rulesource.Config) error {
+	return SaveDiversionSourcesToPath(DiversionSourcesConfigPath(), cfg)
+}
+
+func SaveDiversionSourcesToCustomConfigForBaseDir(baseDir string, cfg rulesource.Config) error {
+	return SaveDiversionSourcesToPath(DiversionSourcesConfigPathForBaseDir(baseDir), cfg)
+}
+
+func SaveDiversionSourcesToPath(path string, cfg rulesource.Config) error {
 	body, err := renderRuleSourceConfig(rulesource.ScopeDiversion, cfg)
 	if err != nil {
 		return err
 	}
-	return writeTextFileAtomically(DiversionSourcesConfigPath(), body)
+	return writeTextFileAtomically(path, body)
 }
 
 func renderRuleSourceConfig(scope rulesource.Scope, cfg rulesource.Config) ([]byte, error) {

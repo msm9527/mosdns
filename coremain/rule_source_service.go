@@ -148,7 +148,7 @@ func (s *ruleSourceService) RefreshAll() ([]RuleSourceItem, error) {
 }
 
 func (s *ruleSourceService) RefreshOne(id string) (RuleSourceItem, error) {
-	source, err := LoadRuleSourceByID(s.configFile(), s.scope, id)
+	source, err := LoadRuleSourceByIDForBaseDir(s.baseDir(), s.configFile(), s.scope, id)
 	if err != nil {
 		return RuleSourceItem{}, NewRuleAPIError(http.StatusNotFound, "RULE_SOURCE_NOT_FOUND", "规则源不存在")
 	}
@@ -164,10 +164,10 @@ func (s *ruleSourceService) RefreshOne(id string) (RuleSourceItem, error) {
 func (s *ruleSourceService) loadConfig() (rulesource.Config, error) {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
-		cfg, _, err := LoadAdguardSourcesFromCustomConfig()
+		cfg, _, err := LoadAdguardSourcesFromCustomConfigForBaseDir(s.baseDir())
 		return cfg, err
 	case rulesource.ScopeDiversion:
-		cfg, _, err := LoadDiversionSourcesFromCustomConfig()
+		cfg, _, err := LoadDiversionSourcesFromCustomConfigForBaseDir(s.baseDir())
 		return cfg, err
 	default:
 		return rulesource.Config{}, fmt.Errorf("unsupported scope %q", s.scope)
@@ -177,9 +177,9 @@ func (s *ruleSourceService) loadConfig() (rulesource.Config, error) {
 func (s *ruleSourceService) saveConfig(cfg rulesource.Config) error {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
-		return SaveAdguardSourcesToCustomConfig(cfg)
+		return SaveAdguardSourcesToCustomConfigForBaseDir(s.baseDir(), cfg)
 	case rulesource.ScopeDiversion:
-		return SaveDiversionSourcesToCustomConfig(cfg)
+		return SaveDiversionSourcesToCustomConfigForBaseDir(s.baseDir(), cfg)
 	default:
 		return fmt.Errorf("unsupported scope %q", s.scope)
 	}
@@ -188,9 +188,9 @@ func (s *ruleSourceService) saveConfig(cfg rulesource.Config) error {
 func (s *ruleSourceService) configFile() string {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
-		return filepath.Join("custom_config", adguardSourcesConfigFilename)
+		return filepath.Join(customConfigDirname, adguardSourcesConfigFilename)
 	case rulesource.ScopeDiversion:
-		return filepath.Join("custom_config", diversionSourcesConfigFilename)
+		return filepath.Join(customConfigDirname, diversionSourcesConfigFilename)
 	default:
 		return ""
 	}

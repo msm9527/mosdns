@@ -37,9 +37,9 @@ type AdguardRule struct {
 	pluginTag string
 	baseArgs  *Args
 
-	mu          sync.RWMutex
-	configFile  string
-	sources     []rulesource.Source
+	mu           sync.RWMutex
+	configFile   string
+	sources      []rulesource.Source
 	allowMatcher *domain.MixMatcher[struct{}]
 	denyMatcher  *domain.MixMatcher[struct{}]
 	denyRules    []string
@@ -173,7 +173,7 @@ func (p *AdguardRule) loadSources() error {
 	if strings.TrimSpace(configFile) == "" {
 		return fmt.Errorf("%s: config_file is required", PluginType)
 	}
-	cfg, _, err := rulesource.LoadConfig(configFile, scope)
+	cfg, _, err := coremain.LoadAdguardSourcesConfigAtPath(configFile)
 	if err != nil {
 		return err
 	}

@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
@@ -125,6 +126,54 @@ policies:
 	}
 	if len(items[0].Bindings) != 1 || items[0].Bindings[0] != "geosite_cn" {
 		t.Fatalf("unexpected bindings: %+v", items[0].Bindings)
+	}
+}
+
+func TestRulesAPI_ListAdguardRulesBootstrapsFromFilesystem(t *testing.T) {
+	baseDir := t.TempDir()
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = baseDir
+	t.Cleanup(func() { MainConfigBaseDir = oldBaseDir })
+
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: adguard
+    type: adguard_rule
+    args:
+      config_file: custom_config/adguard_sources.yaml
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
+# only comments here, bootstrap should rebuild this file from adguard/*
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "adguard", "httpdns.rules"), "||ads.example.com^\n")
+
+	m := NewTestMosdnsWithPlugins(nil)
+	RegisterRulesAPI(m.httpMux, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/rules/adguard", nil)
+	w := httptest.NewRecorder()
+	m.httpMux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var items []RuleSourceItem
+	if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(items) != 1 {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+	if items[0].ID != "httpdns" || items[0].Path != "adguard/httpdns.rules" {
+		t.Fatalf("unexpected item: %+v", items[0])
+	}
+
+	raw, err := os.ReadFile(filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"))
+	if err != nil {
+		t.Fatalf("read bootstrapped config: %v", err)
+	}
+	if !strings.Contains(string(raw), "id: httpdns") {
+		t.Fatalf("bootstrapped config missing source id: %s", string(raw))
 	}
 }
 
