@@ -187,7 +187,7 @@ paths:
   /api/v3/audit/logs:
     get:
       tags: [Audit]
-      summary: Query audit logs
+      summary: Query audit logs (compat)
       parameters:
         - $ref: '#/components/parameters/FromQuery'
         - $ref: '#/components/parameters/ToQuery'
@@ -212,6 +212,30 @@ paths:
                 $ref: '#/components/schemas/AuditLogsResponse'
         '400':
           $ref: '#/components/responses/ApiBadRequest'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
+  /api/v3/audit/logs/search:
+    post:
+      tags: [Audit]
+      summary: Structured audit log search
+      description: 推荐前端和新调用方使用。支持关键词精确/模糊匹配、字段范围、日期范围和高级过滤组合。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AuditLogSearchRequest'
+      responses:
+        '200':
+          description: Structured audit query result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditLogsResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
         '500':
           $ref: '#/components/responses/ApiInternalError'
   /api/v3/audit/logs/slow:
@@ -2109,6 +2133,115 @@ components:
             $ref: '#/components/schemas/AuditLog'
         next_cursor:
           type: string
+    AuditTextMatchMode:
+      type: string
+      enum: [exact, fuzzy]
+    AuditSearchField:
+      type: string
+      enum:
+        - query_name
+        - client_ip
+        - trace_id
+        - domain_set
+        - answer
+        - query_type
+        - query_class
+        - response_code
+        - upstream_tag
+        - transport
+        - server_name
+        - url_path
+        - cache_status
+    AuditTextFilter:
+      type: object
+      properties:
+        value:
+          type: string
+        mode:
+          $ref: '#/components/schemas/AuditTextMatchMode'
+    AuditLogSearchKeyword:
+      type: object
+      required: [value]
+      properties:
+        value:
+          type: string
+        mode:
+          $ref: '#/components/schemas/AuditTextMatchMode'
+        fields:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditSearchField'
+    AuditLogSearchTimeRange:
+      type: object
+      properties:
+        from:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: integer
+              format: int64
+          description: RFC3339 或 Unix 毫秒时间戳
+        to:
+          oneOf:
+            - type: string
+              format: date-time
+            - type: integer
+              format: int64
+          description: RFC3339 或 Unix 毫秒时间戳
+    AuditLogSearchPage:
+      type: object
+      properties:
+        limit:
+          type: integer
+          minimum: 1
+        cursor:
+          type: string
+    AuditLogSearchFilters:
+      type: object
+      properties:
+        domain:
+          $ref: '#/components/schemas/AuditTextFilter'
+        client_ip:
+          $ref: '#/components/schemas/AuditTextFilter'
+        trace_id:
+          $ref: '#/components/schemas/AuditTextFilter'
+        domain_set:
+          $ref: '#/components/schemas/AuditTextFilter'
+        answer:
+          $ref: '#/components/schemas/AuditTextFilter'
+        upstream_tag:
+          $ref: '#/components/schemas/AuditTextFilter'
+        server_name:
+          $ref: '#/components/schemas/AuditTextFilter'
+        url_path:
+          $ref: '#/components/schemas/AuditTextFilter'
+        query_type:
+          type: string
+        query_class:
+          type: string
+        response_code:
+          type: string
+        cache_status:
+          type: string
+        transport:
+          type: string
+        has_answer:
+          type: boolean
+        duration_ms_min:
+          type: number
+        duration_ms_max:
+          type: number
+    AuditLogSearchRequest:
+      type: object
+      properties:
+        time_range:
+          $ref: '#/components/schemas/AuditLogSearchTimeRange'
+        page:
+          $ref: '#/components/schemas/AuditLogSearchPage'
+        keyword:
+          $ref: '#/components/schemas/AuditLogSearchKeyword'
+        filters:
+          $ref: '#/components/schemas/AuditLogSearchFilters'
     AuditSettingsUpdateRequest:
       type: object
       properties:

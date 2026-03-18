@@ -33,6 +33,7 @@ func RegisterAuditAPI(router *chi.Mux) {
 		r.Get("/rank/client", handleGetAuditClientRank)
 		r.Get("/rank/domain_set", handleGetAuditDomainSetRank)
 		r.Get("/logs", handleGetAuditLogs)
+		r.Post("/logs/search", handleSearchAuditLogs)
 		r.Get("/logs/slow", handleGetAuditSlowLogs)
 		r.Get("/settings", handleGetAuditSettings)
 		r.Put("/settings", handlePutAuditSettings)
@@ -205,26 +206,57 @@ func parseAuditLogsQuery(r *http.Request) (AuditLogsQuery, error) {
 		return AuditLogsQuery{}, err
 	}
 	exact, _ := strconv.ParseBool(r.URL.Query().Get("exact"))
-	return AuditLogsQuery{
-		From:         from,
-		To:           to,
-		Limit:        queryInt(r, "limit", 100),
-		Cursor:       r.URL.Query().Get("cursor"),
-		Domain:       r.URL.Query().Get("domain"),
-		ClientIP:     r.URL.Query().Get("client_ip"),
-		Query:        r.URL.Query().Get("q"),
+	matchMode := AuditMatchFuzzy
+	if exact {
+		matchMode = AuditMatchExact
+	}
+	keyword, err := normalizeAuditKeywordSearch(&AuditLogKeywordSearch{
+		Value:  r.URL.Query().Get("q"),
+		Mode:   matchMode,
+		Fields: legacyAuditSearchFields(),
+	}, legacyAuditSearchFields())
+	if err != nil {
+		return AuditLogsQuery{}, err
+	}
+	filters, err := normalizeAuditSearchFilters(AuditLogSearchFilters{
+		Domain: AuditTextFilter{
+			Value: r.URL.Query().Get("domain"),
+			Mode:  AuditMatchFuzzy,
+		},
+		ClientIP: AuditTextFilter{
+			Value: r.URL.Query().Get("client_ip"),
+			Mode:  AuditMatchExact,
+		},
+		DomainSet: AuditTextFilter{
+			Value: r.URL.Query().Get("domain_set"),
+			Mode:  AuditMatchExact,
+		},
+		Answer: AuditTextFilter{
+			Value: r.URL.Query().Get("answer"),
+			Mode:  matchMode,
+		},
+		UpstreamTag: AuditTextFilter{
+			Value: r.URL.Query().Get("upstream_tag"),
+			Mode:  AuditMatchExact,
+		},
 		ResponseCode: strings.ToUpper(r.URL.Query().Get("rcode")),
-		DomainSet:    r.URL.Query().Get("domain_set"),
 		CacheStatus:  r.URL.Query().Get("cache_status"),
-		UpstreamTag:  r.URL.Query().Get("upstream_tag"),
 		Transport:    r.URL.Query().Get("transport"),
-		Answer:       r.URL.Query().Get("answer"),
-		Exact:        exact,
+	})
+	if err != nil {
+		return AuditLogsQuery{}, err
+	}
+	return AuditLogsQuery{
+		From:    from,
+		To:      to,
+		Limit:   queryInt(r, "limit", 100),
+		Cursor:  strings.TrimSpace(r.URL.Query().Get("cursor")),
+		Keyword: keyword,
+		Filters: filters,
 	}, nil
 }
 
 func parseAuditTimeRange(r *http.Request, defaultWindow time.Duration) (time.Time, time.Time, error) {
-	now := time.Now()
 	from, err := parseAuditTimeValue(r.URL.Query().Get("from"))
 	if err != nil {
 		return time.Time{}, time.Time{}, err
@@ -233,16 +265,7 @@ func parseAuditTimeRange(r *http.Request, defaultWindow time.Duration) (time.Tim
 	if err != nil {
 		return time.Time{}, time.Time{}, err
 	}
-	if to.IsZero() {
-		to = now
-	}
-	if from.IsZero() {
-		from = to.Add(-defaultWindow)
-	}
-	if !from.Before(to) {
-		return time.Time{}, time.Time{}, errors.New("from must be earlier than to")
-	}
-	return from, to, nil
+	return resolveAuditTimeRangeValues(from, to, defaultWindow)
 }
 
 func parseAuditTimeValue(raw string) (time.Time, error) {

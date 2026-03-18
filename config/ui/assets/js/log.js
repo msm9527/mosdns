@@ -33,7 +33,8 @@ function closeAndUnlock(dialogElement) {
 
 document.addEventListener('DOMContentLoaded', () => {
     const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440, AUDIT_WINDOW_MIN: 1, AUDIT_WINDOW_MAX: 86400, AUDIT_RAW_RETENTION_MAX: 365, AUDIT_AGG_RETENTION_MAX: 3650, AUDIT_STORAGE_MAX_MB: 10240 };
-    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchTerm: { query: '', exact: false }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], ruleFilters: { adguard: { format: 'all' }, diversion: { format: 'all' } }, requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
+    const auditSearchHelper = window.mosdnsAuditSearch;
+    let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchCriteria: auditSearchHelper ? auditSearchHelper.defaultCriteria() : { keyword: '', mode: 'fuzzy', fields: [], from: '', to: '', filters: {} }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], ruleFilters: { adguard: { format: 'all' }, diversion: { format: 'all' } }, requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const actionLocks = new Set();
     const elements = {
         html: document.documentElement, body: document.body, container: document.querySelector('.container'), initialLoader: document.getElementById('initial-loader'),
@@ -68,7 +69,30 @@ document.addEventListener('DOMContentLoaded', () => {
         overridesSaveBtn: document.getElementById('overrides-save-btn-log'),
         logTable: document.getElementById('log-table'), logTableHead: document.getElementById('log-table-head'), logTableBody: document.getElementById('log-table-body'),
         logQueryTab: document.getElementById('log-query-tab'),
-        logSearch: document.getElementById('log-search'), logQueryTableContainer: document.getElementById('log-query-table-container'), logLoader: document.getElementById('log-loader'),
+        logSearchForm: document.getElementById('log-search-form'),
+        logSearch: document.getElementById('log-search'),
+        logSearchMode: document.getElementById('log-search-mode'),
+        logTimeFrom: document.getElementById('log-time-from'),
+        logTimeTo: document.getElementById('log-time-to'),
+        logSearchSubmitBtn: document.getElementById('log-search-submit-btn'),
+        logSearchResetBtn: document.getElementById('log-search-reset-btn'),
+        logSearchFieldInputs: document.querySelectorAll('input[name="log-search-field"]'),
+        logFilterDomain: document.getElementById('log-filter-domain'),
+        logFilterDomainMode: document.getElementById('log-filter-domain-mode'),
+        logFilterClientIP: document.getElementById('log-filter-client-ip'),
+        logFilterResponseCode: document.getElementById('log-filter-response-code'),
+        logFilterQueryType: document.getElementById('log-filter-query-type'),
+        logFilterDomainSet: document.getElementById('log-filter-domain-set'),
+        logFilterUpstreamTag: document.getElementById('log-filter-upstream-tag'),
+        logFilterUpstreamMode: document.getElementById('log-filter-upstream-mode'),
+        logFilterTransport: document.getElementById('log-filter-transport'),
+        logFilterAnswer: document.getElementById('log-filter-answer'),
+        logFilterAnswerMode: document.getElementById('log-filter-answer-mode'),
+        logFilterHasAnswer: document.getElementById('log-filter-has-answer'),
+        logFilterDurationMin: document.getElementById('log-filter-duration-min'),
+        logFilterDurationMax: document.getElementById('log-filter-duration-max'),
+        logQueryTableContainer: document.getElementById('log-query-table-container'),
+        logLoader: document.getElementById('log-loader'),
         searchResultsInfo: document.getElementById('search-results-info'),
         toast: document.getElementById('toast'),
         tooltip: document.getElementById('answers-tooltip'),
@@ -246,6 +270,12 @@ document.addEventListener('DOMContentLoaded', () => {
             getDomainSetRank: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/rank/domain_set${buildQueryString({ limit })}`, { signal }),
             getSlowest: (signal, limit = 50) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/logs/slow${buildQueryString({ limit })}`, { signal }),
             getLogs: (signal, params = {}) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/logs${buildQueryString({ limit: CONSTANTS.LOGS_PER_PAGE, ...params })}`, { signal }),
+            searchLogs: (signal, payload) => api.fetch(`${CONSTANTS.API_BASE_URL}/api/v3/audit/logs/search`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload),
+                signal
+            }),
         },
         getMetrics: (signal) => {
             const now = Date.now();
@@ -450,7 +480,7 @@ document.addEventListener('DOMContentLoaded', () => {
             };
             renderChunk();
         },
-        updateSearchResultsInfo(summary) {
+        updateSearchResultsInfo(summary, criteria) {
             if (!elements.searchResultsInfo) return;
             if (!summary) {
                 elements.searchResultsInfo.innerHTML = '';
@@ -459,7 +489,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const matchedCount = Number(summary.matched_count || 0).toLocaleString();
             const avgDuration = Number(summary.average_duration_ms || 0).toFixed(2);
             const maxDuration = Number(summary.max_duration_ms || 0).toFixed(2);
-            elements.searchResultsInfo.innerHTML = `匹配 <strong>${matchedCount}</strong> 条，平均耗时 <strong>${avgDuration} ms</strong>，最慢 <strong>${maxDuration} ms</strong>`;
+            const range = auditSearchHelper ? auditSearchHelper.formatRange(criteria) : '';
+            const rangeHTML = range ? `<span class="range">范围：${range}</span>` : '';
+            elements.searchResultsInfo.innerHTML = `<div class="audit-search-results-meta">${rangeHTML}<span>匹配 <strong>${matchedCount}</strong> 条</span><span>平均耗时 <strong>${avgDuration} ms</strong></span><span>最慢 <strong>${maxDuration} ms</strong></span></div>`;
         },
         openLogDetailModal(triggerElement) {
             const logIndex = triggerElement.dataset.logIndex ? parseInt(triggerElement.dataset.logIndex, 10) : null;
@@ -1569,27 +1601,7 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     const adjustLogSearchLayout = () => {
-        const logSearch = document.getElementById('log-search');
-        const originalContainer = document.getElementById('log-search-container-original');
-        const headerActions = document.getElementById('log-header-actions');
-        const logQueryTab = elements.logQueryTab;
-
-        if (!logSearch || !originalContainer || !headerActions || !logQueryTab) return;
-
-        const isComfortable = document.documentElement.dataset.layout === 'comfortable';
-        const isMidDesktop = window.innerWidth <= 1440 && window.innerWidth > CONSTANTS.MOBILE_BREAKPOINT;
-
-        if (isComfortable && isMidDesktop) {
-            if (!headerActions.contains(logSearch)) {
-                headerActions.prepend(logSearch);
-                logQueryTab.classList.add('search-moved-to-header');
-            }
-        } else {
-            if (!originalContainer.contains(logSearch)) {
-                originalContainer.prepend(logSearch);
-                logQueryTab.classList.remove('search-moved-to-header');
-            }
-        }
+        return;
     };
 
     const themeManager = {
@@ -1772,11 +1784,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const placeholder = tbody.closest('.card')?.querySelector('.lazy-placeholder');
         if (placeholder) placeholder.style.display = 'none';
         tbody.innerHTML = '';
-        if (!data || data.length === 0) {
+            if (!data || data.length === 0) {
             let message = '请确保审计功能已开启。';
             let ctaButton = '<button class="button primary tab-link-action" data-tab="system-control">前往系统控制</button>';
-            if (tableType === 'log-query' && state.currentLogSearchTerm?.query) {
-                message = `没有找到与 "<strong>${state.currentLogSearchTerm.query}</strong>" 匹配的记录。`;
+            if (tableType === 'log-query' && auditSearchHelper?.hasActiveCriteria(state.currentLogSearchCriteria)) {
+                message = '没有找到符合当前搜索条件的记录。';
                 ctaButton = '';
             } else if (!state.isCapturing && tableType !== 'adguard' && tableType !== 'diversion') {
                 message = '审计功能当前已停止。';
@@ -2000,7 +2012,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             state.lastUpdateTime = new Date();
             updateLastUpdated();
-            if (activeTab === 'log-query') await fetchAndRenderLogs(1, false);
+            if (activeTab === 'log-query') await fetchAndRenderLogs('', false);
             else if (activeTab === 'rules') {
                 const activeSubTab = document.querySelector('#rules-tab .sub-nav-link.active').dataset.subTab;
                 if (activeSubTab === 'list-mgmt' && !state.listManagerInitialized) {
@@ -2019,6 +2031,67 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     let logRequestController;
+    function readLogSearchCriteriaFromForm() {
+        return auditSearchHelper.normalizeCriteria({
+            keyword: elements.logSearch?.value || '',
+            mode: elements.logSearchMode?.value || 'fuzzy',
+            fields: Array.from(elements.logSearchFieldInputs || []).filter(input => input.checked).map(input => input.value),
+            from: elements.logTimeFrom?.value || '',
+            to: elements.logTimeTo?.value || '',
+            filters: {
+                domain: elements.logFilterDomain?.value || '',
+                domainMode: elements.logFilterDomainMode?.value || 'exact',
+                clientIP: elements.logFilterClientIP?.value || '',
+                responseCode: elements.logFilterResponseCode?.value || '',
+                queryType: elements.logFilterQueryType?.value || '',
+                domainSet: elements.logFilterDomainSet?.value || '',
+                upstreamTag: elements.logFilterUpstreamTag?.value || '',
+                upstreamMode: elements.logFilterUpstreamMode?.value || 'exact',
+                transport: elements.logFilterTransport?.value || '',
+                answer: elements.logFilterAnswer?.value || '',
+                answerMode: elements.logFilterAnswerMode?.value || 'exact',
+                hasAnswer: elements.logFilterHasAnswer?.value || 'any',
+                durationMin: elements.logFilterDurationMin?.value || '',
+                durationMax: elements.logFilterDurationMax?.value || ''
+            }
+        });
+    }
+
+    function syncLogSearchForm(criteria = state.currentLogSearchCriteria) {
+        const normalized = auditSearchHelper.normalizeCriteria(criteria);
+        state.currentLogSearchCriteria = normalized;
+        if (elements.logSearch) elements.logSearch.value = normalized.keyword;
+        if (elements.logSearchMode) elements.logSearchMode.value = normalized.mode;
+        if (elements.logTimeFrom) elements.logTimeFrom.value = normalized.from;
+        if (elements.logTimeTo) elements.logTimeTo.value = normalized.to;
+        Array.from(elements.logSearchFieldInputs || []).forEach(input => {
+            input.checked = normalized.fields.includes(input.value);
+        });
+        if (elements.logFilterDomain) elements.logFilterDomain.value = normalized.filters.domain;
+        if (elements.logFilterDomainMode) elements.logFilterDomainMode.value = normalized.filters.domainMode;
+        if (elements.logFilterClientIP) elements.logFilterClientIP.value = normalized.filters.clientIP;
+        if (elements.logFilterResponseCode) elements.logFilterResponseCode.value = normalized.filters.responseCode;
+        if (elements.logFilterQueryType) elements.logFilterQueryType.value = normalized.filters.queryType;
+        if (elements.logFilterDomainSet) elements.logFilterDomainSet.value = normalized.filters.domainSet;
+        if (elements.logFilterUpstreamTag) elements.logFilterUpstreamTag.value = normalized.filters.upstreamTag;
+        if (elements.logFilterUpstreamMode) elements.logFilterUpstreamMode.value = normalized.filters.upstreamMode;
+        if (elements.logFilterTransport) elements.logFilterTransport.value = normalized.filters.transport;
+        if (elements.logFilterAnswer) elements.logFilterAnswer.value = normalized.filters.answer;
+        if (elements.logFilterAnswerMode) elements.logFilterAnswerMode.value = normalized.filters.answerMode;
+        if (elements.logFilterHasAnswer) elements.logFilterHasAnswer.value = normalized.filters.hasAnswer;
+        if (elements.logFilterDurationMin) elements.logFilterDurationMin.value = normalized.filters.durationMin;
+        if (elements.logFilterDurationMax) elements.logFilterDurationMax.value = normalized.filters.durationMax;
+    }
+
+    function setLogKeywordSearch(value, exact = false) {
+        const nextCriteria = {
+            ...state.currentLogSearchCriteria,
+            keyword: value,
+            mode: exact ? 'exact' : 'fuzzy'
+        };
+        syncLogSearchForm(nextCriteria);
+    }
+
     async function fetchAndRenderLogs(cursor = '', append = false) {
         if (state.isLogLoading && !append) return;
         state.isLogLoading = true;
@@ -2026,14 +2099,18 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!append) renderSkeletonRows(elements.logTableBody, Math.min(20, CONSTANTS.LOGS_PER_PAGE), state.isMobile ? 1 : 5);
         if (!append && logRequestController) logRequestController.abort();
         logRequestController = new AbortController();
-        const params = {
-            cursor: append ? cursor : '',
-            limit: CONSTANTS.LOGS_PER_PAGE,
-            q: state.currentLogSearchTerm.query,
-            exact: state.currentLogSearchTerm.exact
-        };
+        const effectiveCriteria = { ...state.currentLogSearchCriteria };
+        if (effectiveCriteria.mode !== 'exact') {
+            const aliasKeyword = aliasManager.getIpByAlias(String(effectiveCriteria.keyword || '').trim());
+            if (aliasKeyword) effectiveCriteria.keyword = aliasKeyword;
+        }
+        const payload = auditSearchHelper.buildPayload(
+            effectiveCriteria,
+            CONSTANTS.LOGS_PER_PAGE,
+            append ? cursor : ''
+        );
         try {
-            const response = await api.audit.getLogs(logRequestController.signal, params);
+            const response = await api.audit.searchLogs(logRequestController.signal, payload);
             if (!response?.summary || !Array.isArray(response.logs)) {
                 throw new Error("Invalid response from logs API");
             }
@@ -2042,7 +2119,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 nextCursor: response.next_cursor || ''
             };
             if (!append) {
-                ui.updateSearchResultsInfo(response.summary);
+                ui.updateSearchResultsInfo(response.summary, state.currentLogSearchCriteria);
             }
             ui.renderLogTable(response.logs || [], append);
         } catch (error) {
@@ -2075,18 +2152,15 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     function applyLogFilterAndRender() {
-        if (!elements.logSearch) return;
-        const rawSearchTerm = elements.logSearch.value.trim();
-        let query = rawSearchTerm, exact = false;
-        if (rawSearchTerm.startsWith('"') && rawSearchTerm.endsWith('"')) {
-            query = rawSearchTerm.slice(1, -1);
-            exact = true;
-        } else if (!exact) {
-            const ipFromAlias = aliasManager.getIpByAlias(query);
-            if (ipFromAlias) query = ipFromAlias;
-        }
-        state.currentLogSearchTerm = { query, exact };
-        fetchAndRenderLogs(1, false);
+        if (!elements.logSearchForm) return;
+        state.currentLogSearchCriteria = readLogSearchCriteriaFromForm();
+        syncLogSearchForm(state.currentLogSearchCriteria);
+        fetchAndRenderLogs('', false);
+    }
+
+    function resetLogFilterAndRender() {
+        syncLogSearchForm(auditSearchHelper.defaultCriteria());
+        fetchAndRenderLogs('', false);
     }
 
     function loadMoreLogs() {
@@ -4530,7 +4604,7 @@ renderReplacementsTable() {
                 try {
                     await api.audit.clear();
                     ui.showToast('日志已清空', 'success');
-                    if (elements.logSearch) elements.logSearch.value = '';
+                    syncLogSearchForm(auditSearchHelper.defaultCriteria());
                     await updatePageData(true);
                 } catch (error) {
                     ui.showToast('清空日志失败', 'error');
@@ -4563,7 +4637,7 @@ renderReplacementsTable() {
                 try {
                     await saveAuditSettings({ raw_retention_days: rawRetentionDays, aggregate_retention_days: aggregateRetentionDays, max_storage_mb: maxStorageMB });
                     ui.showToast('审计存储策略已立即生效', 'success');
-                    if (elements.logSearch) elements.logSearch.value = '';
+                    syncLogSearchForm(auditSearchHelper.defaultCriteria());
                     await updatePageData(true);
                 } catch (error) {
                     console.error("Set audit storage settings failed:", error);
@@ -4595,6 +4669,12 @@ renderReplacementsTable() {
             }
         });
 
+        syncLogSearchForm();
+        elements.logSearchForm?.addEventListener('submit', (e) => {
+            e.preventDefault();
+            applyLogFilterAndRender();
+        });
+        elements.logSearchResetBtn?.addEventListener('click', () => resetLogFilterAndRender());
         elements.logSearch?.addEventListener('input', debounce(applyLogFilterAndRender, 300));
         elements.logQueryTableContainer?.addEventListener('scroll', () => { const { scrollTop, scrollHeight, clientHeight } = elements.logQueryTableContainer; if (clientHeight + scrollTop >= scrollHeight - 200) loadMoreLogs(); }, { passive: true });
 
@@ -4634,7 +4714,7 @@ const handleInteractiveClick = (e) => {
                 } else if (interactiveButton.matches('.filter-btn')) {
                     const value = interactiveButton.dataset.filterValue;
                     const isExact = interactiveButton.dataset.exactSearch === 'true';
-                    elements.logSearch.value = isExact ? `"${value}"` : value;
+                    setLogKeywordSearch(value, isExact);
                     const logQueryLink = document.querySelector('.tab-link[href="#log-query"]');
                     if (logQueryLink && !logQueryLink.classList.contains('active')) {
                         handleNavigation(logQueryLink);
@@ -4649,7 +4729,7 @@ const handleInteractiveClick = (e) => {
                 if (clickableLink.matches('.clickable-link')) {
                     const value = clickableLink.dataset.filterValue;
                     const isExact = clickableLink.dataset.exactSearch === 'true';
-                    elements.logSearch.value = isExact ? `"${value}"` : value;
+                    setLogKeywordSearch(value, isExact);
                     const logQueryLink = document.querySelector('.tab-link[href="#log-query"]');
                     if (logQueryLink) {
                         if (!logQueryLink.classList.contains('active')) {

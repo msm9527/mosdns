@@ -57,7 +57,8 @@
 | `GET` | `/api/v3/audit/rank/domain` | 域名排行 | `from,to,limit` | `AuditRankItem[]` |
 | `GET` | `/api/v3/audit/rank/client` | 客户端排行 | `from,to,limit` | `AuditRankItem[]` |
 | `GET` | `/api/v3/audit/rank/domain_set` | 规则集排行 | `from,to,limit` | `AuditRankItem[]` |
-| `GET` | `/api/v3/audit/logs` | 原始日志查询 | `from,to,limit,cursor,q,exact,domain,client_ip,rcode,domain_set,cache_status,upstream_tag,transport,answer` | `AuditLogsResponse` |
+| `GET` | `/api/v3/audit/logs` | 原始日志查询兼容入口 | `from,to,limit,cursor,q,exact,domain,client_ip,rcode,domain_set,cache_status,upstream_tag,transport,answer` | `AuditLogsResponse` |
+| `POST` | `/api/v3/audit/logs/search` | 结构化原始日志搜索 | `AuditLogSearchRequest` | `AuditLogsResponse` |
 | `GET` | `/api/v3/audit/logs/slow` | 慢查询列表 | `from,to,limit` | `AuditLog[]` |
 | `GET` | `/api/v3/audit/settings` | 审计设置和当前存储状态 | 无 | `AuditSettingsResponse` |
 | `PUT` | `/api/v3/audit/settings` | 更新审计设置 | `AuditSettingsUpdateRequest` | `AuditSettingsResponse` |
@@ -67,7 +68,59 @@
 
 - `overview.total_query_count` / `overview.total_average_duration_ms` 表示保留期内累计统计
 - `logs.next_cursor` 用于顺序翻页，不再走 `page` / `offset`
+- 推荐使用 `POST /api/v3/audit/logs/search` 进行新搜索，对关键词、字段范围、时间范围和高级过滤做统一表达
+- `GET /api/v3/audit/logs` 保留为兼容入口，主要用于简单 query string 查询
 - `PUT /settings` 保存后立即生效，无需重启
+
+### 2.1 `POST /api/v3/audit/logs/search`
+
+推荐请求体结构：
+
+```json
+{
+  "time_range": {
+    "from": "2026-03-17T16:00:00+08:00",
+    "to": "2026-03-18T16:00:00+08:00"
+  },
+  "page": {
+    "limit": 50,
+    "cursor": ""
+  },
+  "keyword": {
+    "value": "dns.google",
+    "mode": "fuzzy",
+    "fields": ["server_name", "upstream_tag", "query_name"]
+  },
+  "filters": {
+    "response_code": "NOERROR",
+    "has_answer": true,
+    "duration_ms_min": 1,
+    "duration_ms_max": 100,
+    "answer": {
+      "value": "8.8.8.8",
+      "mode": "exact"
+    }
+  }
+}
+```
+
+字段说明：
+
+- `time_range.from/to`：支持 RFC3339 或 Unix 毫秒时间戳；省略时默认最近 24 小时
+- `page.limit/cursor`：顺序翻页参数
+- `keyword.mode`：`fuzzy` 或 `exact`
+- `keyword.fields`：可选，支持 `query_name`、`client_ip`、`trace_id`、`domain_set`、`answer`、`query_type`、`query_class`、`response_code`、`upstream_tag`、`transport`、`server_name`、`url_path`、`cache_status`
+- `filters.*`：支持结构化过滤；文本过滤字段使用 `{ "value": "...", "mode": "exact|fuzzy" }`
+- `filters.has_answer`：只看有应答或无应答
+- `filters.duration_ms_min/max`：按处理耗时区间过滤
+
+返回仍为 `AuditLogsResponse`：
+
+- `summary.matched_count`：当前条件下命中的总条数
+- `summary.average_duration_ms`：当前条件下平均耗时
+- `summary.max_duration_ms`：当前条件下最慢耗时
+- `logs[]`：当前页日志
+- `next_cursor`：下一页游标，空字符串表示没有更多结果
 
 ## 3. Runtime
 

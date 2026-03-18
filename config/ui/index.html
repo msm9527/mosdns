@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="assets/css/log_refactored.min.css">
     <link rel="stylesheet" href="assets/css/enhancements.css">
     <link rel="stylesheet" href="assets/css/performance.css">
+    <link rel="stylesheet" href="assets/css/audit-search.css">
     <link rel="stylesheet" href="assets/css/ui-enhancements.css">
     <style>
         /* v3.4.3.3 Chart Mode Styles */
@@ -1309,9 +1310,144 @@
                 </header>
                 <div class="card-body">
                     <div id="log-search-container-original">
-                        <input type="search" id="log-search" placeholder="全局搜索... (使用 &quot;引号&quot; 精确匹配)">
-                        <button id="manage-aliases-btn-mobile" class="button secondary show-on-mobile"
-                            style="display: none;"><span>管理别名</span></button>
+                        <form id="log-search-form" class="audit-search-form">
+                            <div class="audit-search-toolbar">
+                                <div class="audit-search-field">
+                                    <label for="log-search">关键词</label>
+                                    <input type="search" id="log-search"
+                                        placeholder="域名 / 客户端 / 应答 / Trace ID / 上游 / SNI">
+                                </div>
+                                <div class="audit-search-field">
+                                    <label for="log-search-mode">匹配方式</label>
+                                    <select id="log-search-mode">
+                                        <option value="fuzzy">模糊匹配</option>
+                                        <option value="exact">精确匹配</option>
+                                    </select>
+                                </div>
+                                <div class="audit-search-field">
+                                    <label for="log-time-from">开始时间</label>
+                                    <input type="datetime-local" id="log-time-from">
+                                </div>
+                                <div class="audit-search-field">
+                                    <label for="log-time-to">结束时间</label>
+                                    <input type="datetime-local" id="log-time-to">
+                                </div>
+                                <div class="audit-search-actions">
+                                    <button type="submit" id="log-search-submit-btn" class="button primary">
+                                        <span>查询</span>
+                                    </button>
+                                    <button type="button" id="log-search-reset-btn" class="button secondary">
+                                        <span>重置</span>
+                                    </button>
+                                    <button id="manage-aliases-btn-mobile" type="button"
+                                        class="button secondary show-on-mobile" style="display: none;">
+                                        <span>管理别名</span>
+                                    </button>
+                                </div>
+                            </div>
+                            <fieldset class="audit-search-fieldset">
+                                <legend>关键词范围</legend>
+                                <div class="audit-search-checkboxes">
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="query_name" checked>域名</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="client_ip" checked>客户端</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="answer" checked>应答</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="domain_set" checked>规则集</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="trace_id">Trace ID</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="upstream_tag">上游标签</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="server_name">SNI</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="url_path">URL 路径</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="query_type">查询类型</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="response_code">响应码</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="transport">传输协议</label>
+                                    <label class="audit-search-checkbox"><input type="checkbox" name="log-search-field"
+                                            value="cache_status">缓存状态</label>
+                                </div>
+                            </fieldset>
+                            <details class="audit-search-advanced">
+                                <summary>高级过滤</summary>
+                                <div class="audit-search-advanced-grid">
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-domain">域名过滤</label>
+                                        <div class="audit-search-inline">
+                                            <input type="text" id="log-filter-domain" placeholder="例如 alpha.example">
+                                            <select id="log-filter-domain-mode">
+                                                <option value="exact">精确</option>
+                                                <option value="fuzzy">模糊</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-client-ip">客户端 IP</label>
+                                        <input type="text" id="log-filter-client-ip" placeholder="例如 127.0.0.1">
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-response-code">响应码</label>
+                                        <input type="text" id="log-filter-response-code" placeholder="例如 NOERROR">
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-query-type">查询类型</label>
+                                        <input type="text" id="log-filter-query-type" placeholder="例如 A / AAAA / TXT">
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-domain-set">规则集</label>
+                                        <input type="text" id="log-filter-domain-set" placeholder="例如 foreign">
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-upstream-tag">上游标签</label>
+                                        <div class="audit-search-inline">
+                                            <input type="text" id="log-filter-upstream-tag" placeholder="例如 google">
+                                            <select id="log-filter-upstream-mode">
+                                                <option value="exact">精确</option>
+                                                <option value="fuzzy">模糊</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-transport">传输协议</label>
+                                        <input type="text" id="log-filter-transport" placeholder="例如 https / udp">
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-answer">应答内容</label>
+                                        <div class="audit-search-inline">
+                                            <input type="text" id="log-filter-answer" placeholder="例如 8.8.8.8">
+                                            <select id="log-filter-answer-mode">
+                                                <option value="exact">精确</option>
+                                                <option value="fuzzy">模糊</option>
+                                            </select>
+                                        </div>
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-has-answer">是否有应答</label>
+                                        <select id="log-filter-has-answer">
+                                            <option value="any">全部</option>
+                                            <option value="yes">仅有应答</option>
+                                            <option value="no">仅无应答</option>
+                                        </select>
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-duration-min">最小耗时 (ms)</label>
+                                        <input type="number" id="log-filter-duration-min" min="0" step="0.01"
+                                            placeholder="例如 5">
+                                    </div>
+                                    <div class="audit-search-field">
+                                        <label for="log-filter-duration-max">最大耗时 (ms)</label>
+                                        <input type="number" id="log-filter-duration-max" min="0" step="0.01"
+                                            placeholder="例如 100">
+                                    </div>
+                                </div>
+                            </details>
+                        </form>
                     </div>
                     <div id="search-results-info"></div>
                     <div class="scrollable-table-container" id="log-query-table-container">
@@ -2115,6 +2251,7 @@
     </main>
 
     <script src="assets/js/switch-profiles.js" defer></script>
+    <script src="assets/js/audit-search.js" defer></script>
     <script src="assets/js/log.js" defer></script>
 </body>
 

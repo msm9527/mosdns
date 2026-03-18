@@ -94,23 +94,6 @@ type AuditLogsResponse struct {
 	NextCursor string           `json:"next_cursor,omitempty"`
 }
 
-type AuditLogsQuery struct {
-	From         time.Time
-	To           time.Time
-	Limit        int
-	Cursor       string
-	Domain       string
-	ClientIP     string
-	Query        string
-	ResponseCode string
-	DomainSet    string
-	CacheStatus  string
-	UpstreamTag  string
-	Transport    string
-	Answer       string
-	Exact        bool
-}
-
 type AuditRangeQuery struct {
 	From  time.Time
 	To    time.Time
