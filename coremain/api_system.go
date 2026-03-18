@@ -3,10 +3,8 @@ package coremain
 import (
 	"errors"
 	"net/http"
-	"time"
 
 	"github.com/go-chi/chi/v5"
-	"go.uber.org/zap"
 )
 
 // RegisterSystemAPI 提供系统级操作，如自重启。
@@ -37,60 +35,28 @@ func handleSelfRestart(m *Mosdns) http.HandlerFunc {
 				return
 			}
 		}
-		if body.DelayMs <= 0 {
-			body.DelayMs = 300
-		}
-
-		if !SelfRestartSupported() {
-			// 复用 api_update.go 中的 writeJSON
-			writeAPIError(w, http.StatusNotImplemented, "RESTART_NOT_SUPPORTED_ON_WINDOWS", "self-restart is not supported on Windows")
-			return
-		}
-		if !m.tryScheduleRestart() {
-			writeAPIError(w, http.StatusConflict, "RESTART_ALREADY_SCHEDULED", "restart already scheduled")
+		delayMs, err := m.ScheduleSelfRestart(body.DelayMs)
+		if err != nil {
+			writeSelfRestartError(w, err)
 			return
 		}
 
-		// 1. 立即响应
-		writeJSON(w, http.StatusOK, map[string]any{"status": "scheduled", "delay_ms": body.DelayMs})
+		writeJSON(w, http.StatusOK, map[string]any{"status": "scheduled", "delay_ms": delayMs})
+	}
+}
 
-		go func(delay int) {
-			logger := m.Logger()
-			defer func() {
-				if recovered := recover(); recovered != nil {
-					logger.Error("panic during self restart flow", zap.Any("panic", recovered))
-					m.clearScheduledRestart()
-				}
-			}()
-
-			// 2. 等待延迟
-			time.Sleep(time.Duration(delay) * time.Millisecond)
-
-			// 3. 只对显式声明了重启准备能力的插件执行落盘逻辑
-			logger.Info("preparing plugins for restart")
-
-			for tag, p := range m.plugins {
-				if p == nil {
-					continue
-				}
-				preparer, ok := p.(RestartPreparer)
-				if !ok {
-					continue
-				}
-				logger.Info("running plugin restart preparer", zap.String("tag", tag))
-				if err := preparer.PrepareForRestart(); err != nil {
-					logger.Warn("plugin restart preparation failed", zap.String("tag", tag), zap.Error(err))
-				}
-			}
-			logger.Info("plugin restart preparation completed")
-
-			// 4. 执行重启 (进程替换)
-			logger.Info("executing self restart")
-			_ = logger.Sync()
-			if err := ExecSelfRestart(); err != nil {
-				logger.Error("self-restart exec failed", zap.Error(err))
-				m.clearScheduledRestart()
-			}
-		}(body.DelayMs)
+func writeSelfRestartError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrSelfRestartNotSupported):
+		writeAPIError(w, http.StatusNotImplemented, "RESTART_NOT_SUPPORTED_ON_WINDOWS", err.Error())
+	case errors.Is(err, ErrRestartAlreadyScheduled):
+		writeAPIError(w, http.StatusConflict, "RESTART_ALREADY_SCHEDULED", err.Error())
+	default:
+		var delayErr *RestartDelayError
+		if errors.As(err, &delayErr) {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_RESTART_DELAY", err.Error())
+			return
+		}
+		writeAPIError(w, http.StatusInternalServerError, "RESTART_SCHEDULE_FAILED", err.Error())
 	}
 }

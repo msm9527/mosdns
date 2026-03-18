@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"context"
 	"net/http"
 	"testing"
 )
@@ -85,5 +86,32 @@ func TestGetHttpClientForUpdateFallsBackToDirect(t *testing.T) {
 	}
 	if client == nil || client != m.httpClient {
 		t.Fatalf("unexpected proxy client: %#v", client)
+	}
+}
+
+func TestSelectAssetNoMatchReturnsNil(t *testing.T) {
+	assets := []githubAsset{
+		{Name: "foo.zip"},
+		{Name: "bar.zip"},
+	}
+	if got := selectAsset(assets); got != nil {
+		t.Fatalf("selectAsset() = %#v, want nil", got)
+	}
+}
+
+func TestTriggerPostUpgradeHookUsesRuntimeScheduler(t *testing.T) {
+	var gotDelay int
+	cleanup := registerInternalRestartScheduler(func(delayMs int) error {
+		gotDelay = delayMs
+		return nil
+	})
+	defer cleanup()
+
+	m := &UpdateManager{httpClient: &http.Client{}}
+	if err := m.triggerPostUpgradeHook(context.Background()); err != nil {
+		t.Fatalf("triggerPostUpgradeHook() error = %v", err)
+	}
+	if gotDelay != 500 {
+		t.Fatalf("triggerPostUpgradeHook() delay = %d, want %d", gotDelay, 500)
 	}
 }

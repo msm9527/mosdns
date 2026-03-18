@@ -512,6 +512,22 @@ func TestBuildRestartRequest(t *testing.T) {
 	})
 }
 
+func TestTriggerRestartUsesRuntimeScheduler(t *testing.T) {
+	var gotDelay int
+	cleanup := registerInternalRestartScheduler(func(delayMs int) error {
+		gotDelay = delayMs
+		return nil
+	})
+	defer cleanup()
+
+	if err := triggerRestart(context.Background(), 500); err != nil {
+		t.Fatalf("triggerRestart() error = %v", err)
+	}
+	if gotDelay != 500 {
+		t.Fatalf("triggerRestart() delay = %d, want %d", gotDelay, 500)
+	}
+}
+
 func mustBuildZip(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 

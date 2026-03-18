@@ -188,19 +188,24 @@ func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- 4. 成功响应并触发重启 ---
+	// --- 4. 安排重启并响应 ---
 	lg.Info("config update successful", zap.Int("files_updated", updatedCount))
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"message": fmt.Sprintf("配置更新成功，已覆盖 %d 个文件。MosDNS 即将自动重启。", updatedCount),
-		"status":  "success",
-	})
+	restartErr := triggerRestart(context.Background(), 500)
+	message := fmt.Sprintf("配置更新成功，已覆盖 %d 个文件。", updatedCount)
+	restartScheduled := restartErr == nil
+	if restartErr != nil {
+		lg.Warn("failed to schedule restart after config update", zap.Error(restartErr))
+		message += " 请手动重启。"
+	} else {
+		message += " 已安排自动重启。"
+	}
 
-	// 异步触发重启，给前端一点时间处理响应
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		triggerRestart()
-	}()
+	writeJSON(w, http.StatusOK, map[string]any{
+		"message":           message,
+		"status":            "success",
+		"restart_scheduled": restartScheduled,
+	})
 }
 
 // downloadWithFallback 尝试使用配置的 Socks5 下载，失败则直连
@@ -854,35 +859,19 @@ func resolveConfigTargetDir(rawDir string) (string, error) {
 	return validateConfigTargetDir(MainConfigBaseDir)
 }
 
-// triggerRestart 尝试重启服务，逻辑对齐 update_manager.go
-func triggerRestart() {
+// triggerRestart 尝试安排服务重启。
+func triggerRestart(ctx context.Context, delayMs int) error {
 	lg := mlog.L()
-
-	// 1. 尝试使用 HTTP API 重启 (优先读取环境变量)
-	endpoint := ResolveRestartEndpoint(DefaultRestartEndpoint)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	requestCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 
 	client := &http.Client{Timeout: 5 * time.Second}
-	if err := RequestSelfRestart(ctx, client, endpoint, 500); err == nil {
-		lg.Info("http restart request sent successfully", zap.String("endpoint", endpoint))
-		return
-	} else {
-		lg.Warn("http restart request failed", zap.String("endpoint", endpoint), zap.Error(err))
+	if err := RequestRuntimeRestart(requestCtx, client, delayMs); err != nil {
+		lg.Warn("failed to schedule runtime restart", zap.Error(err))
+		return err
 	}
-
-	// 2. 如果 HTTP 重启失败且不是 Windows，尝试直接 Exec 重启 (Fallback)
-	if SelfRestartSupported() {
-		lg.Info("falling back to syscall.Exec for restart")
-		// 等待一小会儿确保 HTTP 响应已发送
-		time.Sleep(100 * time.Millisecond)
-		if err := ExecSelfRestart(); err != nil {
-			lg.Error("syscall.Exec failed", zap.Error(err))
-		}
-	} else {
-		lg.Warn("automatic restart failed, manual restart required")
-	}
+	lg.Info("runtime restart scheduled")
+	return nil
 }
 
 func buildRestartRequest(ctx context.Context, endpoint string) (*http.Request, error) {

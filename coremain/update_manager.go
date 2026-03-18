@@ -38,8 +38,6 @@ const (
 	httpTimeout          = 120 * time.Second
 	userAgent            = "mosdns-update-client"
 	stateFileName        = ".mosdns-update-state.json"
-	// 默认的重启端点；可由环境变量 MOSDNS_RESTART_ENDPOINT 覆盖。
-	postUpgradeEndpoint = DefaultRestartEndpoint
 )
 
 var (
@@ -493,21 +491,18 @@ func (m *UpdateManager) PerformUpdate(ctx context.Context, force bool, preferV3 
 
 	action.Installed = true
 	action.RestartRequired = true
-	action.Notes = "更新已安装，正在自重启…"
 
 	status.PendingRestart = true
-	status.Message = action.Notes
-	action.Status = status
 
 	m.recordInstalled(status.AssetSignature)
 	if err := m.triggerPostUpgradeHook(ctx); err != nil {
-		m.logWarn("post-upgrade restart hook failed", err, zap.String("endpoint", postUpgradeEndpoint))
+		m.logWarn("post-upgrade restart hook failed", err)
 		action.Notes = "更新已安装，请手动重启。"
-		status.Message = action.Notes
 	} else {
-		action.Notes = "更新已安装，正在自重启…"
-		status.Message = action.Notes
+		action.Notes = "更新已安装，已安排自动重启。"
 	}
+	status.Message = action.Notes
+	action.Status = status
 
 	return action, nil
 }
@@ -524,32 +519,11 @@ func (m *UpdateManager) recordInstalled(signature string) {
 }
 
 func (m *UpdateManager) triggerPostUpgradeHook(ctx context.Context) error {
-	endpoint := ResolveRestartEndpoint(postUpgradeEndpoint)
-
-	if endpoint != "" {
-		if ctx == nil {
-			ctx = context.Background()
-		}
-		requestCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
-		defer cancel()
-		// This local call should not use proxy.
-		if err := RequestSelfRestart(requestCtx, m.httpClient, endpoint, 500); err == nil {
-			return nil
-		} else {
-			m.logWarn("self-restart hook request failed", err, zap.String("endpoint", endpoint))
-		}
-	}
-
-	if SelfRestartSupported() {
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			if err := ExecSelfRestart(); err != nil {
-				m.logWarn("self-restart syscall.Exec failed", err)
-			}
-		}()
-		return nil
-	}
-	return ErrSelfRestartNotSupported
+	_ = ctx
+	requestCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	client := &http.Client{Timeout: 5 * time.Second}
+	return RequestRuntimeRestart(requestCtx, client, 500)
 }
 
 func (m *UpdateManager) isUpdateNeeded(latest, signature string) bool {
@@ -828,9 +802,6 @@ func selectAsset(assets []githubAsset) *githubAsset {
 				return &assets[idx]
 			}
 		}
-	}
-	if len(assets) > 0 {
-		return &assets[0]
 	}
 	return nil
 }

@@ -78,6 +78,17 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 		metricsReg: newMetricsReg(),
 		sc:         safe_close.NewSafeClose(),
 	}
+	SetConfiguredRestartEndpointFromHTTPAddr(cfg.API.HTTP)
+	unregisterRestartScheduler := registerInternalRestartScheduler(func(delayMs int) error {
+		_, err := m.ScheduleSelfRestart(delayMs)
+		return err
+	})
+	m.sc.Attach(func(done func(), closeSignal <-chan struct{}) {
+		defer done()
+		<-closeSignal
+		unregisterRestartScheduler()
+		ClearConfiguredRestartEndpoint()
+	})
 
 	// <<< START OF MODIFICATIONS >>>
 	// Step 1: Discover original settings from the raw config.

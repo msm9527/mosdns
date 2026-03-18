@@ -12,8 +12,6 @@ import (
 	"syscall"
 )
 
-const DefaultRestartEndpoint = "http://127.0.0.1:9099/api/v1/system/restart"
-
 var ErrSelfRestartNotSupported = errors.New("self-restart is not supported on Windows")
 
 // RestartPreparer is implemented by plugins that need explicit preparation
@@ -26,17 +24,11 @@ func SelfRestartSupported() bool {
 	return runtime.GOOS != "windows"
 }
 
-func ResolveRestartEndpoint(defaultEndpoint string) string {
-	endpoint := strings.TrimSpace(os.Getenv("MOSDNS_RESTART_ENDPOINT"))
-	if endpoint == "" {
-		endpoint = defaultEndpoint
-	}
-	return endpoint
-}
-
 func BuildRestartRequestWithDelay(ctx context.Context, endpoint string, delayMs int) (*http.Request, error) {
-	if delayMs <= 0 {
-		delayMs = 500
+	var err error
+	delayMs, err = normalizeRestartDelay(delayMs)
+	if err != nil {
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(fmt.Sprintf(`{"delay_ms":%d}`, delayMs)))
 	if err != nil {
@@ -69,6 +61,25 @@ func RequestSelfRestart(ctx context.Context, client *http.Client, endpoint strin
 		return fmt.Errorf("HTTP %s", resp.Status)
 	}
 	return nil
+}
+
+func RequestRuntimeRestart(ctx context.Context, client *http.Client, delayMs int) error {
+	var err error
+	delayMs, err = normalizeRestartDelay(delayMs)
+	if err != nil {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := requestInternalRestart(delayMs); err == nil {
+		return nil
+	} else if !errors.Is(err, ErrRestartSchedulerUnavailable) {
+		return err
+	}
+
+	endpoint := ResolveRestartEndpoint(DefaultRestartEndpoint)
+	return RequestSelfRestart(ctx, client, endpoint, delayMs)
 }
 
 func ExecSelfRestart() error {
