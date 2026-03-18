@@ -108,7 +108,6 @@ type writeSnapshot struct {
 
 type domainStatsPool struct {
 	pluginTag   string
-	manager     *coremain.Mosdns
 	logger      *zap.Logger
 	dbPath      string
 	policy      writePolicy
@@ -147,7 +146,7 @@ func init() {
 }
 
 func Init(bp *coremain.BP, _ any) (any, error) {
-	pool, err := newDomainStatsPool(bp.Tag(), bp.M(), bp.L())
+	pool, err := newDomainStatsPoolFromBP(bp)
 	if err != nil {
 		return nil, err
 	}
@@ -162,16 +161,23 @@ func QuickSetup(_ sequence.BQ, _ string) (any, error) {
 	return nil, errors.New("domain_stats_pool quick setup is not supported in v2")
 }
 
-func newDomainStatsPool(pluginTag string, manager *coremain.Mosdns, logger *zap.Logger) (*domainStatsPool, error) {
+func newDomainStatsPoolFromBP(bp *coremain.BP) (*domainStatsPool, error) {
+	return newDomainStatsPoolWithDeps(bp.Tag(), bp.L(), bp.ControlDBPath())
+}
+
+func newDomainStatsPool(pluginTag string, _ *coremain.Mosdns, logger *zap.Logger) (*domainStatsPool, error) {
+	return newDomainStatsPoolWithDeps(pluginTag, logger, "")
+}
+
+func newDomainStatsPoolWithDeps(pluginTag string, logger *zap.Logger, dbPath string) (*domainStatsPool, error) {
 	policy, err := resolveWritePolicy(pluginTag)
 	if err != nil {
 		return nil, err
 	}
 	return &domainStatsPool{
 		pluginTag:          strings.TrimSpace(pluginTag),
-		manager:            manager,
 		logger:             logger,
-		dbPath:             coremain.RuntimeStateDBPath(),
+		dbPath:             dbPath,
 		policy:             policy,
 		memoryID:           policy.raw.MemoryID,
 		enableFlags:        policy.trackFlags,

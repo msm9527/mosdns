@@ -108,7 +108,8 @@ type writeSnapshot struct {
 
 type domainMemoryPool struct {
 	pluginTag   string
-	manager     *coremain.Mosdns
+	plugin      func(string) any
+	snapshotter coremain.PluginSnapshotter
 	logger      *zap.Logger
 	dbPath      string
 	policy      writePolicy
@@ -157,7 +158,7 @@ func init() {
 }
 
 func Init(bp *coremain.BP, _ any) (any, error) {
-	pool, err := newDomainMemoryPool(bp.Tag(), bp.M(), bp.L())
+	pool, err := newDomainMemoryPoolFromBP(bp)
 	if err != nil {
 		return nil, err
 	}
@@ -173,16 +174,39 @@ func QuickSetup(_ sequence.BQ, _ string) (any, error) {
 	return nil, errors.New("domain_memory_pool quick setup is not supported in v2")
 }
 
+func newDomainMemoryPoolFromBP(bp *coremain.BP) (*domainMemoryPool, error) {
+	return newDomainMemoryPoolWithDeps(bp.Tag(), bp.Plugin, pluginSnapshotterFunc(bp.SnapshotPlugins), bp.L(), bp.ControlDBPath())
+}
+
 func newDomainMemoryPool(pluginTag string, manager *coremain.Mosdns, logger *zap.Logger) (*domainMemoryPool, error) {
+	var plugin func(string) any
+	var snapshotter coremain.PluginSnapshotter
+	var dbPath string
+	if manager != nil {
+		plugin = manager.GetPlugin
+		snapshotter = manager
+		dbPath = manager.ControlDBPath()
+	}
+	return newDomainMemoryPoolWithDeps(pluginTag, plugin, snapshotter, logger, dbPath)
+}
+
+func newDomainMemoryPoolWithDeps(
+	pluginTag string,
+	plugin func(string) any,
+	snapshotter coremain.PluginSnapshotter,
+	logger *zap.Logger,
+	dbPath string,
+) (*domainMemoryPool, error) {
 	policy, err := resolveWritePolicy(pluginTag)
 	if err != nil {
 		return nil, err
 	}
 	pool := &domainMemoryPool{
 		pluginTag:          strings.TrimSpace(pluginTag),
-		manager:            manager,
+		plugin:             plugin,
+		snapshotter:        snapshotter,
 		logger:             logger,
-		dbPath:             coremain.RuntimeStateDBPath(),
+		dbPath:             dbPath,
 		policy:             policy,
 		memoryID:           policy.raw.MemoryID,
 		enableFlags:        policy.trackFlags,

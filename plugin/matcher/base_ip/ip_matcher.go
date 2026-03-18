@@ -57,7 +57,7 @@ func NewMatcher(bq sequence.BQ, args *Args, f MatchFunc) (m *Matcher, err error)
 
 	// Acquire lists from other plugins or files.
 	for _, tag := range args.IPSets {
-		p := bq.M().GetPlugin(tag)
+		p := bq.Plugin(tag)
 		provider, _ := p.(data_provider.IPMatcherProvider)
 		if provider == nil {
 			return nil, fmt.Errorf("cannot find ipset %s", tag)

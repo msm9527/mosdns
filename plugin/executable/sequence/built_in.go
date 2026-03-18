@@ -96,7 +96,7 @@ func setupTry(bq BQ, s string) (any, error) {
 		pluginName = s[1:]
 	}
 
-	p := bq.M().GetPlugin(pluginName)
+	p := bq.Plugin(pluginName)
 	if p == nil {
 		return nil, fmt.Errorf("can not find try target %s", s)
 	}
@@ -163,7 +163,7 @@ func (a *ActionJump) Exec(ctx context.Context, qCtx *query_context.Context, next
 }
 
 func setupJump(bq BQ, s string) (any, error) {
-	target, _ := bq.M().GetPlugin(s).(*Sequence)
+	target, _ := bq.Plugin(s).(*Sequence)
 	if target == nil {
 		return nil, fmt.Errorf("can not find jump target %s", s)
 	}
@@ -183,7 +183,7 @@ func (a ActionGoto) Exec(ctx context.Context, qCtx *query_context.Context, next 
 }
 
 func setupGoto(bq BQ, s string) (any, error) {
-	gt, _ := bq.M().GetPlugin(s).(*Sequence)
+	gt, _ := bq.Plugin(s).(*Sequence)
 	if gt == nil {
 		return nil, fmt.Errorf("can not find goto target %s", s)
 	}

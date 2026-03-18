@@ -227,6 +227,18 @@ func (p *BP) MetricsRegisterer() prometheus.Registerer {
 	return p.m.GetMetricsReg()
 }
 
+func (p *BP) SnapshotPlugins() map[string]any {
+	return p.m.SnapshotPlugins()
+}
+
+func (p *BP) BaseDir() string {
+	return p.m.BaseDir()
+}
+
+func (p *BP) ControlDBPath() string {
+	return p.m.ControlDBPath()
+}
+
 func (p *BP) SafeClose() *safe_close.SafeClose {
 	return p.m.GetSafeClose()
 }

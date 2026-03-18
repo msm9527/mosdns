@@ -56,10 +56,10 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 
 	p := &Requery{
-		m:          bp.M(),
+		plugin:     bp.Plugin,
 		pluginTag:  bp.Tag(),
 		runtimeKey: cfg.Key,
-		dbPath:     coremain.RuntimeStateDBPath(),
+		dbPath:     bp.ControlDBPath(),
 		scheduler:  cron.New(),
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		queue:      make(refreshJobHeap, 0),
@@ -98,7 +98,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 // Requery is the main struct for the plugin.
 type Requery struct {
 	mu                  sync.RWMutex
-	m                   *coremain.Mosdns
+	plugin              func(string) any
 	pluginTag           string
 	runtimeKey          string
 	dbPath              string
@@ -587,7 +587,7 @@ func (p *Requery) scanDomainsFromSourceFiles(ctx context.Context, limit int) ([]
 }
 
 func (p *Requery) collectRuntimeCandidates(profile taskProfile) ([]domainCandidate, error) {
-	if p.m == nil {
+	if p.plugin == nil {
 		return nil, nil
 	}
 
@@ -616,7 +616,7 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) ([]domainCandida
 
 	candidateSet := make(map[string]domainCandidate)
 	for _, tag := range tags {
-		provider, ok := p.m.GetPlugin(tag).(coremain.DomainRefreshCandidateProvider)
+		provider, ok := p.plugin(tag).(coremain.DomainRefreshCandidateProvider)
 		if !ok || provider == nil {
 			continue
 		}
@@ -1224,7 +1224,7 @@ func (p *Requery) markDomainVerified(ctx context.Context, job refreshJob) error 
 	if strings.TrimSpace(job.VerifyTag) == "" {
 		return nil
 	}
-	verifier, ok := p.m.GetPlugin(job.VerifyTag).(coremain.DomainVerifyPlugin)
+	verifier, ok := p.plugin(job.VerifyTag).(coremain.DomainVerifyPlugin)
 	if !ok || verifier == nil {
 		return fmt.Errorf("verify target %s is not a DomainVerifyPlugin", job.VerifyTag)
 	}
@@ -1369,7 +1369,7 @@ func (p *Requery) collectMemoryStats() ([]memoryStatView, error) {
 	views := make([]memoryStatView, 0, len(tags))
 	for _, tag := range tags {
 		view := memoryStatView{Tag: tag, Key: tag, Name: tag}
-		provider, ok := p.m.GetPlugin(tag).(coremain.DomainStatsProvider)
+		provider, ok := p.plugin(tag).(coremain.DomainStatsProvider)
 		if !ok || provider == nil {
 			continue
 		}
@@ -1936,7 +1936,7 @@ func (p *Requery) callURLs(ctx context.Context, action string, urls []string) ba
 			if tag, op, ok := pluginActionFromURL(task.url); ok {
 				switch op {
 				case "save":
-					if saver, ok := p.m.GetPlugin(tag).(coremain.SaveablePlugin); ok && saver != nil {
+					if saver, ok := p.plugin(tag).(coremain.SaveablePlugin); ok && saver != nil {
 						err := saver.SaveToDisk(ctx)
 						item.StatusCode = http.StatusOK
 						if err == nil {
@@ -1947,7 +1947,7 @@ func (p *Requery) callURLs(ctx context.Context, action string, urls []string) ba
 						}
 					}
 				case "flush":
-					if flusher, ok := p.m.GetPlugin(tag).(coremain.FlushablePlugin); ok && flusher != nil {
+					if flusher, ok := p.plugin(tag).(coremain.FlushablePlugin); ok && flusher != nil {
 						err := flusher.FlushRuntime(ctx)
 						item.StatusCode = http.StatusOK
 						if err == nil {

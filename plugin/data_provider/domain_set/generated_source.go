@@ -33,7 +33,7 @@ func (d *DomainSet) resolveGeneratedExporter(generatedFrom string) (data_provide
 	if tag == "" {
 		return nil, false, nil
 	}
-	if d.bp == nil || d.bp.M() == nil {
+	if d.bp == nil {
 		return nil, false, fmt.Errorf("generated_from source %s requires a running plugin manager", tag)
 	}
 	pluginInterface := d.bp.Plugin(tag)
