@@ -26,7 +26,7 @@ branch_cache: "on"
 
 block_query_type: "on"
 
-block_ipv6: "off"
+block_ipv6: "on"
 
 ad_block: "off"
 
