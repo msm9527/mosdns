@@ -200,7 +200,7 @@ func saveSwitchesToCustomConfig(values map[string]string) error {
 	buf.WriteString("# - client_proxy_mode: all/blacklist/whitelist，控制哪些客户端允许走代理链路。\n")
 	buf.WriteString("# - main_cache: on/off，控制真实解析主缓存总开关。\n")
 	buf.WriteString("# - branch_cache: on/off，控制真实解析分支缓存（国内/国外/ECS）。\n")
-	buf.WriteString("# - fakeip_cache: on/off，控制 fakeip 响应缓存，不影响 fakeip 记忆池。\n")
+	buf.WriteString("# - fakeip_cache: on/off，控制 FakeIP DNS 响应缓存，不影响系统记录 FakeIP 路径域名的运行记忆列表。\n")
 	buf.WriteString("# - probe_cache: on/off，控制节点探测专用缓存。\n")
 	buf.WriteString("# - block_query_type: on/off，控制 SOA/PTR/HTTPS 等类型屏蔽。\n")
 	buf.WriteString("# - block_ipv6: on/off，控制 AAAA 请求屏蔽。\n")

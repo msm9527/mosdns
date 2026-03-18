@@ -29,6 +29,12 @@
 | `prefer_ipv6` | IPv6 优先 | `on` / `off` |
 | `udp_fast_path` | UDP 极限快路径 | `on` / `off` |
 
+说明：
+
+- `fakeip_cache` 只控制 FakeIP DNS 响应缓存是否复用
+- 它不影响 `my_fakeiplist` 这类运行记忆池
+- `my_fakeiplist` 用来记录哪些域名在运行中走过 FakeIP 路径，供查看、统计和规则候选发布使用，不是另一层 DNS 应答缓存
+
 ## 配置示例
 
 ```yaml

@@ -3261,6 +3261,22 @@ const cacheManager = {
             return `<span style="font-weight:700; color:${stateInfo.color}; display:inline-block;">${stateInfo.label}</span>`;
         },
 
+        renderPersistenceCell(stats) {
+            const persist = stats?.config?.persist === true;
+            if (!persist) {
+                return `<span style="font-weight:600; color: var(--color-text-secondary);">仅内存</span>`;
+            }
+            const parts = [];
+            const dumpInterval = Number(stats?.config?.dump_interval || 0);
+            const walSyncInterval = Number(stats?.config?.wal_sync_interval || 0);
+            if (dumpInterval > 0) parts.push(`快照 ${dumpInterval}s`);
+            if (walSyncInterval > 0) parts.push(`WAL ${walSyncInterval}s`);
+            return this.renderStack([
+                `<span style="font-weight:700; color: var(--color-success);">持久化</span>`,
+                parts.length ? `<small style="color: var(--color-text-secondary);">${parts.join(' / ')}</small>` : ''
+            ], 'center');
+        },
+
         async updateStats(signal) {
             try {
                 const res = await api.getAllCacheStats(signal);
@@ -3309,7 +3325,7 @@ const cacheManager = {
             tbody.innerHTML = '';
 
             if (isError) {
-                const cols = state.isMobile ? 1 : 9;
+                const cols = state.isMobile ? 1 : 10;
                 tbody.innerHTML = `<tr><td colspan="${cols}" style="text-align:center; color: var(--color-danger);">缓存数据加载失败</td></tr>`;
                 return;
             }
@@ -3332,6 +3348,7 @@ const cacheManager = {
                                 </div>
                                 <div class="mobile-stats-grid">
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">状态</span><span class="mobile-stat-value">${stateInfo.label}</span></div>
+                                    <div class="mobile-stat-item"><span class="mobile-stat-label">持久化</span><span class="mobile-stat-value">${stats?.config?.persist === true ? '是' : '否'}</span></div>
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">请求总数</span><span class="mobile-stat-value">${this.formatCount(counters.query_total)}</span></div>
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">缓存命中</span><span class="mobile-stat-value">${this.formatCount(counters.hit_total)}</span></div>
                                     <div class="mobile-stat-item"><span class="mobile-stat-label">过期命中</span><span class="mobile-stat-value">${this.formatCount(counters.lazy_hit_total)}</span></div>
@@ -3348,6 +3365,7 @@ const cacheManager = {
                             <div class="cache-name-wrapper" style="max-width: 150px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="${cache.name}">${cache.name}</div>
                         </td>
                         <td class="text-center">${this.renderStateCell(stats)}</td>
+                        <td class="text-center">${this.renderPersistenceCell(stats)}</td>
                         <td class="text-right">${this.formatCount(counters.query_total)}</td>
                         <td class="text-right">${this.formatCount(counters.hit_total)}</td>
                         <td class="text-right">${this.formatCount(counters.lazy_hit_total)}</td>

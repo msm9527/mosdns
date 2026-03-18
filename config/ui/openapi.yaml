@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: mosdns Runtime API
-  version: "2026-03-17"
+  version: "2026-03-18"
   description: |
     当前规范只描述源码中真实注册的接口：
     - `/api/v1/*`
@@ -1405,6 +1405,13 @@ paths:
     get:
       tags: [RuntimeStats]
       summary: Get aggregated cache stats
+      description: |
+        返回内置缓存画像的聚合运行态统计。
+
+        说明：
+        - 缓存策略真源位于 `config/sub_config/cache_policies.yaml`
+        - `config.persist=true` 表示该缓存会做 dump + WAL 持久化
+        - `config.persist=false` 表示该缓存仅保存在内存中
       responses:
         '200':
           description: Aggregated cache stats by runtime profile
@@ -1431,6 +1438,13 @@ paths:
     get:
       tags: [Cache]
       summary: Get one cache instance stats
+      description: |
+        返回单个缓存实例的运行态统计、最近 dump/load/WAL 状态和当前生效参数。
+
+        说明：
+        - 非持久化缓存会返回 `config.persist=false`
+        - 非持久化缓存通常不会提供 `snapshot_file` / `wal_file`
+        - `config.size` 表示最大缓存条目数，超过后按 LRU 淘汰旧条目
       responses:
         '200':
           description: Cache stats
@@ -3290,8 +3304,52 @@ components:
               format: date-time
             last_error:
               type: string
+    CacheOpStatus:
+      type: object
+      properties:
+        status:
+          type: string
+          description: "`ok` / `error` / `not_run`"
+        at:
+          type: string
+          format: date-time
+        duration:
+          type: string
+        entries:
+          type: integer
+        error:
+          type: string
+    CacheStatsConfig:
+      type: object
+      description: 当前缓存实例实际生效的运行参数
+      properties:
+        size:
+          type: integer
+          description: 最大缓存条目数；达到上限后按 LRU 淘汰旧条目
+        lazy_cache_ttl:
+          type: integer
+          description: TTL 过期后允许返回 stale 结果的窗口，单位秒
+        l1_enabled:
+          type: boolean
+        l1_total_cap:
+          type: integer
+        l1_shard_cap:
+          type: integer
+        enable_ecs:
+          type: boolean
+        persist:
+          type: boolean
+          description: 是否启用 dump + WAL 持久化
+        dump_interval:
+          type: integer
+          description: 快照周期，单位秒；仅 `persist=true` 时出现
+        wal_sync_interval:
+          type: integer
+          description: WAL flush/fsync 周期，单位秒；仅 `persist=true` 时出现
+      additionalProperties: true
     CacheStatsSnapshot:
       type: object
+      description: 单个缓存实例的运行态快照
       properties:
         key:
           type: string
@@ -3316,17 +3374,13 @@ components:
             type: integer
             format: int64
         last_dump:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/CacheOpStatus'
         last_load:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/CacheOpStatus'
         last_wal_replay:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/CacheOpStatus'
         config:
-          type: object
-          additionalProperties: true
+          $ref: '#/components/schemas/CacheStatsConfig'
         error:
           type: string
     DomainStatsSnapshot:
@@ -3386,6 +3440,7 @@ components:
           type: string
     AggregatedCacheStatsResponse:
       type: object
+      description: 内置缓存画像的聚合统计结果
       properties:
         items:
           type: array

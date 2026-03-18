@@ -36,7 +36,7 @@
       tag: 'fakeip_cache',
       name: 'FakeIP 缓存',
       desc: '控制 fakeip 响应缓存',
-      tip: 'on=启用，off=关闭。只影响 fakeip 响应缓存，不影响 fakeip 记忆池。',
+      tip: 'on=启用，off=关闭。只影响 FakeIP DNS 应答缓存，不影响系统记录“哪些域名走过 FakeIP 路径”的运行记忆列表。',
       valueForOn: 'on',
       valueForOff: 'off',
     },
