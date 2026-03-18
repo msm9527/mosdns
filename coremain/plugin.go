@@ -21,10 +21,14 @@ package coremain
 
 import (
 	"fmt"
-	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
-	"go.uber.org/zap"
+	"net/http"
 	"reflect"
 	"sync"
+
+	"github.com/IrineSistiana/mosdns/v5/pkg/safe_close"
+	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 // NewPluginArgsFunc represents a func that creates a new args object.
@@ -209,6 +213,46 @@ func (p *BP) L() *zap.Logger {
 // M returns a non-nil Mosdns.
 func (p *BP) M() *Mosdns {
 	return p.m
+}
+
+func (p *BP) Plugin(tag string) any {
+	return p.m.GetPlugin(tag)
+}
+
+func (p *BP) GlobalOverrides() *GlobalOverrides {
+	return p.m.GetGlobalOverrides()
+}
+
+func (p *BP) MetricsRegisterer() prometheus.Registerer {
+	return p.m.GetMetricsReg()
+}
+
+func (p *BP) SnapshotPlugins() map[string]any {
+	return p.m.SnapshotPlugins()
+}
+
+func (p *BP) BaseDir() string {
+	return p.m.BaseDir()
+}
+
+func (p *BP) ControlDBPath() string {
+	return p.m.ControlDBPath()
+}
+
+func (p *BP) SafeClose() *safe_close.SafeClose {
+	return p.m.GetSafeClose()
+}
+
+func (p *BP) CloseWithErr(err error) {
+	p.m.CloseWithErr(err)
+}
+
+func (p *BP) AttachShutdown(fn func(done func(), closeSignal <-chan struct{})) {
+	p.m.GetSafeClose().Attach(fn)
+}
+
+func (p *BP) MountAPI(pattern string, handler http.Handler) {
+	p.m.GetAPIRouter().Mount(pattern, handler)
 }
 
 // Tag returns the plugin tag.

@@ -14,12 +14,20 @@ func memoryPoolsConfigPath() string {
 	return filepath.Join(customConfigDirPath(), memoryPoolsConfigFilename)
 }
 
+func memoryPoolsConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), memoryPoolsConfigFilename)
+}
+
 func MemoryPoolsConfigPath() string {
 	return memoryPoolsConfigPath()
 }
 
 func LoadMemoryPoolPoliciesFromCustomConfig() (map[string]DomainPoolPolicy, bool, error) {
-	path := memoryPoolsConfigPath()
+	return LoadMemoryPoolPoliciesFromCustomConfigForBaseDir(MainConfigBaseDir)
+}
+
+func LoadMemoryPoolPoliciesFromCustomConfigForBaseDir(baseDir string) (map[string]DomainPoolPolicy, bool, error) {
+	path := memoryPoolsConfigPathForBaseDir(baseDir)
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -40,6 +48,14 @@ func LoadMemoryPoolPoliciesFromCustomConfig() (map[string]DomainPoolPolicy, bool
 }
 
 func SaveMemoryPoolPoliciesToCustomConfig(values map[string]DomainPoolPolicy) error {
+	return saveMemoryPoolPoliciesToCustomConfigAtPath(memoryPoolsConfigPath(), values)
+}
+
+func SaveMemoryPoolPoliciesToCustomConfigForBaseDir(baseDir string, values map[string]DomainPoolPolicy) error {
+	return saveMemoryPoolPoliciesToCustomConfigAtPath(memoryPoolsConfigPathForBaseDir(baseDir), values)
+}
+
+func saveMemoryPoolPoliciesToCustomConfigAtPath(path string, values map[string]DomainPoolPolicy) error {
 	normalized, err := normalizeDomainPoolPoliciesForSave(values)
 	if err != nil {
 		return err
@@ -55,7 +71,7 @@ func SaveMemoryPoolPoliciesToCustomConfig(values map[string]DomainPoolPolicy) er
 			return err
 		}
 	}
-	return writeTextFileAtomically(memoryPoolsConfigPath(), buf.Bytes())
+	return writeTextFileAtomically(path, buf.Bytes())
 }
 
 func normalizeDomainPoolPoliciesForSave(values map[string]DomainPoolPolicy) (map[string]DomainPoolPolicy, error) {

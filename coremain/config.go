@@ -24,13 +24,14 @@ import (
 )
 
 type Config struct {
-	Log     mlog.LogConfig `yaml:"log"`
-	Include []string       `yaml:"include"`
-	Plugins []PluginConfig `yaml:"plugins"`
-	API     APIConfig      `yaml:"api"`
-	Audit   *AuditSettings `yaml:"-"`
-	ControlDBPath string   `yaml:"-"`
-	baseDir string         `yaml:"-"`
+	Log            mlog.LogConfig `yaml:"log"`
+	Include        []string       `yaml:"include"`
+	Plugins        []PluginConfig `yaml:"plugins"`
+	API            APIConfig      `yaml:"api"`
+	Audit          *AuditSettings `yaml:"-"`
+	ControlDBPath  string         `yaml:"-"`
+	baseDir        string         `yaml:"-"`
+	mainConfigPath string         `yaml:"-"`
 }
 
 // PluginConfig represents a plugin config

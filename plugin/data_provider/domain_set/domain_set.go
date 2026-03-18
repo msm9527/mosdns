@@ -213,7 +213,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	ds.updateWatchedFilesLocked(cfg.Files)
 
 	for _, tag := range cfg.Sets {
-		provider, ok := bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
+		provider, ok := bp.Plugin(tag).(data_provider.DomainMatcherProvider)
 		if !ok || provider == nil {
 			return nil, fmt.Errorf("%s is not a DomainMatcherProvider", tag)
 		}
@@ -274,7 +274,7 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 
 	otherM := make([]domain.Matcher[struct{}], 0, len(effective.Sets))
 	for _, tag := range effective.Sets {
-		provider, ok := d.bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
+		provider, ok := d.bp.Plugin(tag).(data_provider.DomainMatcherProvider)
 		if !ok || provider == nil {
 			return fmt.Errorf("%s is not a DomainMatcherProvider", tag)
 		}
@@ -358,7 +358,7 @@ func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) er
 
 	otherM := make([]domain.Matcher[struct{}], 0, len(effective.Sets))
 	for _, tag := range effective.Sets {
-		provider, ok := d.bp.M().GetPlugin(tag).(data_provider.DomainMatcherProvider)
+		provider, ok := d.bp.Plugin(tag).(data_provider.DomainMatcherProvider)
 		if !ok || provider == nil {
 			return fmt.Errorf("%s is not a DomainMatcherProvider", tag)
 		}

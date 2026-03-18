@@ -25,15 +25,15 @@ func newRuleSourceService(m *Mosdns, scope rulesource.Scope) *ruleSourceService 
 }
 
 func (s *ruleSourceService) List() ([]RuleSourceItem, error) {
-	cfg, err := s.loadConfig()
+	cfg, err := s.loadActiveConfig()
 	if err != nil {
 		return nil, err
 	}
-	statuses, err := ListRuleSourceStatusByScope(RuntimeStateDBPath(), s.scope)
+	statuses, err := ListRuleSourceStatusByScope(s.controlDBPath(), s.scope)
 	if err != nil {
 		return nil, err
 	}
-	bindings, err := listRuleSourceBindings(MainConfigBaseDir, s.scope)
+	bindings, err := listRuleSourceBindings(s.baseDir(), s.scope)
 	if err != nil {
 		return nil, err
 	}
@@ -89,7 +89,7 @@ func (s *ruleSourceService) Update(id string, item RuleSourceItem) (RuleSourceIt
 		return RuleSourceItem{}, err
 	}
 	if source.ID != id {
-		if err := DeleteRuleSourceStatus(RuntimeStateDBPath(), s.scope, id); err != nil {
+		if err := DeleteRuleSourceStatus(s.controlDBPath(), s.scope, id); err != nil {
 			return RuleSourceItem{}, err
 		}
 	}
@@ -112,7 +112,7 @@ func (s *ruleSourceService) Delete(id string) error {
 	if err := s.saveConfig(cfg); err != nil {
 		return err
 	}
-	if err := DeleteRuleSourceStatus(RuntimeStateDBPath(), s.scope, id); err != nil {
+	if err := DeleteRuleSourceStatus(s.controlDBPath(), s.scope, id); err != nil {
 		return err
 	}
 	return s.reload()
@@ -132,7 +132,7 @@ func (s *ruleSourceService) Get(id string) (RuleSourceItem, error) {
 }
 
 func (s *ruleSourceService) RefreshAll() ([]RuleSourceItem, error) {
-	cfg, err := s.loadConfig()
+	cfg, err := s.loadActiveConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +148,11 @@ func (s *ruleSourceService) RefreshAll() ([]RuleSourceItem, error) {
 }
 
 func (s *ruleSourceService) RefreshOne(id string) (RuleSourceItem, error) {
-	source, err := LoadRuleSourceByID(s.configFile(), s.scope, id)
+	source, err := LoadRuleSourceByIDForBaseDir(s.baseDir(), s.configFile(), s.scope, id)
 	if err != nil {
+		if isRuleSourceConfigEmptyError(err) {
+			return RuleSourceItem{}, s.wrapConfigError(err)
+		}
 		return RuleSourceItem{}, NewRuleAPIError(http.StatusNotFound, "RULE_SOURCE_NOT_FOUND", "规则源不存在")
 	}
 	if err := s.refreshSource(source); err != nil {
@@ -164,22 +167,31 @@ func (s *ruleSourceService) RefreshOne(id string) (RuleSourceItem, error) {
 func (s *ruleSourceService) loadConfig() (rulesource.Config, error) {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
-		cfg, _, err := LoadAdguardSourcesFromCustomConfig()
+		cfg, _, err := LoadAdguardSourcesFromCustomConfigForBaseDir(s.baseDir())
 		return cfg, err
 	case rulesource.ScopeDiversion:
-		cfg, _, err := LoadDiversionSourcesFromCustomConfig()
+		cfg, _, err := LoadDiversionSourcesFromCustomConfigForBaseDir(s.baseDir())
 		return cfg, err
 	default:
 		return rulesource.Config{}, fmt.Errorf("unsupported scope %q", s.scope)
 	}
 }
 
+func (s *ruleSourceService) loadActiveConfig() (rulesource.Config, error) {
+	configPath := resolvePolicyConfigPath(s.baseDir(), s.configFile())
+	cfg, err := loadActiveRuleSourcesConfigAtPath(configPath, s.scope)
+	if err != nil {
+		return rulesource.Config{}, s.wrapConfigError(err)
+	}
+	return cfg, nil
+}
+
 func (s *ruleSourceService) saveConfig(cfg rulesource.Config) error {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
-		return SaveAdguardSourcesToCustomConfig(cfg)
+		return SaveAdguardSourcesToCustomConfigForBaseDir(s.baseDir(), cfg)
 	case rulesource.ScopeDiversion:
-		return SaveDiversionSourcesToCustomConfig(cfg)
+		return SaveDiversionSourcesToCustomConfigForBaseDir(s.baseDir(), cfg)
 	default:
 		return fmt.Errorf("unsupported scope %q", s.scope)
 	}
@@ -188,12 +200,23 @@ func (s *ruleSourceService) saveConfig(cfg rulesource.Config) error {
 func (s *ruleSourceService) configFile() string {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
-		return filepath.Join("custom_config", adguardSourcesConfigFilename)
+		return filepath.Join(customConfigDirname, adguardSourcesConfigFilename)
 	case rulesource.ScopeDiversion:
-		return filepath.Join("custom_config", diversionSourcesConfigFilename)
+		return filepath.Join(customConfigDirname, diversionSourcesConfigFilename)
 	default:
 		return ""
 	}
+}
+
+func (s *ruleSourceService) wrapConfigError(err error) error {
+	if !isRuleSourceConfigEmptyError(err) {
+		return err
+	}
+	return NewRuleAPIError(
+		http.StatusConflict,
+		"RULE_SOURCE_CONFIG_EMPTY",
+		fmt.Sprintf("规则源配置为空，请先编辑 %s", s.configFile()),
+	)
 }
 
 func (s *ruleSourceService) itemFromSource(
@@ -271,7 +294,7 @@ func (s *ruleSourceService) refreshSource(source rulesource.Source) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ruleSourceManualSyncTimeout)
 	defer cancel()
-	_, err = SyncRuleSource(ctx, client, RuntimeStateDBPath(), MainConfigBaseDir, s.scope, source, true)
+	_, err = SyncRuleSource(ctx, client, s.controlDBPath(), s.baseDir(), s.scope, source, true)
 	if err != nil {
 		return NewRuleAPIError(http.StatusBadGateway, "RULE_SOURCE_REFRESH_FAILED", err.Error())
 	}
@@ -286,6 +309,14 @@ func (s *ruleSourceService) reload() error {
 		return NewRuleAPIError(http.StatusInternalServerError, "RULE_SOURCE_RELOAD_FAILED", err.Error())
 	}
 	return nil
+}
+
+func (s *ruleSourceService) baseDir() string {
+	return runtimeBaseDir(s.manager)
+}
+
+func (s *ruleSourceService) controlDBPath() string {
+	return runtimeControlDBPath(s.manager)
 }
 
 func behaviorFromMatchMode(matchMode rulesource.MatchMode) rulesource.Behavior {

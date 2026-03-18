@@ -21,33 +21,72 @@ package sequence
 
 import (
 	"fmt"
-	"github.com/IrineSistiana/mosdns/v5/coremain"
-	"go.uber.org/zap"
 	"sync"
+
+	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/prometheus/client_golang/prometheus"
+	"go.uber.org/zap"
 )
 
 type BQ interface {
-	// M returns a non-nil *coremain.Mosdns.
-	M() *coremain.Mosdns
+	Plugin(tag string) any
+	MetricsRegisterer() prometheus.Registerer
 	// L returns a non-nil *zap.Logger.
 	L() *zap.Logger
+	Named(name string) BQ
 }
 
 type bq struct {
-	m *coremain.Mosdns
-	l *zap.Logger
+	plugin            func(string) any
+	metricsRegisterer prometheus.Registerer
+	l                 *zap.Logger
 }
 
-func (bq *bq) M() *coremain.Mosdns {
-	return bq.m
+func (b *bq) Plugin(tag string) any {
+	if b == nil || b.plugin == nil {
+		return nil
+	}
+	return b.plugin(tag)
 }
 
-func (bq *bq) L() *zap.Logger {
-	return bq.l
+func (b *bq) MetricsRegisterer() prometheus.Registerer {
+	if b == nil {
+		return nil
+	}
+	return b.metricsRegisterer
 }
 
-func NewBQ(m *coremain.Mosdns, l *zap.Logger) BQ {
-	return &bq{m: m, l: l}
+func (b *bq) L() *zap.Logger {
+	return b.l
+}
+
+func (b *bq) Named(name string) BQ {
+	if b == nil {
+		return nil
+	}
+	return &bq{
+		plugin:            b.plugin,
+		metricsRegisterer: b.metricsRegisterer,
+		l:                 b.l.Named(name),
+	}
+}
+
+func NewBQ(plugin func(string) any, reg prometheus.Registerer, l *zap.Logger) BQ {
+	return &bq{plugin: plugin, metricsRegisterer: reg, l: l}
+}
+
+func NewBQFromBP(bp *coremain.BP) BQ {
+	if bp == nil {
+		return NewBQ(nil, nil, zap.NewNop())
+	}
+	return NewBQ(bp.Plugin, bp.MetricsRegisterer(), bp.L())
+}
+
+func NewBQFromMosdns(m *coremain.Mosdns, l *zap.Logger) BQ {
+	if m == nil {
+		return NewBQ(nil, nil, l)
+	}
+	return NewBQ(m.GetPlugin, m.GetMetricsReg(), l)
 }
 
 // ExecQuickSetupFunc configures an Executable or

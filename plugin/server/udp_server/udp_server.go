@@ -305,7 +305,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	}
 
 	var dm DomainMapperPlugin
-	if p := bp.M().GetPlugin("unified_matcher1"); p != nil {
+	if p := bp.Plugin("unified_matcher1"); p != nil {
 		dm, _ = p.(DomainMapperPlugin)
 	}
 
@@ -333,7 +333,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	}
 	bp.L().Info("udp server started with extreme bypass", zap.Stringer("addr", c.LocalAddr()))
 	if args.FastMetricsLogInterval > 0 {
-		bp.M().GetSafeClose().Attach(func(done func(), closeSignal <-chan struct{}) {
+		bp.AttachShutdown(func(done func(), closeSignal <-chan struct{}) {
 			defer done()
 			ticker := time.NewTicker(time.Duration(args.FastMetricsLogInterval) * time.Second)
 			defer ticker.Stop()
@@ -367,7 +367,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 			Logger:     bp.L(),
 			FastBypass: fastBypass,
 		})
-		bp.M().GetSafeClose().SendCloseSignal(err)
+		bp.CloseWithErr(err)
 	}()
 	return &UdpServer{args: args, c: c}, nil
 }
@@ -397,10 +397,10 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			sw7 = findSwitchPlugin(bp, switchmeta.MustLookup("ad_block"))
 			clientProxyMode = findSwitchPlugin(bp, switchmeta.MustLookup("client_proxy_mode"))
 			fakeipCache = findSwitchPlugin(bp, switchmeta.MustLookup("fakeip_cache"))
-			if p := bp.M().GetPlugin("unified_matcher1"); p != nil {
+			if p := bp.Plugin("unified_matcher1"); p != nil {
 				dm, _ = p.(DomainMapperPlugin)
 			}
-			if p := bp.M().GetPlugin("client_ip"); p != nil {
+			if p := bp.Plugin("client_ip"); p != nil {
 				ipSet, _ = p.(IPSetPlugin)
 			}
 		})
@@ -513,7 +513,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 }
 
 func findSwitchPlugin(bp *coremain.BP, def switchmeta.Definition) SwitchPlugin {
-	if p := bp.M().GetPlugin(def.Name); p != nil {
+	if p := bp.Plugin(def.Name); p != nil {
 		if sw, ok := p.(SwitchPlugin); ok {
 			return sw
 		}

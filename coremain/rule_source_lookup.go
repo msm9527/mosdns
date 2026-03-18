@@ -11,7 +11,7 @@ func LoadRuleSourceByID(configPath string, scope rulesource.Scope, sourceID stri
 }
 
 func LoadRuleSourceByIDForBaseDir(baseDir, configPath string, scope rulesource.Scope, sourceID string) (rulesource.Source, error) {
-	cfg, _, err := rulesource.LoadConfig(resolveRuleSourceConfigPath(baseDir, configPath), scope)
+	cfg, err := loadRuleSourceConfigForBaseDir(baseDir, configPath, scope)
 	if err != nil {
 		return rulesource.Source{}, err
 	}
@@ -33,7 +33,7 @@ func LoadRuleSourcesByBindingForBaseDir(
 	scope rulesource.Scope,
 	bindTo string,
 ) ([]rulesource.Source, error) {
-	cfg, _, err := rulesource.LoadConfig(resolveRuleSourceConfigPath(baseDir, configPath), scope)
+	cfg, err := loadRuleSourceConfigForBaseDir(baseDir, configPath, scope)
 	if err != nil {
 		return nil, err
 	}
@@ -44,6 +44,10 @@ func LoadRuleSourcesByBindingForBaseDir(
 		}
 	}
 	return sources, nil
+}
+
+func loadRuleSourceConfigForBaseDir(baseDir, configPath string, scope rulesource.Scope) (rulesource.Config, error) {
+	return loadActiveRuleSourcesConfigAtPath(resolveRuleSourceConfigPath(baseDir, configPath), scope)
 }
 
 func resolveRuleSourceConfigPath(baseDir, configPath string) string {

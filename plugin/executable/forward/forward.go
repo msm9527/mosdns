@@ -88,7 +88,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
 		baseArgs = cloneArgs(rawArgs)
 	}
-	effectiveArgs := buildEffectiveArgs(baseArgs, bp.M().GetGlobalOverrides())
+	effectiveArgs := buildEffectiveArgs(baseArgs, bp.GlobalOverrides())
 
 	f, err := NewForward(effectiveArgs, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
 	if err != nil {
@@ -98,7 +98,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	f.pluginTag = bp.Tag()
 	f.metricsTag = bp.Tag()
 
-	if err := f.RegisterMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.M().GetMetricsReg())); err != nil {
+	if err := f.RegisterMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.MetricsRegisterer())); err != nil {
 		_ = f.Close()
 		return nil, err
 	}

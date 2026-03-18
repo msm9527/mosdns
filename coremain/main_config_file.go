@@ -28,6 +28,21 @@ func saveAuditSettingsToMainConfig(settings AuditSettings) error {
 	if err != nil {
 		return err
 	}
+	return saveAuditSettingsToMainConfigPath(path, settings)
+}
+
+func resolveMainConfigFilePathForRuntime(m *Mosdns) (string, error) {
+	if m != nil && m.MainConfigPath() != "" {
+		return filepath.Clean(m.MainConfigPath()), nil
+	}
+	return resolveMainConfigFilePath()
+}
+
+func saveAuditSettingsToMainConfigPath(path string, settings AuditSettings) error {
+	path = filepath.Clean(path)
+	if path == "" || path == "." {
+		return fmt.Errorf("main config path is empty")
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read main config: %w", err)

@@ -80,7 +80,7 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		}
 	}
 	if !loadedFromFile {
-		if fileObj, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+		if fileObj, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(runtimeBaseDir(m)); err == nil && ok {
 			resp.Socks5 = fileObj.Socks5
 			resp.ECS = fileObj.ECS
 			populateReplacements(fileObj, false)
@@ -112,7 +112,8 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		return
 	}
 
-	if err := saveGlobalOverridesToCustomConfig(&payload); err != nil {
+	baseDir := runtimeBaseDir(m)
+	if err := saveGlobalOverridesToCustomConfigForBaseDir(baseDir, &payload); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "WRITE_CUSTOM_CONFIG_FAILED", "Failed to save custom config: "+err.Error())
 		return
 	}
@@ -138,7 +139,7 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		"socks5":       payload.Socks5,
 		"ecs":          payload.ECS,
 		"replacements": len(payload.Replacements),
-		"path":         globalOverridesConfigPath(),
+		"path":         globalOverridesConfigPathForBaseDir(baseDir),
 	})
 	writeJSON(w, http.StatusOK, map[string]string{
 		"message": message,

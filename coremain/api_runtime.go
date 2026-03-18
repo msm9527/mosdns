@@ -31,7 +31,7 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 	router.Route("/api/v1/control", func(r chi.Router) {
 		r.Get("/health", handleRuntimeHealth(m))
 		r.Get("/summary", handleRuntimeSummary(m))
-		r.Get("/events", handleRuntimeEvents)
+		r.Get("/events", handleRuntimeEvents(m))
 		registerControlShuntAPI(r, m)
 		r.Get("/overrides", func(w http.ResponseWriter, r *http.Request) {
 			handleGetOverrides(w, r, m)
@@ -55,7 +55,7 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 
 func handleRuntimeSummary(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		dbPath := defaultRuntimeStateDBPath()
+		dbPath := runtimeControlDBPath(m)
 		namespaces := []string{
 			runtimeNamespaceWebinfo,
 			runtimeNamespaceRequery,
@@ -88,7 +88,7 @@ func handleRuntimeSummary(m *Mosdns) http.HandlerFunc {
 
 func handleRuntimeHealth(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
-		resp, err := runtimeHealthReport(defaultRuntimeStateDBPath(), m)
+		resp, err := runtimeHealthReport(runtimeControlDBPath(m), m)
 		if err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_HEALTH_FAILED", err.Error())
 			return
@@ -97,15 +97,17 @@ func handleRuntimeHealth(m *Mosdns) http.HandlerFunc {
 	}
 }
 
-func handleRuntimeEvents(w http.ResponseWriter, r *http.Request) {
-	component := strings.TrimSpace(r.URL.Query().Get("component"))
-	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := ListSystemEvents(defaultRuntimeStateDBPath(), component, limit)
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "RUNTIME_EVENTS_FAILED", err.Error())
-		return
+func handleRuntimeEvents(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		component := strings.TrimSpace(r.URL.Query().Get("component"))
+		limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
+		events, err := ListSystemEvents(runtimeControlDBPath(m), component, limit)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_EVENTS_FAILED", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, events)
 	}
-	writeJSON(w, http.StatusOK, events)
 }
 
 func handleControlUpstreamHealth(m *Mosdns) http.HandlerFunc {

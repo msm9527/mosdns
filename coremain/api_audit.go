@@ -25,7 +25,8 @@ type auditSettingsResponse struct {
 	Degraded                   bool   `json:"degraded"`
 }
 
-func RegisterAuditAPI(router *chi.Mux) {
+func RegisterAuditAPI(router *chi.Mux, mosdns ...*Mosdns) {
+	m := firstMosdns(mosdns)
 	router.Route("/api/v3/audit", func(r chi.Router) {
 		r.Get("/overview", handleGetAuditOverview)
 		r.Get("/timeseries", handleGetAuditTimeseries)
@@ -36,7 +37,7 @@ func RegisterAuditAPI(router *chi.Mux) {
 		r.Post("/logs/search", handleSearchAuditLogs)
 		r.Get("/logs/slow", handleGetAuditSlowLogs)
 		r.Get("/settings", handleGetAuditSettings)
-		r.Put("/settings", handlePutAuditSettings)
+		r.Put("/settings", handlePutAuditSettings(m))
 		r.Post("/clear", handleClearAuditLogs)
 	})
 }
@@ -133,37 +134,44 @@ func handleGetAuditSettings(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func handlePutAuditSettings(w http.ResponseWriter, r *http.Request) {
-	var req auditSettingsResponse
-	if err := decodeJSONBodyStrict(w, r, &req, false); err != nil {
-		if errors.Is(err, errJSONBodyTooLarge) {
-			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+func handlePutAuditSettings(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req auditSettingsResponse
+		if err := decodeJSONBodyStrict(w, r, &req, false); err != nil {
+			if errors.Is(err, errJSONBodyTooLarge) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+				return
+			}
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body: "+err.Error())
 			return
 		}
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body: "+err.Error())
-		return
+		settings := AuditSettings{
+			Enabled:                    req.Enabled,
+			OverviewWindowSeconds:      req.OverviewWindowSeconds,
+			RawRetentionDays:           req.RawRetentionDays,
+			AggregateRetentionDays:     req.AggregateRetentionDays,
+			MaxStorageMB:               req.MaxStorageMB,
+			SQLitePath:                 req.SQLitePath,
+			FlushBatchSize:             req.FlushBatchSize,
+			FlushIntervalMs:            req.FlushIntervalMs,
+			MaintenanceIntervalSeconds: req.MaintenanceIntervalSeconds,
+		}
+		settings = normalizeAuditSettings(settings)
+		mainConfigPath, err := resolveMainConfigFilePathForRuntime(m)
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "SAVE_AUDIT_CONFIG_FAILED", err.Error())
+			return
+		}
+		if err := saveAuditSettingsToMainConfigPath(mainConfigPath, settings); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "SAVE_AUDIT_CONFIG_FAILED", err.Error())
+			return
+		}
+		if err := GlobalAuditCollector.SetSettings(settings, runtimeBaseDir(m)); err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "SET_AUDIT_SETTINGS_FAILED", err.Error())
+			return
+		}
+		handleGetAuditSettings(w, r)
 	}
-	settings := AuditSettings{
-		Enabled:                    req.Enabled,
-		OverviewWindowSeconds:      req.OverviewWindowSeconds,
-		RawRetentionDays:           req.RawRetentionDays,
-		AggregateRetentionDays:     req.AggregateRetentionDays,
-		MaxStorageMB:               req.MaxStorageMB,
-		SQLitePath:                 req.SQLitePath,
-		FlushBatchSize:             req.FlushBatchSize,
-		FlushIntervalMs:            req.FlushIntervalMs,
-		MaintenanceIntervalSeconds: req.MaintenanceIntervalSeconds,
-	}
-	settings = normalizeAuditSettings(settings)
-	if err := saveAuditSettingsToMainConfig(settings); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "SAVE_AUDIT_CONFIG_FAILED", err.Error())
-		return
-	}
-	if err := GlobalAuditCollector.SetSettings(settings, MainConfigBaseDir); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "SET_AUDIT_SETTINGS_FAILED", err.Error())
-		return
-	}
-	handleGetAuditSettings(w, r)
 }
 
 func handleClearAuditLogs(w http.ResponseWriter, r *http.Request) {

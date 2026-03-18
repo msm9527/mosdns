@@ -2,7 +2,9 @@ package coremain
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -18,32 +20,76 @@ func AdguardSourcesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), adguardSourcesConfigFilename)
 }
 
+func AdguardSourcesConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), adguardSourcesConfigFilename)
+}
+
 func DiversionSourcesConfigPath() string {
 	return filepath.Join(customConfigDirPath(), diversionSourcesConfigFilename)
 }
 
+func DiversionSourcesConfigPathForBaseDir(baseDir string) string {
+	return filepath.Join(customConfigDirPathForBaseDir(baseDir), diversionSourcesConfigFilename)
+}
+
 func LoadAdguardSourcesFromCustomConfig() (rulesource.Config, bool, error) {
-	return rulesource.LoadConfig(AdguardSourcesConfigPath(), rulesource.ScopeAdguard)
+	return LoadAdguardSourcesConfigAtPath(AdguardSourcesConfigPath())
+}
+
+func LoadAdguardSourcesFromCustomConfigForBaseDir(baseDir string) (rulesource.Config, bool, error) {
+	return LoadAdguardSourcesConfigAtPath(AdguardSourcesConfigPathForBaseDir(baseDir))
 }
 
 func LoadDiversionSourcesFromCustomConfig() (rulesource.Config, bool, error) {
-	return rulesource.LoadConfig(DiversionSourcesConfigPath(), rulesource.ScopeDiversion)
+	return LoadDiversionSourcesConfigAtPath(DiversionSourcesConfigPath())
+}
+
+func LoadDiversionSourcesFromCustomConfigForBaseDir(baseDir string) (rulesource.Config, bool, error) {
+	return LoadDiversionSourcesConfigAtPath(DiversionSourcesConfigPathForBaseDir(baseDir))
+}
+
+func LoadAdguardSourcesConfigAtPath(path string) (rulesource.Config, bool, error) {
+	return loadRuleSourcesConfigAtPath(path, rulesource.ScopeAdguard)
+}
+
+func LoadActiveAdguardSourcesConfigAtPath(path string) (rulesource.Config, error) {
+	return loadActiveRuleSourcesConfigAtPath(path, rulesource.ScopeAdguard)
+}
+
+func LoadDiversionSourcesConfigAtPath(path string) (rulesource.Config, bool, error) {
+	return loadRuleSourcesConfigAtPath(path, rulesource.ScopeDiversion)
 }
 
 func SaveAdguardSourcesToCustomConfig(cfg rulesource.Config) error {
+	return SaveAdguardSourcesToPath(AdguardSourcesConfigPath(), cfg)
+}
+
+func SaveAdguardSourcesToCustomConfigForBaseDir(baseDir string, cfg rulesource.Config) error {
+	return SaveAdguardSourcesToPath(AdguardSourcesConfigPathForBaseDir(baseDir), cfg)
+}
+
+func SaveAdguardSourcesToPath(path string, cfg rulesource.Config) error {
 	body, err := renderRuleSourceConfig(rulesource.ScopeAdguard, cfg)
 	if err != nil {
 		return err
 	}
-	return writeTextFileAtomically(AdguardSourcesConfigPath(), body)
+	return writeTextFileAtomically(path, body)
 }
 
 func SaveDiversionSourcesToCustomConfig(cfg rulesource.Config) error {
+	return SaveDiversionSourcesToPath(DiversionSourcesConfigPath(), cfg)
+}
+
+func SaveDiversionSourcesToCustomConfigForBaseDir(baseDir string, cfg rulesource.Config) error {
+	return SaveDiversionSourcesToPath(DiversionSourcesConfigPathForBaseDir(baseDir), cfg)
+}
+
+func SaveDiversionSourcesToPath(path string, cfg rulesource.Config) error {
 	body, err := renderRuleSourceConfig(rulesource.ScopeDiversion, cfg)
 	if err != nil {
 		return err
 	}
-	return writeTextFileAtomically(DiversionSourcesConfigPath(), body)
+	return writeTextFileAtomically(path, body)
 }
 
 func renderRuleSourceConfig(scope rulesource.Scope, cfg rulesource.Config) ([]byte, error) {
@@ -99,8 +145,51 @@ func ruleSourceConfigHeader(scope rulesource.Scope) string {
 }
 
 func ResolveMainConfigPath(path string) string {
-	if filepath.IsAbs(path) || strings.TrimSpace(MainConfigBaseDir) == "" {
+	return ResolveMainConfigPathForBaseDir(MainConfigBaseDir, path)
+}
+
+func ResolveMainConfigPathForBaseDir(baseDir, path string) string {
+	if filepath.IsAbs(path) || strings.TrimSpace(baseDir) == "" {
 		return path
 	}
-	return filepath.Join(MainConfigBaseDir, path)
+	return filepath.Join(baseDir, path)
+}
+
+type ruleSourceConfigEmptyError struct {
+	path  string
+	scope rulesource.Scope
+}
+
+func (e *ruleSourceConfigEmptyError) Error() string {
+	return fmt.Sprintf("%s rule source config %s has no sources", e.scope, e.path)
+}
+
+func loadRuleSourcesConfigAtPath(path string, scope rulesource.Scope) (rulesource.Config, bool, error) {
+	return rulesource.LoadConfig(path, scope)
+}
+
+func loadActiveRuleSourcesConfigAtPath(path string, scope rulesource.Scope) (rulesource.Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return rulesource.Config{}, &ruleSourceConfigEmptyError{path: path, scope: scope}
+		}
+		return rulesource.Config{}, fmt.Errorf("read config %s: %w", path, err)
+	}
+	if len(raw) == 0 {
+		return rulesource.Config{}, &ruleSourceConfigEmptyError{path: path, scope: scope}
+	}
+	cfg, _, err := loadRuleSourcesConfigAtPath(path, scope)
+	if err != nil {
+		return rulesource.Config{}, err
+	}
+	if len(cfg.Sources) == 0 {
+		return rulesource.Config{}, &ruleSourceConfigEmptyError{path: path, scope: scope}
+	}
+	return cfg, nil
+}
+
+func isRuleSourceConfigEmptyError(err error) bool {
+	var target *ruleSourceConfigEmptyError
+	return errors.As(err, &target)
 }

@@ -89,3 +89,25 @@ func TestOpenDropsLegacySwitchStateTable(t *testing.T) {
 		}
 	}
 }
+
+func TestOpenPersistentReturnsSharedHandle(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "control.db")
+	t.Cleanup(func() {
+		if err := ResetPersistent(dbPath); err != nil {
+			t.Fatalf("ResetPersistent: %v", err)
+		}
+	})
+
+	first, err := OpenPersistent(dbPath, nil)
+	if err != nil {
+		t.Fatalf("OpenPersistent first: %v", err)
+	}
+	second, err := OpenPersistent(dbPath, nil)
+	if err != nil {
+		t.Fatalf("OpenPersistent second: %v", err)
+	}
+
+	if first != second {
+		t.Fatalf("expected shared persistent handle")
+	}
+}

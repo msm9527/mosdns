@@ -88,8 +88,8 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
 		baseArgs = cloneRuleArgs(*rawArgs)
 	}
-	effectiveArgs := buildEffectiveRuleArgs(bp.Tag(), baseArgs, bp.M().GetGlobalOverrides())
-	return newSequenceWithBase(NewBQ(bp.M(), bp.L()), bp.Tag(), baseArgs, effectiveArgs)
+	effectiveArgs := buildEffectiveRuleArgs(bp.Tag(), baseArgs, bp.GlobalOverrides())
+	return newSequenceWithBase(NewBQFromBP(bp), bp.Tag(), baseArgs, effectiveArgs)
 }
 
 func NewSequence(bq BQ, ra []RuleArgs) (*Sequence, error) {
@@ -394,7 +394,7 @@ func (s *Sequence) newMatcher(bq BQ, mc MatchConfig, ri, mi int) (NamedMatcher, 
 	switch {
 	case len(mc.Tag) > 0:
 		name = mc.Tag
-		p, _ := bq.M().GetPlugin(name).(Matcher)
+		p, _ := bq.Plugin(name).(Matcher)
 		if p == nil {
 			return NamedMatcher{}, fmt.Errorf("can not find matcher %s", name)
 		}
@@ -414,7 +414,7 @@ func (s *Sequence) newMatcher(bq BQ, mc MatchConfig, ri, mi int) (NamedMatcher, 
 		if f == nil {
 			return NamedMatcher{}, fmt.Errorf("invalid matcher type %s", mc.Type)
 		}
-		p, err := f(NewBQ(bq.M(), bq.L().Named(fmt.Sprintf("r%d.m%d", ri, mi))), mc.Args)
+		p, err := f(bq.Named(fmt.Sprintf("r%d.m%d", ri, mi)), mc.Args)
 		if err != nil {
 			return NamedMatcher{}, fmt.Errorf("failed to init matcher, %w", err)
 		}
@@ -435,7 +435,7 @@ func (s *Sequence) newExec(bq BQ, ec ExecConfig, ri int) (Executable, RecursiveE
 	var exec any
 	switch {
 	case len(ec.Tag) > 0:
-		p := bq.M().GetPlugin(ec.Tag)
+		p := bq.Plugin(ec.Tag)
 		if p == nil {
 			return nil, nil, fmt.Errorf("can not find executable %s", ec.Tag)
 		}
@@ -453,7 +453,7 @@ func (s *Sequence) newExec(bq BQ, ec ExecConfig, ri int) (Executable, RecursiveE
 		if f == nil {
 			return nil, nil, fmt.Errorf("invalid executable type %s", ec.Type)
 		}
-		v, err := f(NewBQ(bq.M(), bq.L().Named(fmt.Sprintf("r%d", ri))), ec.Args)
+		v, err := f(bq.Named(fmt.Sprintf("r%d", ri)), ec.Args)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to init executable, %w", err)
 		}

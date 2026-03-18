@@ -41,6 +41,7 @@ import (
 
 type Mosdns struct {
 	logger *zap.Logger // non-nil logger.
+	env    RuntimeEnv
 
 	// Plugins
 	plugins map[string]any
@@ -51,6 +52,7 @@ type Mosdns struct {
 	overridesMu      sync.RWMutex
 	globalOverrides  *GlobalOverrides // <<< ADDED
 	cachePolicies    *CachePolicyConfig
+	updateManager    *UpdateManager
 	restartScheduled atomic.Bool
 }
 
@@ -71,13 +73,18 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	// Start the audit log collector's background worker.
 	GlobalAuditCollector.StartWorker()
 
+	env := newRuntimeEnvFromConfig(cfg)
 	m := &Mosdns{
-		logger:     lg,
-		plugins:    make(map[string]any),
-		httpMux:    chi.NewRouter(),
-		metricsReg: newMetricsReg(),
-		sc:         safe_close.NewSafeClose(),
+		logger:        lg,
+		env:           env,
+		plugins:       make(map[string]any),
+		httpMux:       chi.NewRouter(),
+		metricsReg:    newMetricsReg(),
+		sc:            safe_close.NewSafeClose(),
+		updateManager: NewUpdateManager(),
 	}
+	m.updateManager.SetRuntimeEnv(env)
+	m.updateManager.SetCurrentVersion(GetBuildVersion())
 	SetConfiguredRestartEndpointFromHTTPAddr(cfg.API.HTTP)
 	unregisterRestartScheduler := registerInternalRestartScheduler(func(delayMs int) error {
 		_, err := m.ScheduleSelfRestart(delayMs)
@@ -96,24 +103,24 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	DiscoverAndCacheSettings(cfg)
 
 	// Step 2: Load user-editable overrides from custom_config.
-	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(env.BaseDir); err == nil && ok {
 		m.setGlobalOverrides(overrides)
 		mlog.L().Info("loaded global overrides from custom config",
-			zap.String("path", globalOverridesConfigPath()),
+			zap.String("path", globalOverridesConfigPathForBaseDir(env.BaseDir)),
 			zap.String("socks5", overrides.Socks5),
 			zap.String("ecs", overrides.ECS),
 			zap.Int("replacements", len(overrides.Replacements)))
 	} else if err != nil {
 		mlog.L().Warn("failed to load global overrides from custom config", zap.Error(err))
 	}
-	cachePolicies, ok, err := LoadCachePolicyConfigFromSubConfig()
+	cachePolicies, ok, err := LoadCachePolicyConfigFromSubConfigForBaseDir(env.BaseDir)
 	if err != nil {
 		return nil, fmt.Errorf("failed to load cache policies from sub config: %w", err)
 	}
 	m.cachePolicies = cachePolicies
 	if ok {
 		mlog.L().Info("loaded cache policies from sub config",
-			zap.String("path", cachePoliciesConfigPath()),
+			zap.String("path", cachePoliciesConfigPathForBaseDir(env.BaseDir)),
 			zap.Int("response_policies", len(cachePolicies.Response)),
 			zap.Int("udp_fast_internal_ttl", cachePolicies.UDPFastPath.InternalTTL))
 	}
@@ -124,9 +131,9 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 
 	// Register our new APIs.
 	RegisterCaptureAPI(m.httpMux)      // For process logs
-	RegisterAuditAPI(m.httpMux)        // For audit logs
+	RegisterAuditAPI(m.httpMux, m)     // For audit logs
 	RegisterOverridesAPI(m.httpMux, m) // <<< MODIFIED: Pass 'm'
-	RegisterConfigManagerAPI(m.httpMux)
+	RegisterConfigManagerAPI(m.httpMux, m)
 	RegisterCacheAPI(m.httpMux, m)
 	RegisterListsAPI(m.httpMux, m)
 	RegisterMiscAPI(m.httpMux, m)
@@ -134,7 +141,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 	RegisterRuntimeAPI(m.httpMux, m)
 	RegisterRuntimeStatsAPI(m.httpMux, m)
 	RegisterRulesAPI(m.httpMux, m)
-	RegisterUpdateAPI(m.httpMux)    // For binary updates
+	RegisterUpdateAPI(m.httpMux, m) // For binary updates
 	RegisterSystemAPI(m.httpMux, m) // For self-restart
 	RegisterUpstreamAPI(m.httpMux, m)
 
@@ -204,6 +211,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 func NewTestMosdnsWithPlugins(p map[string]any) *Mosdns {
 	return &Mosdns{
 		logger:     mlog.Nop(),
+		env:        runtimeEnvFromGlobals(),
 		httpMux:    chi.NewRouter(),
 		plugins:    p,
 		metricsReg: newMetricsReg(),
@@ -266,6 +274,35 @@ func (m *Mosdns) GetGlobalOverrides() *GlobalOverrides {
 	return CloneGlobalOverrides(m.globalOverrides)
 }
 
+func (m *Mosdns) RuntimeEnv() RuntimeEnv {
+	if m == nil {
+		return runtimeEnvFromGlobals()
+	}
+	if m.env == (RuntimeEnv{}) {
+		return runtimeEnvFromGlobals()
+	}
+	return m.env
+}
+
+func (m *Mosdns) BaseDir() string {
+	return m.RuntimeEnv().BaseDir
+}
+
+func (m *Mosdns) MainConfigPath() string {
+	return m.RuntimeEnv().MainConfigPath
+}
+
+func (m *Mosdns) ControlDBPath() string {
+	return m.RuntimeEnv().ControlDBPath
+}
+
+func (m *Mosdns) GetUpdateManager() *UpdateManager {
+	if m == nil || m.updateManager == nil {
+		return GlobalUpdateManager
+	}
+	return m.updateManager
+}
+
 func newMetricsReg() *prometheus.Registry {
 	reg := prometheus.NewRegistry()
 	reg.MustRegister(collectors.NewProcessCollector(collectors.ProcessCollectorOpts{}))
@@ -304,7 +341,7 @@ func (m *Mosdns) initHttpMux() {
 	m.httpMux.Method(http.MethodGet, "/metrics", wrappedMetricsHandler)
 
 	// 外置 UI 模式：不再内置任何前端资源，只挂载配置目录下的 ui 文件。
-	uiBaseDir := filepath.Join(MainConfigBaseDir, "ui")
+	uiBaseDir := filepath.Join(m.BaseDir(), "ui")
 	m.httpMux.Get("/", func(w http.ResponseWriter, r *http.Request) {
 		if info, err := os.Stat(uiBaseDir); err == nil && info.IsDir() {
 			http.Redirect(w, r, "/ui/", http.StatusFound)

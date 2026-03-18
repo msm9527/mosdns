@@ -11,6 +11,10 @@ type HotRuleConsumer interface {
 	ReplaceHotRules(providerTag string, rules []string) error
 }
 
+type PluginSnapshotter interface {
+	SnapshotPlugins() map[string]any
+}
+
 func (m *Mosdns) SnapshotPlugins() map[string]any {
 	if m == nil {
 		return nil
@@ -22,16 +26,16 @@ func (m *Mosdns) SnapshotPlugins() map[string]any {
 	return snapshot
 }
 
-func DispatchHotRulesAdd(m *Mosdns, providerTag string, rules []string) error {
-	return dispatchHotRules(m, providerTag, rules, false)
+func DispatchHotRulesAdd(snapshotter PluginSnapshotter, providerTag string, rules []string) error {
+	return dispatchHotRules(snapshotter, providerTag, rules, false)
 }
 
-func DispatchHotRulesReplace(m *Mosdns, providerTag string, rules []string) error {
-	return dispatchHotRules(m, providerTag, rules, true)
+func DispatchHotRulesReplace(snapshotter PluginSnapshotter, providerTag string, rules []string) error {
+	return dispatchHotRules(snapshotter, providerTag, rules, true)
 }
 
-func dispatchHotRules(m *Mosdns, providerTag string, rules []string, replace bool) error {
-	if m == nil {
+func dispatchHotRules(snapshotter PluginSnapshotter, providerTag string, rules []string, replace bool) error {
+	if snapshotter == nil {
 		return nil
 	}
 	providerTag = strings.TrimSpace(providerTag)
@@ -39,7 +43,7 @@ func dispatchHotRules(m *Mosdns, providerTag string, rules []string, replace boo
 		return nil
 	}
 	var firstErr error
-	for _, plugin := range m.SnapshotPlugins() {
+	for _, plugin := range snapshotter.SnapshotPlugins() {
 		consumer, ok := plugin.(HotRuleConsumer)
 		if !ok || consumer == nil {
 			continue

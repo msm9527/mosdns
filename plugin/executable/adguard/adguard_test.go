@@ -1,7 +1,9 @@
 package adguard_rule
 
 import (
+	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -35,5 +37,31 @@ func TestAdguardLoadSources(t *testing.T) {
 	}
 	if len(p.sources) != 1 || p.sources[0].ID != "block" {
 		t.Fatalf("unexpected sources: %+v", p.sources)
+	}
+}
+
+func TestAdguardLoadSourcesRejectsCommentOnlyConfig(t *testing.T) {
+	dir := t.TempDir()
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
+
+	if err := os.MkdirAll(filepath.Join(dir, "custom_config"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(custom_config): %v", err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(dir, "custom_config", "adguard_sources.yaml"),
+		[]byte("# empty truth source\n"),
+		0o644,
+	); err != nil {
+		t.Fatalf("WriteFile(adguard_sources.yaml): %v", err)
+	}
+
+	p := &AdguardRule{configFile: filepath.Join("custom_config", "adguard_sources.yaml")}
+	err := p.loadSources()
+	if err == nil {
+		t.Fatal("expected loadSources to fail")
+	}
+	if !strings.Contains(err.Error(), "has no sources") {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }

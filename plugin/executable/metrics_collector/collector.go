@@ -100,6 +100,6 @@ func (c *Collector) Exec(ctx context.Context, qCtx *query_context.Context, next 
 
 // QuickSetup format: metrics_name
 func QuickSetup(bp sequence.BQ, s string) (any, error) {
-	r := prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.M().GetMetricsReg())
+	r := prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.MetricsRegisterer())
 	return NewCollector(r, s)
 }

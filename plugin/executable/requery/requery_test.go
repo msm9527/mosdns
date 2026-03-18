@@ -116,7 +116,7 @@ func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T)
 	})
 
 	p := &Requery{
-		m: m,
+		plugin: m.GetPlugin,
 		config: &Config{
 			URLActions: URLActions{SaveRules: []string{"/api/v1/memory/my_realiplist/save"}},
 		},
@@ -163,7 +163,7 @@ func TestCollectRuntimeCandidatesUsesMemoryPoolPolicies(t *testing.T) {
 	})
 
 	p := &Requery{
-		m:         m,
+		plugin:    m.GetPlugin,
 		pluginTag: "requery",
 		config:    &Config{},
 	}
@@ -196,7 +196,7 @@ func TestMergeAndFilterDomainsMergesRuntimeCandidatesForFullMode(t *testing.T) {
 	})
 
 	p := &Requery{
-		m: m,
+		plugin: m.GetPlugin,
 		config: &Config{
 			DomainProcessing:  DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
 			ExecutionSettings: ExecutionSettings{DateRangeDays: 30},
@@ -238,7 +238,7 @@ func TestBuildTaskCandidatePlanSplitsFullRebuildStages(t *testing.T) {
 	})
 
 	p := &Requery{
-		m: m,
+		plugin: m.GetPlugin,
 		config: &Config{
 			DomainProcessing: DomainProcessing{SourceFiles: []SourceFile{{Alias: "top", Path: source}}},
 			ExecutionSettings: ExecutionSettings{
@@ -358,7 +358,7 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 	})
 
 	p := &Requery{
-		m:          m,
+		plugin:     m.GetPlugin,
 		httpClient: &http.Client{Timeout: 2 * time.Second},
 		queueIndex: make(map[string]struct{}),
 		queueKick:  make(chan struct{}, 1),

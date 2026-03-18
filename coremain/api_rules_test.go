@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
@@ -24,6 +25,9 @@ policies:
     type: adguard_rule
     args:
       config_file: custom_config/adguard_sources.yaml
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
+# empty truth source, POST should still be able to create the first item
 `)
 
 	m := NewTestMosdnsWithPlugins(nil)
@@ -125,6 +129,44 @@ policies:
 	}
 	if len(items[0].Bindings) != 1 || items[0].Bindings[0] != "geosite_cn" {
 		t.Fatalf("unexpected bindings: %+v", items[0].Bindings)
+	}
+}
+
+func TestRulesAPI_ListAdguardRulesFailsOnEmptyConfig(t *testing.T) {
+	baseDir := t.TempDir()
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = baseDir
+	t.Cleanup(func() { MainConfigBaseDir = oldBaseDir })
+
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: adguard
+    type: adguard_rule
+    args:
+      config_file: custom_config/adguard_sources.yaml
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
+# comment-only config should fail explicitly
+`)
+
+	m := NewTestMosdnsWithPlugins(nil)
+	RegisterRulesAPI(m.httpMux, m)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/rules/adguard", nil)
+	w := httptest.NewRecorder()
+	m.httpMux.ServeHTTP(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
+	}
+	var resp APIErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
+	}
+	if resp.Code != "RULE_SOURCE_CONFIG_EMPTY" {
+		t.Fatalf("unexpected error response: %+v", resp)
+	}
+	if !strings.Contains(resp.Error, "custom_config/adguard_sources.yaml") {
+		t.Fatalf("unexpected error message: %s", resp.Error)
 	}
 }
 

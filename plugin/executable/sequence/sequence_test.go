@@ -196,13 +196,13 @@ func Test_sequence_Exec(t *testing.T) {
 			m := coremain.NewTestMosdnsWithPlugins(ps)
 			preparePlugins(ps)
 			if len(tt.ra2) > 0 {
-				s, err := NewSequence(coremain.NewBP("test", m), tt.ra2)
+				s, err := NewSequence(NewBQFromBP(coremain.NewBP("test", m)), tt.ra2)
 				if err != nil {
 					t.Fatal(err)
 				}
 				ps["seq2"] = s
 			}
-			s, err := NewSequence(coremain.NewBP("test", m), tt.ra)
+			s, err := NewSequence(NewBQFromBP(coremain.NewBP("test", m)), tt.ra)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -230,7 +230,7 @@ func TestSequenceReloadControlConfigRebuildsFromRawArgs(t *testing.T) {
 		},
 	}
 	overrides.Prepare()
-	s, err := newSequenceWithBase(NewBQ(m, m.Logger()), "test_sequence", baseArgs, buildEffectiveRuleArgs("test_sequence", baseArgs, overrides))
+	s, err := newSequenceWithBase(NewBQFromMosdns(m, m.Logger()), "test_sequence", baseArgs, buildEffectiveRuleArgs("test_sequence", baseArgs, overrides))
 	if err != nil {
 		t.Fatalf("newSequenceWithBase failed: %v", err)
 	}

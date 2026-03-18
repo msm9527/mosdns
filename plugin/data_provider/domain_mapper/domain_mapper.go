@@ -143,7 +143,7 @@ func (dm *DomainMapper) resolveProviders(ruleConfigs []RuleConfig) (map[string]d
 		if _, loaded := providers[r.Tag]; loaded {
 			continue
 		}
-		pluginInterface := dm.bp.M().GetPlugin(r.Tag)
+		pluginInterface := dm.bp.Plugin(r.Tag)
 		if pluginInterface == nil {
 			return nil, fmt.Errorf("plugin %s not found", r.Tag)
 		}

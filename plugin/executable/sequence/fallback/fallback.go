@@ -73,11 +73,11 @@ func newFallbackPlugin(bp *coremain.BP, args *Args) (*fallback, error) {
 		return nil, errors.New("args missing primary or secondary")
 	}
 
-	pe := sequence.ToExecutable(bp.M().GetPlugin(args.Primary))
+	pe := sequence.ToExecutable(bp.Plugin(args.Primary))
 	if pe == nil {
 		return nil, fmt.Errorf("can not find primary executable %s", args.Primary)
 	}
-	se := sequence.ToExecutable(bp.M().GetPlugin(args.Secondary))
+	se := sequence.ToExecutable(bp.Plugin(args.Secondary))
 	if se == nil {
 		return nil, fmt.Errorf("can not find secondary executable %s", args.Secondary)
 	}

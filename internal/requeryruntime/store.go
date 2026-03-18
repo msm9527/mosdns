@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sync"
 	"time"
 
 	runtimesqlite "github.com/IrineSistiana/mosdns/v5/internal/store/sqlite"
@@ -63,31 +62,15 @@ type PruneSummary struct {
 	RemainingChecks    int   `json:"remaining_checkpoints"`
 }
 
-var globalStore struct {
-	mu    sync.Mutex
-	paths map[string]*runtimesqlite.RuntimeDB
-}
-
 func dbForPath(path string) (*runtimesqlite.RuntimeDB, error) {
 	if path == "" {
 		return nil, fmt.Errorf("runtime db path is required")
 	}
 
-	globalStore.mu.Lock()
-	defer globalStore.mu.Unlock()
-
-	if globalStore.paths == nil {
-		globalStore.paths = make(map[string]*runtimesqlite.RuntimeDB)
-	}
-	if db := globalStore.paths[path]; db != nil {
-		return db, nil
-	}
-
-	db, err := runtimesqlite.Open(path, nil)
+	db, err := runtimesqlite.OpenPersistent(path, nil)
 	if err != nil {
 		return nil, err
 	}
-	globalStore.paths[path] = db
 	return db, nil
 }
 
@@ -384,17 +367,7 @@ func joinConditions(conditions []string) string {
 }
 
 func ResetForTesting(path string) error {
-	globalStore.mu.Lock()
-	db := globalStore.paths[path]
-	delete(globalStore.paths, path)
-	globalStore.mu.Unlock()
-
-	if db != nil {
-		if err := db.Close(); err != nil {
-			return err
-		}
-	}
-	return nil
+	return runtimesqlite.ResetPersistent(path)
 }
 
 func LoadRun(path, runID string) (*Run, error) {

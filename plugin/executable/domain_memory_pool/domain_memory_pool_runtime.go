@@ -64,10 +64,10 @@ func (d *domainMemoryPool) saveState(state coremain.DomainPoolState) error {
 }
 
 func (d *domainMemoryPool) notifyDirty(job coremain.DomainRefreshJob) {
-	if d.policy.requeryTag == "" || d.manager == nil {
+	if d.policy.requeryTag == "" || d.plugin == nil {
 		return
 	}
-	enqueuer, ok := d.manager.GetPlugin(d.policy.requeryTag).(coremain.DomainRefreshJobEnqueuer)
+	enqueuer, ok := d.plugin(d.policy.requeryTag).(coremain.DomainRefreshJobEnqueuer)
 	if !ok || enqueuer == nil {
 		if d.logger != nil {
 			d.logger.Warn(

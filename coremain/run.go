@@ -130,36 +130,15 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 		return nil, fmt.Errorf("fail to load config, %w", err)
 	}
 
-	// <<< ADDED: Determine and set the main config base directory.
-	// This ensures the path is absolute and available for other packages.
 	if fileUsed != "" {
-		if absPath, err := filepath.Abs(fileUsed); err == nil {
-			MainConfigFilePath = absPath
-		} else {
-			MainConfigFilePath = fileUsed
-		}
-		if absPath, err := filepath.Abs(fileUsed); err == nil {
-			MainConfigBaseDir = filepath.Dir(absPath)
-		} else {
-			MainConfigBaseDir = filepath.Dir(fileUsed)
-		}
-	} else if len(sf.dir) > 0 {
-		if absPath, err := filepath.Abs(sf.dir); err == nil {
-			MainConfigBaseDir = absPath
-		} else {
-			MainConfigBaseDir = sf.dir
-		}
-	} else {
-		if wd, err := os.Getwd(); err == nil {
-			MainConfigBaseDir = wd
-		}
-		MainConfigFilePath = ""
+		cfg.mainConfigPath = cleanRuntimePath(fileUsed)
 	}
-	mlog.L().Info("main config base directory set", zap.String("path", MainConfigBaseDir))
-	setRuntimeStateDBPath(cfg.ControlDBPath)
+	env := newRuntimeEnvFromConfig(cfg)
+	applyLegacyRuntimeEnv(env)
+	mlog.L().Info("main config base directory set", zap.String("path", env.BaseDir))
 
 	// <<< ADDED: Explicitly initialize the audit collector with the correct base path.
-	InitializeAuditCollector(MainConfigBaseDir, cfg.Audit)
+	InitializeAuditCollector(env.BaseDir, cfg.Audit)
 	// <<< END ADDED SECTION
 
 	mlog.L().Info("main config loaded", zap.String("file", fileUsed))
@@ -189,6 +168,7 @@ func loadConfig(filePath string) (*Config, string, error) {
 
 	cfg.baseDir = resolveBaseDir(fileUsed)
 	cfg.ControlDBPath = resolveRuntimeStateDBPathForConfig(cfg.baseDir, cfg.ControlDBPath)
+	cfg.mainConfigPath = cleanRuntimePath(fileUsed)
 	return cfg, fileUsed, nil
 }
 

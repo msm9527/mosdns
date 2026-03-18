@@ -50,7 +50,7 @@ func handleControlShuntConflicts(m *Mosdns) http.HandlerFunc {
 			conflicts = conflicts[:limit]
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
-			"base_dir":  MainConfigBaseDir,
+			"base_dir":  runtimeBaseDir(m),
 			"count":     len(conflicts),
 			"conflicts": conflicts,
 			"warnings":  analyzer.warnings,
@@ -59,10 +59,11 @@ func handleControlShuntConflicts(m *Mosdns) http.HandlerFunc {
 }
 
 func loadControlShuntAnalyzer(m *Mosdns, live bool) (*shuntAnalyzer, error) {
+	baseDir := runtimeBaseDir(m)
 	if live {
-		return newShuntAnalyzerWithManager(MainConfigBaseDir, m)
+		return newShuntAnalyzerWithManager(baseDir, m)
 	}
-	return newShuntAnalyzer(MainConfigBaseDir)
+	return newShuntAnalyzer(baseDir)
 }
 
 func parseBoolDefaultTrue(value string) bool {

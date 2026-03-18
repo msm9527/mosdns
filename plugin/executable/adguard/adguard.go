@@ -36,10 +36,11 @@ type Args struct {
 type AdguardRule struct {
 	pluginTag string
 	baseArgs  *Args
+	baseDir   string
 
-	mu          sync.RWMutex
-	configFile  string
-	sources     []rulesource.Source
+	mu           sync.RWMutex
+	configFile   string
+	sources      []rulesource.Source
 	allowMatcher *domain.MixMatcher[struct{}]
 	denyMatcher  *domain.MixMatcher[struct{}]
 	denyRules    []string
@@ -66,6 +67,7 @@ func newAdguardRule(bp *coremain.BP, args any) (any, error) {
 	p := &AdguardRule{
 		pluginTag:    bp.Tag(),
 		baseArgs:     cfg,
+		baseDir:      bp.BaseDir(),
 		configFile:   cfg.ConfigFile,
 		allowMatcher: domain.NewDomainMixMatcher(),
 		denyMatcher:  domain.NewDomainMixMatcher(),
@@ -169,11 +171,11 @@ func (p *AdguardRule) ReloadControlConfig(global *coremain.GlobalOverrides, _ []
 }
 
 func (p *AdguardRule) loadSources() error {
-	configFile := coremain.ResolveMainConfigPath(p.currentConfigFile())
+	configFile := coremain.ResolveMainConfigPathForBaseDir(p.currentBaseDir(), p.currentConfigFile())
 	if strings.TrimSpace(configFile) == "" {
 		return fmt.Errorf("%s: config_file is required", PluginType)
 	}
-	cfg, _, err := rulesource.LoadConfig(configFile, scope)
+	cfg, err := coremain.LoadActiveAdguardSourcesConfigAtPath(configFile)
 	if err != nil {
 		return err
 	}
@@ -207,7 +209,7 @@ func (p *AdguardRule) reloadAllRules(forceRemote bool) error {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), coremain.MainConfigBaseDir, scope, source, forceRemote)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, forceRemote)
 		cancel()
 		if err != nil {
 			return err
@@ -310,5 +312,16 @@ func (p *AdguardRule) sourceSnapshot() []rulesource.Source {
 }
 
 func (p *AdguardRule) runtimeDBPath() string {
+	baseDir := p.currentBaseDir()
+	if baseDir != "" {
+		return coremain.RuntimeStateDBPathForBaseDir(baseDir)
+	}
 	return coremain.RuntimeStateDBPathForPath(p.currentConfigFile())
+}
+
+func (p *AdguardRule) currentBaseDir() string {
+	if strings.TrimSpace(p.baseDir) != "" {
+		return p.baseDir
+	}
+	return strings.TrimSpace(coremain.MainConfigBaseDir)
 }

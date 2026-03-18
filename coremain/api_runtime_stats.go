@@ -2,6 +2,7 @@ package coremain
 
 import (
 	"net/http"
+	"sort"
 
 	"github.com/go-chi/chi/v5"
 )
@@ -54,26 +55,10 @@ type DomainStatsProvider interface {
 	SnapshotDomainStats() DomainStatsSnapshot
 }
 
-type runtimeCacheProfile struct {
-	Key  string
-	Name string
-	Tag  string
-}
-
 type runtimeDomainProfile struct {
 	Key  string
 	Name string
 	Tag  string
-}
-
-var runtimeCacheProfiles = []runtimeCacheProfile{
-	{Key: "cache_main", Name: "主缓存", Tag: "cache_main"},
-	{Key: "cache_branch_domestic", Name: "国内分支缓存", Tag: "cache_branch_domestic"},
-	{Key: "cache_branch_foreign", Name: "国外分支缓存", Tag: "cache_branch_foreign"},
-	{Key: "cache_branch_foreign_ecs", Name: "国外 ECS 分支缓存", Tag: "cache_branch_foreign_ecs"},
-	{Key: "cache_fakeip_domestic", Name: "国内 FakeIP 缓存", Tag: "cache_fakeip_domestic"},
-	{Key: "cache_fakeip_proxy", Name: "代理 FakeIP 缓存", Tag: "cache_fakeip_proxy"},
-	{Key: "cache_probe", Name: "节点探测缓存", Tag: "cache_probe"},
 }
 
 func RegisterRuntimeStatsAPI(router *chi.Mux, m *Mosdns) {
@@ -83,30 +68,47 @@ func RegisterRuntimeStatsAPI(router *chi.Mux, m *Mosdns) {
 
 func handleAggregatedCacheStats(m *Mosdns) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		items := make([]CacheStatsSnapshot, 0, len(runtimeCacheProfiles))
-		for _, profile := range runtimeCacheProfiles {
-			item := CacheStatsSnapshot{
-				Key:      profile.Key,
-				Name:     profile.Name,
-				Tag:      profile.Tag,
-				Counters: map[string]uint64{},
+		items := make([]CacheStatsSnapshot, 0)
+		for _, tag := range discoverRuntimeCacheTags(m) {
+			provider, ok := m.GetPlugin(tag).(CacheStatsProvider)
+			if !ok || provider == nil {
+				continue
 			}
-
-			if provider, ok := m.GetPlugin(profile.Tag).(CacheStatsProvider); ok && provider != nil {
-				item = provider.SnapshotCacheStats()
-				item.Key = profile.Key
-				item.Name = profile.Name
-				if item.Tag == "" {
-					item.Tag = profile.Tag
-				}
-			} else {
-				item.Error = "plugin not found or stats unavailable"
+			item := provider.SnapshotCacheStats()
+			if item.Key == "" {
+				item.Key = tag
+			}
+			if item.Name == "" {
+				item.Name = item.Tag
+			}
+			if item.Tag == "" {
+				item.Tag = tag
+			}
+			if item.Name == "" {
+				item.Name = tag
+			}
+			if item.Counters == nil {
+				item.Counters = map[string]uint64{}
 			}
 			items = append(items, item)
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	}
+}
+
+func discoverRuntimeCacheTags(m *Mosdns) []string {
+	snapshot := m.SnapshotPlugins()
+	tags := make([]string, 0, len(snapshot))
+	for tag, plugin := range snapshot {
+		provider, ok := plugin.(CacheStatsProvider)
+		if !ok || provider == nil {
+			continue
+		}
+		tags = append(tags, tag)
+	}
+	sort.Strings(tags)
+	return tags
 }
 
 func handleAggregatedDomainStats(m *Mosdns) http.HandlerFunc {

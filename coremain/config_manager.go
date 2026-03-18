@@ -50,168 +50,186 @@ type configRemoteSourceSpec struct {
 }
 
 // RegisterConfigManagerAPI 注册配置管理相关的 API
-func RegisterConfigManagerAPI(router *chi.Mux) {
-	router.Get("/api/v1/config/info", handleConfigInfo)
-	router.Post("/api/v1/config/export", handleConfigExport)
-	router.Post("/api/v1/config/update_from_url", handleConfigUpdateFromURL)
+func RegisterConfigManagerAPI(router *chi.Mux, m *Mosdns) {
+	router.Get("/api/v1/config/info", handleConfigInfoWithMosdns(m))
+	router.Post("/api/v1/config/export", handleConfigExportWithMosdns(m))
+	router.Post("/api/v1/config/update_from_url", handleConfigUpdateFromURLWithMosdns(m))
 }
 
 func handleConfigInfo(w http.ResponseWriter, r *http.Request) {
-	dir, err := resolveConfigTargetDir("")
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "CONFIG_DIR_UNAVAILABLE", "current config dir unavailable: "+err.Error())
-		return
+	handleConfigInfoWithMosdns(nil)(w, r)
+}
+
+func handleConfigInfoWithMosdns(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		dir, err := resolveConfigTargetDirForBaseDir(runtimeBaseDir(m), "")
+		if err != nil {
+			writeAPIError(w, http.StatusInternalServerError, "CONFIG_DIR_UNAVAILABLE", "current config dir unavailable: "+err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, ConfigManagerInfo{
+			Dir:          dir,
+			RemoteSource: configRemoteSourceURL,
+			Warning:      "远程更新会覆盖所有配置，请提前备份。",
+		})
 	}
-	writeJSON(w, http.StatusOK, ConfigManagerInfo{
-		Dir:          dir,
-		RemoteSource: configRemoteSourceURL,
-		Warning:      "远程更新会覆盖所有配置，请提前备份。",
-	})
 }
 
 // handleConfigExport 对应需求：把本地目录打包下载
 func handleConfigExport(w http.ResponseWriter, r *http.Request) {
-	var req ConfigManagerRequest
-	if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
-		if errors.Is(err, errJSONBodyTooLarge) {
-			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+	handleConfigExportWithMosdns(nil)(w, r)
+}
+
+func handleConfigExportWithMosdns(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req ConfigManagerRequest
+		if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
+			if errors.Is(err, errJSONBodyTooLarge) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+				return
+			}
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
 			return
 		}
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
-		return
-	}
-	validatedDir, err := resolveConfigTargetDir(req.Dir)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_TARGET_DIR", "invalid dir: "+err.Error())
-		return
-	}
-	req.Dir = validatedDir
-
-	// 设置响应头，告诉浏览器这是一个附件下载
-	w.Header().Set("Content-Type", "application/zip")
-	filename := fmt.Sprintf("mosdns_backup_%d.zip", time.Now().Unix())
-	w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
-
-	zipWriter := zip.NewWriter(w)
-	defer zipWriter.Close()
-
-	rootBackupDir := filepath.Clean(filepath.Join(req.Dir, configBackupDirName))
-
-	// 遍历目录并打包
-	err = filepath.Walk(req.Dir, func(path string, info os.FileInfo, err error) error {
+		validatedDir, err := resolveConfigTargetDirForBaseDir(runtimeBaseDir(m), req.Dir)
 		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_TARGET_DIR", "invalid dir: "+err.Error())
+			return
+		}
+		req.Dir = validatedDir
+
+		// 设置响应头，告诉浏览器这是一个附件下载
+		w.Header().Set("Content-Type", "application/zip")
+		filename := fmt.Sprintf("mosdns_backup_%d.zip", time.Now().Unix())
+		w.Header().Set("Content-Disposition", fmt.Sprintf("attachment; filename=\"%s\"", filename))
+
+		zipWriter := zip.NewWriter(w)
+		defer zipWriter.Close()
+
+		rootBackupDir := filepath.Clean(filepath.Join(req.Dir, configBackupDirName))
+
+		// 遍历目录并打包
+		err = filepath.Walk(req.Dir, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			// 仅排除根目录下的 backup 文件夹，避免递归备份或下载无用数据。
+			// 子目录中的同名 backup 不应被误跳过。
+			if info.IsDir() && filepath.Clean(path) == rootBackupDir {
+				return filepath.SkipDir
+			}
+			if info.IsDir() {
+				return nil
+			}
+
+			// 获取相对于根目录的路径，作为 zip 内的文件名
+			relPath, err := filepath.Rel(req.Dir, path)
+			if err != nil {
+				return err
+			}
+
+			// 写入 Zip
+			zipFile, err := zipWriter.Create(relPath)
+			if err != nil {
+				return err
+			}
+
+			fsFile, err := os.Open(path)
+			if err != nil {
+				return err
+			}
+			defer fsFile.Close()
+
+			_, err = io.Copy(zipFile, fsFile)
 			return err
-		}
+		})
 
-		// 仅排除根目录下的 backup 文件夹，避免递归备份或下载无用数据。
-		// 子目录中的同名 backup 不应被误跳过。
-		if info.IsDir() && filepath.Clean(path) == rootBackupDir {
-			return filepath.SkipDir
-		}
-		if info.IsDir() {
-			return nil
-		}
-
-		// 获取相对于根目录的路径，作为 zip 内的文件名
-		relPath, err := filepath.Rel(req.Dir, path)
 		if err != nil {
-			return err
+			mlog.L().Error("export config failed", zap.String("dir", req.Dir), zap.Error(err))
 		}
-
-		// 写入 Zip
-		zipFile, err := zipWriter.Create(relPath)
-		if err != nil {
-			return err
-		}
-
-		fsFile, err := os.Open(path)
-		if err != nil {
-			return err
-		}
-		defer fsFile.Close()
-
-		_, err = io.Copy(zipFile, fsFile)
-		return err
-	})
-
-	if err != nil {
-		mlog.L().Error("export config failed", zap.String("dir", req.Dir), zap.Error(err))
 	}
 }
 
 // handleConfigUpdateFromURL 对应需求：下载 -> 备份 -> 覆盖 -> 重启
 func handleConfigUpdateFromURL(w http.ResponseWriter, r *http.Request) {
-	var req ConfigManagerRequest
-	if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
-		if errors.Is(err, errJSONBodyTooLarge) {
-			writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+	handleConfigUpdateFromURLWithMosdns(nil)(w, r)
+}
+
+func handleConfigUpdateFromURLWithMosdns(m *Mosdns) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var req ConfigManagerRequest
+		if err := decodeJSONBodyStrict(w, r, &req, true); err != nil {
+			if errors.Is(err, errJSONBodyTooLarge) {
+				writeAPIError(w, http.StatusRequestEntityTooLarge, "REQUEST_BODY_TOO_LARGE", "Request body too large")
+				return
+			}
+			writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
 			return
 		}
-		writeAPIError(w, http.StatusBadRequest, "INVALID_REQUEST_BODY", "Invalid request body")
-		return
-	}
-	validatedDir, err := resolveConfigTargetDir(req.Dir)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_TARGET_DIR", "invalid dir: "+err.Error())
-		return
-	}
-	req.Dir = validatedDir
-	sourceSpec, err := resolveConfigRemoteSource(req.URL)
-	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "INVALID_UPDATE_URL", "invalid remote source: "+err.Error())
-		return
-	}
+		validatedDir, err := resolveConfigTargetDirForBaseDir(runtimeBaseDir(m), req.Dir)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_TARGET_DIR", "invalid dir: "+err.Error())
+			return
+		}
+		req.Dir = validatedDir
+		sourceSpec, err := resolveConfigRemoteSource(req.URL)
+		if err != nil {
+			writeAPIError(w, http.StatusBadRequest, "INVALID_UPDATE_URL", "invalid remote source: "+err.Error())
+			return
+		}
 
-	lg := mlog.L()
+		lg := mlog.L()
 
-	// --- 1. 下载文件 (包含代理检测和降级逻辑) ---
-	zipData, err := downloadWithFallback(sourceSpec.DownloadURL)
-	if err != nil {
-		lg.Error("download config failed", zap.Error(err))
-		writeAPIError(w, http.StatusInternalServerError, "DOWNLOAD_CONFIG_FAILED", "Download failed: "+err.Error())
-		return
+		// --- 1. 下载文件 (包含代理检测和降级逻辑) ---
+		zipData, err := downloadWithFallback(runtimeBaseDir(m), sourceSpec.DownloadURL)
+		if err != nil {
+			lg.Error("download config failed", zap.Error(err))
+			writeAPIError(w, http.StatusInternalServerError, "DOWNLOAD_CONFIG_FAILED", "Download failed: "+err.Error())
+			return
+		}
+
+		// --- 2. 执行备份 (先清空后备份，失败则熔断) ---
+		backupDir := filepath.Join(req.Dir, configBackupDirName)
+		if err := performLocalBackup(req.Dir, backupDir); err != nil {
+			lg.Error("local backup failed, aborting update", zap.Error(err))
+			writeAPIError(w, http.StatusInternalServerError, "LOCAL_BACKUP_FAILED", "Backup failed (update aborted): "+err.Error())
+			return
+		}
+
+		// --- 3. 解压并覆盖（先 staging 再原子写入；失败自动回滚） ---
+		updatedCount, err := extractRemoteConfigWithRollback(zipData, req.Dir, backupDir, sourceSpec)
+		if err != nil {
+			lg.Error("extract and overwrite failed", zap.Error(err))
+			writeAPIError(w, http.StatusInternalServerError, "UPDATE_FILES_FAILED", "Update files failed: "+err.Error())
+			return
+		}
+
+		// --- 4. 安排重启并响应 ---
+		lg.Info("config update successful", zap.Int("files_updated", updatedCount))
+
+		restartErr := triggerRestart(context.Background(), 500)
+		message := fmt.Sprintf("配置更新成功，已覆盖 %d 个文件。", updatedCount)
+		restartScheduled := restartErr == nil
+		if restartErr != nil {
+			lg.Warn("failed to schedule restart after config update", zap.Error(restartErr))
+			message += " 请手动重启。"
+		} else {
+			message += " 已安排自动重启。"
+		}
+
+		writeJSON(w, http.StatusOK, map[string]any{
+			"message":           message,
+			"status":            "success",
+			"restart_scheduled": restartScheduled,
+		})
 	}
-
-	// --- 2. 执行备份 (先清空后备份，失败则熔断) ---
-	backupDir := filepath.Join(req.Dir, configBackupDirName)
-	if err := performLocalBackup(req.Dir, backupDir); err != nil {
-		lg.Error("local backup failed, aborting update", zap.Error(err))
-		writeAPIError(w, http.StatusInternalServerError, "LOCAL_BACKUP_FAILED", "Backup failed (update aborted): "+err.Error())
-		return
-	}
-
-	// --- 3. 解压并覆盖（先 staging 再原子写入；失败自动回滚） ---
-	updatedCount, err := extractRemoteConfigWithRollback(zipData, req.Dir, backupDir, sourceSpec)
-	if err != nil {
-		lg.Error("extract and overwrite failed", zap.Error(err))
-		writeAPIError(w, http.StatusInternalServerError, "UPDATE_FILES_FAILED", "Update files failed: "+err.Error())
-		return
-	}
-
-	// --- 4. 安排重启并响应 ---
-	lg.Info("config update successful", zap.Int("files_updated", updatedCount))
-
-	restartErr := triggerRestart(context.Background(), 500)
-	message := fmt.Sprintf("配置更新成功，已覆盖 %d 个文件。", updatedCount)
-	restartScheduled := restartErr == nil
-	if restartErr != nil {
-		lg.Warn("failed to schedule restart after config update", zap.Error(restartErr))
-		message += " 请手动重启。"
-	} else {
-		message += " 已安排自动重启。"
-	}
-
-	writeJSON(w, http.StatusOK, map[string]any{
-		"message":           message,
-		"status":            "success",
-		"restart_scheduled": restartScheduled,
-	})
 }
 
 // downloadWithFallback 尝试使用配置的 Socks5 下载，失败则直连
-func downloadWithFallback(url string) ([]byte, error) {
+func downloadWithFallback(baseDir, url string) ([]byte, error) {
 	var proxyAddr string
-	if overrides, ok, err := loadGlobalOverridesFromCustomConfig(); err == nil && ok {
+	if overrides, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(baseDir); err == nil && ok {
 		proxyAddr = strings.TrimSpace(overrides.Socks5)
 	} else if err != nil {
 		mlog.L().Warn("failed to load custom overrides for config download, falling back to direct", zap.Error(err))
@@ -850,13 +868,17 @@ func validateConfigTargetDir(rawDir string) (string, error) {
 }
 
 func resolveConfigTargetDir(rawDir string) (string, error) {
+	return resolveConfigTargetDirForBaseDir(MainConfigBaseDir, rawDir)
+}
+
+func resolveConfigTargetDirForBaseDir(baseDir, rawDir string) (string, error) {
 	if strings.TrimSpace(rawDir) != "" {
 		return validateConfigTargetDir(rawDir)
 	}
-	if strings.TrimSpace(MainConfigBaseDir) == "" {
+	if strings.TrimSpace(baseDir) == "" {
 		return "", fmt.Errorf("main config base dir is empty")
 	}
-	return validateConfigTargetDir(MainConfigBaseDir)
+	return validateConfigTargetDir(baseDir)
 }
 
 // triggerRestart 尝试安排服务重启。

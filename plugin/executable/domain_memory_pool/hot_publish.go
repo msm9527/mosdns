@@ -23,7 +23,7 @@ type hotPublishRequest struct {
 }
 
 func (d *domainMemoryPool) initHotPublisher() {
-	if d.manager == nil || d.publishTarget() == "" {
+	if d.snapshotter == nil || d.publishTarget() == "" {
 		return
 	}
 	d.hotCmdChan = make(chan hotPublishRequest, 16)
@@ -88,7 +88,7 @@ func (d *domainMemoryPool) flushPendingHotAdds(pending map[string]struct{}) {
 		return
 	}
 	target := d.publishTarget()
-	if err := coremain.DispatchHotRulesAdd(d.manager, target, rules); err != nil {
+	if err := coremain.DispatchHotRulesAdd(d.snapshotter, target, rules); err != nil {
 		d.recordHotDispatchFailure("add", target, err)
 		d.hotNeedsReplace.Store(true)
 		return
@@ -102,7 +102,7 @@ func (d *domainMemoryPool) flushPendingHotAdds(pending map[string]struct{}) {
 
 func (d *domainMemoryPool) dispatchHotReplace(rules []string) error {
 	target := d.publishTarget()
-	if err := coremain.DispatchHotRulesReplace(d.manager, target, rules); err != nil {
+	if err := coremain.DispatchHotRulesReplace(d.snapshotter, target, rules); err != nil {
 		d.recordHotDispatchFailure("replace", target, err)
 		d.hotNeedsReplace.Store(true)
 		return err
