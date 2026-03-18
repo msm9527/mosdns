@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	runtimesqlite "github.com/IrineSistiana/mosdns/v5/internal/store/sqlite"
 )
@@ -22,11 +21,6 @@ type RuntimeStateEntry struct {
 	Key             string          `json:"key"`
 	Value           json.RawMessage `json:"value"`
 	UpdatedAtUnixMS int64           `json:"updated_at_unix_ms"`
-}
-
-var globalRuntimeStateStore struct {
-	mu    sync.Mutex
-	paths map[string]*runtimesqlite.RuntimeDB
 }
 
 var runtimeStateDBPathOverride string
@@ -72,22 +66,10 @@ func getRuntimeStateStoreByPath(path string) (*runtimeStateStore, error) {
 	if path == "" {
 		path = defaultRuntimeStateDBPath()
 	}
-
-	globalRuntimeStateStore.mu.Lock()
-	defer globalRuntimeStateStore.mu.Unlock()
-
-	if globalRuntimeStateStore.paths == nil {
-		globalRuntimeStateStore.paths = make(map[string]*runtimesqlite.RuntimeDB)
-	}
-	if db := globalRuntimeStateStore.paths[path]; db != nil {
-		return &runtimeStateStore{db: db}, nil
-	}
-
-	db, err := runtimesqlite.Open(path, nil)
+	db, err := runtimesqlite.OpenPersistent(path, nil)
 	if err != nil {
 		return nil, fmt.Errorf("open runtime state db: %w", err)
 	}
-	globalRuntimeStateStore.paths[path] = db
 	return &runtimeStateStore{db: db}, nil
 }
 

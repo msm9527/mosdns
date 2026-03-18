@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	_ "modernc.org/sqlite"
@@ -30,11 +31,16 @@ var sharedRuntimeDBs struct {
 	paths map[string]*sharedRuntimeDB
 }
 
+var persistentRuntimeDBs struct {
+	mu    sync.Mutex
+	paths map[string]*RuntimeDB
+}
+
 func Open(path string, extraMigrations []Migration) (*RuntimeDB, error) {
-	if path == "" {
-		return nil, fmt.Errorf("sqlite path is required")
+	path, err := normalizeRuntimeDBPath(path)
+	if err != nil {
+		return nil, err
 	}
-	path = filepath.Clean(path)
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return nil, fmt.Errorf("create sqlite directory: %w", err)
 	}
@@ -65,6 +71,50 @@ func Open(path string, extraMigrations []Migration) (*RuntimeDB, error) {
 
 	runtimeDB := &RuntimeDB{db: db, path: path}
 	return storeSharedRuntimeDB(runtimeDB), nil
+}
+
+func OpenPersistent(path string, extraMigrations []Migration) (*RuntimeDB, error) {
+	path, err := normalizeRuntimeDBPath(path)
+	if err != nil {
+		return nil, err
+	}
+
+	persistentRuntimeDBs.mu.Lock()
+	defer persistentRuntimeDBs.mu.Unlock()
+
+	if persistentRuntimeDBs.paths == nil {
+		persistentRuntimeDBs.paths = make(map[string]*RuntimeDB)
+	}
+	if db := persistentRuntimeDBs.paths[path]; db != nil {
+		if err := ensureSchema(db.DB(), append(baseMigrations(), extraMigrations...)); err != nil {
+			return nil, err
+		}
+		return db, nil
+	}
+
+	db, err := Open(path, extraMigrations)
+	if err != nil {
+		return nil, err
+	}
+	persistentRuntimeDBs.paths[path] = db
+	return db, nil
+}
+
+func ResetPersistent(path string) error {
+	path, err := normalizeRuntimeDBPath(path)
+	if err != nil {
+		return err
+	}
+
+	persistentRuntimeDBs.mu.Lock()
+	db := persistentRuntimeDBs.paths[path]
+	delete(persistentRuntimeDBs.paths, path)
+	persistentRuntimeDBs.mu.Unlock()
+
+	if db == nil {
+		return nil
+	}
+	return db.Close()
 }
 
 func (r *RuntimeDB) DB() *sql.DB {
@@ -118,6 +168,14 @@ func applyPragmas(db *sql.DB) error {
 		}
 	}
 	return nil
+}
+
+func normalizeRuntimeDBPath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", fmt.Errorf("sqlite path is required")
+	}
+	return filepath.Clean(path), nil
 }
 
 func ensureSchema(db *sql.DB, migrations []Migration) error {
