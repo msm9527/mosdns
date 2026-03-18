@@ -173,7 +173,7 @@ func (p *AdguardRule) loadSources() error {
 	if strings.TrimSpace(configFile) == "" {
 		return fmt.Errorf("%s: config_file is required", PluginType)
 	}
-	cfg, _, err := coremain.LoadAdguardSourcesConfigAtPath(configFile)
+	cfg, err := coremain.LoadActiveAdguardSourcesConfigAtPath(configFile)
 	if err != nil {
 		return err
 	}

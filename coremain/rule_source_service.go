@@ -25,7 +25,7 @@ func newRuleSourceService(m *Mosdns, scope rulesource.Scope) *ruleSourceService 
 }
 
 func (s *ruleSourceService) List() ([]RuleSourceItem, error) {
-	cfg, err := s.loadConfig()
+	cfg, err := s.loadActiveConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -132,7 +132,7 @@ func (s *ruleSourceService) Get(id string) (RuleSourceItem, error) {
 }
 
 func (s *ruleSourceService) RefreshAll() ([]RuleSourceItem, error) {
-	cfg, err := s.loadConfig()
+	cfg, err := s.loadActiveConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -150,6 +150,9 @@ func (s *ruleSourceService) RefreshAll() ([]RuleSourceItem, error) {
 func (s *ruleSourceService) RefreshOne(id string) (RuleSourceItem, error) {
 	source, err := LoadRuleSourceByIDForBaseDir(s.baseDir(), s.configFile(), s.scope, id)
 	if err != nil {
+		if isRuleSourceConfigEmptyError(err) {
+			return RuleSourceItem{}, s.wrapConfigError(err)
+		}
 		return RuleSourceItem{}, NewRuleAPIError(http.StatusNotFound, "RULE_SOURCE_NOT_FOUND", "规则源不存在")
 	}
 	if err := s.refreshSource(source); err != nil {
@@ -174,6 +177,15 @@ func (s *ruleSourceService) loadConfig() (rulesource.Config, error) {
 	}
 }
 
+func (s *ruleSourceService) loadActiveConfig() (rulesource.Config, error) {
+	configPath := resolvePolicyConfigPath(s.baseDir(), s.configFile())
+	cfg, err := loadActiveRuleSourcesConfigAtPath(configPath, s.scope)
+	if err != nil {
+		return rulesource.Config{}, s.wrapConfigError(err)
+	}
+	return cfg, nil
+}
+
 func (s *ruleSourceService) saveConfig(cfg rulesource.Config) error {
 	switch s.scope {
 	case rulesource.ScopeAdguard:
@@ -194,6 +206,17 @@ func (s *ruleSourceService) configFile() string {
 	default:
 		return ""
 	}
+}
+
+func (s *ruleSourceService) wrapConfigError(err error) error {
+	if !isRuleSourceConfigEmptyError(err) {
+		return err
+	}
+	return NewRuleAPIError(
+		http.StatusConflict,
+		"RULE_SOURCE_CONFIG_EMPTY",
+		fmt.Sprintf("规则源配置为空，请先编辑 %s", s.configFile()),
+	)
 }
 
 func (s *ruleSourceService) itemFromSource(

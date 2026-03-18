@@ -26,6 +26,9 @@ policies:
     args:
       config_file: custom_config/adguard_sources.yaml
 `)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
+# empty truth source, POST should still be able to create the first item
+`)
 
 	m := NewTestMosdnsWithPlugins(nil)
 	RegisterRulesAPI(m.httpMux, m)
@@ -129,7 +132,7 @@ policies:
 	}
 }
 
-func TestRulesAPI_ListAdguardRulesBootstrapsFromFilesystem(t *testing.T) {
+func TestRulesAPI_ListAdguardRulesFailsOnEmptyConfig(t *testing.T) {
 	baseDir := t.TempDir()
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = baseDir
@@ -143,9 +146,8 @@ policies:
       config_file: custom_config/adguard_sources.yaml
 `)
 	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
-# only comments here, bootstrap should rebuild this file from adguard/*
+# comment-only config should fail explicitly
 `)
-	mustWriteRuleTestFile(t, filepath.Join(baseDir, "adguard", "httpdns.rules"), "||ads.example.com^\n")
 
 	m := NewTestMosdnsWithPlugins(nil)
 	RegisterRulesAPI(m.httpMux, m)
@@ -153,27 +155,18 @@ policies:
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/rules/adguard", nil)
 	w := httptest.NewRecorder()
 	m.httpMux.ServeHTTP(w, req)
-	if w.Code != http.StatusOK {
+	if w.Code != http.StatusConflict {
 		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
 	}
-
-	var items []RuleSourceItem
-	if err := json.Unmarshal(w.Body.Bytes(), &items); err != nil {
-		t.Fatalf("decode response: %v", err)
+	var resp APIErrorResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode error response: %v", err)
 	}
-	if len(items) != 1 {
-		t.Fatalf("unexpected items: %+v", items)
+	if resp.Code != "RULE_SOURCE_CONFIG_EMPTY" {
+		t.Fatalf("unexpected error response: %+v", resp)
 	}
-	if items[0].ID != "httpdns" || items[0].Path != "adguard/httpdns.rules" {
-		t.Fatalf("unexpected item: %+v", items[0])
-	}
-
-	raw, err := os.ReadFile(filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"))
-	if err != nil {
-		t.Fatalf("read bootstrapped config: %v", err)
-	}
-	if !strings.Contains(string(raw), "id: httpdns") {
-		t.Fatalf("bootstrapped config missing source id: %s", string(raw))
+	if !strings.Contains(resp.Error, "custom_config/adguard_sources.yaml") {
+		t.Fatalf("unexpected error message: %s", resp.Error)
 	}
 }
 

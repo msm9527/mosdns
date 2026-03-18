@@ -47,11 +47,7 @@ func LoadRuleSourcesByBindingForBaseDir(
 }
 
 func loadRuleSourceConfigForBaseDir(baseDir, configPath string, scope rulesource.Scope) (rulesource.Config, error) {
-	cfg, _, err := loadRuleSourcesConfigAtPath(resolveRuleSourceConfigPath(baseDir, configPath), scope)
-	if err != nil {
-		return rulesource.Config{}, err
-	}
-	return cfg, nil
+	return loadActiveRuleSourcesConfigAtPath(resolveRuleSourceConfigPath(baseDir, configPath), scope)
 }
 
 func resolveRuleSourceConfigPath(baseDir, configPath string) string {

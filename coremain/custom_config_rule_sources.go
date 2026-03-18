@@ -2,7 +2,9 @@ package coremain
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -48,6 +50,10 @@ func LoadDiversionSourcesFromCustomConfigForBaseDir(baseDir string) (rulesource.
 
 func LoadAdguardSourcesConfigAtPath(path string) (rulesource.Config, bool, error) {
 	return loadRuleSourcesConfigAtPath(path, rulesource.ScopeAdguard)
+}
+
+func LoadActiveAdguardSourcesConfigAtPath(path string) (rulesource.Config, error) {
+	return loadActiveRuleSourcesConfigAtPath(path, rulesource.ScopeAdguard)
 }
 
 func LoadDiversionSourcesConfigAtPath(path string) (rulesource.Config, bool, error) {
@@ -143,4 +149,43 @@ func ResolveMainConfigPath(path string) string {
 		return path
 	}
 	return filepath.Join(MainConfigBaseDir, path)
+}
+
+type ruleSourceConfigEmptyError struct {
+	path  string
+	scope rulesource.Scope
+}
+
+func (e *ruleSourceConfigEmptyError) Error() string {
+	return fmt.Sprintf("%s rule source config %s has no sources", e.scope, e.path)
+}
+
+func loadRuleSourcesConfigAtPath(path string, scope rulesource.Scope) (rulesource.Config, bool, error) {
+	return rulesource.LoadConfig(path, scope)
+}
+
+func loadActiveRuleSourcesConfigAtPath(path string, scope rulesource.Scope) (rulesource.Config, error) {
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return rulesource.Config{}, &ruleSourceConfigEmptyError{path: path, scope: scope}
+		}
+		return rulesource.Config{}, fmt.Errorf("read config %s: %w", path, err)
+	}
+	if len(raw) == 0 {
+		return rulesource.Config{}, &ruleSourceConfigEmptyError{path: path, scope: scope}
+	}
+	cfg, _, err := loadRuleSourcesConfigAtPath(path, scope)
+	if err != nil {
+		return rulesource.Config{}, err
+	}
+	if len(cfg.Sources) == 0 {
+		return rulesource.Config{}, &ruleSourceConfigEmptyError{path: path, scope: scope}
+	}
+	return cfg, nil
+}
+
+func isRuleSourceConfigEmptyError(err error) bool {
+	var target *ruleSourceConfigEmptyError
+	return errors.As(err, &target)
 }
