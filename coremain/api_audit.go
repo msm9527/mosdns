@@ -154,6 +154,11 @@ func handlePutAuditSettings(w http.ResponseWriter, r *http.Request) {
 		FlushIntervalMs:            req.FlushIntervalMs,
 		MaintenanceIntervalSeconds: req.MaintenanceIntervalSeconds,
 	}
+	settings = normalizeAuditSettings(settings)
+	if err := saveAuditSettingsToMainConfig(settings); err != nil {
+		writeAPIError(w, http.StatusInternalServerError, "SAVE_AUDIT_CONFIG_FAILED", err.Error())
+		return
+	}
 	if err := GlobalAuditCollector.SetSettings(settings, MainConfigBaseDir); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "SET_AUDIT_SETTINGS_FAILED", err.Error())
 		return

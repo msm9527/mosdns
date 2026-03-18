@@ -24,7 +24,6 @@ const (
 	auditDefaultMaintenanceIntervalSeconds = 60
 	auditMaxMaintenanceIntervalSeconds     = 3600
 	auditRealtimeBucketCount               = 3600
-	runtimeStateKeyAuditConfig             = "settings_v3"
 	auditSQLiteFilename                    = "audit.db"
 )
 
@@ -93,11 +92,6 @@ func loadAuditSettings(configBaseDir string, base *AuditSettings) AuditSettings 
 	if base != nil {
 		settings = mergeAuditSettings(settings, *base)
 	}
-	if runtimeSettings, ok, err := loadAuditSettingsFromRuntimeStore(configBaseDir); err == nil && ok {
-		settings = mergeAuditSettings(settings, runtimeSettings)
-	} else if err != nil {
-		mlog.L().Warn("failed to load audit settings from runtime store", zap.Error(err))
-	}
 	settings = normalizeAuditSettings(settings)
 	mlog.L().Info("loaded audit settings",
 		zap.Bool("enabled", settings.Enabled),
@@ -109,31 +103,10 @@ func loadAuditSettings(configBaseDir string, base *AuditSettings) AuditSettings 
 }
 
 func mergeAuditSettings(base, override AuditSettings) AuditSettings {
-	if strings.TrimSpace(override.SQLitePath) == "" {
+	if override.SQLitePath == "" {
 		override.SQLitePath = base.SQLitePath
 	}
 	return normalizeAuditSettings(override)
-}
-
-func saveAuditSettings(configBaseDir string, settings AuditSettings) error {
-	store, err := getRuntimeStateStoreByPath(runtimeStateDBPathForBaseDir(configBaseDir))
-	if err != nil {
-		return err
-	}
-	return store.put(runtimeStateNamespaceAudit, runtimeStateKeyAuditConfig, normalizeAuditSettings(settings))
-}
-
-func loadAuditSettingsFromRuntimeStore(configBaseDir string) (AuditSettings, bool, error) {
-	store, err := getRuntimeStateStoreByPath(runtimeStateDBPathForBaseDir(configBaseDir))
-	if err != nil {
-		return AuditSettings{}, false, err
-	}
-	var settings AuditSettings
-	ok, err := store.get(runtimeStateNamespaceAudit, runtimeStateKeyAuditConfig, &settings)
-	if err != nil {
-		return AuditSettings{}, false, err
-	}
-	return settings, ok, nil
 }
 
 func defaultAuditSQLitePath(configBaseDir string) string {

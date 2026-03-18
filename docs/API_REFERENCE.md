@@ -61,7 +61,7 @@
 | `POST` | `/api/v3/audit/logs/search` | 结构化原始日志搜索 | `AuditLogSearchRequest` | `AuditLogsResponse` |
 | `GET` | `/api/v3/audit/logs/slow` | 慢查询列表 | `from,to,limit` | `AuditLog[]` |
 | `GET` | `/api/v3/audit/settings` | 审计设置和当前存储状态 | 无 | `AuditSettingsResponse` |
-| `PUT` | `/api/v3/audit/settings` | 更新审计设置 | `AuditSettingsUpdateRequest` | `AuditSettingsResponse` |
+| `PUT` | `/api/v3/audit/settings` | 更新审计设置，并写回 `config/config.yaml` 的 `audit:` 段 | `AuditSettingsUpdateRequest` | `AuditSettingsResponse` |
 | `POST` | `/api/v3/audit/clear` | 清空原始日志和聚合数据 | 无 | `{ "message": "..." }` |
 
 说明：

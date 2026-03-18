@@ -265,7 +265,7 @@ paths:
       summary: Get audit settings
       responses:
         '200':
-          description: Current audit settings and storage runtime status
+          description: Current audit settings from main config and storage runtime status
           content:
             application/json:
               schema:
@@ -284,7 +284,7 @@ paths:
               $ref: '#/components/schemas/AuditSettingsUpdateRequest'
       responses:
         '200':
-          description: Updated audit settings
+          description: Updated audit settings persisted to main config and applied at runtime
           content:
             application/json:
               schema:

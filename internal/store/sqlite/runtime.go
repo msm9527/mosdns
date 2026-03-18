@@ -273,16 +273,6 @@ func baseMigrations() []Migration {
 			`,
 		},
 		{
-			ID: "0008_audit_state",
-			Up: `
-				CREATE TABLE IF NOT EXISTS audit_state (
-					setting_key TEXT PRIMARY KEY,
-					payload_json TEXT NOT NULL,
-					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000)
-				);
-			`,
-		},
-		{
 			ID: "0010_adguard_rule_item",
 			Up: `
 				CREATE TABLE IF NOT EXISTS adguard_rule_item (
@@ -435,6 +425,12 @@ func baseMigrations() []Migration {
 				);
 				CREATE INDEX IF NOT EXISTS idx_rule_source_status_scope
 				ON rule_source_status(scope, updated_at_unix_ms DESC);
+			`,
+		},
+		{
+			ID: "0018_drop_audit_state",
+			Up: `
+				DROP TABLE IF EXISTS audit_state;
 			`,
 		},
 	}

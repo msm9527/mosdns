@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -52,6 +54,22 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	}
 	if collector.GetSettings().SQLitePath != settings.SQLitePath {
 		t.Fatalf("collector SQLitePath = %q, want %q", collector.GetSettings().SQLitePath, settings.SQLitePath)
+	}
+	updatedConfig, err := os.ReadFile(MainConfigFilePath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	for _, want := range []string{
+		"enabled: false",
+		"overview_window_seconds: 120",
+		"raw_retention_days: 14",
+		"aggregate_retention_days: 45",
+		"max_storage_mb: 256",
+		"sqlite_path: " + settings.SQLitePath,
+	} {
+		if !strings.Contains(string(updatedConfig), want) {
+			t.Fatalf("updated config missing %q:\n%s", want, string(updatedConfig))
+		}
 	}
 
 	postAuditNoBody(t, router, http.MethodPost, "/api/v3/audit/clear")
@@ -131,11 +149,14 @@ func newAuditAPITestHarness(t *testing.T) (*chi.Mux, *AuditCollector, time.Time)
 
 	oldCollector := GlobalAuditCollector
 	oldBaseDir := MainConfigBaseDir
+	oldFilePath := MainConfigFilePath
 	MainConfigBaseDir = t.TempDir()
+	MainConfigFilePath = filepath.Join(MainConfigBaseDir, "config.yaml")
+	writeAuditMainConfigForTest(t, MainConfigFilePath)
 
 	collector := NewAuditCollector(AuditSettings{
 		Enabled:                true,
-		SQLitePath:             filepath.Join(MainConfigBaseDir, "audit.db"),
+		SQLitePath:             "db/audit.db",
 		OverviewWindowSeconds:  60,
 		RawRetentionDays:       7,
 		AggregateRetentionDays: 30,
@@ -159,12 +180,34 @@ func newAuditAPITestHarness(t *testing.T) (*chi.Mux, *AuditCollector, time.Time)
 	t.Cleanup(func() {
 		GlobalAuditCollector = oldCollector
 		MainConfigBaseDir = oldBaseDir
+		MainConfigFilePath = oldFilePath
 		collector.closeStorage()
 	})
 
 	router := chi.NewMux()
 	RegisterAuditAPI(router)
 	return router, collector, base
+}
+
+func writeAuditMainConfigForTest(t *testing.T, path string) {
+	t.Helper()
+	content := `version: v2
+audit:
+  enabled: true
+  overview_window_seconds: 60
+  raw_retention_days: 7
+  aggregate_retention_days: 30
+  max_storage_mb: 128
+  sqlite_path: db/audit.db
+  flush_batch_size: 256
+  flush_interval_ms: 250
+  maintenance_interval_seconds: 60
+storage:
+  control_db: db/control.db
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 }
 
 func decodeAuditResponse(t *testing.T, rec *httptest.ResponseRecorder, dst any) {
