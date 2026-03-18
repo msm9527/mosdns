@@ -28,6 +28,7 @@
 | Audit | `GET` | `/api/v3/audit/rank/client` | `stable` | `AuditRankItem[]` |
 | Audit | `GET` | `/api/v3/audit/rank/domain_set` | `stable` | `AuditRankItem[]` |
 | Audit | `GET` | `/api/v3/audit/logs` | `stable` | `AuditLogsResponse` |
+| Audit | `POST` | `/api/v3/audit/logs/search` | `stable` | `AuditLogsResponse` |
 | Audit | `GET` | `/api/v3/audit/logs/slow` | `stable` | `AuditLog[]` |
 | Audit | `GET` | `/api/v3/audit/settings` | `stable` | `AuditSettingsResponse` |
 | Audit | `PUT` | `/api/v3/audit/settings` | `stable` | `AuditSettingsResponse` |

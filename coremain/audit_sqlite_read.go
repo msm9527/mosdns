@@ -242,61 +242,6 @@ func scanAuditLogRow(scanner scanner) (AuditLog, error) {
 	return log, nil
 }
 
-func buildAuditLogWhere(params AuditLogsQuery) ([]string, []any) {
-	where := []string{"query_time_unix_ms BETWEEN ? AND ?"}
-	args := []any{params.From.UnixMilli(), params.To.UnixMilli()}
-	appendFilter := func(clause string, value any) {
-		where = append(where, clause)
-		args = append(args, value)
-	}
-	if params.ClientIP != "" {
-		appendFilter("client_ip = ?", params.ClientIP)
-	}
-	if params.Domain != "" {
-		appendFilter("query_name LIKE ?", "%"+params.Domain+"%")
-	}
-	if params.ResponseCode != "" {
-		appendFilter("response_code = ?", strings.ToUpper(params.ResponseCode))
-	}
-	if params.DomainSet != "" {
-		appendFilter("domain_set_norm = ?", params.DomainSet)
-	}
-	if params.CacheStatus != "" {
-		appendFilter("cache_status = ?", params.CacheStatus)
-	}
-	if params.UpstreamTag != "" {
-		appendFilter("upstream_tag = ?", params.UpstreamTag)
-	}
-	if params.Transport != "" {
-		appendFilter("transport = ?", params.Transport)
-	}
-	if params.Answer != "" {
-		appendFilter("answer_search_text LIKE ?", buildAuditSearchPattern(params.Answer, params.Exact))
-	}
-	if params.Query != "" {
-		appendAuditTextQuery(&where, &args, params.Query, params.Exact)
-	}
-	return where, args
-}
-
-func appendAuditTextQuery(where *[]string, args *[]any, query string, exact bool) {
-	if exact {
-		*where = append(*where, `(query_name = ? OR client_ip = ? OR trace_id = ? OR domain_set_norm = ? OR answer_search_text LIKE ?)`)
-		*args = append(*args, query, query, query, query, wrapExactPattern(query))
-		return
-	}
-	needle := "%" + strings.ToLower(query) + "%"
-	*where = append(*where, `(LOWER(query_name) LIKE ? OR LOWER(client_ip) LIKE ? OR LOWER(trace_id) LIKE ? OR LOWER(domain_set_norm) LIKE ? OR LOWER(answer_search_text) LIKE ?)`)
-	*args = append(*args, needle, needle, needle, needle, needle)
-}
-
-func buildAuditSearchPattern(value string, exact bool) string {
-	if exact {
-		return wrapExactPattern(value)
-	}
-	return "%" + value + "%"
-}
-
 func joinAuditWhere(where []string, args []any) (string, []any) {
 	if len(where) == 0 {
 		return "", args
