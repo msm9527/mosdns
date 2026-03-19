@@ -15,6 +15,12 @@ type FlushablePlugin interface {
 	FlushRuntime(ctx context.Context) error
 }
 
+// UpstreamStatsResetter is implemented by plugins that can clear in-memory
+// upstream runtime stats.
+type UpstreamStatsResetter interface {
+	ResetUpstreamStats(ctx context.Context, upstreamTag string) (int, error)
+}
+
 // DomainVerifyPlugin is implemented by plugins that can mark a domain as verified.
 type DomainVerifyPlugin interface {
 	MarkDomainVerified(ctx context.Context, domain, verifiedAt string) (int, error)

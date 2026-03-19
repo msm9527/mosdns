@@ -570,6 +570,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/UpstreamHealthOverview'
+  /api/v1/control/upstreams/stats/reset:
+    post:
+      tags: [Upstream]
+      deprecated: true
+      summary: Reset upstream runtime stats (compat alias)
+      description: 兼容旧入口，推荐改用 `/api/v1/upstream/stats/reset`。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamStatsResetRequest'
+      responses:
+        '200':
+          description: Upstream stats reset result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamStatsResetResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
   /api/v1/control/upstreams/tags:
     get:
       tags: [Upstream]
@@ -1106,6 +1131,34 @@ paths:
           $ref: '#/components/responses/ApiInternalError'
         '503':
           $ref: '#/components/responses/ApiServiceUnavailable'
+  /api/v1/upstream/stats/reset:
+    post:
+      tags: [Upstream]
+      summary: Reset upstream runtime stats
+      description: |
+        清空当前上游累计统计。只会重置累计计数，不会改变瞬时健康状态。
+        - 空请求体或 `{}`: 清空全部上游统计
+        - `{ "plugin_tag": "..." }`: 清空某个插件组的统计
+        - `{ "plugin_tag": "...", "upstream_tag": "..." }`: 清空单个上游统计
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpstreamStatsResetRequest'
+      responses:
+        '200':
+          description: Upstream stats reset result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UpstreamStatsResetResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '413':
+          $ref: '#/components/responses/ApiRequestTooLarge'
+        '500':
+          $ref: '#/components/responses/ApiInternalError'
   /api/v1/upstream/items:
     get:
       tags: [Upstream]
@@ -2589,6 +2642,29 @@ components:
       properties:
         plugin_tag:
           type: string
+    UpstreamStatsResetRequest:
+      type: object
+      properties:
+        plugin_tag:
+          type: string
+        upstream_tag:
+          type: string
+          description: 仅在同时提供 `plugin_tag` 时有效。
+    UpstreamStatsResetResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        plugin_tag:
+          type: string
+        upstream_tag:
+          type: string
+        cleared_runtime_items:
+          type: integer
+          description: 本次已清空的运行中上游数量。
+        deleted_persistent_items:
+          type: integer
+          description: 本次从 control.db 删除的累计统计行数。
     UpstreamItemMutationRequest:
       type: object
       properties:
@@ -2614,6 +2690,22 @@ components:
           format: int64
         average_latency_ms:
           type: number
+          description: 健康打分用 EWMA 延迟，单位毫秒。
+        observed_average_latency_ms:
+          type: number
+          description: 累计观测到的平均响应延迟，单位毫秒。
+        query_total:
+          type: integer
+          format: int64
+          description: 累计向该上游发起的查询次数。
+        error_total:
+          type: integer
+          format: int64
+          description: 累计从该上游收到错误的次数。
+        winner_total:
+          type: integer
+          format: int64
+          description: 累计该上游结果被选为最终响应的次数。
         inflight:
           type: integer
           format: int64

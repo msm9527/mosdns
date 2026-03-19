@@ -49,6 +49,7 @@ func RegisterRuntimeAPI(router *chi.Mux, m *Mosdns) {
 			handleSetUpstreamConfigWithMosdns(w, r, m)
 		})
 		r.Get("/upstreams/health", handleControlUpstreamHealth(m))
+		r.Post("/upstreams/stats/reset", handleResetUpstreamStats(m))
 		r.Get("/upstreams/tags", handleGetControlUpstreamTags(m))
 	})
 }

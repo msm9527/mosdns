@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,10 +24,24 @@ func (fakeUpstreamHealthProvider) SnapshotUpstreamHealth() []UpstreamHealthSnaps
 		Address:             "udp://1.1.1.1:53",
 		Score:               123,
 		AverageLatencyMs:    12.3,
+		ObservedAverageMs:   8.8,
+		QueryTotal:          120,
+		ErrorTotal:          6,
+		WinnerTotal:         90,
 		Inflight:            1,
 		ConsecutiveFailures: 0,
 		Healthy:             true,
 	}}
+}
+
+type fakeUpstreamStatsResetter struct {
+	calledWith []string
+	returned   int
+}
+
+func (f *fakeUpstreamStatsResetter) ResetUpstreamStats(_ context.Context, upstreamTag string) (int, error) {
+	f.calledWith = append(f.calledWith, upstreamTag)
+	return f.returned, nil
 }
 
 func TestHandleRuntimeSummary(t *testing.T) {
@@ -114,6 +129,64 @@ func TestHandleControlUpstreamHealth(t *testing.T) {
 	}
 	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].UpstreamTag != "u1" {
 		t.Fatalf("unexpected upstream health payload: %+v", resp)
+	}
+	if resp.Items[0].QueryTotal != 120 || resp.Items[0].WinnerTotal != 90 || resp.Items[0].ObservedAverageMs != 8.8 {
+		t.Fatalf("unexpected upstream health stats payload: %+v", resp.Items[0])
+	}
+}
+
+func TestHandleControlUpstreamStatsReset(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	dbPath := RuntimeStateDBPath()
+	if err := SaveUpstreamRuntimeStats(dbPath, []UpstreamRuntimeStats{
+		{PluginTag: "fake", UpstreamTag: "u1", QueryTotal: 10},
+		{PluginTag: "other", UpstreamTag: "keep", QueryTotal: 20},
+	}); err != nil {
+		t.Fatalf("SaveUpstreamRuntimeStats: %v", err)
+	}
+
+	resetter := &fakeUpstreamStatsResetter{returned: 1}
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": resetter}))
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/control/upstreams/stats/reset", strings.NewReader(`{"plugin_tag":"fake","upstream_tag":"u1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if len(resetter.calledWith) != 1 || resetter.calledWith[0] != "u1" {
+		t.Fatalf("unexpected resetter calls: %+v", resetter.calledWith)
+	}
+
+	var resp upstreamStatsResetResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode reset response: %v", err)
+	}
+	if resp.ClearedRuntimeItems != 1 || resp.DeletedPersistentItems != 1 {
+		t.Fatalf("unexpected reset response: %+v", resp)
+	}
+
+	values, err := LoadUpstreamRuntimeStatsByPlugin(dbPath, "fake")
+	if err != nil {
+		t.Fatalf("LoadUpstreamRuntimeStatsByPlugin fake: %v", err)
+	}
+	if len(values) != 0 {
+		t.Fatalf("expected fake stats to be deleted, got %+v", values)
+	}
+	other, err := LoadUpstreamRuntimeStatsByPlugin(dbPath, "other")
+	if err != nil {
+		t.Fatalf("LoadUpstreamRuntimeStatsByPlugin other: %v", err)
+	}
+	if len(other) != 1 || other["keep"].QueryTotal != 20 {
+		t.Fatalf("unexpected other stats: %+v", other)
 	}
 }
 

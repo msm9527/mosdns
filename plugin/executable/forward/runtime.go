@@ -55,10 +55,19 @@ func (f *Forward) ReloadControlConfig(global *coremain.GlobalOverrides, _ []core
 	f.runtimeMu.RLock()
 	base := cloneArgs(f.baseArgs)
 	metricsTag := f.metricsTag
+	controlDBPath := f.controlDBPath
 	f.runtimeMu.RUnlock()
 
+	if err := f.flushPersistentStats(); err != nil {
+		return err
+	}
 	rebuilt, err := NewForward(buildEffectiveArgs(base, global), Opts{Logger: f.logger, MetricsTag: metricsTag})
 	if err != nil {
+		return err
+	}
+	f.bindStatsCallbacks(rebuilt.us)
+	if err := f.restorePersistentStats(rebuilt.us); err != nil {
+		_ = rebuilt.Close()
 		return err
 	}
 
@@ -67,6 +76,7 @@ func (f *Forward) ReloadControlConfig(global *coremain.GlobalOverrides, _ []core
 	f.args = rebuilt.args
 	f.us = rebuilt.us
 	f.tag2Upstream = rebuilt.tag2Upstream
+	f.controlDBPath = controlDBPath
 	f.runtimeMu.Unlock()
 
 	go closeUpstreamsLater(oldUs, 2*time.Second)
@@ -115,13 +125,17 @@ func (f *Forward) runtimeSelection(tags []string) (*Args, []*upstreamWrapper, er
 }
 
 func (f *Forward) Close() error {
+	var firstErr error
+	if err := f.closeStatsFlusher(); err != nil {
+		firstErr = err
+	}
 	f.runtimeMu.RLock()
 	us := append([]*upstreamWrapper(nil), f.us...)
 	f.runtimeMu.RUnlock()
 	for _, u := range us {
 		_ = u.Close()
 	}
-	return nil
+	return firstErr
 }
 
 func (f *Forward) SnapshotUpstreamHealth() []coremain.UpstreamHealthSnapshot {
@@ -129,18 +143,7 @@ func (f *Forward) SnapshotUpstreamHealth() []coremain.UpstreamHealthSnapshot {
 	now := time.Now()
 	items := make([]coremain.UpstreamHealthSnapshot, 0, len(us))
 	for _, u := range us {
-		items = append(items, coremain.UpstreamHealthSnapshot{
-			PluginTag:           f.pluginTag,
-			PluginType:          PluginType,
-			UpstreamTag:         u.cfg.Tag,
-			Address:             u.cfg.Addr,
-			Score:               u.healthScore(now),
-			AverageLatencyMs:    float64(u.ewmaLatencyUs.Load()) / 1000.0,
-			Inflight:            u.inflightCount.Load(),
-			ConsecutiveFailures: u.consecutiveErrs.Load(),
-			Healthy:             !u.isUnhealthy(now),
-			UnhealthyUntilMs:    coremain.UnhealthyUntilUnixMilli(u.unhealthyUntil.Load()),
-		})
+		items = append(items, u.snapshotHealth(f.pluginTag, now))
 	}
 	return items
 }

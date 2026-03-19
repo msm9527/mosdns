@@ -491,6 +491,24 @@ func baseMigrations() []Migration {
 				DROP TABLE IF EXISTS audit_state;
 			`,
 		},
+		{
+			ID: "0019_upstream_runtime_stats",
+			Up: `
+				CREATE TABLE IF NOT EXISTS upstream_runtime_stats (
+					plugin_tag TEXT NOT NULL,
+					upstream_tag TEXT NOT NULL,
+					query_total INTEGER NOT NULL DEFAULT 0,
+					error_total INTEGER NOT NULL DEFAULT 0,
+					winner_total INTEGER NOT NULL DEFAULT 0,
+					latency_total_us INTEGER NOT NULL DEFAULT 0,
+					latency_count INTEGER NOT NULL DEFAULT 0,
+					updated_at_unix_ms INTEGER NOT NULL DEFAULT (unixepoch('subsec') * 1000),
+					PRIMARY KEY (plugin_tag, upstream_tag)
+				);
+				CREATE INDEX IF NOT EXISTS idx_upstream_runtime_stats_plugin
+				ON upstream_runtime_stats(plugin_tag, updated_at_unix_ms DESC);
+			`,
+		},
 	}
 }
 

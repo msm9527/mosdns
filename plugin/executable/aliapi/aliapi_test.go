@@ -3,9 +3,11 @@ package aliapi
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/pkg/upstream"
@@ -229,6 +231,82 @@ func TestAliAPI_PersistentServfailAccumulatesAcrossShortExpiredWindows(t *testin
 	}
 	if remaining := time.Until(rec.expiresAt); remaining < 9*time.Second {
 		t.Fatalf("expected persistent suppression after accumulation, got %s", remaining)
+	}
+}
+
+func TestSnapshotUpstreamHealthIncludesObservedStats(t *testing.T) {
+	wrapper := newTestWrapper(&fakeUpstream{}, "stats_test")
+	wrapper.cfg.Tag = "u1"
+	wrapper.queryCount.Store(30)
+	wrapper.errorCount.Store(3)
+	wrapper.winnerCount.Store(20)
+	wrapper.latencyTotalUs.Store(90000)
+	wrapper.latencyCount.Store(15)
+	wrapper.ewmaLatencyUs.Store(12000)
+
+	f := &AliAPI{
+		pluginTag: "ali",
+		us:        []*upstreamWrapper{wrapper},
+	}
+
+	items := f.SnapshotUpstreamHealth()
+	if len(items) != 1 {
+		t.Fatalf("expected one item, got %d", len(items))
+	}
+	item := items[0]
+	if item.QueryTotal != 30 || item.ErrorTotal != 3 || item.WinnerTotal != 20 {
+		t.Fatalf("unexpected counters: %+v", item)
+	}
+	if item.ObservedAverageMs != 6 {
+		t.Fatalf("unexpected observed average latency: %+v", item)
+	}
+	if item.AverageLatencyMs != 12 {
+		t.Fatalf("unexpected health latency: %+v", item)
+	}
+}
+
+func TestAliAPIPersistentStatsRestoreResetAndFlush(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "control.db")
+	if err := coremain.SaveUpstreamRuntimeStats(dbPath, []coremain.UpstreamRuntimeStats{
+		{PluginTag: "ali", UpstreamTag: "u1", QueryTotal: 15, ErrorTotal: 1, WinnerTotal: 10, LatencyTotalUs: 75000, LatencyCount: 15},
+	}); err != nil {
+		t.Fatalf("SaveUpstreamRuntimeStats: %v", err)
+	}
+
+	wrapper := newTestWrapper(&fakeUpstream{}, "persist_stats")
+	wrapper.cfg.Tag = "u1"
+	f := &AliAPI{
+		logger:        zap.NewNop(),
+		pluginTag:     "ali",
+		controlDBPath: dbPath,
+		us:            []*upstreamWrapper{wrapper},
+	}
+
+	if err := f.restorePersistentStats(f.us); err != nil {
+		t.Fatalf("restorePersistentStats: %v", err)
+	}
+	item := f.SnapshotUpstreamHealth()[0]
+	if item.QueryTotal != 15 || item.ErrorTotal != 1 || item.WinnerTotal != 10 || item.ObservedAverageMs != 5 {
+		t.Fatalf("unexpected restored stats: %+v", item)
+	}
+
+	count, err := f.ResetUpstreamStats(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ResetUpstreamStats: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one reset item, got %d", count)
+	}
+	if err := f.flushPersistentStats(); err != nil {
+		t.Fatalf("flushPersistentStats: %v", err)
+	}
+
+	values, err := coremain.LoadUpstreamRuntimeStatsByPlugin(dbPath, "ali")
+	if err != nil {
+		t.Fatalf("LoadUpstreamRuntimeStatsByPlugin: %v", err)
+	}
+	if len(values) != 1 || values["u1"].QueryTotal != 0 || values["u1"].LatencyCount != 0 {
+		t.Fatalf("unexpected flushed stats: %+v", values)
 	}
 }
 

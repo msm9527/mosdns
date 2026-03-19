@@ -186,6 +186,23 @@ func TestHandleReplaceUpstreamConfigWithMosdns_SaveAndApply(t *testing.T) {
 	}
 }
 
+func TestHandleUpstreamStatsResetRejectsUpstreamOnlyScope(t *testing.T) {
+	router := chi.NewRouter()
+	RegisterUpstreamAPI(router, nil)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/upstream/stats/reset", strings.NewReader(`{"upstream_tag":"u1"}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("unexpected status code: got %d, body=%s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), `"code":"INVALID_UPSTREAM_STATS_RESET_SCOPE"`) {
+		t.Fatalf("unexpected response body: %s", w.Body.String())
+	}
+}
+
 func TestHandleUpstreamItemCRUD(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	upstreamOverridesLock.Lock()

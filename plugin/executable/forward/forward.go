@@ -97,6 +97,10 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	f.baseArgs = baseArgs
 	f.pluginTag = bp.Tag()
 	f.metricsTag = bp.Tag()
+	if err := f.configureStatsPersistence(bp.ControlDBPath()); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 
 	if err := f.RegisterMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.MetricsRegisterer())); err != nil {
 		_ = f.Close()
@@ -108,15 +112,18 @@ func Init(bp *coremain.BP, args any) (any, error) {
 var _ sequence.Executable = (*Forward)(nil)
 var _ sequence.QuickConfigurableExec = (*Forward)(nil)
 var _ coremain.ControlConfigReloader = (*Forward)(nil)
+var _ coremain.UpstreamStatsResetter = (*Forward)(nil)
 
 type Forward struct {
-	runtimeMu  sync.RWMutex
-	args       *Args
-	baseArgs   *Args
-	pluginTag  string
-	metricsTag string
+	runtimeMu     sync.RWMutex
+	args          *Args
+	baseArgs      *Args
+	pluginTag     string
+	metricsTag    string
+	controlDBPath string
 
 	logger       *zap.Logger
+	statsFlusher *coremain.UpstreamRuntimeStatsFlusher
 	us           []*upstreamWrapper
 	tag2Upstream map[string]*upstreamWrapper // for fast tag lookup only.
 }
@@ -233,21 +240,21 @@ func (f *Forward) exchange(ctx context.Context, qCtx *query_context.Context, run
 	for range selected {
 		select {
 		case result := <-results:
-			if winner, tag, done := picker.add(result.resp, result.err, result.tag); done {
+			if winner, upstream, done := picker.add(result.resp, result.err, result.upstream); done {
 				cancel()
-				setAuditWinnerTag(qCtx, tag)
+				recordWinnerSelection(qCtx, upstream)
 				return winner, nil
 			}
 		case <-ctx.Done():
 			cancel()
-			if fallback, tag, err := picker.final(); err == nil && fallback != nil {
-				setAuditWinnerTag(qCtx, tag)
+			if fallback, upstream, err := picker.final(); err == nil && fallback != nil {
+				recordWinnerSelection(qCtx, upstream)
 				return fallback, nil
 			}
 			return nil, context.Cause(ctx)
 		}
 	}
-	resp, tag, err := picker.final()
-	setAuditWinnerTag(qCtx, tag)
+	resp, upstream, err := picker.final()
+	recordWinnerSelection(qCtx, upstream)
 	return resp, err
 }

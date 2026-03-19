@@ -67,6 +67,7 @@ func RegisterUpstreamAPI(router *chi.Mux, m *Mosdns) {
 		r.Post("/apply", func(w http.ResponseWriter, r *http.Request) {
 			handleApplyUpstreamConfigWithMosdns(w, r, m)
 		})
+		r.Post("/stats/reset", handleResetUpstreamStats(m))
 		r.Get("/items", handleGetUpstreamItems)
 		r.Post("/items", func(w http.ResponseWriter, r *http.Request) {
 			handleCreateUpstreamItemWithMosdns(w, r, m)
