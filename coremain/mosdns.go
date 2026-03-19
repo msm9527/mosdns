@@ -209,9 +209,19 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 
 // NewTestMosdnsWithPlugins returns a mosdns instance for testing.
 func NewTestMosdnsWithPlugins(p map[string]any) *Mosdns {
+	return NewTestMosdnsWithPluginsAndEnv(p, RuntimeEnv{})
+}
+
+// NewTestMosdnsWithPluginsAndEnv returns a mosdns test instance with an explicit runtime environment.
+func NewTestMosdnsWithPluginsAndEnv(p map[string]any, env RuntimeEnv) *Mosdns {
+	if env == (RuntimeEnv{}) {
+		env = runtimeEnvFromGlobals()
+	} else {
+		env = completeRuntimeEnv(env)
+	}
 	return &Mosdns{
 		logger:     mlog.Nop(),
-		env:        runtimeEnvFromGlobals(),
+		env:        env,
 		httpMux:    chi.NewRouter(),
 		plugins:    p,
 		metricsReg: newMetricsReg(),

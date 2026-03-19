@@ -4,7 +4,7 @@ import "github.com/IrineSistiana/mosdns/v5/coremain"
 
 func (p *Requery) memoryTargetTags() ([]string, error) {
 	if p.pluginTag != "" {
-		return coremain.RequeryTargetDomainPoolTags(p.pluginTag)
+		return coremain.RequeryTargetDomainPoolTagsForBaseDir(p.baseDir, p.pluginTag)
 	}
 
 	// Test-only fallback for direct struct construction without plugin init.

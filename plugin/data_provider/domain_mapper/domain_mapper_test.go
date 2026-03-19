@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
@@ -20,23 +21,33 @@ func newTestMapper(defaultMark uint8, defaultTag string, result *MatchResult, na
 		defaultMark: defaultMark,
 		defaultTag:  defaultTag,
 	}
-	m := domain.NewMixMatcher[*MatchResult]()
-	for _, name := range names {
-		if err := m.Add("domain:"+name, result); err != nil {
-			panic(err)
+	m := domain.NewMixMatcher[*compiledMatch]()
+	if result != nil {
+		for _, name := range names {
+			if err := m.Add("domain:"+name, &compiledMatch{
+				sources: []matchSource{{
+					providerTag: "test-provider",
+					result:      result,
+				}},
+			}); err != nil {
+				panic(err)
+			}
 		}
 	}
 	dm.matcher = atomic.Value{}
 	dm.matcher.Store(m)
 	dm.hotLookup = atomic.Value{}
-	dm.hotLookup.Store(make(map[string]*MatchResult))
+	dm.hotLookup.Store(make(map[string][]matchSource))
+	dm.validators = atomic.Value{}
+	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
 	dm.hotRules = make(map[string]map[string]struct{})
 	return dm
 }
 
 type mockRuleExporter struct {
-	rules    []string
-	hotRules []string
+	rules        []string
+	hotRules     []string
+	allowHotRule func(domain string, now time.Time) bool
 }
 
 func (m *mockRuleExporter) GetRules() ([]string, error) {
@@ -47,6 +58,13 @@ func (m *mockRuleExporter) Subscribe(func()) {}
 
 func (m *mockRuleExporter) SnapshotHotRules() ([]string, error) {
 	return append([]string(nil), m.hotRules...), nil
+}
+
+func (m *mockRuleExporter) AllowHotRule(domain string, now time.Time) bool {
+	if m.allowHotRule == nil {
+		return true
+	}
+	return m.allowHotRule(domain, now)
 }
 
 func newTestQueryContext(name string) *query_context.Context {
@@ -193,6 +211,65 @@ func TestDomainMapperHotRulesMergeWithMainMatcher(t *testing.T) {
 	}
 }
 
+func TestDomainMapperSkipsDisallowedProviderOnCurrentRequest(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiprule": &mockRuleExporter{
+			rules: []string{"full:stale.example"},
+			allowHotRule: func(domain string, _ time.Time) bool {
+				return domain != "stale.example"
+			},
+		},
+		"whitelist": &mockRuleExporter{rules: []string{"full:stale.example"}},
+	})
+	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
+		Rules: []RuleConfig{
+			{Tag: "my_realiprule", Mark: 11, OutputTag: "记忆直连"},
+			{Tag: "whitelist", Mark: 8, OutputTag: "白名单"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper: %v", err)
+	}
+	dm := dmAny.(*DomainMapper)
+
+	marks, tags, ok := dm.FastMatch("stale.example.")
+	if !ok {
+		t.Fatal("expected whitelist match to remain")
+	}
+	if len(marks) != 1 || marks[0] != 8 {
+		t.Fatalf("unexpected filtered marks: %v", marks)
+	}
+	if tags != "白名单" {
+		t.Fatalf("unexpected filtered tags: %q", tags)
+	}
+}
+
+func TestDomainMapperSkipsDisallowedHotRuleOnCurrentRequest(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiprule": &mockRuleExporter{
+			hotRules: []string{"full:hot-stale.example"},
+			allowHotRule: func(string, time.Time) bool {
+				return false
+			},
+		},
+	})
+	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
+		Rules: []RuleConfig{{
+			Tag:       "my_realiprule",
+			Mark:      11,
+			OutputTag: "记忆直连",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper: %v", err)
+	}
+	dm := dmAny.(*DomainMapper)
+
+	if _, _, ok := dm.FastMatch("hot-stale.example."); ok {
+		t.Fatal("expected disallowed hot rule to be skipped")
+	}
+}
+
 func TestDomainMapperReplaceHotRulesClearsMatch(t *testing.T) {
 	dm := newTestMapper(17, "未命中", nil)
 	dm.ruleConfigs = []RuleConfig{{Tag: "my_realiprule", Mark: 11, OutputTag: "记忆直连"}}
@@ -217,21 +294,28 @@ func newBenchmarkMapper(ruleCount int) *DomainMapper {
 		defaultMark: 17,
 		defaultTag:  "未命中",
 	}
-	m := domain.NewMixMatcher[*MatchResult]()
+	m := domain.NewMixMatcher[*compiledMatch]()
 	for i := 0; i < ruleCount; i++ {
 		rule := fmt.Sprintf("domain:bench-%d.example.org", i)
 		res := &MatchResult{
 			Marks:      []uint8{11},
 			JoinedTags: "订阅直连",
 		}
-		if err := m.Add(rule, res); err != nil {
+		if err := m.Add(rule, &compiledMatch{
+			sources: []matchSource{{
+				providerTag: "bench-provider",
+				result:      res,
+			}},
+		}); err != nil {
 			panic(err)
 		}
 	}
 	dm.matcher = atomic.Value{}
 	dm.matcher.Store(m)
 	dm.hotLookup = atomic.Value{}
-	dm.hotLookup.Store(make(map[string]*MatchResult))
+	dm.hotLookup.Store(make(map[string][]matchSource))
+	dm.validators = atomic.Value{}
+	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
 	dm.hotRules = make(map[string]map[string]struct{})
 	return dm
 }

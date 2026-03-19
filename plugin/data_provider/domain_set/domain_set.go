@@ -52,6 +52,7 @@ var _ domain.Matcher[struct{}] = (*DomainSet)(nil)
 
 // 确保实现了 RuleExporter 接口
 var _ data_provider.RuleExporter = (*DomainSet)(nil)
+var _ coremain.HotRuleRuntimeValidator = (*DomainSet)(nil)
 
 type DomainSet struct {
 	bp        *coremain.BP
@@ -257,6 +258,23 @@ func (d *DomainSet) Match(domainStr string) (value struct{}, ok bool) {
 	}
 
 	return struct{}{}, false
+}
+
+func (d *DomainSet) AllowHotRule(domain string, now time.Time) bool {
+	validator := d.generatedHotRuleValidator()
+	if validator == nil {
+		return true
+	}
+	return validator.AllowHotRule(domain, now)
+}
+
+func (d *DomainSet) generatedHotRuleValidator() coremain.HotRuleRuntimeValidator {
+	tag := strings.TrimSpace(d.generatedFrom)
+	if tag == "" || d.bp == nil {
+		return nil
+	}
+	validator, _ := d.bp.Plugin(tag).(coremain.HotRuleRuntimeValidator)
+	return validator
 }
 
 func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {

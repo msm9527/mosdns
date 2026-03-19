@@ -58,6 +58,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	p := &Requery{
 		plugin:     bp.Plugin,
 		pluginTag:  bp.Tag(),
+		baseDir:    bp.BaseDir(),
 		runtimeKey: cfg.Key,
 		dbPath:     bp.ControlDBPath(),
 		scheduler:  cron.New(),
@@ -100,6 +101,7 @@ type Requery struct {
 	mu                  sync.RWMutex
 	plugin              func(string) any
 	pluginTag           string
+	baseDir             string
 	runtimeKey          string
 	dbPath              string
 	config              *Config

@@ -549,6 +549,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	h := k.Sum()
 	shard := c.shards[h%shardCount]
+	currentSig := currentRouteSignature(qCtx)
 
 	// --- L1 极速路径查询 (免解包) ---
 	var (
@@ -562,6 +563,11 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	}
 
 	now := time.Now()
+	if ok1 && shouldBypassForRouteChange(v1.domainSet, currentSig) {
+		c.deleteL1Key(k)
+		v1 = nil
+		ok1 = false
+	}
 	if ok1 && now.Before(v1.expirationTime) {
 		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 		c.hitTotal.Inc()
@@ -596,7 +602,20 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	// --- L2 路径查询 ---
 	cachedItem, _, _ := c.backend.Get(kReal)
-	cachedResp, lazyHit, domainSet := getRespFromCache(msgKey, c.backend, c.args.LazyCacheTTL > 0, expiredMsgTtl)
+	if cachedItem != nil && shouldBypassForRouteChange(cachedItem.domainSet, currentSig) {
+		c.backend.Delete(kReal)
+		c.deleteL1Key(kReal)
+		cachedItem = nil
+	}
+	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyCacheTTL > 0, expiredMsgTtl)
+	if corrupt {
+		c.backend.Delete(kReal)
+		c.deleteL1Key(kReal)
+		cachedItem = nil
+		cachedResp = nil
+		lazyHit = false
+		domainSet = ""
+	}
 	if lazyHit {
 		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
 		if state.staleServed.CompareAndSwap(false, true) {
@@ -604,7 +623,20 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			c.lazyHitCount.Add(1)
 		} else {
 			if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
-				refreshedResp, refreshedLazy, refreshedDomainSet := getRespFromCache(msgKey, c.backend, false, expiredMsgTtl)
+				refreshedItem, _, _ := c.backend.Get(kReal)
+				if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentSig) {
+					c.backend.Delete(kReal)
+					c.deleteL1Key(kReal)
+					refreshedItem = nil
+				}
+				refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, false, expiredMsgTtl)
+				if refreshedCorrupt {
+					c.backend.Delete(kReal)
+					c.deleteL1Key(kReal)
+					refreshedResp = nil
+					refreshedLazy = false
+					refreshedDomainSet = ""
+				}
 				if refreshedResp != nil && !refreshedLazy {
 					coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 					c.hitTotal.Inc()
@@ -643,12 +675,9 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		}
 
 		// 命中 L2 且未过期：晋升到 L1
-		if c.l1Enabled && !lazyHit {
-			v2, _, _ := c.backend.Get(kReal)
-			if v2 != nil {
-				shard.updateL1(kReal, cachedResp, v2.storedTime, v2.expirationTime, v2.domainSet)
-				c.maybePrefetch(msgKey, qCtx, next, now, v2.storedTime, v2.expirationTime, v2.domainSet)
-			}
+		if c.l1Enabled && !lazyHit && cachedItem != nil {
+			shard.updateL1(kReal, cachedResp, cachedItem.storedTime, cachedItem.expirationTime, cachedItem.domainSet)
+			c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedTime, cachedItem.expirationTime, cachedItem.domainSet)
 		}
 		return nil
 	}
@@ -656,7 +685,20 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	if cachedItem != nil && now.After(cachedItem.expirationTime) && domainSetContainsToken(cachedItem.domainSet, "DDNS域名") {
 		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
-			refreshedResp, refreshedLazy, refreshedDomainSet := getRespFromCache(msgKey, c.backend, false, expiredMsgTtl)
+			refreshedItem, _, _ := c.backend.Get(kReal)
+			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentSig) {
+				c.backend.Delete(kReal)
+				c.deleteL1Key(kReal)
+				refreshedItem = nil
+			}
+			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, false, expiredMsgTtl)
+			if refreshedCorrupt {
+				c.backend.Delete(kReal)
+				c.deleteL1Key(kReal)
+				refreshedResp = nil
+				refreshedLazy = false
+				refreshedDomainSet = ""
+			}
 			if refreshedResp != nil && !refreshedLazy {
 				coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 				c.hitTotal.Inc()
@@ -1431,6 +1473,15 @@ func min[T constraints.Ordered](a, b T) T {
 
 func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, bool, string) {
 	v, _, _ := backend.Get(key(msgKey))
+	resp, lazy, domainSet, corrupt := respFromCacheItem(v, lazyCacheEnabled, lazyTtl)
+	if corrupt {
+		backend.Delete(key(msgKey))
+		return nil, false, ""
+	}
+	return resp, lazy, domainSet
+}
+
+func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, bool, string, bool) {
 	if v != nil {
 		now := time.Now()
 
@@ -1439,24 +1490,23 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCache
 		defer dnsMsgPool.Put(m)
 
 		if err := m.Unpack(v.resp); err != nil {
-			backend.Delete(key(msgKey))
-			return nil, false, ""
+			return nil, false, "", true
 		}
 
 		if now.Before(v.expirationTime) {
 			// 这里必须 Copy，因为下游会修改 TTL 或 ID
 			r := m.Copy()
 			dnsutils.SubtractTTL(r, uint32(now.Sub(v.storedTime).Seconds()))
-			return r, false, v.domainSet
+			return r, false, v.domainSet, false
 		}
 
 		if lazyCacheEnabled && !domainSetContainsToken(v.domainSet, "DDNS域名") {
 			r := m.Copy()
 			dnsutils.SetTTL(r, uint32(lazyTtl))
-			return r, true, v.domainSet
+			return r, true, v.domainSet, false
 		}
 	}
-	return nil, false, ""
+	return nil, false, "", false
 }
 
 func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool {

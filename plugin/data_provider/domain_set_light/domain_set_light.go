@@ -42,6 +42,7 @@ type Args struct {
 var _ data_provider.DomainMatcherProvider = (*DomainSetLight)(nil)
 var _ domain.Matcher[struct{}] = (*DomainSetLight)(nil)
 var _ data_provider.RuleExporter = (*DomainSetLight)(nil)
+var _ coremain.HotRuleRuntimeValidator = (*DomainSetLight)(nil)
 
 // 定义一个简单的接口，用于复用 SRS 解析逻辑（解耦 Trie 树依赖）
 type ruleAdder interface {
@@ -244,6 +245,23 @@ func (d *DomainSetLight) GetDomainMatcher() domain.Matcher[struct{}] {
 // Match [重要修改] 恒定返回 false，不占用 CPU，不查找 Trie
 func (d *DomainSetLight) Match(domainStr string) (value struct{}, ok bool) {
 	return struct{}{}, false
+}
+
+func (d *DomainSetLight) AllowHotRule(domain string, now time.Time) bool {
+	validator := d.generatedHotRuleValidator()
+	if validator == nil {
+		return true
+	}
+	return validator.AllowHotRule(domain, now)
+}
+
+func (d *DomainSetLight) generatedHotRuleValidator() coremain.HotRuleRuntimeValidator {
+	tag := strings.TrimSpace(d.generatedFrom)
+	if tag == "" || d.bp == nil {
+		return nil
+	}
+	validator, _ := d.bp.Plugin(tag).(coremain.HotRuleRuntimeValidator)
+	return validator
 }
 
 func (d *DomainSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {

@@ -1,6 +1,9 @@
 package coremain
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 type HotRuleSnapshotProvider interface {
 	SnapshotHotRules() ([]string, error)
@@ -9,6 +12,12 @@ type HotRuleSnapshotProvider interface {
 type HotRuleConsumer interface {
 	AddHotRules(providerTag string, rules []string) error
 	ReplaceHotRules(providerTag string, rules []string) error
+}
+
+// HotRuleRuntimeValidator allows providers to decide whether a hot rule is
+// still safe to serve on the current request path.
+type HotRuleRuntimeValidator interface {
+	AllowHotRule(domain string, now time.Time) bool
 }
 
 type PluginSnapshotter interface {
