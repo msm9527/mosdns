@@ -44,6 +44,15 @@ type MatchResult struct {
 	JoinedTags string
 }
 
+type matchSource struct {
+	providerTag string
+	result      *MatchResult
+}
+
+type compiledMatch struct {
+	sources []matchSource
+}
+
 type DomainMapper struct {
 	bp          *coremain.BP
 	pluginTag   string
@@ -51,6 +60,7 @@ type DomainMapper struct {
 	logger      *zap.Logger
 	matcher     atomic.Value
 	hotLookup   atomic.Value
+	validators  atomic.Value
 	updateMu    sync.Mutex
 	hotMu       sync.Mutex
 	updateTimer *time.Timer
@@ -104,8 +114,9 @@ func NewMapper(bp *coremain.BP, args any) (any, error) {
 		providers:   make(map[string]data_provider.RuleExporter),
 		subscribed:  make(map[string]bool),
 	}
-	dm.matcher.Store(domain.NewMixMatcher[*MatchResult]())
-	dm.hotLookup.Store(make(map[string]*MatchResult))
+	dm.matcher.Store(domain.NewMixMatcher[*compiledMatch]())
+	dm.hotLookup.Store(make(map[string][]matchSource))
+	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
 
 	if err := dm.reloadFromConfig(cfg); err != nil {
 		return nil, err
@@ -174,13 +185,18 @@ func (dm *DomainMapper) rebuild() {
 	dm.logger.Info("rebuilding domain_mapper with logic inheritance...")
 	start := time.Now()
 
-	markMap := make(map[string]uint64)
-	tagMap := make(map[string]string)
+	providerResults := buildProviderResults(dm.ruleConfigs)
+	ruleSources := make(map[string][]matchSource)
 	totalRules := 0
 
 	for _, ruleCfg := range dm.ruleConfigs {
-		provider, ok := dm.providers[ruleCfg.Tag]
+		providerTag := strings.TrimSpace(ruleCfg.Tag)
+		provider, ok := dm.providers[providerTag]
 		if !ok {
+			continue
+		}
+		providerResult := providerResults[providerTag]
+		if providerResult == nil {
 			continue
 		}
 		rules, err := provider.GetRules()
@@ -188,30 +204,23 @@ func (dm *DomainMapper) rebuild() {
 			continue
 		}
 
-		targetTag := ruleCfg.OutputTag
-		if targetTag == "" {
-			targetTag = ruleCfg.Tag
-		}
-
 		for _, ruleStr := range rules {
 			ruleKey := normalizeRuleKey(ruleStr)
 			if ruleKey == "" {
 				continue
 			}
-			if ruleCfg.Mark > 0 && ruleCfg.Mark <= 63 {
-				markMap[ruleKey] |= (1 << (ruleCfg.Mark - 1))
-			}
-			oldTags := tagMap[ruleKey]
-			if oldTags == "" {
-				tagMap[ruleKey] = targetTag
-			} else if !strings.Contains(oldTags, targetTag) {
-				tagMap[ruleKey] = oldTags + "|" + targetTag
-			}
+			ruleSources[ruleKey] = appendUniqueMatchSource(ruleSources[ruleKey], matchSource{
+				providerTag: providerTag,
+				result:      providerResult,
+			})
 		}
 		totalRules += len(rules)
 	}
 
-	for ruleStr := range markMap {
+	newMatcher := domain.NewMixMatcher[*compiledMatch]()
+	compiledRules := 0
+	for ruleStr, directSources := range ruleSources {
+		sources := cloneMatchSources(directSources)
 		dotPos := strings.Index(ruleStr, ":")
 		if dotPos == -1 {
 			continue
@@ -219,10 +228,7 @@ func (dm *DomainMapper) rebuild() {
 		dName := ruleStr[dotPos+1:]
 		if strings.HasPrefix(ruleStr, "full:") {
 			directDomainKey := "domain:" + dName
-			if aMask, ok := markMap[directDomainKey]; ok {
-				markMap[ruleStr] |= aMask
-				tagMap[ruleStr] = mergeTagStrings(tagMap[ruleStr], tagMap[directDomainKey])
-			}
+			sources = appendMatchSources(sources, ruleSources[directDomainKey])
 		}
 
 		for {
@@ -233,40 +239,23 @@ func (dm *DomainMapper) rebuild() {
 			dName = dName[nextDot+1:]
 			ancestorKey := "domain:" + dName
 
-			if aMask, ok := markMap[ancestorKey]; ok {
-				markMap[ruleStr] |= aMask
-				tagMap[ruleStr] = mergeTagStrings(tagMap[ruleStr], tagMap[ancestorKey])
-			}
+			sources = appendMatchSources(sources, ruleSources[ancestorKey])
 		}
-	}
-
-	pool := make(map[string]*MatchResult)
-	newMatcher := domain.NewMixMatcher[*MatchResult]()
-
-	for ruleStr, mask := range markMap {
-		tagsStr := tagMap[ruleStr]
-		sig := fmt.Sprintf("%d-%s", mask, tagsStr)
-
-		res, exists := pool[sig]
-		if !exists {
-			res = &MatchResult{
-				JoinedTags: tagsStr,
-			}
-			for i := uint8(0); i < 64; i++ {
-				if mask&(1<<i) != 0 {
-					res.Marks = append(res.Marks, i+1)
-				}
-			}
-			pool[sig] = res
+		if len(sources) == 0 {
+			continue
 		}
-		newMatcher.Add(ruleStr, res)
+		if err := newMatcher.Add(ruleStr, &compiledMatch{sources: sources}); err != nil {
+			dm.logger.Warn("domain_mapper add rule failed", zap.String("rule", ruleStr), zap.Error(err))
+			continue
+		}
+		compiledRules++
 	}
 
 	dm.matcher.Store(newMatcher)
 
 	dm.logger.Info("rebuild finished",
 		zap.Int("rules", totalRules),
-		zap.Int("pooled_results", len(pool)),
+		zap.Int("compiled_rules", compiledRules),
 		zap.Duration("duration", time.Since(start)))
 }
 
@@ -317,6 +306,7 @@ func (dm *DomainMapper) reloadFromConfig(cfg *Args) error {
 	dm.defaultMark = cfg.DefaultMark
 	dm.defaultTag = cfg.DefaultTag
 	dm.providers = providers
+	dm.validators.Store(buildProviderValidators(providers))
 	if dm.hotRules == nil {
 		dm.hotRules = make(map[string]map[string]struct{})
 	}

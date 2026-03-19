@@ -3,11 +3,13 @@ package domain_memory_pool
 import (
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
 
 var _ coremain.HotRuleSnapshotProvider = (*domainMemoryPool)(nil)
+var _ coremain.HotRuleRuntimeValidator = (*domainMemoryPool)(nil)
 
 func (d *domainMemoryPool) SnapshotHotRules() ([]string, error) {
 	d.mu.Lock()
@@ -79,6 +81,110 @@ func (d *domainMemoryPool) pushHotRulesReplace(rules []string) error {
 
 func (d *domainMemoryPool) publishTarget() string {
 	return strings.TrimSpace(d.policy.raw.PublishTo)
+}
+
+func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
+	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
+	if domain == "" {
+		return false
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+
+	var (
+		allow       bool
+		shouldDirty bool
+		notify      *coremain.DomainRefreshJob
+	)
+
+	d.mu.Lock()
+	for key, entry := range d.stats {
+		bare, _ := splitStorageKey(key)
+		if bare != domain || !entry.Promoted {
+			continue
+		}
+		if d.allowHotRuleEntryLocked(entry, now) {
+			allow = true
+			break
+		}
+		shouldDirty = true
+	}
+	if !allow && shouldDirty {
+		notify = d.markHotRuleRefreshLocked(domain, now)
+	}
+	d.mu.Unlock()
+
+	if !allow && notify != nil {
+		d.dirtyPending.Store(true)
+		go d.notifyDirty(*notify)
+	}
+	return allow
+}
+
+func (d *domainMemoryPool) allowHotRuleEntryLocked(entry *statEntry, now time.Time) bool {
+	if entry == nil || !entry.Promoted {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(entry.RefreshState), "dirty") {
+		return false
+	}
+	if d.policy.staleAfterMinutes <= 0 {
+		return true
+	}
+	lastStamp := firstNonEmpty(entry.LastVerifiedAt, firstNonEmpty(entry.LastDirtyAt, entry.LastSeenAt))
+	if strings.TrimSpace(lastStamp) == "" {
+		return false
+	}
+	ts, err := time.Parse(time.RFC3339, lastStamp)
+	if err != nil {
+		return false
+	}
+	return now.Sub(ts) < time.Duration(d.policy.staleAfterMinutes)*time.Minute
+}
+
+func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time) *coremain.DomainRefreshJob {
+	if d.policy.requeryTag == "" {
+		return nil
+	}
+
+	nowStamp := now.UTC().Format(time.RFC3339)
+	var (
+		qTypeMask   uint8
+		shouldQueue bool
+	)
+
+	for key, entry := range d.stats {
+		bare, _ := splitStorageKey(key)
+		if bare != domain || !entry.Promoted {
+			continue
+		}
+		qTypeMask |= entry.QTypeMask
+		if entry.CooldownUntil != "" {
+			if ts, err := time.Parse(time.RFC3339, entry.CooldownUntil); err == nil && now.Before(ts) {
+				continue
+			}
+		}
+		entry.RefreshState = "dirty"
+		entry.DirtyReason = "stale"
+		entry.LastDirtyAt = nowStamp
+		if d.policy.refreshCooldownMinute > 0 {
+			entry.CooldownUntil = now.Add(time.Duration(d.policy.refreshCooldownMinute) * time.Minute).Format(time.RFC3339)
+		}
+		shouldQueue = true
+	}
+
+	if !shouldQueue {
+		return nil
+	}
+	return &coremain.DomainRefreshJob{
+		Domain:     domain,
+		MemoryID:   d.memoryID,
+		QTypeMask:  qTypeMask,
+		Reason:     "stale",
+		VerifyTag:  d.pluginTag,
+		ObservedAt: now,
+	}
 }
 
 func normalizePoolHotRules(rules []string) []string {

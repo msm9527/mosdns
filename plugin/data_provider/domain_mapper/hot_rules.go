@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	domainmatcher "github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
@@ -92,69 +93,37 @@ func snapshotProviderHotRules(provider data_provider.RuleExporter) ([]string, bo
 }
 
 func (dm *DomainMapper) rebuildHotLookupLocked() {
-	lookup := make(map[string]*MatchResult)
+	providerResults := buildProviderResults(dm.ruleConfigs)
+	lookup := make(map[string][]matchSource)
 	for providerTag, rules := range dm.hotRules {
-		result := dm.hotResultForProvider(providerTag)
+		result := providerResults[strings.TrimSpace(providerTag)]
 		if result == nil {
 			continue
 		}
 		for rule := range rules {
-			lookup[rule] = mergeMatchResult(lookup[rule], result)
+			lookup[rule] = appendUniqueMatchSource(lookup[rule], matchSource{
+				providerTag: providerTag,
+				result:      result,
+			})
 		}
 	}
 	dm.hotLookup.Store(lookup)
 }
 
-func (dm *DomainMapper) hotResultForProvider(providerTag string) *MatchResult {
-	marks := make([]uint8, 0, 4)
-	seenMarks := make(map[uint8]struct{}, 4)
-	tags := make([]string, 0, 4)
-	seenTags := make(map[string]struct{}, 4)
-
-	for _, rule := range dm.ruleConfigs {
-		if strings.TrimSpace(rule.Tag) != providerTag {
-			continue
-		}
-		if rule.Mark > 0 {
-			if _, exists := seenMarks[rule.Mark]; !exists {
-				seenMarks[rule.Mark] = struct{}{}
-				marks = append(marks, rule.Mark)
-			}
-		}
-		tag := strings.TrimSpace(rule.OutputTag)
-		if tag == "" {
-			tag = strings.TrimSpace(rule.Tag)
-		}
-		if tag == "" {
-			continue
-		}
-		if _, exists := seenTags[tag]; exists {
-			continue
-		}
-		seenTags[tag] = struct{}{}
-		tags = append(tags, tag)
-	}
-	if len(marks) == 0 && len(tags) == 0 {
-		return nil
-	}
-	slices.Sort(marks)
-	return &MatchResult{
-		Marks:      marks,
-		JoinedTags: strings.Join(tags, "|"),
-	}
-}
-
 func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
-	matcher := dm.matcher.Load().(*domainmatcher.MixMatcher[*MatchResult])
-	mainResult, mainOK := matcher.Match(qname)
-	hotResult, hotOK := dm.matchHot(qname)
+	now := time.Now()
+	matcher := dm.matcher.Load().(*domainmatcher.MixMatcher[*compiledMatch])
+	mainCompiled, mainOK := matcher.Match(qname)
+	mainResult := dm.resolveCompiledMatch(mainCompiled, qname, now)
+	hotResult, hotOK := dm.matchHot(qname, now)
 	result := mergeMatchResult(mainResult, hotResult)
 	return result, result != nil && (mainOK || hotOK)
 }
 
-func (dm *DomainMapper) matchHot(qname string) (*MatchResult, bool) {
-	lookup := dm.hotLookup.Load().(map[string]*MatchResult)
-	result, ok := lookup[ensureFQDN(qname)]
+func (dm *DomainMapper) matchHot(qname string, now time.Time) (*MatchResult, bool) {
+	lookup := dm.hotLookup.Load().(map[string][]matchSource)
+	sources, ok := lookup[ensureFQDN(qname)]
+	result := dm.resolveSources(sources, qname, now)
 	return result, ok && result != nil
 }
 

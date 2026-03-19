@@ -3969,7 +3969,6 @@ renderReplacementsTable() {
             tags: [],
             serverConfig: {},
             draftConfig: {},
-            metrics: {},
             health: {},
             dirty: false,
             filters: { group: '', keyword: '' }
@@ -3987,6 +3986,7 @@ renderReplacementsTable() {
 
         bindEvents() {
             document.getElementById('add-upstream-btn')?.addEventListener('click', () => this.openModal());
+            document.getElementById('upstream-clear-stats-btn')?.addEventListener('click', () => this.clearStats());
             document.getElementById('upstream-reset-btn')?.addEventListener('click', () => this.resetDraft());
             document.getElementById('upstream-apply-btn')?.addEventListener('click', () => this.applyCurrentConfig());
             document.getElementById('global-restart-btn')?.addEventListener('click', () => this.restartService());
@@ -4085,7 +4085,6 @@ renderReplacementsTable() {
                 const shouldLoadConfig = forceConfig || !this.state.dirty;
                 const reqs = [
                     api.fetch('/api/v1/control/upstreams/tags'),
-                    api.getMetrics(),
                     api.fetch('/api/v1/control/upstreams/health')
                 ];
                 if (shouldLoadConfig) {
@@ -4093,12 +4092,10 @@ renderReplacementsTable() {
                 }
                 const result = await Promise.all(reqs);
                 const tagsRes = result[0];
-                const metricsRaw = result[1];
-                const healthRaw = result[2];
-                const configRes = shouldLoadConfig ? result[3] : null;
+                const healthRaw = result[1];
+                const configRes = shouldLoadConfig ? result[2] : null;
 
                 this.state.tags = Array.isArray(tagsRes) ? tagsRes : [];
-                this.parseMetrics(metricsRaw);
                 this.parseHealth(healthRaw);
                 if (shouldLoadConfig) {
                     this.state.serverConfig = this.normalizeConfig(configRes);
@@ -4111,31 +4108,6 @@ renderReplacementsTable() {
                 console.error('Upstream data load failed', e);
                 ui.showToast('加载上游配置失败', 'error');
             }
-        },
-
-        parseMetrics(rawText) {
-            const prefixes = ['mosdns_aliapi_', 'mosdns_forward_'];
-            const parse = (metric) => {
-                const map = {};
-                prefixes.forEach((prefix) => {
-                    const regex = new RegExp(`${prefix}${metric}\\{[^}]*metrics_tag="([^"]+)"[^}]*tag="([^"]+)"[^}]*\\} ([0-9.eE+-]+)`, 'g');
-                    let match;
-                    while ((match = regex.exec(rawText)) !== null) {
-                        const group = match[1];
-                        const name = match[2];
-                        const val = parseFloat(match[3]);
-                        map[`${group}|${name}`] = val;
-                    }
-                });
-                return map;
-            };
-            this.state.metrics = {
-                latSum: parse('response_latency_millisecond_sum'),
-                latCount: parse('response_latency_millisecond_count'),
-                queryTotal: parse('query_total'),
-                errorTotal: parse('error_total'),
-                winnerTotal: parse('upstream_winner_total')
-            };
         },
 
         parseHealth(raw) {
@@ -4185,22 +4157,17 @@ renderReplacementsTable() {
 
         getStats(group, tag, enabled) {
             const key = `${group}|${tag}`;
-            const m = this.state.metrics;
             const health = this.state.health[key] || null;
-            const q = m.queryTotal[key] || 0;
-            const e = m.errorTotal[key] || 0;
-            const w = m.winnerTotal[key] || 0;
-            const lSum = m.latSum[key] || 0;
-            const lCount = m.latCount[key] || 0;
-            const avgFromMetrics = lCount > 0 ? (lSum / lCount).toFixed(2) + ' ms' : '0 ms';
-            const avgFromHealth = health && typeof health.average_latency_ms === 'number' && health.average_latency_ms > 0
-                ? `${health.average_latency_ms.toFixed(2)} ms`
-                : avgFromMetrics;
+            const q = Number(health?.query_total || 0);
+            const e = Number(health?.error_total || 0);
+            const w = Number(health?.winner_total || 0);
+            const observedAvg = Number(health?.observed_average_latency_ms || 0);
+            const avgText = observedAvg > 0 ? `${observedAvg.toFixed(2)} ms` : '0 ms';
             const rate = q > 0 ? ((e / q) * 100).toFixed(2) + '%' : '0.00%';
             const winRate = q > 0 ? ((w / q) * 100).toFixed(2) + '%' : '0.00%';
             const healthText = !enabled ? '已禁用' : (health ? (health.healthy ? (health.consecutive_failures > 0 || health.inflight > 0 ? '降级' : '健康') : '退避中') : '未知');
             const healthColor = !enabled ? 'var(--color-text-secondary)' : (health ? (health.healthy ? ((health.consecutive_failures > 0 || health.inflight > 0) ? 'var(--color-warning)' : 'var(--color-success)') : 'var(--color-danger)') : 'var(--color-text-secondary)');
-            return { avgLat: avgFromHealth, query: q, rate: rate, winRate: winRate, healthText, healthColor, inflight: health?.inflight || 0, score: health?.score || 0 };
+            return { avgLat: avgText, query: q, rate: rate, winRate: winRate, healthText, healthColor, inflight: health?.inflight || 0, score: health?.score || 0 };
         },
 
         renderTable() {
@@ -4501,6 +4468,29 @@ renderReplacementsTable() {
             this.syncGroupFilters();
             this.renderTable();
             ui.showToast('草稿已重置为服务端当前配置', 'success');
+        },
+
+        async clearStats() {
+            return ui.runExclusive('upstreams:clear-stats', async () => {
+                const btn = document.getElementById('upstream-clear-stats-btn');
+                if (!confirm('确定要清空所有上游累计统计吗？这不会影响当前草稿配置。')) return;
+
+                ui.setLoading(btn, true);
+                try {
+                    const resp = await api.fetch('/api/v1/upstream/stats/reset', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({})
+                    });
+                    const msg = (resp && typeof resp === 'object' && resp.message) ? resp.message : '上游统计已清空';
+                    ui.showToast(msg, 'success');
+                    await this.loadData({ forceConfig: false });
+                } catch (e) {
+                    ui.showToast('清空上游统计失败: ' + e.message, 'error');
+                } finally {
+                    ui.setLoading(btn, false);
+                }
+            });
         },
 
         async applyCurrentConfig() {

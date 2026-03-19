@@ -24,7 +24,11 @@ func loadRuntimeDomainProfiles() ([]runtimeDomainProfile, error) {
 }
 
 func RequeryTargetDomainPoolTags(requeryTag string) ([]string, error) {
-	values, _, err := LoadMemoryPoolPoliciesFromCustomConfig()
+	return RequeryTargetDomainPoolTagsForBaseDir(MainConfigBaseDir, requeryTag)
+}
+
+func RequeryTargetDomainPoolTagsForBaseDir(baseDir, requeryTag string) ([]string, error) {
+	values, _, err := LoadMemoryPoolPoliciesFromCustomConfigForBaseDir(baseDir)
 	if err != nil {
 		return nil, err
 	}

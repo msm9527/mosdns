@@ -112,6 +112,10 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	f.baseArgs = baseArgs
 	f.pluginTag = bp.Tag()
 	f.metricsTag = bp.Tag()
+	if err := f.configureStatsPersistence(bp.ControlDBPath()); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
 
 	if err := f.RegisterMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.MetricsRegisterer())); err != nil {
 		_ = f.Close()
@@ -200,16 +204,19 @@ func buildEffectiveArgs(pluginTag string, base *Args, global *coremain.GlobalOve
 var _ sequence.Executable = (*AliAPI)(nil)
 var _ sequence.QuickConfigurableExec = (*AliAPI)(nil)
 var _ coremain.ControlConfigReloader = (*AliAPI)(nil)
+var _ coremain.UpstreamStatsResetter = (*AliAPI)(nil)
 
 // AliAPI represents the aliapi plugin instance.
 type AliAPI struct {
-	runtimeMu  sync.RWMutex
-	args       *Args
-	baseArgs   *Args
-	pluginTag  string
-	metricsTag string
+	runtimeMu     sync.RWMutex
+	args          *Args
+	baseArgs      *Args
+	pluginTag     string
+	metricsTag    string
+	controlDBPath string
 
 	logger       *zap.Logger
+	statsFlusher *coremain.UpstreamRuntimeStatsFlusher
 	us           []*upstreamWrapper
 	tag2Upstream map[string]*upstreamWrapper
 	failureMu    sync.Mutex
@@ -376,9 +383,17 @@ func (f *AliAPI) ReloadControlConfig(global *coremain.GlobalOverrides, upstreams
 	metricsTag := f.metricsTag
 	f.runtimeMu.RUnlock()
 
+	if err := f.flushPersistentStats(); err != nil {
+		return err
+	}
 	effective := buildEffectiveArgs(pluginTag, base, global, upstreams, f.logger)
 	rebuilt, err := NewAliAPI(effective, Opts{Logger: f.logger, MetricsTag: metricsTag})
 	if err != nil {
+		return err
+	}
+	f.bindStatsCallbacks(rebuilt.us)
+	if err := f.restorePersistentStats(rebuilt.us); err != nil {
+		_ = rebuilt.Close()
 		return err
 	}
 
@@ -440,13 +455,17 @@ func (f *AliAPI) QuickConfigureExec(args string) (any, error) {
 }
 
 func (f *AliAPI) Close() error {
+	var firstErr error
+	if err := f.closeStatsFlusher(); err != nil {
+		firstErr = err
+	}
 	f.runtimeMu.RLock()
 	us := append([]*upstreamWrapper(nil), f.us...)
 	f.runtimeMu.RUnlock()
 	for _, u := range us {
 		_ = u.Close()
 	}
-	return nil
+	return firstErr
 }
 
 func (f *AliAPI) SnapshotUpstreamHealth() []coremain.UpstreamHealthSnapshot {
@@ -454,18 +473,7 @@ func (f *AliAPI) SnapshotUpstreamHealth() []coremain.UpstreamHealthSnapshot {
 	now := time.Now()
 	items := make([]coremain.UpstreamHealthSnapshot, 0, len(us))
 	for _, u := range us {
-		items = append(items, coremain.UpstreamHealthSnapshot{
-			PluginTag:           f.pluginTag,
-			PluginType:          PluginType,
-			UpstreamTag:         u.cfg.Tag,
-			Address:             u.cfg.Addr,
-			Score:               u.healthScore(now),
-			AverageLatencyMs:    float64(u.ewmaLatencyUs.Load()) / 1000.0,
-			Inflight:            int64(u.mInflightValue.Load()),
-			ConsecutiveFailures: u.consecutiveFailures.Load(),
-			Healthy:             !u.isCircuitOpen(now),
-			UnhealthyUntilMs:    coremain.UnhealthyUntilUnixMilli(u.circuitOpenUntil.Load()),
-		})
+		items = append(items, u.snapshotHealth(f.pluginTag, now))
 	}
 	return items
 }
@@ -575,19 +583,19 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		switch {
 		case hasUsableAnswer(r):
 			f.clearFailure(failureKey)
-			u.mWinnerTotal.Inc()
+			u.recordWinner()
 			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, nil
 		case r.Rcode == dns.RcodeSuccess || r.Rcode == dns.RcodeNameError:
 			f.clearFailure(failureKey)
-			u.mWinnerTotal.Inc()
+			u.recordWinner()
 			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, nil
 		default:
 			if r.Rcode == dns.RcodeServerFailure {
 				f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 			}
-			u.mWinnerTotal.Inc()
+			u.recordWinner()
 			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, nil
 		}
@@ -605,7 +613,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 
 		if hasUsableAnswer(r) {
 			f.clearFailure(failureKey)
-			u.mWinnerTotal.Inc()
+			u.recordWinner()
 			coremain.SetAuditUpstreamTag(qCtx, u.name())
 			return r, true
 		}
@@ -685,12 +693,12 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 
 		case <-ctx.Done():
 			if lastSuccessOrNXRes != nil {
-				lastSuccessOrNXResUpstream.mWinnerTotal.Inc()
+				lastSuccessOrNXResUpstream.recordWinner()
 				coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())
 				return lastSuccessOrNXRes, nil
 			}
 			if lastOtherRes != nil {
-				lastOtherResUpstream.mWinnerTotal.Inc()
+				lastOtherResUpstream.recordWinner()
 				coremain.SetAuditUpstreamTag(qCtx, lastOtherResUpstream.name())
 				return lastOtherRes, nil
 			}
@@ -703,7 +711,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 
 	if lastSuccessOrNXRes != nil {
 		f.clearFailure(failureKey)
-		lastSuccessOrNXResUpstream.mWinnerTotal.Inc()
+		lastSuccessOrNXResUpstream.recordWinner()
 		coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())
 		return lastSuccessOrNXRes, nil
 	}
@@ -711,7 +719,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		if lastOtherRes.Rcode == dns.RcodeServerFailure {
 			f.putFailure(failureKey, dns.RcodeServerFailure, runtimeArgs)
 		}
-		lastOtherResUpstream.mWinnerTotal.Inc()
+		lastOtherResUpstream.recordWinner()
 		coremain.SetAuditUpstreamTag(qCtx, lastOtherResUpstream.name())
 		return lastOtherRes, nil
 	}
@@ -1143,10 +1151,16 @@ type upstreamWrapper struct {
 	u                   upstream.Upstream
 	cfg                 UpstreamConfig
 	metricsTag          string
+	onStatsChanged      func()
 	consecutiveFailures atomic.Uint32
 	circuitOpenUntil    atomic.Int64
 	mInflightValue      atomic.Int64
 	ewmaLatencyUs       atomic.Int64
+	queryCount          atomic.Uint64
+	errorCount          atomic.Uint64
+	winnerCount         atomic.Uint64
+	latencyTotalUs      atomic.Uint64
+	latencyCount        atomic.Uint64
 
 	mQueryTotal       prometheus.Counter
 	mErrorTotal       prometheus.Counter
@@ -1293,6 +1307,7 @@ func (w *upstreamWrapper) isCircuitOpen(now time.Time) bool {
 // thus `u` (the wrapped upstream) no longer needs to call them via EventObserver.
 func (w *upstreamWrapper) ExchangeContext(ctx context.Context, req []byte) (*[]byte, error) {
 	w.mQueryTotal.Inc()
+	w.queryCount.Add(1)
 	w.mInflight.Inc()
 	w.mInflightValue.Add(1)
 
@@ -1305,11 +1320,15 @@ func (w *upstreamWrapper) ExchangeContext(ctx context.Context, req []byte) (*[]b
 
 	if err != nil {
 		w.mErrorTotal.Inc()
+		w.errorCount.Add(1)
 	} else {
 		latency := time.Since(start)
 		w.mResponseLatency.Observe(float64(latency.Milliseconds()))
+		w.latencyTotalUs.Add(uint64(latency.Microseconds()))
+		w.latencyCount.Add(1)
 		w.recordLatency(latency)
 	}
+	w.notifyStatsChanged()
 
 	return resp, err
 }

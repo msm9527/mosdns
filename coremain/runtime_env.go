@@ -20,13 +20,7 @@ func newRuntimeEnvFromConfig(cfg *Config) RuntimeEnv {
 		MainConfigPath: strings.TrimSpace(cfg.mainConfigPath),
 		ControlDBPath:  strings.TrimSpace(cfg.ControlDBPath),
 	}
-	if env.MainConfigPath == "" && env.BaseDir != "" {
-		env.MainConfigPath = filepath.Join(env.BaseDir, defaultMainConfigFilename)
-	}
-	if env.ControlDBPath == "" && env.BaseDir != "" {
-		env.ControlDBPath = filepath.Join(env.BaseDir, runtimeStateDBFilename)
-	}
-	return normalizeRuntimeEnv(env)
+	return completeRuntimeEnv(env)
 }
 
 func normalizeRuntimeEnv(env RuntimeEnv) RuntimeEnv {
@@ -34,6 +28,17 @@ func normalizeRuntimeEnv(env RuntimeEnv) RuntimeEnv {
 	env.MainConfigPath = cleanRuntimePath(env.MainConfigPath)
 	env.ControlDBPath = cleanRuntimePath(env.ControlDBPath)
 	return env
+}
+
+func completeRuntimeEnv(env RuntimeEnv) RuntimeEnv {
+	env = normalizeRuntimeEnv(env)
+	if env.MainConfigPath == "" && env.BaseDir != "" {
+		env.MainConfigPath = filepath.Join(env.BaseDir, defaultMainConfigFilename)
+	}
+	if env.ControlDBPath == "" && env.BaseDir != "" {
+		env.ControlDBPath = filepath.Join(env.BaseDir, runtimeStateDBFilename)
+	}
+	return normalizeRuntimeEnv(env)
 }
 
 func cleanRuntimePath(path string) string {

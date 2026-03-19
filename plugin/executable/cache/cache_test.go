@@ -33,6 +33,7 @@ import (
 
 	pcache "github.com/IrineSistiana/mosdns/v5/pkg/cache"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/miekg/dns"
 )
 
@@ -139,6 +140,65 @@ func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
 	resp, lazy, domainSet := getRespFromCache("ddns-key", backend, true, expiredMsgTtl)
 	if resp != nil || lazy || domainSet != "" {
 		t.Fatalf("expected ddns stale cache to be bypassed, got resp=%v lazy=%v domainSet=%q", resp != nil, lazy, domainSet)
+	}
+}
+
+func Test_shouldBypassForRouteChange(t *testing.T) {
+	if shouldBypassForRouteChange("记忆直连|白名单", "白名单|记忆直连") {
+		t.Fatal("expected reordered tags to share the same signature")
+	}
+	if !shouldBypassForRouteChange("记忆直连", "未命中") {
+		t.Fatal("expected route change to bypass cached entry")
+	}
+}
+
+func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	seedCtx := testQueryContext(t, "route-change.example.", net.IPv4(1, 1, 1, 1))
+	seedCtx.StoreValue(query_context.KeyDomainSet, "记忆直连")
+
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	msgKey := string(keyBuf)
+	keyBufferPool.Put(bufPtr)
+
+	if !c.saveRespToCache(msgKey, seedCtx) {
+		t.Fatal("expected seed response to be cached")
+	}
+
+	k := key(msgKey)
+	stored, _, _ := c.backend.Get(k)
+	if stored == nil {
+		t.Fatal("expected stored cache item")
+	}
+	c.shards[k.Sum()%shardCount].updateL1(k, seedCtx.R(), stored.storedTime, stored.expirationTime, stored.domainSet)
+
+	qCtx := testQueryContext(t, "route-change.example.", net.IPv4(2, 2, 2, 2))
+	qCtx.StoreValue(query_context.KeyDomainSet, "未命中")
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected response after cache exec, got %+v", resp)
+	}
+	gotA, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A response, got %T", resp.Answer[0])
+	}
+	if !gotA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected stale cache bypass to keep fresh response, got %s", gotA.A.String())
+	}
+
+	updated, _, _ := c.backend.Get(k)
+	if updated == nil {
+		t.Fatal("expected cache entry to be rewritten after bypass")
+	}
+	if updated.domainSet != "未命中" {
+		t.Fatalf("expected cache entry to be rewritten with current route, got %q", updated.domainSet)
 	}
 }
 

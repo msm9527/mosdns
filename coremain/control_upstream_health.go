@@ -12,6 +12,10 @@ type UpstreamHealthSnapshot struct {
 	Address             string  `json:"address"`
 	Score               int64   `json:"score"`
 	AverageLatencyMs    float64 `json:"average_latency_ms"`
+	ObservedAverageMs   float64 `json:"observed_average_latency_ms"`
+	QueryTotal          uint64  `json:"query_total"`
+	ErrorTotal          uint64  `json:"error_total"`
+	WinnerTotal         uint64  `json:"winner_total"`
 	Inflight            int64   `json:"inflight"`
 	ConsecutiveFailures uint32  `json:"consecutive_failures"`
 	Healthy             bool    `json:"healthy"`
@@ -83,4 +87,11 @@ func UnhealthyUntilUnixMilli(unixNano int64) int64 {
 		return 0
 	}
 	return time.Unix(0, unixNano).UnixMilli()
+}
+
+func AverageLatencyMsFromTotals(totalLatencyUs, sampleCount uint64) float64 {
+	if sampleCount == 0 {
+		return 0
+	}
+	return float64(totalLatencyUs) / float64(sampleCount) / 1000.0
 }

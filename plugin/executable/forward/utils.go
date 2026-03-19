@@ -35,13 +35,20 @@ type upstreamWrapper struct {
 	idx             int
 	u               upstream.Upstream
 	cfg             UpstreamConfig
+	onStatsChanged  func()
 	consecutiveErrs atomic.Uint32
 	inflightCount   atomic.Int64
 	ewmaLatencyUs   atomic.Int64
 	unhealthyUntil  atomic.Int64
+	queryCount      atomic.Uint64
+	errorCount      atomic.Uint64
+	winnerCount     atomic.Uint64
+	latencyTotalUs  atomic.Uint64
+	latencyCount    atomic.Uint64
 
 	queryTotal      prometheus.Counter
 	errTotal        prometheus.Counter
+	winnerTotal     prometheus.Counter
 	thread          prometheus.Gauge
 	responseLatency prometheus.Histogram
 
@@ -74,6 +81,11 @@ func newWrapper(idx int, cfg UpstreamConfig, pluginTag string) *upstreamWrapper 
 			Help:        "The total number of queries failed",
 			ConstLabels: lb,
 		}),
+		winnerTotal: prometheus.NewCounter(prometheus.CounterOpts{
+			Name:        "upstream_winner_total",
+			Help:        "The total number of times this upstream result was selected as the final response",
+			ConstLabels: lb,
+		}),
 		thread: prometheus.NewGauge(prometheus.GaugeOpts{
 			Name:        "thread",
 			Help:        "The number of threads (queries) that are currently being processed",
@@ -103,6 +115,7 @@ func (uw *upstreamWrapper) registerMetricsTo(r prometheus.Registerer) error {
 	for _, collector := range [...]prometheus.Collector{
 		uw.queryTotal,
 		uw.errTotal,
+		uw.winnerTotal,
 		uw.thread,
 		uw.responseLatency,
 		uw.connOpened,
@@ -126,6 +139,7 @@ func (uw *upstreamWrapper) name() string {
 
 func (uw *upstreamWrapper) ExchangeContext(ctx context.Context, m []byte) (*[]byte, error) {
 	uw.queryTotal.Inc()
+	uw.queryCount.Add(1)
 
 	start := time.Now()
 	uw.thread.Inc()
@@ -137,11 +151,15 @@ func (uw *upstreamWrapper) ExchangeContext(ctx context.Context, m []byte) (*[]by
 
 	if err != nil {
 		uw.errTotal.Inc()
+		uw.errorCount.Add(1)
 		uw.recordFailure(time.Now())
 	} else {
 		uw.responseLatency.Observe(float64(latency.Milliseconds()))
+		uw.latencyTotalUs.Add(uint64(latency.Microseconds()))
+		uw.latencyCount.Add(1)
 		uw.recordSuccess(latency)
 	}
+	uw.notifyStatsChanged()
 	return r, err
 }
 

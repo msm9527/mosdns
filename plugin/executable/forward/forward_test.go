@@ -2,9 +2,11 @@ package fastforward
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/miekg/dns"
@@ -117,5 +119,79 @@ func TestForwardExchangeHonorsParentCancellation(t *testing.T) {
 	}
 	if blocking.calls != 1 {
 		t.Fatalf("expected exactly one upstream call, got %d", blocking.calls)
+	}
+}
+
+func TestSnapshotUpstreamHealthIncludesObservedStats(t *testing.T) {
+	wrapper := newWrapper(0, UpstreamConfig{Tag: "fast", Addr: "udp://fast"}, "test")
+	wrapper.queryCount.Store(25)
+	wrapper.errorCount.Store(4)
+	wrapper.winnerCount.Store(19)
+	wrapper.latencyTotalUs.Store(50000)
+	wrapper.latencyCount.Store(10)
+	wrapper.ewmaLatencyUs.Store(7000)
+
+	forward := &Forward{
+		pluginTag: "test",
+		us:        []*upstreamWrapper{wrapper},
+	}
+
+	items := forward.SnapshotUpstreamHealth()
+	if len(items) != 1 {
+		t.Fatalf("expected one item, got %d", len(items))
+	}
+	item := items[0]
+	if item.QueryTotal != 25 || item.ErrorTotal != 4 || item.WinnerTotal != 19 {
+		t.Fatalf("unexpected counters: %+v", item)
+	}
+	if item.ObservedAverageMs != 5 {
+		t.Fatalf("unexpected observed average latency: %+v", item)
+	}
+	if item.AverageLatencyMs != 7 {
+		t.Fatalf("unexpected health latency: %+v", item)
+	}
+}
+
+func TestForwardPersistentStatsRestoreResetAndFlush(t *testing.T) {
+	dbPath := filepath.Join(t.TempDir(), "control.db")
+	if err := coremain.SaveUpstreamRuntimeStats(dbPath, []coremain.UpstreamRuntimeStats{
+		{PluginTag: "test", UpstreamTag: "u1", QueryTotal: 12, ErrorTotal: 2, WinnerTotal: 9, LatencyTotalUs: 48000, LatencyCount: 12},
+	}); err != nil {
+		t.Fatalf("SaveUpstreamRuntimeStats: %v", err)
+	}
+
+	wrapper := newWrapper(0, UpstreamConfig{Tag: "u1", Addr: "udp://fast"}, "test")
+	forward := &Forward{
+		logger:        zap.NewNop(),
+		pluginTag:     "test",
+		controlDBPath: dbPath,
+		us:            []*upstreamWrapper{wrapper},
+	}
+
+	if err := forward.restorePersistentStats(forward.us); err != nil {
+		t.Fatalf("restorePersistentStats: %v", err)
+	}
+	item := forward.SnapshotUpstreamHealth()[0]
+	if item.QueryTotal != 12 || item.ErrorTotal != 2 || item.WinnerTotal != 9 || item.ObservedAverageMs != 4 {
+		t.Fatalf("unexpected restored stats: %+v", item)
+	}
+
+	count, err := forward.ResetUpstreamStats(context.Background(), "u1")
+	if err != nil {
+		t.Fatalf("ResetUpstreamStats: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("expected one reset item, got %d", count)
+	}
+	if err := forward.flushPersistentStats(); err != nil {
+		t.Fatalf("flushPersistentStats: %v", err)
+	}
+
+	values, err := coremain.LoadUpstreamRuntimeStatsByPlugin(dbPath, "test")
+	if err != nil {
+		t.Fatalf("LoadUpstreamRuntimeStatsByPlugin: %v", err)
+	}
+	if len(values) != 1 || values["u1"].QueryTotal != 0 || values["u1"].LatencyCount != 0 {
+		t.Fatalf("unexpected flushed stats: %+v", values)
 	}
 }

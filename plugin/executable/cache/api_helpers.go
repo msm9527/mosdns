@@ -49,6 +49,10 @@ func (c *Cache) deleteL1Keys(keys []key) {
 	}
 }
 
+func (c *Cache) deleteL1Key(k key) {
+	c.deleteL1Keys([]key{k})
+}
+
 func domainSetContainsToken(domainSet, token string) bool {
 	token = strings.TrimSpace(token)
 	if token == "" || strings.TrimSpace(domainSet) == "" {

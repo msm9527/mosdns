@@ -134,22 +134,18 @@ func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T)
 func TestCollectRuntimeCandidatesUsesMemoryPoolPolicies(t *testing.T) {
 	t.Parallel()
 
-	oldBaseDir := coremain.MainConfigBaseDir
-	coremain.MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		coremain.MainConfigBaseDir = oldBaseDir
-	})
+	baseDir := t.TempDir()
 
 	otherPolicy := coremain.DefaultDomainPoolPolicy("other_list")
 	otherPolicy.RequeryTag = "other-requery"
-	if err := coremain.SaveMemoryPoolPoliciesToCustomConfig(map[string]coremain.DomainPoolPolicy{
+	if err := coremain.SaveMemoryPoolPoliciesToCustomConfigForBaseDir(baseDir, map[string]coremain.DomainPoolPolicy{
 		"my_realiplist": coremain.DefaultDomainPoolPolicy("my_realiplist"),
 		"other_list":    otherPolicy,
 	}); err != nil {
-		t.Fatalf("SaveMemoryPoolPoliciesToCustomConfig: %v", err)
+		t.Fatalf("SaveMemoryPoolPoliciesToCustomConfigForBaseDir: %v", err)
 	}
 
-	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+	m := coremain.NewTestMosdnsWithPluginsAndEnv(map[string]any{
 		"my_realiplist": mockRefreshCandidateProvider{
 			candidates: []coremain.DomainRefreshCandidate{
 				{Domain: "policy.example", QTypeMask: qtypeMaskA, Weight: 9000, Reason: "stale"},
@@ -160,11 +156,12 @@ func TestCollectRuntimeCandidatesUsesMemoryPoolPolicies(t *testing.T) {
 				{Domain: "ignored.example", QTypeMask: qtypeMaskAAAA, Weight: 9500, Reason: "stale"},
 			},
 		},
-	})
+	}, coremain.RuntimeEnv{BaseDir: baseDir})
 
 	p := &Requery{
 		plugin:    m.GetPlugin,
 		pluginTag: "requery",
+		baseDir:   baseDir,
 		config:    &Config{},
 	}
 
@@ -563,15 +560,11 @@ func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 }
 
 func TestBeginTaskExecutionRollsBackOnPersistFailure(t *testing.T) {
-	oldBaseDir := coremain.MainConfigBaseDir
-	coremain.MainConfigBaseDir = t.TempDir()
-	t.Cleanup(func() {
-		coremain.MainConfigBaseDir = oldBaseDir
-	})
+	dir := t.TempDir()
 
 	p := &Requery{
 		runtimeKey: "state/requery",
-		dbPath:     filepath.Join(coremain.MainConfigBaseDir, "control.db"),
+		dbPath:     filepath.Join(dir, "control.db"),
 		config:     newDefaultConfig(),
 		status:     Status{TaskState: "idle"},
 	}
