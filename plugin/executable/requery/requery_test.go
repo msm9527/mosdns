@@ -518,6 +518,27 @@ func TestApplyConfigDefaults(t *testing.T) {
 	if cfg.Workflow.Mode != "hybrid" {
 		t.Fatalf("unexpected workflow mode: %q", cfg.Workflow.Mode)
 	}
+	if cfg.Scheduler.IntervalMinutes != defaultSchedulerIntervalMinutes {
+		t.Fatalf("unexpected scheduler interval: %d", cfg.Scheduler.IntervalMinutes)
+	}
+	if cfg.ExecutionSettings.QueriesPerSecond != defaultFullQPS {
+		t.Fatalf("unexpected full qps: %d", cfg.ExecutionSettings.QueriesPerSecond)
+	}
+	if cfg.ExecutionSettings.QuickQueriesPerSecond != defaultQuickQPS {
+		t.Fatalf("unexpected quick qps: %d", cfg.ExecutionSettings.QuickQueriesPerSecond)
+	}
+	if cfg.ExecutionSettings.PrewarmQueriesPerSecond != defaultPrewarmQPS {
+		t.Fatalf("unexpected prewarm qps: %d", cfg.ExecutionSettings.PrewarmQueriesPerSecond)
+	}
+	if cfg.ExecutionSettings.QuickRebuildLimit != defaultQuickRebuildLimit {
+		t.Fatalf("unexpected quick limit: %d", cfg.ExecutionSettings.QuickRebuildLimit)
+	}
+	if cfg.ExecutionSettings.PrewarmLimit != defaultPrewarmLimit {
+		t.Fatalf("unexpected prewarm limit: %d", cfg.ExecutionSettings.PrewarmLimit)
+	}
+	if cfg.ExecutionSettings.FullRebuildPriorityLimit != defaultFullRebuildPriorityLimit {
+		t.Fatalf("unexpected full priority limit: %d", cfg.ExecutionSettings.FullRebuildPriorityLimit)
+	}
 	if cfg.Workflow.FlushMode != "legacy" {
 		t.Fatalf("unexpected flush mode: %q", cfg.Workflow.FlushMode)
 	}
@@ -529,6 +550,28 @@ func TestApplyConfigDefaults(t *testing.T) {
 	}
 	if cfg.Recovery.AutoResume == nil || !*cfg.Recovery.AutoResume {
 		t.Fatalf("unexpected auto resume: %#v", cfg.Recovery.AutoResume)
+	}
+}
+
+func TestNewDefaultConfigSchedulerDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := newDefaultConfig()
+	if !cfg.Scheduler.Enabled {
+		t.Fatal("expected scheduler to be enabled by default")
+	}
+	if cfg.Scheduler.IntervalMinutes != defaultSchedulerIntervalMinutes {
+		t.Fatalf("unexpected default scheduler interval: %d", cfg.Scheduler.IntervalMinutes)
+	}
+	if cfg.ExecutionSettings.QueriesPerSecond != defaultFullQPS ||
+		cfg.ExecutionSettings.QuickQueriesPerSecond != defaultQuickQPS ||
+		cfg.ExecutionSettings.PrewarmQueriesPerSecond != defaultPrewarmQPS {
+		t.Fatalf("unexpected default qps settings: %+v", cfg.ExecutionSettings)
+	}
+	if cfg.ExecutionSettings.QuickRebuildLimit != defaultQuickRebuildLimit ||
+		cfg.ExecutionSettings.PrewarmLimit != defaultPrewarmLimit ||
+		cfg.ExecutionSettings.FullRebuildPriorityLimit != defaultFullRebuildPriorityLimit {
+		t.Fatalf("unexpected default limit settings: %+v", cfg.ExecutionSettings)
 	}
 }
 
@@ -547,6 +590,12 @@ func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 	}
 	if p.status.TaskState != "idle" {
 		t.Fatalf("unexpected status after init: %+v", p.status)
+	}
+	if !p.config.Scheduler.Enabled {
+		t.Fatal("expected default scheduler to be enabled")
+	}
+	if p.config.Scheduler.IntervalMinutes != defaultSchedulerIntervalMinutes {
+		t.Fatalf("unexpected default interval: %d", p.config.Scheduler.IntervalMinutes)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "state", "requeryconfig.json")); !os.IsNotExist(err) {
 		t.Fatalf("expected pseudo config file to stay absent, got err=%v", err)

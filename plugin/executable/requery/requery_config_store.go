@@ -13,15 +13,16 @@ import (
 const (
 	defaultURLCallDelayMS           = 50
 	defaultURLCallConcurrency       = 4
+	defaultSchedulerIntervalMinutes = 8 * 60
 	defaultFullQPS                  = 100
-	defaultQuickQPS                 = 300
-	defaultPrewarmQPS               = 500
+	defaultQuickQPS                 = 200
+	defaultPrewarmQPS               = 300
 	defaultDateRangeDays            = 30
 	defaultMaxQueueSize             = 2048
 	defaultOnDemandBatchSize        = 32
-	defaultQuickRebuildLimit        = 2000
-	defaultPrewarmLimit             = 1000
-	defaultFullRebuildPriorityLimit = 4000
+	defaultQuickRebuildLimit        = 3500
+	defaultPrewarmLimit             = 2000
+	defaultFullRebuildPriorityLimit = 6000
 	defaultCheckpointBatchSize      = 256
 	defaultResumeDelayMS            = 1500
 	runtimeStateNamespaceRequery    = "requery"
@@ -55,6 +56,10 @@ func newDefaultConfig() *Config {
 			CheckpointBatchSize: defaultCheckpointBatchSize,
 			ResumeDelayMS:       defaultResumeDelayMS,
 		},
+		Scheduler: SchedulerConfig{
+			Enabled:         true,
+			IntervalMinutes: defaultSchedulerIntervalMinutes,
+		},
 	}
 	cfg.ExecutionSettings.DateRangeDays = defaultDateRangeDays
 	cfg.ExecutionSettings.QueryMode = "observed"
@@ -71,6 +76,14 @@ func newDefaultConfig() *Config {
 	return cfg
 }
 
+func normalizeSchedulerDefaults(cfg *SchedulerConfig) bool {
+	if cfg == nil || cfg.IntervalMinutes > 0 {
+		return false
+	}
+	cfg.IntervalMinutes = defaultSchedulerIntervalMinutes
+	return true
+}
+
 func applyConfigDefaults(cfg *Config) bool {
 	if cfg == nil {
 		return false
@@ -80,6 +93,9 @@ func applyConfigDefaults(cfg *Config) bool {
 
 	if cfg.Status.TaskState == "" {
 		cfg.Status.TaskState = "idle"
+		configChanged = true
+	}
+	if normalizeSchedulerDefaults(&cfg.Scheduler) {
 		configChanged = true
 	}
 	if cfg.ExecutionSettings.URLCallDelayMS == 0 {

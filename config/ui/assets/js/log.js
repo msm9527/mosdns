@@ -32,7 +32,7 @@ function closeAndUnlock(dialogElement) {
 
 
 document.addEventListener('DOMContentLoaded', () => {
-    const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440, AUDIT_WINDOW_MIN: 1, AUDIT_WINDOW_MAX: 86400, AUDIT_RAW_RETENTION_MAX: 365, AUDIT_AGG_RETENTION_MAX: 3650, AUDIT_STORAGE_MAX_MB: 10240 };
+    const CONSTANTS = { API_BASE_URL: '', LOGS_PER_PAGE: 50, HISTORY_LENGTH: 60, DEFAULT_AUTO_REFRESH_INTERVAL: 15, ANIMATION_DURATION: 1000, MOBILE_BREAKPOINT: 1024, TOAST_DURATION: 3000, SKELETON_ROWS: 10, TOOLTIP_SHOW_DELAY: 200, TOOLTIP_HIDE_DELAY: 250, UPDATE_AUTO_MINUTES_DEFAULT: 1440, AUDIT_WINDOW_MIN: 1, AUDIT_WINDOW_MAX: 86400, AUDIT_RAW_RETENTION_MAX: 365, AUDIT_AGG_RETENTION_MAX: 3650, AUDIT_STORAGE_MAX_MB: 10240, REQUERY_SWEEP_INTERVAL_DEFAULT: 480, REQUERY_FULL_QPS_DEFAULT: 100, REQUERY_FULL_PRIORITY_LIMIT_DEFAULT: 6000, REQUERY_QUICK_QPS_DEFAULT: 200, REQUERY_QUICK_LIMIT_DEFAULT: 3500, REQUERY_PREWARM_QPS_DEFAULT: 300, REQUERY_PREWARM_LIMIT_DEFAULT: 2000 };
     const auditSearchHelper = window.mosdnsAuditSearch;
     let state = { isUpdating: false, isCapturing: false, isMobile: false, isTouchDevice: false, currentLogPage: 1, isLogLoading: false, logPaginationInfo: null, displayedLogs: [], currentLogSearchCriteria: auditSearchHelper ? auditSearchHelper.defaultCriteria() : { keyword: '', mode: 'fuzzy', fields: [], from: '', to: '', filters: {} }, clientAliases: {}, topDomains: [], topClients: [], slowestQueries: [], domainSetRank: [], shuntColors: {}, logSort: { key: 'query_time', order: 'desc' }, autoRefresh: { enabled: false, intervalId: null, intervalSeconds: CONSTANTS.DEFAULT_AUTO_REFRESH_INTERVAL }, data: { totalQueries: { current: null, previous: null }, totalAvgDuration: { current: null, previous: null }, recentQueries: { current: null, previous: null }, recentAvgDuration: { current: null, previous: null } }, history: { totalQueries: [], avgDuration: [], timestamps: [] }, auditSettings: null, auditOverview: null, lastUpdateTime: null, adguardRules: [], diversionRules: [], ruleFilters: { adguard: { format: 'all' }, diversion: { format: 'all' } }, requery: { status: null, config: null, memoryStats: [], recentRuns: [], pollId: null }, dataView: { rawEntries: [], filteredEntries: [], viewType: 'domain', currentOffset: 0, currentLimit: 100, currentQuery: '', currentConfig: null, hasMore: true, totalCount: 0 }, coreMode: 'secure', cacheStats: {}, listManagerInitialized: false, featureSwitches: {}, systemInfo: {}, update: { status: null, loading: false, auto: { enabled: true, intervalMinutes: CONSTANTS.UPDATE_AUTO_MINUTES_DEFAULT, timerId: null } } };
     const actionLocks = new Set();
@@ -592,7 +592,10 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             elements.requeryCancelBtn.addEventListener('click', this.handleCancel.bind(this));
             elements.requeryModeSelect.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
-            elements.requerySchedulerToggle.addEventListener('change', this.handleUpdateSchedulerConfig.bind(this));
+            elements.requerySchedulerToggle.addEventListener('change', () => {
+                this.syncSchedulerInputs(elements.requerySchedulerToggle.checked);
+                this.handleUpdateSchedulerConfig();
+            });
             elements.requeryIntervalInput.addEventListener('change', debouncedUpdate);
             if (elements.requeryDateRangeInput) {
                 elements.requeryDateRangeInput.addEventListener('change', debouncedUpdate);
@@ -600,6 +603,19 @@ document.addEventListener('DOMContentLoaded', () => {
             ['requeryFullQpsInput', 'requeryQuickQpsInput', 'requeryQuickLimitInput', 'requeryPrewarmQpsInput', 'requeryPrewarmLimitInput', 'requeryFullPriorityLimitInput', 'requeryRefreshResolverPoolInput'].forEach((key) => {
                 if (elements[key]) elements[key].addEventListener('change', debouncedUpdate);
             });
+        },
+
+        normalizeSchedulerInterval() {
+            const value = parseInt(elements.requeryIntervalInput.value, 10);
+            if (value > 0) {
+                return value;
+            }
+            return CONSTANTS.REQUERY_SWEEP_INTERVAL_DEFAULT;
+        },
+
+        syncSchedulerInputs(isEnabled) {
+            elements.requeryIntervalInput.value = this.normalizeSchedulerInterval();
+            elements.requeryIntervalInput.disabled = !isEnabled;
         },
 
         async updateStatus(signal) {
@@ -713,12 +729,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
             if (config.execution_settings && elements.requeryDateRangeInput) {
                 elements.requeryDateRangeInput.value = config.execution_settings.date_range_days || 30;
-                elements.requeryFullQpsInput.value = config.execution_settings.queries_per_second || 100;
-                elements.requeryQuickQpsInput.value = config.execution_settings.quick_queries_per_second || 300;
-                elements.requeryQuickLimitInput.value = config.execution_settings.quick_rebuild_limit || 2000;
-                elements.requeryPrewarmQpsInput.value = config.execution_settings.prewarm_queries_per_second || 500;
-                elements.requeryPrewarmLimitInput.value = config.execution_settings.prewarm_limit || 1000;
-                elements.requeryFullPriorityLimitInput.value = config.execution_settings.full_rebuild_priority_limit || 4000;
+                elements.requeryFullQpsInput.value = config.execution_settings.queries_per_second || CONSTANTS.REQUERY_FULL_QPS_DEFAULT;
+                elements.requeryQuickQpsInput.value = config.execution_settings.quick_queries_per_second || CONSTANTS.REQUERY_QUICK_QPS_DEFAULT;
+                elements.requeryQuickLimitInput.value = config.execution_settings.quick_rebuild_limit || CONSTANTS.REQUERY_QUICK_LIMIT_DEFAULT;
+                elements.requeryPrewarmQpsInput.value = config.execution_settings.prewarm_queries_per_second || CONSTANTS.REQUERY_PREWARM_QPS_DEFAULT;
+                elements.requeryPrewarmLimitInput.value = config.execution_settings.prewarm_limit || CONSTANTS.REQUERY_PREWARM_LIMIT_DEFAULT;
+                elements.requeryFullPriorityLimitInput.value = config.execution_settings.full_rebuild_priority_limit || CONSTANTS.REQUERY_FULL_PRIORITY_LIMIT_DEFAULT;
                 elements.requeryRefreshResolverPoolInput.value = Array.isArray(config.execution_settings.refresh_resolver_pool)
                     ? config.execution_settings.refresh_resolver_pool.join('\n')
                     : '';
@@ -726,10 +742,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
             elements.requeryModeSelect.value = (config.workflow && config.workflow.mode) ? config.workflow.mode : 'hybrid';
             elements.requerySchedulerToggle.checked = config.scheduler.enabled;
-            elements.requeryIntervalInput.value = config.scheduler.interval_minutes;
-
-            const schedulerInputsDisabled = !config.scheduler.enabled;
-            elements.requeryIntervalInput.disabled = schedulerInputsDisabled;
+            elements.requeryIntervalInput.value = config.scheduler.interval_minutes || CONSTANTS.REQUERY_SWEEP_INTERVAL_DEFAULT;
+            this.syncSchedulerInputs(config.scheduler.enabled);
             [elements.requeryPrewarmBtn, elements.requeryQuickTriggerBtn, elements.requeryTriggerBtn].forEach(btn => {
                 btn.disabled = isRunning;
                 btn.hidden = false;
@@ -909,7 +923,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
         async handleUpdateSchedulerConfig() {
             const isEnabled = elements.requerySchedulerToggle.checked;
-            const interval = parseInt(elements.requeryIntervalInput.value, 10);
+            this.syncSchedulerInputs(isEnabled);
+            const interval = this.normalizeSchedulerInterval();
             const dateRangeDays = parseInt(elements.requeryDateRangeInput.value, 10);
             const fullQps = parseInt(elements.requeryFullQpsInput.value, 10);
             const quickQps = parseInt(elements.requeryQuickQpsInput.value, 10);
@@ -922,11 +937,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 .map(item => item.trim())
                 .filter(Boolean);
             const mode = elements.requeryModeSelect.value || 'hybrid';
-
-            if (isEnabled && (!interval || interval <= 0)) {
-                ui.showToast('启用低频巡检时，必须设置一个有效的间隔分钟数', 'error');
-                return;
-            }
 
             if (!dateRangeDays || dateRangeDays < 1) {
                 ui.showToast('长尾补全天数必须大于 0', 'error');
@@ -948,7 +958,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const newConfig = {
                 mode: mode,
                 enabled: isEnabled,
-                interval_minutes: interval || 0,
+                interval_minutes: interval,
                 start_datetime: '',
                 date_range_days: dateRangeDays,
                 queries_per_second: fullQps,
