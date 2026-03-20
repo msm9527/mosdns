@@ -4,10 +4,12 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
+	"github.com/robfig/cron/v3"
 )
 
 func TestSaveConfigUnlockedSyncsRuntimeJobs(t *testing.T) {
@@ -18,6 +20,7 @@ func TestSaveConfigUnlockedSyncsRuntimeJobs(t *testing.T) {
 		runtimeKey: runtimeKey,
 		dbPath:     dbPath,
 		config:     newDefaultConfig(),
+		scheduler:  cron.New(),
 		status:     Status{TaskState: "idle"},
 	}
 	p.config.Scheduler.Enabled = true
@@ -44,6 +47,7 @@ func TestRequeryAPIListsRunsAndCheckpoints(t *testing.T) {
 		runtimeKey: runtimeKey,
 		dbPath:     dbPath,
 		config:     newDefaultConfig(),
+		scheduler:  cron.New(),
 		status:     Status{TaskState: "idle"},
 	}
 	if err := p.saveConfigUnlocked(); err != nil {
@@ -131,5 +135,44 @@ func TestPersistRunSnapshotWithIDKeepsFinalStateAfterActiveRunCleared(t *testing
 	}
 	if runs[0].RunID != "run-finish" || runs[0].State != "idle" || runs[0].EndedAtUnixMS == 0 {
 		t.Fatalf("unexpected final run snapshot: %+v", runs[0])
+	}
+}
+
+func TestUpdateSchedulerNormalizesInvalidInterval(t *testing.T) {
+	dir := t.TempDir()
+	runtimeKey, dbPath := newTestRequeryStore(dir)
+
+	p := &Requery{
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
+		config:     newDefaultConfig(),
+		scheduler:  cron.New(),
+		status:     Status{TaskState: "idle"},
+	}
+	if err := p.saveConfigUnlocked(); err != nil {
+		t.Fatalf("saveConfigUnlocked: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/scheduler/config", strings.NewReader(`{
+		"enabled": true,
+		"interval_minutes": 0,
+		"mode": "hybrid",
+		"date_range_days": 30,
+		"queries_per_second": 100,
+		"quick_queries_per_second": 200,
+		"prewarm_queries_per_second": 300,
+		"quick_rebuild_limit": 3500,
+		"prewarm_limit": 2000,
+		"full_rebuild_priority_limit": 6000
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	p.api().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if p.config.Scheduler.IntervalMinutes != defaultSchedulerIntervalMinutes {
+		t.Fatalf("unexpected normalized interval: %d", p.config.Scheduler.IntervalMinutes)
 	}
 }

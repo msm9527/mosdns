@@ -1456,14 +1456,14 @@ func (p *Requery) defaultQuickLimit() int {
 	if p.config.ExecutionSettings.QuickRebuildLimit > 0 {
 		return p.config.ExecutionSettings.QuickRebuildLimit
 	}
-	return 2000
+	return defaultQuickRebuildLimit
 }
 
 func (p *Requery) defaultPrewarmLimit() int {
 	if p.config.ExecutionSettings.PrewarmLimit > 0 {
 		return p.config.ExecutionSettings.PrewarmLimit
 	}
-	return 1000
+	return defaultPrewarmLimit
 }
 
 func (p *Requery) fullRebuildPriorityLimit() int {
@@ -1471,8 +1471,8 @@ func (p *Requery) fullRebuildPriorityLimit() int {
 		return p.config.ExecutionSettings.FullRebuildPriorityLimit
 	}
 	limit := p.defaultQuickLimit() * 2
-	if limit < 4000 {
-		return 4000
+	if limit < defaultFullRebuildPriorityLimit {
+		return defaultFullRebuildPriorityLimit
 	}
 	return limit
 }
@@ -1708,6 +1708,7 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 	defer p.mu.Unlock()
 
 	p.config.Scheduler = payload.SchedulerConfig
+	normalizeSchedulerDefaults(&p.config.Scheduler)
 	if payload.Mode != "" {
 		p.config.Workflow.Mode = strings.ToLower(payload.Mode)
 	}
