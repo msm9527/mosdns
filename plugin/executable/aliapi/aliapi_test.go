@@ -74,6 +74,20 @@ func (r *repeatUpstream) ExchangeContext(ctx context.Context, m []byte) (*[]byte
 
 func (r *repeatUpstream) Close() error { return nil }
 
+type cancelOnContextUpstream struct {
+	started chan struct{}
+}
+
+func (u *cancelOnContextUpstream) ExchangeContext(ctx context.Context, m []byte) (*[]byte, error) {
+	if u.started != nil {
+		close(u.started)
+	}
+	<-ctx.Done()
+	return nil, context.Cause(ctx)
+}
+
+func (u *cancelOnContextUpstream) Close() error { return nil }
+
 func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 	bad := &fakeUpstream{errs: []error{context.DeadlineExceeded}}
 	f := &AliAPI{
@@ -97,6 +111,9 @@ func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 	if bad.calls != 1 {
 		t.Fatalf("unexpected upstream calls %d", bad.calls)
 	}
+	if got := f.us[0].errorCount.Load(); got != 1 {
+		t.Fatalf("expected one recorded upstream error, got %d", got)
+	}
 
 	r, err = f.exchange(context.Background(), qCtx, f.args, f.us)
 	if err != nil {
@@ -107,6 +124,31 @@ func TestAliAPI_TransportFailureReturnsSyntheticServfail(t *testing.T) {
 	}
 	if bad.calls != 1 {
 		t.Fatalf("expected suppressed repeat query, got calls=%d", bad.calls)
+	}
+	if got := f.us[0].errorCount.Load(); got != 1 {
+		t.Fatalf("expected suppressed query to avoid new upstream errors, got %d", got)
+	}
+}
+
+func TestAliAPIUpstreamWrapperCanceledDoesNotIncrementErrorTotal(t *testing.T) {
+	u := &cancelOnContextUpstream{started: make(chan struct{})}
+	w := newTestWrapper(u, "test_cancel_not_error")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := w.ExchangeContext(ctx, []byte{1})
+		errCh <- err
+	}()
+
+	<-u.started
+	cancel()
+
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if got := w.errorCount.Load(); got != 0 {
+		t.Fatalf("expected canceled exchange to avoid error_total, got %d", got)
 	}
 }
 

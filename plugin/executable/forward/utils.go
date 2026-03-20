@@ -150,9 +150,11 @@ func (uw *upstreamWrapper) ExchangeContext(ctx context.Context, m []byte) (*[]by
 	uw.thread.Dec()
 
 	if err != nil {
-		uw.errTotal.Inc()
-		uw.errorCount.Add(1)
-		uw.recordFailure(time.Now())
+		if !upstream.IsContextCanceled(err) {
+			uw.errTotal.Inc()
+			uw.errorCount.Add(1)
+			uw.recordFailure(time.Now())
+		}
 	} else {
 		uw.responseLatency.Observe(float64(latency.Milliseconds()))
 		uw.latencyTotalUs.Add(uint64(latency.Microseconds()))
