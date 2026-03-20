@@ -279,6 +279,9 @@ func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryM
 	}
 
 	if payload != nil && (meta.PreFastFlags&(1<<39)) == 0 && q.Opcode == dns.OpcodeQuery && len(q.Question) > 0 {
+		if !shouldStoreFastResponse(*payload) {
+			return payload
+		}
 		dsetName := meta.PreFastDomainSet
 		if dsetName == "" && h.dm != nil {
 			_, dsetName, _ = h.dm.FastMatch(q.Question[0].Name)
