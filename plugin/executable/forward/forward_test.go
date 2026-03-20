@@ -2,6 +2,7 @@ package fastforward
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -119,6 +120,47 @@ func TestForwardExchangeHonorsParentCancellation(t *testing.T) {
 	}
 	if blocking.calls != 1 {
 		t.Fatalf("expected exactly one upstream call, got %d", blocking.calls)
+	}
+}
+
+func TestForwardUpstreamWrapperCanceledDoesNotIncrementErrorTotal(t *testing.T) {
+	upstream := &testUpstream{delay: time.Second}
+	wrapper := newWrapper(0, UpstreamConfig{Tag: "cancel", Addr: "udp://cancel"}, "test")
+	wrapper.u = upstream
+
+	ctx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		_, err := wrapper.ExchangeContext(ctx, []byte{1})
+		errCh <- err
+	}()
+
+	time.AfterFunc(50*time.Millisecond, cancel)
+
+	if err := <-errCh; !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context canceled, got %v", err)
+	}
+	if got := wrapper.errorCount.Load(); got != 0 {
+		t.Fatalf("expected canceled exchange to avoid error_total, got %d", got)
+	}
+	if got := wrapper.consecutiveErrs.Load(); got != 0 {
+		t.Fatalf("expected canceled exchange to avoid health failures, got %d", got)
+	}
+}
+
+func TestForwardUpstreamWrapperFailureIncrementsErrorTotal(t *testing.T) {
+	wrapper := newWrapper(0, UpstreamConfig{Tag: "fail", Addr: "udp://fail"}, "test")
+	wrapper.u = &testUpstream{err: errors.New("boom")}
+
+	_, err := wrapper.ExchangeContext(context.Background(), []byte{1})
+	if err == nil {
+		t.Fatal("expected upstream failure")
+	}
+	if got := wrapper.errorCount.Load(); got != 1 {
+		t.Fatalf("expected one recorded upstream error, got %d", got)
+	}
+	if got := wrapper.consecutiveErrs.Load(); got != 1 {
+		t.Fatalf("expected failure to affect health counters, got %d", got)
 	}
 }
 

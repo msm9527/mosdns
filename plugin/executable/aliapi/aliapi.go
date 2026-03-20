@@ -1319,8 +1319,10 @@ func (w *upstreamWrapper) ExchangeContext(ctx context.Context, req []byte) (*[]b
 	w.mInflight.Dec() // Always decrement inflight after the exchange completes
 
 	if err != nil {
-		w.mErrorTotal.Inc()
-		w.errorCount.Add(1)
+		if !upstream.IsContextCanceled(err) {
+			w.mErrorTotal.Inc()
+			w.errorCount.Add(1)
+		}
 	} else {
 		latency := time.Since(start)
 		w.mResponseLatency.Observe(float64(latency.Milliseconds()))
