@@ -2,6 +2,8 @@ full:localhost.pan.baidu.com
 domain:alibabachengdun.com
 domain:wocloud.cn
 domain:wo.cn
+domain:ugnas.com
+domain:ug.link
 domain:10086.cn
 full:www.dingtalkcs.com
 domain:vegslb.com
