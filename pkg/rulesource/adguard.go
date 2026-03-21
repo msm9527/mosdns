@@ -1,37 +1,43 @@
 package rulesource
 
 import (
-	"bufio"
-	"bytes"
 	"fmt"
-	"regexp"
 	"strings"
 )
 
-var (
-	adguardBlockRule = regexp.MustCompile(`^\|\|([\w\.\-\*]+)\^$`)
-	adguardAllowRule = regexp.MustCompile(`^@@\|\|([\w\.\-\*]+)\^$`)
-	adguardRegexRule = regexp.MustCompile(`^\/(.*)\/$`)
-	adguardFullRule  = regexp.MustCompile(`^([\w\.\-]+)$`)
-)
+type adguardParsedLine struct {
+	key          string
+	rules        []adguardCompiledRule
+	badfilterKey string
+}
+
+type adguardCompiledRule struct {
+	rule      string
+	allow     bool
+	important bool
+}
 
 func parseAdguardLines(lines []string) (AdguardResult, error) {
-	var result AdguardResult
+	parsed := make([]adguardParsedLine, 0, len(lines))
+	badfilters := make(map[string]struct{})
 	for _, line := range lines {
-		allow, deny, err := normalizeAdguardLine(line)
+		if isAdguardMetadataLine(line) {
+			continue
+		}
+		item, err := parseAdguardRuleLine(line)
 		if err != nil {
 			return AdguardResult{}, err
 		}
-		if allow != "" {
-			result.Allow = append(result.Allow, allow)
+		if item == nil {
+			continue
 		}
-		if deny != "" {
-			result.Deny = append(result.Deny, deny)
+		if item.badfilterKey != "" {
+			badfilters[item.badfilterKey] = struct{}{}
+			continue
 		}
+		parsed = append(parsed, *item)
 	}
-	result.Allow = uniqueStrings(result.Allow)
-	result.Deny = uniqueStrings(result.Deny)
-	return result, nil
+	return buildAdguardResult(parsed, badfilters), nil
 }
 
 func parseAdguardStructured(parse parseStructuredFunc, data []byte) (AdguardResult, error) {
@@ -58,36 +64,32 @@ func collectAdguardLines(root any) ([]string, error) {
 	return nil, fmt.Errorf("adguard structured source must be a string array or payload list")
 }
 
-func normalizeAdguardLine(line string) (string, string, error) {
-	if matches := adguardAllowRule.FindStringSubmatch(line); len(matches) > 1 {
-		return convertWildcardDomain(matches[1]), "", nil
-	}
-	if matches := adguardBlockRule.FindStringSubmatch(line); len(matches) > 1 {
-		return "", convertWildcardDomain(matches[1]), nil
-	}
-	if matches := adguardRegexRule.FindStringSubmatch(line); len(matches) > 1 {
-		return "", "regexp:" + matches[1], nil
-	}
-	if matches := adguardFullRule.FindStringSubmatch(line); len(matches) > 1 {
-		return "", "full:" + matches[1], nil
-	}
-	return "", "", nil
+func isAdguardMetadataLine(line string) bool {
+	return strings.HasPrefix(line, "[") && strings.HasSuffix(line, "]")
 }
 
-func convertWildcardDomain(value string) string {
-	clean := strings.TrimPrefix(strings.TrimPrefix(value, "*."), ".")
-	if !strings.Contains(clean, "*") {
-		return "domain:" + clean
+func buildAdguardResult(parsed []adguardParsedLine, badfilters map[string]struct{}) AdguardResult {
+	var result AdguardResult
+	for _, item := range parsed {
+		if _, blocked := badfilters[item.key]; blocked {
+			continue
+		}
+		for _, rule := range item.rules {
+			switch {
+			case rule.allow && rule.important:
+				result.ImportantAllow = append(result.ImportantAllow, rule.rule)
+			case rule.allow:
+				result.Allow = append(result.Allow, rule.rule)
+			case rule.important:
+				result.ImportantDeny = append(result.ImportantDeny, rule.rule)
+			default:
+				result.Deny = append(result.Deny, rule.rule)
+			}
+		}
 	}
-	replacer := strings.NewReplacer(".", `\.`, "*", ".*")
-	return "regexp:" + replacer.Replace(clean)
-}
-
-func parseAdguardFromReader(data []byte) (AdguardResult, error) {
-	scanner := bufio.NewScanner(bytes.NewReader(data))
-	lines := make([]string, 0)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-	return parseAdguardLines(lines)
+	result.Allow = uniqueStrings(result.Allow)
+	result.Deny = uniqueStrings(result.Deny)
+	result.ImportantAllow = uniqueStrings(result.ImportantAllow)
+	result.ImportantDeny = uniqueStrings(result.ImportantDeny)
+	return result
 }

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
 )
 
@@ -64,4 +65,57 @@ func TestAdguardLoadSourcesRejectsCommentOnlyConfig(t *testing.T) {
 	if !strings.Contains(err.Error(), "has no sources") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+}
+
+func TestAdguardMatchHonorsImportantPriority(t *testing.T) {
+	p := buildAdguardRuleForTest(t, "||example.org^$important\n@@||example.org^\n")
+	if _, blocked := p.Match("www.example.org"); !blocked {
+		t.Fatal("expected important deny to override normal allow")
+	}
+
+	p = buildAdguardRuleForTest(t, "||example.org^$important\n@@||example.org^$important\n")
+	if _, blocked := p.Match("www.example.org"); blocked {
+		t.Fatal("expected important allow to override important deny")
+	}
+}
+
+func TestAdguardMatchSupportsBadfilterAndDenyAllow(t *testing.T) {
+	p := buildAdguardRuleForTest(t, "||example.org^\n||example.org^$badfilter\n")
+	if _, blocked := p.Match("example.org"); blocked {
+		t.Fatal("expected badfilter to remove deny rule")
+	}
+
+	p = buildAdguardRuleForTest(t, "||example.org^$denyallow=sub.example.org\n")
+	if _, blocked := p.Match("www.example.org"); !blocked {
+		t.Fatal("expected www.example.org to remain blocked")
+	}
+	if _, blocked := p.Match("sub.example.org"); blocked {
+		t.Fatal("expected denyallow domain to bypass block")
+	}
+}
+
+func buildAdguardRuleForTest(t *testing.T, raw string) *AdguardRule {
+	t.Helper()
+
+	result, err := rulesource.ParseAdguardBytes(rulesource.FormatRules, []byte(raw))
+	if err != nil {
+		t.Fatalf("ParseAdguardBytes: %v", err)
+	}
+	p := &AdguardRule{
+		importantAllowMatcher: domain.NewDomainMixMatcher(),
+		importantDenyMatcher:  domain.NewDomainMixMatcher(),
+		allowMatcher:          domain.NewDomainMixMatcher(),
+		denyMatcher:           domain.NewDomainMixMatcher(),
+	}
+	if err := mergeAdguardResult(
+		result,
+		p.importantAllowMatcher,
+		p.importantDenyMatcher,
+		p.allowMatcher,
+		p.denyMatcher,
+		&p.denyRules,
+	); err != nil {
+		t.Fatalf("mergeAdguardResult: %v", err)
+	}
+	return p
 }
