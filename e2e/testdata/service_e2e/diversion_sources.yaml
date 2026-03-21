@@ -1,0 +1,19 @@
+sources:
+  - id: base-cn
+    name: Base CN
+    bind_to: geosite_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/cn.list
+  - id: base-proxy
+    name: Base Proxy
+    bind_to: geosite_no_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/proxy.list

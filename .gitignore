@@ -31,6 +31,8 @@ demo/
 /config/cache/*.wal
 /config/audit_logs/*.ndjson
 /reports/
+/e2e/reports/
+/e2e/db/
 /config/gen/*
 !/config/gen/.gitkeep
 /config/db/*

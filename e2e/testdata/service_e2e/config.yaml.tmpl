@@ -1,0 +1,233 @@
+version: v2
+log:
+  level: error
+api:
+  http: "127.0.0.1:%d"
+audit:
+  sqlite_path: "%s"
+storage:
+  control_db: control.db
+control:
+  base_dir: state
+  switches:
+    - name: block_response
+    - name: client_proxy_mode
+    - name: main_cache
+    - name: branch_cache
+    - name: fakeip_cache
+    - name: probe_cache
+    - name: block_query_type
+    - name: block_ipv6
+    - name: ad_block
+    - name: cn_answer_mode
+    - name: udp_fast_path
+upstreams:
+  - name: domestic
+    plugin_type: aliapi
+    options:
+      concurrent: 1
+      upstreams:
+        - addr: "udp://%s"
+  - name: foreign
+    plugin_type: aliapi
+    options:
+      concurrent: 1
+      upstreams:
+        - addr: "udp://%s"
+  - name: cnfake
+    plugin_type: aliapi
+    options:
+      concurrent: 1
+      upstreams:
+        - addr: "udp://%s"
+  - name: nocnfake
+    plugin_type: aliapi
+    options:
+      concurrent: 1
+      upstreams:
+        - addr: "udp://%s"
+policies:
+  - name: adguard
+    type: adguard_rule
+    args:
+      config_file: custom_config/adguard_sources.yaml
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_cn
+  - name: geosite_no_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_no_cn
+  - name: client_ip
+    type: ip_set
+    args:
+      files:
+        - "%s"
+  - name: blocklist
+    type: domain_set_light
+    args:
+      files:
+        - "%s"
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: default
+      rules:
+        - tag: blocklist
+          mark: 1
+          output_tag: block
+        - tag: adguard
+          mark: 5
+          output_tag: ad
+        - tag: geosite_no_cn
+          mark: 14
+          output_tag: proxy
+        - tag: geosite_cn
+          mark: 16
+          output_tag: cn
+  - name: cache_main
+    type: cache
+    args: {}
+  - name: cache_branch_foreign
+    type: cache
+    args: {}
+  - name: cache_fakeip_domestic
+    type: cache
+    args: {}
+  - name: cache_fakeip_proxy
+    type: cache
+    args: {}
+  - name: cache_probe
+    type: cache
+    args: {}
+  - name: sequence_local
+    type: sequence
+    args:
+      - matches: switch 'main_cache:on'
+        exec: $cache_main
+      - exec: $domestic
+  - name: sequence_google
+    type: sequence
+    args:
+      - matches: switch 'main_cache:on'
+        exec: $cache_main
+      - matches: switch 'branch_cache:on'
+        exec: $cache_branch_foreign
+      - exec: $foreign
+  - name: sequence_local_fake_generated
+    type: sequence
+    args:
+      - matches: switch 'fakeip_cache:on'
+        exec: $cache_fakeip_domestic
+      - exec: $cnfake
+  - name: sequence_fakeip_generated
+    type: sequence
+    args:
+      - matches: switch 'fakeip_cache:on'
+        exec: $cache_fakeip_proxy
+      - exec: $nocnfake
+  - name: sequence_local_divert
+    type: sequence
+    args:
+      - matches: switch 'cn_answer_mode:fakeip'
+        exec:
+          - $sequence_local_fake_generated
+          - exit
+      - exec: $sequence_local
+  - name: sequence_common_precheck
+    type: sequence
+    args:
+      - matches:
+          - qtype 6 12 65
+          - switch 'block_query_type:on'
+        exec:
+          - reject 0
+          - exit
+      - matches:
+          - qtype 28
+          - switch 'block_ipv6:on'
+        exec:
+          - reject 0
+          - exit
+      - exec: $unified_matcher1
+      - matches:
+          - fast_mark 1
+          - switch 'block_response:on'
+        exec:
+          - reject 3
+          - exit
+      - matches:
+          - fast_mark 5
+          - switch 'ad_block:on'
+        exec:
+          - reject 3
+          - exit
+      - matches:
+          - switch 'client_proxy_mode:whitelist'
+          - '!client_ip $client_ip'
+        exec:
+          - $sequence_local
+          - exit
+  - name: sequence_ipv4
+    type: sequence
+    args:
+      - matches: fast_mark 16
+        exec:
+          - $sequence_local_divert
+          - exit
+      - matches: fast_mark 14
+        exec:
+          - $sequence_fakeip_generated
+          - exit
+      - exec: $sequence_google
+  - name: sequence_ipv6
+    type: sequence
+    args:
+      - matches: fast_mark 16
+        exec:
+          - $sequence_local
+          - exit
+      - exec: $sequence_google
+  - name: sequence_other
+    type: sequence
+    args:
+      - matches: fast_mark 16
+        exec:
+          - $sequence_local
+          - exit
+      - exec: $sequence_google
+  - name: sequence_main
+    type: sequence
+    args:
+      - exec: $sequence_common_precheck
+      - matches: has_resp
+        exec: exit
+      - matches: qtype 1
+        exec: $sequence_ipv4
+      - matches: qtype 28
+        exec: $sequence_ipv6
+      - matches: '!qtype 1 28'
+        exec: $sequence_other
+  - name: sequence_probe
+    type: sequence
+    args:
+      - matches: switch 'probe_cache:on'
+        exec: $cache_probe
+      - exec: $foreign
+listeners:
+  - name: udp_all
+    protocol: udp
+    listen: "127.0.0.1:%d"
+    entry: sequence_main
+  - name: tcp_all
+    protocol: tcp
+    listen: "127.0.0.1:%d"
+    entry: sequence_main
+  - name: udp_probe
+    protocol: udp
+    listen: "127.0.0.1:%d"
+    entry: sequence_probe

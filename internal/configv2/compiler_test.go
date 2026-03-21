@@ -89,6 +89,29 @@ func TestCompileDeclarativeWithoutLegacy(t *testing.T) {
 	}
 }
 
+func TestCompileIgnoresUnknownControlSwitches(t *testing.T) {
+	cfg := &Config{
+		Version: CurrentVersion,
+		Control: ControlConfig{
+			Switches: []SwitchConfig{
+				{Name: "branch_cache"},
+				{Name: "prefer_ipv6"},
+			},
+		},
+	}
+
+	compiled, err := Compile(cfg)
+	if err != nil {
+		t.Fatalf("Compile() error = %v", err)
+	}
+	if len(compiled.Plugins) != 1 {
+		t.Fatalf("expected only known switch plugin to remain, got %+v", compiled.Plugins)
+	}
+	if compiled.Plugins[0].Tag != "branch_cache" || compiled.Plugins[0].Type != "switch" {
+		t.Fatalf("unexpected compiled plugins: %+v", compiled.Plugins)
+	}
+}
+
 func TestCompileOrdersPluginsByDependency(t *testing.T) {
 	cfg := &Config{
 		Version: CurrentVersion,

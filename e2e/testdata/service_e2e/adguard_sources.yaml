@@ -1,0 +1,9 @@
+sources:
+  - id: base-ad
+    name: Base Ad
+    enabled: true
+    behavior: adguard
+    match_mode: adguard_native
+    format: rules
+    source_kind: local
+    path: adguard/base.rules

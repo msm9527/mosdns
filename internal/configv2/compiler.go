@@ -6,6 +6,9 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/IrineSistiana/mosdns/v5/mlog"
+	"github.com/IrineSistiana/mosdns/v5/plugin/switch/switchmeta"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -261,6 +264,11 @@ func compileControl(runtime ControlConfig) ([]PluginConfig, error) {
 		name := strings.TrimSpace(item.Name)
 		if name == "" {
 			return nil, errors.New("control switch name is required")
+		}
+		if _, ok := switchmeta.Lookup(name); !ok {
+			mlog.L().Warn("ignoring unknown control switch in config",
+				zap.String("name", name))
+			continue
 		}
 		plugins = append(plugins, PluginConfig{
 			Tag:  name,

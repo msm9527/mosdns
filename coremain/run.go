@@ -146,6 +146,10 @@ func NewServer(sf *serverFlags) (*Mosdns, error) {
 	return NewMosdns(cfg)
 }
 
+func NewServerFromConfigPath(filePath string) (*Mosdns, error) {
+	return NewServer(&serverFlags{c: filePath})
+}
+
 // loadConfig loads a v2 config from a file. If filePath is empty, it will
 // automatically search and load a file which name start with "config".
 func loadConfig(filePath string) (*Config, string, error) {

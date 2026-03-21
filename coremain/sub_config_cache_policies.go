@@ -4,8 +4,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
+	"github.com/IrineSistiana/mosdns/v5/mlog"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -134,21 +137,29 @@ func LoadCachePolicyConfigFromSubConfigForBaseDir(baseDir string) (*CachePolicyC
 	if err := yaml.Unmarshal(raw, &fileCfg); err != nil {
 		return nil, false, fmt.Errorf("decode cache policies config file %s: %w", path, err)
 	}
-	if err := mergeCachePolicyFile(cfg, fileCfg); err != nil {
+	ignored, err := mergeCachePolicyFile(cfg, fileCfg)
+	if err != nil {
 		return nil, false, fmt.Errorf("normalize cache policies config file %s: %w", path, err)
+	}
+	if len(ignored) > 0 {
+		mlog.L().Warn("ignoring unknown cache policies in sub config",
+			zap.String("path", path),
+			zap.Strings("tags", ignored))
 	}
 	return cfg, true, nil
 }
 
-func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) error {
+func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]string, error) {
+	ignored := make([]string, 0)
 	for tag, item := range raw.Response {
 		policy, ok := cfg.Response[tag]
 		if !ok {
-			return fmt.Errorf("unknown cache policy %q", tag)
+			ignored = append(ignored, tag)
+			continue
 		}
 		mergeOneCachePolicy(&policy, item)
 		if err := validateCachePolicy(tag, policy); err != nil {
-			return err
+			return nil, err
 		}
 		cfg.Response[tag] = policy
 	}
@@ -162,12 +173,13 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) error {
 		cfg.UDPFastPath.TTLMax = *raw.UDPFastPath.TTLMax
 	}
 	if cfg.UDPFastPath.InternalTTL <= 0 {
-		return fmt.Errorf("udp_fast_path.internal_ttl requires > 0")
+		return nil, fmt.Errorf("udp_fast_path.internal_ttl requires > 0")
 	}
 	if cfg.UDPFastPath.TTLMax > 0 && cfg.UDPFastPath.TTLMin > cfg.UDPFastPath.TTLMax {
-		return fmt.Errorf("udp_fast_path.ttl_min cannot exceed ttl_max")
+		return nil, fmt.Errorf("udp_fast_path.ttl_min cannot exceed ttl_max")
 	}
-	return nil
+	sort.Strings(ignored)
+	return ignored, nil
 }
 
 func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) {
