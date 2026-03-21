@@ -29,6 +29,7 @@ sources:
       source_kind: remote
       path: adguard/httpdns.rules
       url: https://raw.githubusercontent.com/yyysuo/firetv/refs/heads/master/httpdns.txt
+      auto_update: true
       update_interval_hours: 24
     - id: pcdn1
       name: PCDN Filter 1
@@ -39,6 +40,7 @@ sources:
       source_kind: remote
       path: adguard/pcdn1.rules
       url: https://thhbdd.github.io/Block-pcdn-domains/ban.txt
+      auto_update: true
       update_interval_hours: 24
     - id: pcdn2
       name: PCDN Filter 2
@@ -49,4 +51,5 @@ sources:
       source_kind: remote
       path: adguard/pcdn2.rules
       url: https://cdn.jsdelivr.net/gh/susetao/PCDNFilter-CHN-@main/PCDNFilter.txt
+      auto_update: true
       update_interval_hours: 24
