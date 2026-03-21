@@ -78,7 +78,7 @@ func newSdSetLight(bp *coremain.BP, args any) (any, error) {
 	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
-	if err := p.reloadAllRules(false); err != nil {
+	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{PreferCache: true}); err != nil {
 		return nil, err
 	}
 	go p.backgroundSync()
@@ -159,7 +159,7 @@ func (p *SdSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []c
 	if err := p.loadSources(); err != nil {
 		return err
 	}
-	return p.reloadAllRules(false)
+	return p.reloadAllRules(coremain.RuleSourceSyncOptions{})
 }
 
 func (p *SdSetLight) loadSources() error {
@@ -182,7 +182,7 @@ func (p *SdSetLight) loadSources() error {
 	return nil
 }
 
-func (p *SdSetLight) reloadAllRules(forceRemote bool) error {
+func (p *SdSetLight) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
 	sources := p.sourceSnapshot()
 	rules := make([]string, 0)
 	for _, source := range sources {
@@ -190,7 +190,7 @@ func (p *SdSetLight) reloadAllRules(forceRemote bool) error {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, forceRemote)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
 		cancel()
 		if err != nil {
 			p.setRules(nil)
@@ -221,7 +221,7 @@ func (p *SdSetLight) backgroundSync() {
 		select {
 		case <-ticker.C:
 			if err := p.loadSources(); err == nil {
-				_ = p.reloadAllRules(false)
+				_ = p.reloadAllRules(coremain.RuleSourceSyncOptions{})
 			}
 		case <-p.ctx.Done():
 			return
