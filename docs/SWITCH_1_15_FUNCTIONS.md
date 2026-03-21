@@ -24,9 +24,7 @@
 | `block_query_type` | 屏蔽 SOA/PTR/HTTPS 等类型 | `on` / `off` |
 | `block_ipv6` | 屏蔽 IPv6 | `on` / `off` |
 | `ad_block` | 广告屏蔽 | `on` / `off` |
-| `prefer_ipv4` | IPv4 优先 | `on` / `off` |
 | `cn_answer_mode` | 国内域名应答模式 | `realip` / `fakeip` |
-| `prefer_ipv6` | IPv6 优先 | `on` / `off` |
 | `udp_fast_path` | UDP 极限快路径 | `on` / `off` |
 
 说明：

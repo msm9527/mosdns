@@ -240,8 +240,6 @@ func saveSwitchesToCustomConfig(values map[string]string) error {
 	buf.WriteString("# - block_ipv6: on/off，控制 AAAA 请求屏蔽。\n")
 	buf.WriteString("# - ad_block: on/off，控制 AdGuard 在线规则拦截。\n")
 	buf.WriteString("# - cn_answer_mode: realip/fakeip，控制国内域名返回真实 IP 还是 FakeIP。\n")
-	buf.WriteString("# - prefer_ipv4: on/off，开启后优先返回 IPv4。\n")
-	buf.WriteString("# - prefer_ipv6: on/off，开启后优先返回 IPv6。\n")
 	buf.WriteString("# - udp_fast_path: on/off，控制 UDP 极限缓存快路径。\n\n")
 
 	for i, def := range switchmeta.Ordered() {

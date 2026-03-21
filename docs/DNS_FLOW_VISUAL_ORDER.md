@@ -5,7 +5,7 @@
 ```mermaid
 flowchart TB
     A0([DNS 请求进入]) --> A1[sequence_common_precheck]
-    A1 --> A2[unified_matcher1 / 屏蔽 / client_ip / prefer_ipv4/6]
+    A1 --> A2[unified_matcher1 / 屏蔽 / client_ip]
     A2 --> A3[top_domains + rewrite]
     A3 --> A4{qtype}
     A4 -- A --> B0[[sequence_ipv4]]

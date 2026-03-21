@@ -92,22 +92,6 @@
       valueForOn: 'on',
       valueForOff: 'off',
     },
-    {
-      tag: 'prefer_ipv4',
-      name: 'IPv4 优先',
-      desc: '优先返回 IPv4 结果',
-      tip: 'on=启用，off=关闭。建议与“IPv6 优先”互斥。',
-      valueForOn: 'on',
-      valueForOff: 'off',
-    },
-    {
-      tag: 'prefer_ipv6',
-      name: 'IPv6 优先',
-      desc: '优先返回 IPv6 结果',
-      tip: 'on=启用，off=关闭。建议与“IPv4 优先”互斥。',
-      valueForOn: 'on',
-      valueForOff: 'off',
-    },
   ];
 
   const icons = {
@@ -120,9 +104,7 @@
     block_query_type: 'fa-ban',
     block_ipv6: 'fa-ban',
     ad_block: 'fa-shield-alt',
-    prefer_ipv4: 'fa-network-wired',
     cn_answer_mode: 'fa-route',
-    prefer_ipv6: 'fa-network-wired',
     udp_fast_path: 'fa-bolt',
   };
 

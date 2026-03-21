@@ -16,8 +16,6 @@
 # - block_ipv6: on/off，控制 AAAA 请求屏蔽。
 # - ad_block: on/off，控制 AdGuard 在线规则拦截。
 # - cn_answer_mode: realip/fakeip，控制国内域名返回真实 IP 还是 FakeIP。
-# - prefer_ipv4: on/off，开启后优先返回 IPv4。
-# - prefer_ipv6: on/off，开启后优先返回 IPv6。
 # - udp_fast_path: on/off，控制 UDP 极限缓存快路径。
 
 block_response: "on"
@@ -38,10 +36,6 @@ block_ipv6: "on"
 
 ad_block: "off"
 
-prefer_ipv4: "off"
-
 cn_answer_mode: "realip"
-
-prefer_ipv6: "off"
 
 udp_fast_path: "on"

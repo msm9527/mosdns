@@ -37,6 +37,4 @@ control:
     - name: block_ipv6
     - name: ad_block
     - name: cn_answer_mode
-    - name: prefer_ipv4
-    - name: prefer_ipv6
     - name: udp_fast_path
