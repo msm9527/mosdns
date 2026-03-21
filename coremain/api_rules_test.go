@@ -170,6 +170,171 @@ policies:
 	}
 }
 
+func TestRulesAPI_DeleteDiversionRuleRemovesManagedFile(t *testing.T) {
+	baseDir := t.TempDir()
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = baseDir
+	t.Cleanup(func() { MainConfigBaseDir = oldBaseDir })
+
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_cn
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: tesss
+    name: Tesss
+    bind_to: geosite_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: srs
+    source_kind: local
+    path: diversion/tesss.srs
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "diversion", "tesss.srs"), "dummy")
+	if err := SaveRuleSourceStatus(RuntimeStateDBPath(), RuleSourceStatus{
+		Scope:    string(rulesource.ScopeDiversion),
+		SourceID: "tesss",
+	}); err != nil {
+		t.Fatalf("SaveRuleSourceStatus: %v", err)
+	}
+
+	m := NewTestMosdnsWithPlugins(nil)
+	RegisterRulesAPI(m.httpMux, m)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/rules/diversion/tesss", nil)
+	w := httptest.NewRecorder()
+	m.httpMux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp RuleSourceDeleteResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.FileCleanup.Status != ruleSourceFileCleanupDeleted || !resp.FileCleanup.Deleted {
+		t.Fatalf("unexpected cleanup response: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, "diversion", "tesss.srs")); !os.IsNotExist(err) {
+		t.Fatalf("expected diversion file to be removed, err=%v", err)
+	}
+	statuses, err := ListRuleSourceStatusByScope(RuntimeStateDBPath(), rulesource.ScopeDiversion)
+	if err != nil {
+		t.Fatalf("ListRuleSourceStatusByScope: %v", err)
+	}
+	if _, ok := statuses["tesss"]; ok {
+		t.Fatalf("expected diversion status to be removed, got %+v", statuses["tesss"])
+	}
+}
+
+func TestRulesAPI_DeleteAdguardRuleRemovesManagedFile(t *testing.T) {
+	baseDir := t.TempDir()
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = baseDir
+	t.Cleanup(func() { MainConfigBaseDir = oldBaseDir })
+
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: adguard
+    type: adguard_rule
+    args:
+      config_file: custom_config/adguard_sources.yaml
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
+sources:
+  - id: httpdns
+    name: HttpDNS
+    enabled: true
+    behavior: adguard
+    match_mode: adguard_native
+    format: rules
+    source_kind: local
+    path: adguard/httpdns.rules
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "adguard", "httpdns.rules"), "||example.com^")
+
+	m := NewTestMosdnsWithPlugins(nil)
+	RegisterRulesAPI(m.httpMux, m)
+
+	req := httptest.NewRequest(http.MethodDelete, "/api/v1/rules/adguard/httpdns", nil)
+	w := httptest.NewRecorder()
+	m.httpMux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
+	}
+
+	var resp RuleSourceDeleteResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.FileCleanup.Status != ruleSourceFileCleanupDeleted || !resp.FileCleanup.Deleted {
+		t.Fatalf("unexpected cleanup response: %+v", resp)
+	}
+	if _, err := os.Stat(filepath.Join(baseDir, "adguard", "httpdns.rules")); !os.IsNotExist(err) {
+		t.Fatalf("expected adguard file to be removed, err=%v", err)
+	}
+}
+
+func TestRulesAPI_UpdateDiversionRuleRemovesObsoleteManagedFile(t *testing.T) {
+	baseDir := t.TempDir()
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = baseDir
+	t.Cleanup(func() { MainConfigBaseDir = oldBaseDir })
+
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_cn
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: old-rule
+    name: Old Rule
+    bind_to: geosite_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/old-rule.list
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "diversion", "old-rule.list"), "full:old.example")
+
+	m := NewTestMosdnsWithPlugins(nil)
+	RegisterRulesAPI(m.httpMux, m)
+
+	body := bytes.NewBufferString(`{
+		"id":"new-rule",
+		"name":"New Rule",
+		"bind_to":"geosite_cn",
+		"enabled":true,
+		"match_mode":"domain_set",
+		"format":"list",
+		"source_kind":"local",
+		"path":"diversion/new-rule.list"
+	}`)
+	req := httptest.NewRequest(http.MethodPut, "/api/v1/rules/diversion/old-rule", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	m.httpMux.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
+	}
+
+	if _, err := os.Stat(filepath.Join(baseDir, "diversion", "old-rule.list")); !os.IsNotExist(err) {
+		t.Fatalf("expected obsolete diversion file to be removed, err=%v", err)
+	}
+}
+
 func mustWriteRuleTestFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

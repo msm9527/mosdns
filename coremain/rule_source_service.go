@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
+	"go.uber.org/zap"
 	"golang.org/x/net/proxy"
 )
 
@@ -77,6 +79,7 @@ func (s *ruleSourceService) Update(id string, item RuleSourceItem) (RuleSourceIt
 	if index < 0 {
 		return RuleSourceItem{}, NewRuleAPIError(http.StatusNotFound, "RULE_SOURCE_NOT_FOUND", "规则源不存在")
 	}
+	previous := cfg.Sources[index]
 	source, err := s.sourceFromItem(id, item)
 	if err != nil {
 		return RuleSourceItem{}, err
@@ -93,29 +96,42 @@ func (s *ruleSourceService) Update(id string, item RuleSourceItem) (RuleSourceIt
 			return RuleSourceItem{}, err
 		}
 	}
+	cleanup := s.cleanupUpdatedSourceFile(previous, source, cfg)
+	logRuleSourceFileCleanup("update", s.scope, source.ID, cleanup)
 	if err := s.reload(); err != nil {
 		return RuleSourceItem{}, err
 	}
 	return s.Get(source.ID)
 }
 
-func (s *ruleSourceService) Delete(id string) error {
+func (s *ruleSourceService) Delete(id string) (RuleSourceDeleteResponse, error) {
 	cfg, err := s.loadConfig()
 	if err != nil {
-		return err
+		return RuleSourceDeleteResponse{}, err
 	}
 	index := indexRuleSource(cfg, id)
 	if index < 0 {
-		return NewRuleAPIError(http.StatusNotFound, "RULE_SOURCE_NOT_FOUND", "规则源不存在")
+		return RuleSourceDeleteResponse{}, NewRuleAPIError(http.StatusNotFound, "RULE_SOURCE_NOT_FOUND", "规则源不存在")
 	}
+	removed := cfg.Sources[index]
 	cfg.Sources = append(cfg.Sources[:index], cfg.Sources[index+1:]...)
 	if err := s.saveConfig(cfg); err != nil {
-		return err
+		return RuleSourceDeleteResponse{}, err
 	}
+	cleanup := s.cleanupRemovedSourceFile(removed, cfg)
+	logRuleSourceFileCleanup("delete", s.scope, id, cleanup)
 	if err := DeleteRuleSourceStatus(s.controlDBPath(), s.scope, id); err != nil {
-		return err
+		return RuleSourceDeleteResponse{}, err
 	}
-	return s.reload()
+	if err := s.reload(); err != nil {
+		return RuleSourceDeleteResponse{}, err
+	}
+	return RuleSourceDeleteResponse{
+		Message:     "规则源已删除。",
+		ID:          id,
+		Scope:       string(s.scope),
+		FileCleanup: cleanup,
+	}, nil
 }
 
 func (s *ruleSourceService) Get(id string) (RuleSourceItem, error) {
@@ -368,4 +384,21 @@ func newRuleSourceHTTPClient(socks5 string) (*http.Client, error) {
 		transport.Proxy = nil
 	}
 	return &http.Client{Timeout: ruleSourceManualSyncTimeout, Transport: transport}, nil
+}
+
+func logRuleSourceFileCleanup(
+	action string,
+	scope rulesource.Scope,
+	sourceID string,
+	cleanup RuleSourceFileCleanup,
+) {
+	if cleanup.Status != ruleSourceFileCleanupError {
+		return
+	}
+	mlog.L().Warn("rule source file cleanup failed",
+		zap.String("action", action),
+		zap.String("scope", string(scope)),
+		zap.String("source_id", sourceID),
+		zap.String("path", cleanup.Path),
+		zap.String("message", cleanup.Message))
 }

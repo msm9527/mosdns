@@ -103,7 +103,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
 		baseArgs = cloneArgs(rawArgs)
 	}
-	effectiveArgs := buildEffectiveArgs(bp.Tag(), baseArgs, bp.GlobalOverrides(), coremain.GetUpstreamOverrides(bp.Tag()), bp.L())
+	effectiveArgs := buildEffectiveArgs(bp.Tag(), baseArgs, coremain.GetUpstreamOverrides(bp.Tag()), bp.L())
 
 	f, err := NewAliAPI(effectiveArgs, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
 	if err != nil {
@@ -135,11 +135,8 @@ func cloneArgs(src *Args) *Args {
 	return &dst
 }
 
-func buildEffectiveArgs(pluginTag string, base *Args, global *coremain.GlobalOverrides, overrides []coremain.UpstreamOverrideConfig, logger *zap.Logger) *Args {
+func buildEffectiveArgs(pluginTag string, base *Args, overrides []coremain.UpstreamOverrideConfig, logger *zap.Logger) *Args {
 	a := cloneArgs(base)
-	if global != nil && global.Socks5 != "" {
-		a.Socks5 = global.Socks5
-	}
 
 	enabledUpstreams := make([]UpstreamConfig, 0, len(overrides))
 	enabledCount := 0
@@ -376,7 +373,7 @@ func (f *AliAPI) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrapper
 	return f.args, us, nil
 }
 
-func (f *AliAPI) ReloadControlConfig(global *coremain.GlobalOverrides, upstreams []coremain.UpstreamOverrideConfig) error {
+func (f *AliAPI) ReloadControlConfig(_ *coremain.GlobalOverrides, upstreams []coremain.UpstreamOverrideConfig) error {
 	f.runtimeMu.RLock()
 	base := cloneArgs(f.baseArgs)
 	pluginTag := f.pluginTag
@@ -386,7 +383,7 @@ func (f *AliAPI) ReloadControlConfig(global *coremain.GlobalOverrides, upstreams
 	if err := f.flushPersistentStats(); err != nil {
 		return err
 	}
-	effective := buildEffectiveArgs(pluginTag, base, global, upstreams, f.logger)
+	effective := buildEffectiveArgs(pluginTag, base, upstreams, f.logger)
 	rebuilt, err := NewAliAPI(effective, Opts{Logger: f.logger, MetricsTag: metricsTag})
 	if err != nil {
 		return err

@@ -22,12 +22,8 @@ func cloneArgs(src *Args) *Args {
 	return &dst
 }
 
-func buildEffectiveArgs(base *Args, global *coremain.GlobalOverrides) *Args {
-	args := cloneArgs(base)
-	if global != nil && global.Socks5 != "" {
-		args.Socks5 = global.Socks5
-	}
-	return args
+func buildEffectiveArgs(base *Args) *Args {
+	return cloneArgs(base)
 }
 
 func (f *Forward) snapshotRuntime() (*Args, []*upstreamWrapper) {
@@ -51,7 +47,7 @@ func (f *Forward) snapshotRuntimeByTags(tags []string) (*Args, []*upstreamWrappe
 	return f.args, us, nil
 }
 
-func (f *Forward) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
+func (f *Forward) ReloadControlConfig(_ *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	f.runtimeMu.RLock()
 	base := cloneArgs(f.baseArgs)
 	metricsTag := f.metricsTag
@@ -61,7 +57,7 @@ func (f *Forward) ReloadControlConfig(global *coremain.GlobalOverrides, _ []core
 	if err := f.flushPersistentStats(); err != nil {
 		return err
 	}
-	rebuilt, err := NewForward(buildEffectiveArgs(base, global), Opts{Logger: f.logger, MetricsTag: metricsTag})
+	rebuilt, err := NewForward(buildEffectiveArgs(base), Opts{Logger: f.logger, MetricsTag: metricsTag})
 	if err != nil {
 		return err
 	}

@@ -148,7 +148,7 @@ func saveGlobalOverridesToCustomConfigAtPath(path string, payload *GlobalOverrid
 	buf.WriteString("# - 这里不再走 control.db，数据库只负责运行态和生成态数据。\n")
 	buf.WriteString("#\n")
 	buf.WriteString("# 字段说明：\n")
-	buf.WriteString("# - socks5: 给支持 socks5 的插件提供统一代理地址，例如 127.0.0.1:7891\n")
+	buf.WriteString("# - socks5: 给规则下载、更新等非 DNS 上游请求提供统一代理地址，例如 127.0.0.1:7891\n")
 	buf.WriteString("# - ecs: 用于替换配置里 `ecs x.x.x.x` / `ecs 2408:...` 这类 ECS 指定值\n")
 	buf.WriteString("# - replacements: 可选的字符串替换表，适合少量精确替换\n\n")
 	buf.Write(body)
