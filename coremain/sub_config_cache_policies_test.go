@@ -73,6 +73,44 @@ udp_fast_path:
 	}
 }
 
+func TestLoadCachePolicyConfigFromSubConfigIgnoresUnknownPolicy(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	path := filepath.Join(MainConfigBaseDir, cachePoliciesConfigRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	const body = `
+response:
+  cache_main:
+    size: 4096
+  cache_legacy_removed:
+    size: 1
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, ok, err := LoadCachePolicyConfigFromSubConfig()
+	if err != nil {
+		t.Fatalf("LoadCachePolicyConfigFromSubConfig: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cache policy file to exist")
+	}
+	if cfg.Response["cache_main"].Size != 4096 {
+		t.Fatalf("expected cache_main override to survive, got %+v", cfg.Response["cache_main"])
+	}
+	if _, exists := cfg.Response["cache_legacy_removed"]; exists {
+		t.Fatalf("expected unknown legacy cache policy to be ignored, got %+v", cfg.Response)
+	}
+}
+
 func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
