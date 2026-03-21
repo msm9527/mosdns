@@ -88,7 +88,7 @@ func Init(bp *coremain.BP, args any) (any, error) {
 	if rawArgs, ok := bp.RawArgs().(*Args); ok && rawArgs != nil {
 		baseArgs = cloneArgs(rawArgs)
 	}
-	effectiveArgs := buildEffectiveArgs(baseArgs, bp.GlobalOverrides())
+	effectiveArgs := buildEffectiveArgs(baseArgs)
 
 	f, err := NewForward(effectiveArgs, Opts{Logger: bp.L(), MetricsTag: bp.Tag()})
 	if err != nil {
