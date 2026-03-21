@@ -64,6 +64,14 @@ func applyLegacyRuntimeEnv(env RuntimeEnv) {
 	setRuntimeStateDBPath(env.ControlDBPath)
 }
 
+func SnapshotRuntimeEnvForTesting() RuntimeEnv {
+	return runtimeEnvFromGlobals()
+}
+
+func ApplyRuntimeEnvForTesting(env RuntimeEnv) {
+	applyLegacyRuntimeEnv(env)
+}
+
 func runtimeBaseDir(m *Mosdns) string {
 	if m != nil {
 		return m.BaseDir()
