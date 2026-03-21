@@ -252,7 +252,7 @@
 | `GET` | `/api/v1/rules/adguard` | 列出广告规则源 | `RuleSourceItem[]` |
 | `POST` | `/api/v1/rules/adguard` | 新建广告规则源 | `201` + `RuleSourceItem` |
 | `PUT` | `/api/v1/rules/adguard/{id}` | 更新广告规则源 | `RuleSourceItem` |
-| `DELETE` | `/api/v1/rules/adguard/{id}` | 删除广告规则源 | `204 No Content` |
+| `DELETE` | `/api/v1/rules/adguard/{id}` | 删除广告规则源 | `RuleSourceDeleteResponse` |
 | `POST` | `/api/v1/rules/adguard/update` | 刷新全部广告规则源 | `RuleSourceItem[]` |
 | `POST` | `/api/v1/rules/adguard/{id}/update` | 刷新单个广告规则源 | `RuleSourceItem` |
 
@@ -263,13 +263,20 @@
 | `GET` | `/api/v1/rules/diversion` | 列出在线分流规则源 | `RuleSourceItem[]` |
 | `POST` | `/api/v1/rules/diversion` | 新建在线分流规则源 | `201` + `RuleSourceItem` |
 | `PUT` | `/api/v1/rules/diversion/{id}` | 更新在线分流规则源 | `RuleSourceItem` |
-| `DELETE` | `/api/v1/rules/diversion/{id}` | 删除在线分流规则源 | `204 No Content` |
+| `DELETE` | `/api/v1/rules/diversion/{id}` | 删除在线分流规则源 | `RuleSourceDeleteResponse` |
 | `POST` | `/api/v1/rules/diversion/update` | 刷新全部在线分流规则源 | `RuleSourceItem[]` |
 | `POST` | `/api/v1/rules/diversion/{id}/update` | 刷新单个在线分流规则源 | `RuleSourceItem` |
 
 说明：
 
 - 写入时用 `RuleSourceWriteRequest`
+- `behavior` 不作为写入参数，服务端会根据 `match_mode` 自动推导：
+  - `adguard_native -> adguard`
+  - `domain_set -> domain`
+  - `ip_cidr_set -> ipcidr`
+- `bindings` 是读取时返回的派生字段，不参与写入。
+- `DELETE` 现在会返回文件清理结果；如果对应规则文件位于受管目录 `adguard/` 或 `diversion/` 下，且未被其他规则源复用，会一并删除本地文件。
+- `PUT` 在规则源 `id/path` 变化后，也会自动清理旧的受管规则文件。
 - 读取时用 `RuleSourceItem`
 - `rule_count`、`last_updated`、`last_error` 为运行态衍生字段
 

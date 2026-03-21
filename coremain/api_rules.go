@@ -54,11 +54,12 @@ func registerRuleScopeRoutes(r chi.Router, m *Mosdns, path string, scope rulesou
 			writeJSON(w, http.StatusOK, updated)
 		}))
 		r.Delete("/{id}", WithAsyncGC(func(w http.ResponseWriter, r *http.Request) {
-			if err := service.Delete(chi.URLParam(r, "id")); err != nil {
+			result, err := service.Delete(chi.URLParam(r, "id"))
+			if err != nil {
 				writeRuleError(w, "RULE_SOURCE_DELETE_FAILED", err)
 				return
 			}
-			w.WriteHeader(http.StatusNoContent)
+			writeJSON(w, http.StatusOK, result)
 		}))
 		r.Post("/update", WithAsyncGC(func(w http.ResponseWriter, _ *http.Request) {
 			items, err := service.RefreshAll()

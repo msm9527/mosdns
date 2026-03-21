@@ -1314,8 +1314,12 @@ paths:
       tags: [Rules]
       summary: Delete adguard rule source
       responses:
-        '204':
-          description: Deleted successfully
+        '200':
+          description: Deleted successfully with cleanup result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceDeleteResponse'
         '404':
           $ref: '#/components/responses/ApiNotFound'
         '500':
@@ -1416,8 +1420,12 @@ paths:
       tags: [Rules]
       summary: Delete diversion rule source
       responses:
-        '204':
-          description: Deleted successfully
+        '200':
+          description: Deleted successfully with cleanup result
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuleSourceDeleteResponse'
         '404':
           $ref: '#/components/responses/ApiNotFound'
         '500':
@@ -3370,15 +3378,8 @@ components:
           type: string
         bind_to:
           type: string
-        bindings:
-          type: array
-          items:
-            type: string
         enabled:
           type: boolean
-        behavior:
-          type: string
-          enum: [adguard, domain, ipcidr]
         match_mode:
           type: string
           enum: [adguard_native, domain_set, ip_cidr_set]
@@ -3401,6 +3402,13 @@ components:
         - $ref: '#/components/schemas/RuleSourceWriteRequest'
         - type: object
           properties:
+            behavior:
+              type: string
+              enum: [adguard, domain, ipcidr]
+            bindings:
+              type: array
+              items:
+                type: string
             rule_count:
               type: integer
             last_updated:
@@ -3408,6 +3416,29 @@ components:
               format: date-time
             last_error:
               type: string
+    RuleSourceFileCleanup:
+      type: object
+      properties:
+        path:
+          type: string
+        status:
+          type: string
+          enum: [deleted, missing, skipped, error]
+        deleted:
+          type: boolean
+        message:
+          type: string
+    RuleSourceDeleteResponse:
+      type: object
+      properties:
+        message:
+          type: string
+        id:
+          type: string
+        scope:
+          type: string
+        file_cleanup:
+          $ref: '#/components/schemas/RuleSourceFileCleanup'
     CacheOpStatus:
       type: object
       properties:

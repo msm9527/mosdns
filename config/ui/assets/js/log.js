@@ -2724,8 +2724,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!confirm(`确定要删除规则 "${rule.name}" 吗？此操作不可恢复。`)) return;
             ui.setLoading(target, true);
             try {
-                await api.fetch(`/api/v1/rules/${mode}/${encodeURIComponent(id)}`, { method: 'DELETE' });
-                ui.showToast(`规则 "${rule.name}" 已删除`);
+                const result = await api.fetch(`/api/v1/rules/${mode}/${encodeURIComponent(id)}`, { method: 'DELETE' });
+                const cleanup = result && result.file_cleanup;
+                let message = `规则 "${rule.name}" 已删除`;
+                if (cleanup && cleanup.message) {
+                    message += `，${cleanup.message}`;
+                }
+                ui.showToast(message, cleanup && cleanup.status === 'error' ? 'error' : 'success');
                 await (mode === 'adguard' ? adguardManager.load() : diversionManager.load());
             } finally {
                 ui.setLoading(target, false);
