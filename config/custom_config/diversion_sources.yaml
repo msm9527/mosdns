@@ -9,20 +9,10 @@
 # 字段说明：
 # - id: 规则源唯一标识，只用于识别单条 source。
 # - name: Web UI 显示名称。
-# - bind_to: 绑定到哪个系统分流入口。
-#   - geosite_cn: 国内域名分流
-#   - geosite_no_cn: 代理域名分流
-#   - geoip_cn: 国内 IP 分流
-#   - cuscn: 自定义直连补充
-#   - cusnocn: 自定义代理补充
-#   同一个 bind_to 下可以同时挂多个 source，运行时会自动聚合。
+# - bind_to: 绑定到哪个系统分流入口；同一个 bind_to 下可以同时挂多个 source，运行时会自动聚合。
 # - enabled: 是否启用该规则源。
-# - behavior: 规则语义：
-#   - domain: 域名集合。
-#   - ipcidr: IP/CIDR 集合。
-# - match_mode:
-#   - domain_set: 域名集合匹配。
-#   - ip_cidr_set: IP/CIDR 匹配。
+# - behavior: 规则语义，允许 domain / ipcidr。
+# - match_mode: 允许 domain_set / ip_cidr_set。
 # - format: 原始文件格式，例如 list / txt / json / yaml / srs / mrs。
 # - source_kind: local / remote。
 # - path: 原始文件相对 config 根目录的路径，建议放在 diversion/ 目录下。
@@ -62,4 +52,3 @@ sources:
       source_kind: remote
       path: diversion/geolocation-!cn.srs
       url: https://raw.githubusercontent.com/MetaCubeX/meta-rules-dat/refs/heads/sing/geo/geosite/geolocation-!cn.srs
-      update_interval_hours: 24
