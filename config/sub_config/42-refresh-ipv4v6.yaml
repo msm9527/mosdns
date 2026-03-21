@@ -189,14 +189,6 @@ policies:
           - $sequence_local_refresh
           - tag_setter 指定客户端直连
           - exit
-      - matches:
-          - switch 'prefer_ipv4:on'
-          - switch 'prefer_ipv6:off'
-        exec: prefer_ipv4
-      - matches:
-          - switch 'prefer_ipv4:off'
-          - switch 'prefer_ipv6:on'
-        exec: prefer_ipv6
       - exec: $rewrite
       - matches: qtype 1
         exec: $sequence_ipv4_refresh

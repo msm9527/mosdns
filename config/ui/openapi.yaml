@@ -1952,9 +1952,7 @@ components:
           - block_query_type
           - block_ipv6
           - ad_block
-          - prefer_ipv4
           - cn_answer_mode
-          - prefer_ipv6
           - udp_fast_path
     UpstreamTagPath:
       name: upstreamTag
@@ -2756,7 +2754,7 @@ components:
           type: string
           description: |
             可用值依赖开关名：
-            - `block_response` / `main_cache` / `branch_cache` / `fakeip_cache` / `probe_cache` / `block_query_type` / `block_ipv6` / `ad_block` / `prefer_ipv4` / `prefer_ipv6` / `udp_fast_path`: `on` / `off`
+            - `block_response` / `main_cache` / `branch_cache` / `fakeip_cache` / `probe_cache` / `block_query_type` / `block_ipv6` / `ad_block` / `udp_fast_path`: `on` / `off`
             - `client_proxy_mode`: `all` / `blacklist` / `whitelist`
             - `cn_answer_mode`: `realip` / `fakeip`
     RequerySourceFile:

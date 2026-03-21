@@ -36,12 +36,10 @@ var ordered = []Definition{
 	{Name: "block_query_type", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_ipv6", DefaultValue: "off", aliases: onOffAliases()},
 	{Name: "ad_block", DefaultValue: "off", aliases: onOffAliases()},
-	{Name: "prefer_ipv4", DefaultValue: "off", aliases: onOffAliases()},
 	{Name: "cn_answer_mode", DefaultValue: "realip", aliases: map[string]string{
 		"realip": "realip",
 		"fakeip": "fakeip",
 	}},
-	{Name: "prefer_ipv6", DefaultValue: "off", aliases: onOffAliases()},
 	{Name: "udp_fast_path", DefaultValue: "on", aliases: onOffAliases()},
 }
 

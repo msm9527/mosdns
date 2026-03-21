@@ -30,7 +30,6 @@
    - `unified_matcher1` 打 fast_mark
    - 黑名单/无 A/无 AAAA/广告拦截
    - 指定 client_ip 直连判定
-   - prefer_ipv4/prefer_ipv6
    - 注意：`main_cache` 已下沉到真实解析链内部，入口层不再直接缓存 fakeip 应答
 4. 按 qtype 分流到：
    - A: `sequence_ipv4`

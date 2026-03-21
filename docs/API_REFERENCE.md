@@ -176,15 +176,13 @@
 - `block_query_type`
 - `block_ipv6`
 - `ad_block`
-- `prefer_ipv4`
 - `cn_answer_mode`
-- `prefer_ipv6`
 - `main_cache`
 - `udp_fast_path`
 
 值约束：
 
-- `on/off`：`block_response`、`branch_cache`、`block_query_type`、`block_ipv6`、`ad_block`、`prefer_ipv4`、`prefer_ipv6`、`main_cache`、`udp_fast_path`
+- `on/off`：`block_response`、`branch_cache`、`block_query_type`、`block_ipv6`、`ad_block`、`main_cache`、`udp_fast_path`
 - `all/blacklist/whitelist`：`client_proxy_mode`
 - `realip/fakeip`：`cn_answer_mode`
 
