@@ -53,6 +53,43 @@ func TestSaveSwitchesToCustomConfigRejectsUnknownSwitch(t *testing.T) {
 	}
 }
 
+func TestLoadSwitchesFromCustomConfigIgnoresUnknownSwitch(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	path := filepath.Join(MainConfigBaseDir, "custom_config", "switches.yaml")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	raw := []byte("branch_cache: off\nprefer_ipv6: on\nprefer_ipv4: off\n")
+	if err := os.WriteFile(path, raw, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	values, ok, err := LoadSwitchesFromCustomConfig()
+	if err != nil {
+		t.Fatalf("LoadSwitchesFromCustomConfig: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected switches config file to exist")
+	}
+	if values["branch_cache"] != "off" {
+		t.Fatalf("expected branch_cache override to survive, got %+v", values)
+	}
+	if _, exists := values["prefer_ipv6"]; exists {
+		t.Fatalf("expected deprecated prefer_ipv6 to be ignored, got %+v", values)
+	}
+	if _, exists := values["prefer_ipv4"]; exists {
+		t.Fatalf("expected deprecated prefer_ipv4 to be ignored, got %+v", values)
+	}
+	if values["block_response"] != "on" {
+		t.Fatalf("expected known defaults to remain available, got %+v", values)
+	}
+}
+
 func TestWriteTextFileAtomicallySupportsConcurrentWriters(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "global_overrides.yaml")

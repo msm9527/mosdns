@@ -8,7 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/IrineSistiana/mosdns/v5/plugin/switch/switchmeta"
+	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 )
 
@@ -208,9 +210,14 @@ func loadSwitchesFromCustomConfigAtPath(path string) (map[string]string, bool, e
 	if err := yaml.Unmarshal(raw, &cfg); err != nil {
 		return nil, false, fmt.Errorf("decode switches config file %s: %w", path, err)
 	}
-	normalized, err := normalizeSwitchValueMap(cfg)
+	normalized, ignored, err := normalizeLoadedSwitchValueMap(cfg)
 	if err != nil {
 		return nil, false, fmt.Errorf("normalize switches config file %s: %w", path, err)
+	}
+	if len(ignored) > 0 {
+		mlog.L().Warn("ignoring unknown switches in custom config",
+			zap.String("path", path),
+			zap.Strings("names", ignored))
 	}
 	return normalized, true, nil
 }
@@ -324,22 +331,37 @@ func defaultSwitchValueMap() map[string]string {
 }
 
 func normalizeSwitchValueMap(values map[string]string) (map[string]string, error) {
+	normalized, _, err := normalizeSwitchValueMapWithMode(values, false)
+	return normalized, err
+}
+
+func normalizeLoadedSwitchValueMap(values map[string]string) (map[string]string, []string, error) {
+	return normalizeSwitchValueMapWithMode(values, true)
+}
+
+func normalizeSwitchValueMapWithMode(values map[string]string, ignoreUnknown bool) (map[string]string, []string, error) {
 	normalized := defaultSwitchValueMap()
 	if values == nil {
-		return normalized, nil
+		return normalized, nil, nil
 	}
+	ignored := make([]string, 0)
 	for name, value := range values {
 		def, ok := switchmeta.Lookup(name)
 		if !ok {
-			return nil, fmt.Errorf("unknown switch %q", name)
+			if ignoreUnknown {
+				ignored = append(ignored, name)
+				continue
+			}
+			return nil, nil, fmt.Errorf("unknown switch %q", name)
 		}
 		next, err := def.NormalizeValue(value)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		normalized[name] = next
 	}
-	return normalized, nil
+	sort.Strings(ignored)
+	return normalized, ignored, nil
 }
 
 func strconvQuote(value string) string {
