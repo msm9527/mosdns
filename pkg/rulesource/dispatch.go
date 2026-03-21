@@ -6,12 +6,14 @@ import (
 )
 
 type AdguardResult struct {
-	Allow []string
-	Deny  []string
+	Allow          []string
+	Deny           []string
+	ImportantAllow []string
+	ImportantDeny  []string
 }
 
 func (r AdguardResult) Count() int {
-	return len(r.Allow) + len(r.Deny)
+	return len(r.Allow) + len(r.Deny) + len(r.ImportantAllow) + len(r.ImportantDeny)
 }
 
 func ParseDomainBytes(format Format, data []byte) ([]string, error) {

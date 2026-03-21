@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -14,7 +13,6 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
-	"golang.org/x/net/proxy"
 )
 
 const (
@@ -38,15 +36,17 @@ type AdguardRule struct {
 	baseArgs  *Args
 	baseDir   string
 
-	mu           sync.RWMutex
-	configFile   string
-	sources      []rulesource.Source
-	allowMatcher *domain.MixMatcher[struct{}]
-	denyMatcher  *domain.MixMatcher[struct{}]
-	denyRules    []string
-	httpClient   *http.Client
-	ctx          context.Context
-	cancel       context.CancelFunc
+	mu                    sync.RWMutex
+	configFile            string
+	sources               []rulesource.Source
+	importantAllowMatcher *domain.MixMatcher[struct{}]
+	importantDenyMatcher  *domain.MixMatcher[struct{}]
+	allowMatcher          *domain.MixMatcher[struct{}]
+	denyMatcher           *domain.MixMatcher[struct{}]
+	denyRules             []string
+	httpClient            *http.Client
+	ctx                   context.Context
+	cancel                context.CancelFunc
 
 	subsMu      sync.RWMutex
 	subscribers []func()
@@ -65,56 +65,27 @@ func newAdguardRule(bp *coremain.BP, args any) (any, error) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	p := &AdguardRule{
-		pluginTag:    bp.Tag(),
-		baseArgs:     cfg,
-		baseDir:      bp.BaseDir(),
-		configFile:   cfg.ConfigFile,
-		allowMatcher: domain.NewDomainMixMatcher(),
-		denyMatcher:  domain.NewDomainMixMatcher(),
-		httpClient:   client,
-		ctx:          ctx,
-		cancel:       cancel,
-		subscribers:  make([]func(), 0),
+		pluginTag:             bp.Tag(),
+		baseArgs:              cfg,
+		baseDir:               bp.BaseDir(),
+		configFile:            cfg.ConfigFile,
+		importantAllowMatcher: domain.NewDomainMixMatcher(),
+		importantDenyMatcher:  domain.NewDomainMixMatcher(),
+		allowMatcher:          domain.NewDomainMixMatcher(),
+		denyMatcher:           domain.NewDomainMixMatcher(),
+		httpClient:            client,
+		ctx:                   ctx,
+		cancel:                cancel,
+		subscribers:           make([]func(), 0),
 	}
 	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
-	if err := p.reloadAllRules(false); err != nil {
+	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{PreferCache: true}); err != nil {
 		return nil, err
 	}
 	go p.backgroundSync()
 	return p, nil
-}
-
-func cloneArgs(src *Args) *Args {
-	if src == nil {
-		return &Args{}
-	}
-	return &Args{Socks5: src.Socks5, ConfigFile: src.ConfigFile}
-}
-
-func newHTTPClient(socks5 string) (*http.Client, error) {
-	transport := &http.Transport{
-		Proxy: http.ProxyFromEnvironment,
-		DialContext: (&net.Dialer{
-			Timeout:   30 * time.Second,
-			KeepAlive: 30 * time.Second,
-		}).DialContext,
-		TLSHandshakeTimeout: 10 * time.Second,
-	}
-	if strings.TrimSpace(socks5) != "" {
-		dialer, err := proxy.SOCKS5("tcp", socks5, nil, proxy.Direct)
-		if err != nil {
-			return nil, fmt.Errorf("%s: create socks5 dialer: %w", PluginType, err)
-		}
-		contextDialer, ok := dialer.(proxy.ContextDialer)
-		if !ok {
-			return nil, fmt.Errorf("%s: socks5 dialer does not support context", PluginType)
-		}
-		transport.DialContext = contextDialer.DialContext
-		transport.Proxy = nil
-	}
-	return &http.Client{Timeout: syncTimeout, Transport: transport}, nil
 }
 
 func (p *AdguardRule) Close() error {
@@ -129,6 +100,12 @@ func (p *AdguardRule) GetDomainMatcher() domain.Matcher[struct{}] {
 func (p *AdguardRule) Match(domainStr string) (struct{}, bool) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
+	if _, matched := p.importantAllowMatcher.Match(domainStr); matched {
+		return struct{}{}, false
+	}
+	if _, matched := p.importantDenyMatcher.Match(domainStr); matched {
+		return struct{}{}, true
+	}
 	if _, matched := p.allowMatcher.Match(domainStr); matched {
 		return struct{}{}, false
 	}
@@ -167,7 +144,7 @@ func (p *AdguardRule) ReloadControlConfig(global *coremain.GlobalOverrides, _ []
 	if err := p.loadSources(); err != nil {
 		return err
 	}
-	return p.reloadAllRules(false)
+	return p.reloadAllRules(coremain.RuleSourceSyncOptions{})
 }
 
 func (p *AdguardRule) loadSources() error {
@@ -198,8 +175,10 @@ func (p *AdguardRule) loadSources() error {
 	return coremain.PruneRuleSourceStatus(p.runtimeDBPath(), scope, keepIDs)
 }
 
-func (p *AdguardRule) reloadAllRules(forceRemote bool) error {
+func (p *AdguardRule) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
 	sources := p.sourceSnapshot()
+	importantAllowMatcher := domain.NewDomainMixMatcher()
+	importantDenyMatcher := domain.NewDomainMixMatcher()
 	allowMatcher := domain.NewDomainMixMatcher()
 	denyMatcher := domain.NewDomainMixMatcher()
 	denyRules := make([]string, 0)
@@ -209,69 +188,32 @@ func (p *AdguardRule) reloadAllRules(forceRemote bool) error {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, forceRemote)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
 		cancel()
 		if err != nil {
 			return err
 		}
-		if err := mergeSourceRules(source, result.Data, allowMatcher, denyMatcher, &denyRules); err != nil {
+		if err := mergeSourceRules(
+			source,
+			result.Data,
+			importantAllowMatcher,
+			importantDenyMatcher,
+			allowMatcher,
+			denyMatcher,
+			&denyRules,
+		); err != nil {
 			return err
 		}
 	}
 
 	p.mu.Lock()
+	p.importantAllowMatcher = importantAllowMatcher
+	p.importantDenyMatcher = importantDenyMatcher
 	p.allowMatcher = allowMatcher
 	p.denyMatcher = denyMatcher
 	p.denyRules = append([]string(nil), denyRules...)
 	p.mu.Unlock()
 	p.notifySubscribers()
-	return nil
-}
-
-func mergeSourceRules(
-	source rulesource.Source,
-	data []byte,
-	allowMatcher *domain.MixMatcher[struct{}],
-	denyMatcher *domain.MixMatcher[struct{}],
-	denyRules *[]string,
-) error {
-	if source.Behavior == rulesource.BehaviorAdguard {
-		result, err := rulesource.ParseAdguardBytes(source.Format, data)
-		if err != nil {
-			return err
-		}
-		return mergeAdguardResult(result, allowMatcher, denyMatcher, denyRules)
-	}
-	rules, err := rulesource.ParseDomainBytes(source.Format, data)
-	if err != nil {
-		return err
-	}
-	for _, rule := range rules {
-		if err := denyMatcher.Add(rule, struct{}{}); err != nil {
-			return err
-		}
-		*denyRules = append(*denyRules, rule)
-	}
-	return nil
-}
-
-func mergeAdguardResult(
-	result rulesource.AdguardResult,
-	allowMatcher *domain.MixMatcher[struct{}],
-	denyMatcher *domain.MixMatcher[struct{}],
-	denyRules *[]string,
-) error {
-	for _, rule := range result.Allow {
-		if err := allowMatcher.Add(rule, struct{}{}); err != nil {
-			return err
-		}
-	}
-	for _, rule := range result.Deny {
-		if err := denyMatcher.Add(rule, struct{}{}); err != nil {
-			return err
-		}
-		*denyRules = append(*denyRules, rule)
-	}
 	return nil
 }
 
@@ -282,7 +224,7 @@ func (p *AdguardRule) backgroundSync() {
 		select {
 		case <-ticker.C:
 			if err := p.loadSources(); err == nil {
-				_ = p.reloadAllRules(false)
+				_ = p.reloadAllRules(coremain.RuleSourceSyncOptions{})
 			}
 		case <-p.ctx.Done():
 			return

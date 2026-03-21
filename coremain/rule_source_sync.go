@@ -19,6 +19,11 @@ type RuleSourceSyncResult struct {
 	LastUpdated time.Time
 }
 
+type RuleSourceSyncOptions struct {
+	ForceRemote bool
+	PreferCache bool
+}
+
 func SyncRuleSource(
 	ctx context.Context,
 	client *http.Client,
@@ -26,16 +31,26 @@ func SyncRuleSource(
 	baseDir string,
 	scope rulesource.Scope,
 	source rulesource.Source,
-	forceRemote bool,
+	options RuleSourceSyncOptions,
 ) (*RuleSourceSyncResult, error) {
 	localPath, err := rulesource.ResolveLocalPath(baseDir, scope, source)
 	if err != nil {
 		return nil, err
 	}
-	if source.SourceKind == rulesource.SourceKindRemote && shouldDownloadRuleSource(dbPath, scope, source, localPath, forceRemote) {
-		return downloadRuleSource(ctx, client, dbPath, scope, source, localPath)
+	if source.SourceKind == rulesource.SourceKindRemote {
+		if options.PreferCache && !options.ForceRemote && localRuleSourceExists(localPath) {
+			return loadExistingRuleSource(dbPath, scope, source, localPath)
+		}
+		if shouldDownloadRuleSource(dbPath, scope, source, localPath, options) {
+			return downloadRuleSource(ctx, client, dbPath, scope, source, localPath)
+		}
 	}
 	return loadExistingRuleSource(dbPath, scope, source, localPath)
+}
+
+func localRuleSourceExists(localPath string) bool {
+	_, err := os.Stat(localPath)
+	return err == nil
 }
 
 func shouldDownloadRuleSource(
@@ -43,12 +58,12 @@ func shouldDownloadRuleSource(
 	scope rulesource.Scope,
 	source rulesource.Source,
 	localPath string,
-	forceRemote bool,
+	options RuleSourceSyncOptions,
 ) bool {
-	if forceRemote {
+	if options.ForceRemote {
 		return true
 	}
-	if _, err := os.Stat(localPath); err != nil {
+	if !localRuleSourceExists(localPath) {
 		return true
 	}
 	if !source.AutoUpdate || source.UpdateIntervalHours < 1 {
@@ -80,28 +95,23 @@ func downloadRuleSource(
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		saveRuleSourceError(dbPath, scope, source.ID, err)
-		return nil, err
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("download %s failed with status %d", source.ID, resp.StatusCode)
-		saveRuleSourceError(dbPath, scope, source.ID, err)
-		return nil, err
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		saveRuleSourceError(dbPath, scope, source.ID, err)
-		return nil, err
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
 	}
 	count, err := parseRuleSourceCount(source, data)
 	if err != nil {
-		saveRuleSourceError(dbPath, scope, source.ID, err)
-		return nil, err
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
 	}
 	if err := writeRuleSourceFile(localPath, data); err != nil {
-		saveRuleSourceError(dbPath, scope, source.ID, err)
-		return nil, err
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
 	}
 	result := &RuleSourceSyncResult{
 		Data:        data,
@@ -119,19 +129,61 @@ func loadExistingRuleSource(
 	source rulesource.Source,
 	localPath string,
 ) (*RuleSourceSyncResult, error) {
-	data, err := os.ReadFile(localPath)
+	result, err := readExistingRuleSource(dbPath, scope, source, localPath)
 	if err != nil {
 		saveRuleSourceError(dbPath, scope, source.ID, err)
+		return nil, err
+	}
+	saveRuleSourceSuccess(dbPath, scope, source.ID, result.RuleCount, result.LastUpdated)
+	return result, nil
+}
+
+func fallbackToExistingRuleSource(
+	dbPath string,
+	scope rulesource.Scope,
+	source rulesource.Source,
+	localPath string,
+	cause error,
+) (*RuleSourceSyncResult, error) {
+	result, err := readExistingRuleSource(dbPath, scope, source, localPath)
+	if err != nil {
+		combinedErr := fmt.Errorf(
+			"refresh %s from %s failed: %w; fallback cache %s unavailable: %v",
+			source.ID,
+			source.URL,
+			cause,
+			localPath,
+			err,
+		)
+		saveRuleSourceError(dbPath, scope, source.ID, combinedErr)
+		return nil, combinedErr
+	}
+	_ = SaveRuleSourceStatus(dbPath, RuleSourceStatus{
+		Scope:       string(scope),
+		SourceID:    source.ID,
+		RuleCount:   result.RuleCount,
+		LastUpdated: result.LastUpdated,
+		LastError:   cause.Error(),
+	})
+	return result, nil
+}
+
+func readExistingRuleSource(
+	dbPath string,
+	scope rulesource.Scope,
+	source rulesource.Source,
+	localPath string,
+) (*RuleSourceSyncResult, error) {
+	data, err := os.ReadFile(localPath)
+	if err != nil {
 		return nil, err
 	}
 	info, err := os.Stat(localPath)
 	if err != nil {
-		saveRuleSourceError(dbPath, scope, source.ID, err)
 		return nil, err
 	}
 	count, err := parseRuleSourceCount(source, data)
 	if err != nil {
-		saveRuleSourceError(dbPath, scope, source.ID, err)
 		return nil, err
 	}
 	statuses, _ := ListRuleSourceStatusByScope(dbPath, scope)
@@ -139,7 +191,6 @@ func loadExistingRuleSource(
 	if status, ok := statuses[source.ID]; ok && !status.LastUpdated.IsZero() {
 		lastUpdated = status.LastUpdated
 	}
-	saveRuleSourceSuccess(dbPath, scope, source.ID, count, lastUpdated)
 	return &RuleSourceSyncResult{
 		Data:        data,
 		LocalPath:   localPath,

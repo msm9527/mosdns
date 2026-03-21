@@ -82,7 +82,7 @@ func newSdSet(bp *coremain.BP, args any) (any, error) {
 	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
-	if err := p.reloadAllRules(false); err != nil {
+	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{PreferCache: true}); err != nil {
 		return nil, err
 	}
 	go p.backgroundSync()
@@ -163,7 +163,7 @@ func (p *SdSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []corema
 	if err := p.loadSources(); err != nil {
 		return err
 	}
-	return p.reloadAllRules(false)
+	return p.reloadAllRules(coremain.RuleSourceSyncOptions{})
 }
 
 func (p *SdSet) loadSources() error {
@@ -186,7 +186,7 @@ func (p *SdSet) loadSources() error {
 	return nil
 }
 
-func (p *SdSet) reloadAllRules(forceRemote bool) error {
+func (p *SdSet) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
 	next := domain.NewDomainMixMatcher()
 	rules := make([]string, 0)
 	for _, source := range p.sourceSnapshot() {
@@ -194,7 +194,7 @@ func (p *SdSet) reloadAllRules(forceRemote bool) error {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, forceRemote)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
 		cancel()
 		if err != nil {
 			p.setRules(nil)
@@ -231,7 +231,7 @@ func (p *SdSet) backgroundSync() {
 		select {
 		case <-ticker.C:
 			if err := p.loadSources(); err == nil {
-				_ = p.reloadAllRules(false)
+				_ = p.reloadAllRules(coremain.RuleSourceSyncOptions{})
 			}
 		case <-p.ctx.Done():
 			return

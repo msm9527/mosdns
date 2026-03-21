@@ -310,7 +310,9 @@ func (s *ruleSourceService) refreshSource(source rulesource.Source) error {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), ruleSourceManualSyncTimeout)
 	defer cancel()
-	_, err = SyncRuleSource(ctx, client, s.controlDBPath(), s.baseDir(), s.scope, source, true)
+	_, err = SyncRuleSource(ctx, client, s.controlDBPath(), s.baseDir(), s.scope, source, RuleSourceSyncOptions{
+		ForceRemote: true,
+	})
 	if err != nil {
 		return NewRuleAPIError(http.StatusBadGateway, "RULE_SOURCE_REFRESH_FAILED", err.Error())
 	}

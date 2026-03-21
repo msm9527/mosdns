@@ -8,8 +8,10 @@ import (
 	"net/netip"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 
+	domainmatcher "github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/klauspost/compress/zstd"
 	mcidr "github.com/metacubex/mihomo/component/cidr"
 	mtrie "github.com/metacubex/mihomo/component/trie"
@@ -96,6 +98,94 @@ func TestParseAdguardFormats(t *testing.T) {
 		t.Fatalf("ParseAdguardBytes yaml: %v", err)
 	}
 	expectDomainRules(t, yamlResult.Deny, []string{"domain:yaml-block.example"})
+}
+
+func TestParseAdguardFormats_ExtendedDNSSyntax(t *testing.T) {
+	result, err := ParseAdguardBytes(FormatRules, []byte(strings.Join([]string{
+		"[Adblock Plus 2.0]",
+		"example.org",
+		"0.0.0.0 hosts.example",
+		"|start",
+		"end|",
+		"||wild*.example^",
+		"@@||allow.example^$important",
+		"||block.example^$important",
+		"||badfilter.example^",
+		"||badfilter.example^$badfilter",
+		"||filtered.example^$client=127.0.0.1",
+	}, "\n")))
+	if err != nil {
+		t.Fatalf("ParseAdguardBytes extended: %v", err)
+	}
+	expectDomainRules(t, result.Deny, []string{
+		"full:example.org",
+		"full:hosts.example",
+		"regexp:^(?:.+\\.)?wild.*\\.example$",
+		"regexp:^.*end$",
+		"regexp:^start.*$",
+	})
+	expectDomainRules(t, result.ImportantAllow, []string{"domain:allow.example"})
+	expectDomainRules(t, result.ImportantDeny, []string{"domain:block.example"})
+	if len(result.Allow) != 0 {
+		t.Fatalf("expected no normal allow rules, got %+v", result.Allow)
+	}
+	for _, blocked := range append(result.Deny, result.ImportantDeny...) {
+		if blocked == "domain:badfilter.example" {
+			t.Fatalf("expected badfilter rule to be removed")
+		}
+		if blocked == "domain:filtered.example" {
+			t.Fatalf("expected unsupported modifier rule to be ignored")
+		}
+	}
+}
+
+func TestParseAdguardFormats_DenyAllow(t *testing.T) {
+	result, err := ParseAdguardBytes(FormatRules, []byte("||example.org^$denyallow=sub.example.org"))
+	if err != nil {
+		t.Fatalf("ParseAdguardBytes denyallow: %v", err)
+	}
+	if len(result.Deny) != 1 {
+		t.Fatalf("expected one deny rule, got %+v", result.Deny)
+	}
+	expectDomainRules(t, result.Deny, []string{"domain:example.org"})
+	expectDomainRules(t, result.Allow, []string{"domain:sub.example.org"})
+
+	allowMatcher := domainmatcher.NewDomainMixMatcher()
+	denyMatcher := domainmatcher.NewDomainMixMatcher()
+	for _, rule := range result.Allow {
+		if err := allowMatcher.Add(rule, struct{}{}); err != nil {
+			t.Fatalf("allowMatcher.Add(%q): %v", rule, err)
+		}
+	}
+	for _, rule := range result.Deny {
+		if err := denyMatcher.Add(rule, struct{}{}); err != nil {
+			t.Fatalf("denyMatcher.Add(%q): %v", rule, err)
+		}
+	}
+	if _, ok := allowMatcher.Match("sub.example.org"); !ok {
+		t.Fatal("expected denyallow domain to become an allow rule")
+	}
+	if _, ok := denyMatcher.Match("www.example.org"); !ok {
+		t.Fatal("expected base domain rule to remain blocked")
+	}
+}
+
+func TestParseAdguardFormats_CompatRegexWithoutClosingSlash(t *testing.T) {
+	result, err := ParseAdguardBytes(FormatRules, []byte("/^.*pcdn.*biliapi\\.net^\n"))
+	if err != nil {
+		t.Fatalf("ParseAdguardBytes compat regex: %v", err)
+	}
+	expectDomainRules(t, result.Deny, []string{"regexp:^.*pcdn.*biliapi\\.net$"})
+
+	matcher := domainmatcher.NewDomainMixMatcher()
+	for _, rule := range result.Deny {
+		if err := matcher.Add(rule, struct{}{}); err != nil {
+			t.Fatalf("matcher.Add(%q): %v", rule, err)
+		}
+	}
+	if _, ok := matcher.Match("xpcdny.biliapi.net"); !ok {
+		t.Fatal("expected compat regex rule to match")
+	}
 }
 
 func TestValidateConfig(t *testing.T) {
