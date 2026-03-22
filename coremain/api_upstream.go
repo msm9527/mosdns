@@ -219,55 +219,18 @@ func cloneGlobalUpstreamOverrides(src GlobalUpstreamOverrides) GlobalUpstreamOve
 }
 
 func validateUpstreamEntry(u UpstreamOverrideConfig, idx int) (string, string, bool) {
-	itemPos := idx + 1
-	u.Tag = strings.TrimSpace(u.Tag)
-	u.Protocol = strings.TrimSpace(u.Protocol)
-	if u.Tag == "" {
-		return "UPSTREAM_TAG_REQUIRED", fmt.Sprintf("Item #%d: tag (name) is required", itemPos), false
-	}
-
-	if !u.Enabled {
-		return "", "", true
-	}
-
-	if u.Protocol == "aliapi" {
-		if strings.TrimSpace(u.AccountID) == "" || strings.TrimSpace(u.AccessKeyID) == "" || strings.TrimSpace(u.AccessKeySecret) == "" {
-			return "ALIAPI_CREDENTIALS_REQUIRED", fmt.Sprintf("Item #%d (%s): AliAPI requires account_id, access_key_id, and access_key_secret", itemPos, u.Tag), false
-		}
-		return "", "", true
-	}
-
-	if strings.TrimSpace(u.Addr) == "" {
-		return "UPSTREAM_ADDR_REQUIRED", fmt.Sprintf("Item #%d (%s): addr is required for DNS types", itemPos, u.Tag), false
-	}
-	return "", "", true
+	_, code, msg, ok := normalizeUpstreamEntry(u, idx)
+	return code, msg, ok
 }
 
 func validateUpstreamList(upstreams []UpstreamOverrideConfig) (string, string, bool) {
-	tagSeen := make(map[string]struct{}, len(upstreams))
-	for i, u := range upstreams {
-		if code, msg, ok := validateUpstreamEntry(u, i); !ok {
-			return code, msg, false
-		}
-		tag := strings.TrimSpace(u.Tag)
-		if _, duplicated := tagSeen[tag]; duplicated {
-			return "UPSTREAM_TAG_DUPLICATED", fmt.Sprintf("duplicated upstream tag: %s", tag), false
-		}
-		tagSeen[tag] = struct{}{}
-	}
-	return "", "", true
+	_, code, msg, ok := normalizeUpstreamList(upstreams)
+	return code, msg, ok
 }
 
 func validateGlobalUpstreamConfig(cfg GlobalUpstreamOverrides) (string, string, bool) {
-	for pluginTag, upstreams := range cfg {
-		if strings.TrimSpace(pluginTag) == "" {
-			return "PLUGIN_TAG_REQUIRED", "plugin_tag is required", false
-		}
-		if code, msg, ok := validateUpstreamList(upstreams); !ok {
-			return code, msg, false
-		}
-	}
-	return "", "", true
+	_, code, msg, ok := normalizeGlobalUpstreamConfig(cfg)
+	return code, msg, ok
 }
 
 func applyUpstreamRuntimeReload(m *Mosdns, pluginTag string) error {
@@ -347,7 +310,8 @@ func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Reques
 	if payload.Config == nil {
 		payload.Config = make(GlobalUpstreamOverrides)
 	}
-	if code, msg, ok := validateGlobalUpstreamConfig(payload.Config); !ok {
+	normalizedConfig, code, msg, ok := normalizeGlobalUpstreamConfig(payload.Config)
+	if !ok {
 		writeAPIError(w, http.StatusBadRequest, code, msg)
 		return
 	}
@@ -360,7 +324,7 @@ func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Reques
 	if err := func() error {
 		upstreamOverridesLock.Lock()
 		defer upstreamOverridesLock.Unlock()
-		upstreamOverrides = cloneGlobalUpstreamOverrides(payload.Config)
+		upstreamOverrides = cloneGlobalUpstreamOverrides(normalizedConfig)
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save upstream config")
@@ -439,10 +403,12 @@ func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 		writeAPIError(w, http.StatusBadRequest, "PLUGIN_TAG_REQUIRED", "plugin_tag is required")
 		return
 	}
-	if code, msg, ok := validateUpstreamList([]UpstreamOverrideConfig{payload.Upstream}); !ok {
+	normalizedItems, code, msg, ok := normalizeUpstreamList([]UpstreamOverrideConfig{payload.Upstream})
+	if !ok {
 		writeAPIError(w, http.StatusBadRequest, code, msg)
 		return
 	}
+	payload.Upstream = normalizedItems[0]
 	if err := ensureUpstreamOverridesLoaded(); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
 		return
@@ -462,10 +428,11 @@ func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 		list = append(list, payload.Upstream)
-		if code, msg, ok := validateUpstreamList(list); !ok {
+		normalizedList, code, msg, ok := normalizeUpstreamList(list)
+		if !ok {
 			return fmt.Errorf("%s|%s", code, msg)
 		}
-		upstreamOverrides[payload.PluginTag] = list
+		upstreamOverrides[payload.PluginTag] = normalizedList
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
 		if strings.Contains(err.Error(), "|") {
@@ -517,10 +484,12 @@ func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 	if strings.TrimSpace(payload.Upstream.Tag) == "" {
 		payload.Upstream.Tag = upstreamTag
 	}
-	if code, msg, ok := validateUpstreamList([]UpstreamOverrideConfig{payload.Upstream}); !ok {
+	normalizedItems, code, msg, ok := normalizeUpstreamList([]UpstreamOverrideConfig{payload.Upstream})
+	if !ok {
 		writeAPIError(w, http.StatusBadRequest, code, msg)
 		return
 	}
+	payload.Upstream = normalizedItems[0]
 	if err := ensureUpstreamOverridesLoaded(); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_LOAD_FAILED", "Failed to load upstream config")
 		return
@@ -555,10 +524,11 @@ func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 			}
 		}
 		list[idx] = payload.Upstream
-		if code, msg, ok := validateUpstreamList(list); !ok {
+		normalizedList, code, msg, ok := normalizeUpstreamList(list)
+		if !ok {
 			return fmt.Errorf("%s|%s", code, msg)
 		}
-		upstreamOverrides[payload.PluginTag] = list
+		upstreamOverrides[payload.PluginTag] = normalizedList
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
 		if strings.Contains(err.Error(), "|") {
@@ -681,7 +651,8 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 		return
 	}
 
-	if code, msg, ok := validateUpstreamList(payload.Upstreams); !ok {
+	normalizedUpstreams, code, msg, ok := normalizeUpstreamList(payload.Upstreams)
+	if !ok {
 		writeAPIError(w, http.StatusBadRequest, code, msg)
 		return
 	}
@@ -701,7 +672,7 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 		if upstreamOverrides == nil {
 			upstreamOverrides = make(GlobalUpstreamOverrides)
 		}
-		upstreamOverrides[payload.PluginTag] = payload.Upstreams
+		upstreamOverrides[payload.PluginTag] = normalizedUpstreams
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
 		mlog.L().Error("[Debug UpstreamAPI] Save failed", zap.Error(err))
