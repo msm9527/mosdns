@@ -315,11 +315,12 @@ func loadFromFile(path string, m IPReceiver) error {
 	if path == "" {
 		return nil
 	}
+	resolvedPath := coremain.ResolveMainConfigPath(path)
 	// 内存优化：流式打开文件
-	f, err := os.Open(path)
+	f, err := os.Open(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			fmt.Printf("[ip_set] file not found, skipping: %s\n", path)
+			fmt.Printf("[ip_set] file not found, skipping: %s\n", resolvedPath)
 			return nil
 		}
 		return err
@@ -332,7 +333,7 @@ func loadFromFile(path string, m IPReceiver) error {
 	if n == 3 && magic == srsMagic {
 		f.Seek(0, 0)
 		if ok, cnt, lastSrs := tryLoadSRS(f, m); ok {
-			fmt.Printf("[ip_set] loaded %d rules from srs file: %s\n", cnt, path)
+			fmt.Printf("[ip_set] loaded %d rules from srs file: %s\n", cnt, resolvedPath)
 			if lastSrs != "" {
 				fmt.Printf("[ip_set] last srs rule: %s\n", lastSrs)
 			}
@@ -349,7 +350,7 @@ func loadFromFile(path string, m IPReceiver) error {
 			return err
 		}
 		after := l.Len()
-		fmt.Printf("[ip_set] loaded %d rules from text file: %s\n", after-before, path)
+		fmt.Printf("[ip_set] loaded %d rules from text file: %s\n", after-before, resolvedPath)
 		return nil
 	}
 

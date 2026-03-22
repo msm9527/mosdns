@@ -189,6 +189,8 @@ policies:
           - $sequence_local_refresh
           - tag_setter 指定客户端直连
           - exit
+      - matches: has_resp
+        exec: exit
       - exec: $rewrite
       - matches: qtype 1
         exec: $sequence_ipv4_refresh

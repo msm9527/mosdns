@@ -9,36 +9,51 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	coremain "github.com/IrineSistiana/mosdns/v5/coremain"
-	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin"
 	"github.com/miekg/dns"
 )
 
+const serviceE2EFixtureStartAttempts = 5
+
 type serviceE2EPorts struct {
-	api   int
-	dns   int
-	probe int
+	api            int
+	dns            int
+	requery        int
+	clashmi        int
+	google         int
+	googleECS      int
+	local          int
+	requeryRefresh int
+	sbnode         int
+	singbox        int
 }
 
 type serviceE2EUpstreams struct {
-	domestic string
-	foreign  string
-	cnfake   string
-	nocnfake string
+	domestic   string
+	foreign    string
+	foreignecs string
+	cnfake     string
+	nocnfake   string
 }
 
 type serviceE2EFixture struct {
-	savedEnv     coremain.RuntimeEnv
-	baseDir      string
-	httpBase     string
-	dnsAddr      string
-	probeAddr    string
-	server       *coremain.Mosdns
-	client       *http.Client
-	stopUpstream func()
+	savedEnv      coremain.RuntimeEnv
+	baseDir       string
+	configDir     string
+	httpBase      string
+	dnsAddr       string
+	googleAddr    string
+	googleECSAddr string
+	localAddr     string
+	sbnodeAddr    string
+	singboxAddr   string
+	server        *coremain.Mosdns
+	client        *http.Client
+	stopUpstream  func()
 }
 
 type serviceE2ESwitchState struct {
@@ -57,6 +72,24 @@ type serviceE2ECacheStats struct {
 
 func newServiceE2EFixture() (*serviceE2EFixture, error) {
 	savedEnv := coremain.SnapshotRuntimeEnvForTesting()
+	var lastErr error
+	for attempt := 0; attempt < serviceE2EFixtureStartAttempts; attempt++ {
+		fx, err := startServiceE2EFixture(savedEnv)
+		if err == nil {
+			return fx, nil
+		}
+		lastErr = err
+		if !isServiceE2EPortConflict(err) {
+			coremain.ApplyRuntimeEnvForTesting(savedEnv)
+			return nil, err
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	coremain.ApplyRuntimeEnvForTesting(savedEnv)
+	return nil, lastErr
+}
+
+func startServiceE2EFixture(savedEnv coremain.RuntimeEnv) (*serviceE2EFixture, error) {
 	baseDir, err := os.MkdirTemp("", "mosdns-e2e-*")
 	if err != nil {
 		return nil, err
@@ -64,38 +97,40 @@ func newServiceE2EFixture() (*serviceE2EFixture, error) {
 
 	ports, err := reserveServiceE2EPorts()
 	if err != nil {
-		_ = os.RemoveAll(baseDir)
+		cleanupServiceE2EAttempt(savedEnv, baseDir, nil)
 		return nil, err
 	}
 	upstreams, stopUpstream, err := startServiceE2EUpstreams()
 	if err != nil {
-		_ = os.RemoveAll(baseDir)
+		cleanupServiceE2EAttempt(savedEnv, baseDir, nil)
 		return nil, err
 	}
 
 	configPath, err := writeServiceE2EFiles(baseDir, ports, upstreams)
 	if err != nil {
-		stopUpstream()
-		_ = os.RemoveAll(baseDir)
+		cleanupServiceE2EAttempt(savedEnv, baseDir, stopUpstream)
 		return nil, err
 	}
 	server, err := coremain.NewServerFromConfigPath(configPath)
 	if err != nil {
-		stopUpstream()
-		coremain.ApplyRuntimeEnvForTesting(savedEnv)
-		_ = os.RemoveAll(baseDir)
+		cleanupServiceE2EAttempt(savedEnv, baseDir, stopUpstream)
 		return nil, err
 	}
 
 	fx := &serviceE2EFixture{
-		savedEnv:     savedEnv,
-		baseDir:      baseDir,
-		httpBase:     fmt.Sprintf("http://127.0.0.1:%d", ports.api),
-		dnsAddr:      fmt.Sprintf("127.0.0.1:%d", ports.dns),
-		probeAddr:    fmt.Sprintf("127.0.0.1:%d", ports.probe),
-		server:       server,
-		client:       &http.Client{Timeout: 3 * time.Second},
-		stopUpstream: stopUpstream,
+		savedEnv:      savedEnv,
+		baseDir:       baseDir,
+		configDir:     filepath.Dir(configPath),
+		httpBase:      fmt.Sprintf("http://127.0.0.1:%d", ports.api),
+		dnsAddr:       fmt.Sprintf("127.0.0.1:%d", ports.dns),
+		googleAddr:    fmt.Sprintf("127.0.0.1:%d", ports.google),
+		googleECSAddr: fmt.Sprintf("127.0.0.1:%d", ports.googleECS),
+		localAddr:     fmt.Sprintf("127.0.0.1:%d", ports.local),
+		sbnodeAddr:    fmt.Sprintf("127.0.0.1:%d", ports.sbnode),
+		singboxAddr:   fmt.Sprintf("127.0.0.1:%d", ports.singbox),
+		server:        server,
+		client:        &http.Client{Timeout: 3 * time.Second},
+		stopUpstream:  stopUpstream,
 	}
 	if err := fx.waitReady(); err != nil {
 		fx.Close()
@@ -104,20 +139,44 @@ func newServiceE2EFixture() (*serviceE2EFixture, error) {
 	return fx, nil
 }
 
+func cleanupServiceE2EAttempt(savedEnv coremain.RuntimeEnv, baseDir string, stopUpstream func()) {
+	if stopUpstream != nil {
+		stopUpstream()
+	}
+	coremain.ApplyRuntimeEnvForTesting(savedEnv)
+	if baseDir != "" {
+		_ = os.RemoveAll(baseDir)
+	}
+}
+
+func isServiceE2EPortConflict(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(err.Error(), "address already in use")
+}
+
 func reserveServiceE2EPorts() (serviceE2EPorts, error) {
-	api, err := reserveServiceE2EPort()
-	if err != nil {
-		return serviceE2EPorts{}, err
+	ports := make([]int, 0, 10)
+	for i := 0; i < 10; i++ {
+		port, err := reserveServiceE2EPort()
+		if err != nil {
+			return serviceE2EPorts{}, err
+		}
+		ports = append(ports, port)
 	}
-	dnsPort, err := reserveServiceE2EPort()
-	if err != nil {
-		return serviceE2EPorts{}, err
-	}
-	probe, err := reserveServiceE2EPort()
-	if err != nil {
-		return serviceE2EPorts{}, err
-	}
-	return serviceE2EPorts{api: api, dns: dnsPort, probe: probe}, nil
+	return serviceE2EPorts{
+		api:            ports[0],
+		dns:            ports[1],
+		requery:        ports[2],
+		clashmi:        ports[3],
+		google:         ports[4],
+		googleECS:      ports[5],
+		local:          ports[6],
+		requeryRefresh: ports[7],
+		sbnode:         ports[8],
+		singbox:        ports[9],
+	}, nil
 }
 
 func reserveServiceE2EPort() (int, error) {
@@ -144,10 +203,10 @@ func (fx *serviceE2EFixture) Close() {
 }
 
 func (fx *serviceE2EFixture) waitReady() error {
-	if err := waitServiceE2EEventually(5*time.Second, fx.httpReady, "http api not ready"); err != nil {
+	if err := waitServiceE2EEventually(10*time.Second, fx.httpReady, "http api not ready"); err != nil {
 		return err
 	}
-	return waitServiceE2EEventually(5*time.Second, fx.dnsReady, "dns listener not ready")
+	return waitServiceE2EEventually(10*time.Second, fx.dnsReady, "dns listener not ready")
 }
 
 func (fx *serviceE2EFixture) httpReady() bool {
@@ -237,121 +296,4 @@ func (fx *serviceE2EFixture) deleteJSON(t TestingT, path string, dst any) {
 	if err := fx.doJSON(http.MethodDelete, path, nil, dst, http.StatusOK); err != nil {
 		t.Fatalf("%v", err)
 	}
-}
-
-func (fx *serviceE2EFixture) setSwitch(t TestingT, name, value string) {
-	t.Helper()
-	var state serviceE2ESwitchState
-	fx.putJSON(t, "/api/v1/control/switches/"+name, map[string]string{"value": value}, &state)
-	if state.Value != value {
-		t.Fatalf("switch %s not updated: %+v", name, state)
-	}
-}
-
-func (fx *serviceE2EFixture) queryUDP(t TestingT, name string, qtype uint16) *dns.Msg {
-	t.Helper()
-	return fx.mustExchange(t, "udp", fx.dnsAddr, name, qtype)
-}
-
-func (fx *serviceE2EFixture) queryTCP(t TestingT, name string, qtype uint16) *dns.Msg {
-	t.Helper()
-	return fx.mustExchange(t, "tcp", fx.dnsAddr, name, qtype)
-}
-
-func (fx *serviceE2EFixture) queryProbe(t TestingT, name string, qtype uint16) *dns.Msg {
-	t.Helper()
-	return fx.mustExchange(t, "udp", fx.probeAddr, name, qtype)
-}
-
-func (fx *serviceE2EFixture) mustExchange(t TestingT, network, addr, name string, qtype uint16) *dns.Msg {
-	t.Helper()
-	resp, err := fx.exchange(network, addr, name, qtype)
-	if err != nil {
-		t.Fatalf("dns exchange %s %s %s: %v", network, addr, name, err)
-	}
-	return resp
-}
-
-func (fx *serviceE2EFixture) exchange(network, addr, name string, qtype uint16) (*dns.Msg, error) {
-	client := &dns.Client{Net: network, Timeout: 2 * time.Second}
-	req := new(dns.Msg)
-	req.SetQuestion(dns.Fqdn(name), qtype)
-	resp, _, err := client.Exchange(req, addr)
-	return resp, err
-}
-
-func (fx *serviceE2EFixture) waitForDNS(t TestingT, network, addr, name string, qtype uint16, check func(*dns.Msg) bool) {
-	t.Helper()
-	if err := waitServiceE2EEventually(5*time.Second, func() bool {
-		resp, err := fx.exchange(network, addr, name, qtype)
-		return err == nil && check(resp)
-	}, "condition not satisfied before deadline"); err != nil {
-		t.Fatalf("%v", err)
-	}
-}
-
-func (fx *serviceE2EFixture) cacheStats(t TestingT) map[string]coremain.CacheStatsSnapshot {
-	t.Helper()
-	var payload serviceE2ECacheStats
-	fx.getJSON(t, "/api/v1/cache/stats", &payload)
-	items := make(map[string]coremain.CacheStatsSnapshot, len(payload.Items))
-	for _, item := range payload.Items {
-		items[item.Tag] = item
-	}
-	return items
-}
-
-func (fx *serviceE2EFixture) addAdguardRuleFile(t TestingT, name, content string) string {
-	t.Helper()
-	path := filepath.Join(fx.baseDir, "adguard", name)
-	if err := writeServiceE2EFile(path, content); err != nil {
-		t.Fatalf("write adguard rule file: %v", err)
-	}
-	return path
-}
-
-func (fx *serviceE2EFixture) addDiversionRuleFile(t TestingT, name, content string) string {
-	t.Helper()
-	path := filepath.Join(fx.baseDir, "diversion", name)
-	if err := writeServiceE2EFile(path, content); err != nil {
-		t.Fatalf("write diversion rule file: %v", err)
-	}
-	return path
-}
-
-func (fx *serviceE2EFixture) requireDeleted(t TestingT, path string) {
-	t.Helper()
-	if _, err := os.Stat(path); !os.IsNotExist(err) {
-		t.Fatalf("expected %s to be deleted, err=%v", path, err)
-	}
-}
-
-func newLocalAdguardRule(id, name, path string) coremain.RuleSourceItem {
-	return coremain.RuleSourceItem{
-		ID:         id,
-		Name:       name,
-		Enabled:    true,
-		MatchMode:  rulesource.MatchModeAdguardNative,
-		Format:     rulesource.FormatRules,
-		SourceKind: rulesource.SourceKindLocal,
-		Path:       path,
-	}
-}
-
-func newLocalDiversionRule(id, name, bindTo, path string) coremain.RuleSourceItem {
-	return coremain.RuleSourceItem{
-		ID:         id,
-		Name:       name,
-		BindTo:     bindTo,
-		Enabled:    true,
-		MatchMode:  rulesource.MatchModeDomainSet,
-		Format:     rulesource.FormatList,
-		SourceKind: rulesource.SourceKindLocal,
-		Path:       path,
-	}
-}
-
-type TestingT interface {
-	Helper()
-	Fatalf(string, ...any)
 }

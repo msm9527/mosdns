@@ -138,17 +138,18 @@ func (r *Rewrite) loadRulesFromFiles(files []string) ([]string, error) {
 	newMatcher.SetDefaultMatcher(domain.MatcherFull)
 
 	for i, file := range files {
-		b, err := os.ReadFile(file)
+		resolvedPath := coremain.ResolveMainConfigPath(file)
+		b, err := os.ReadFile(resolvedPath)
 		if err != nil {
 			// Allow non-existent files on startup
 			if os.IsNotExist(err) {
 				continue
 			}
-			return nil, fmt.Errorf("failed to read file #%d %s, %w", i, file, err)
+			return nil, fmt.Errorf("failed to read file #%d %s, %w", i, resolvedPath, err)
 		}
 		rules, err := loadRulesFromReader(bytes.NewReader(b), newMatcher)
 		if err != nil {
-			return nil, fmt.Errorf("failed to load rules from file #%d %s, %w", i, file, err)
+			return nil, fmt.Errorf("failed to load rules from file #%d %s, %w", i, resolvedPath, err)
 		}
 		allRules = append(allRules, rules...)
 	}

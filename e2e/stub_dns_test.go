@@ -75,10 +75,11 @@ func startServiceE2EUpstreams() (serviceE2EUpstreams, func(), error) {
 		return serviceE2EUpstreams{}, nil, err
 	}
 	return serviceE2EUpstreams{
-			domestic: domestic.addr,
-			foreign:  foreign.addr,
-			cnfake:   cnfake.addr,
-			nocnfake: nocnfake.addr,
+			domestic:   domestic.addr,
+			foreign:    foreign.addr,
+			foreignecs: foreign.addr,
+			cnfake:     cnfake.addr,
+			nocnfake:   nocnfake.addr,
 		}, func() {
 			domestic.Close()
 			foreign.Close()
@@ -133,6 +134,14 @@ func buildServiceE2EAnswers(q dns.Question, ipv4, ipv6 net.IP) []dns.RR {
 
 func requireServiceE2EARecord(t TestingT, resp *dns.Msg, want string) {
 	t.Helper()
+	a := requireServiceE2EAnyARecord(t, resp)
+	if got := a.A.String(); got != want {
+		t.Fatalf("unexpected A answer: got %s want %s", got, want)
+	}
+}
+
+func requireServiceE2EAnyARecord(t TestingT, resp *dns.Msg) *dns.A {
+	t.Helper()
 	if resp.Rcode != dns.RcodeSuccess {
 		t.Fatalf("unexpected rcode: %d", resp.Rcode)
 	}
@@ -143,9 +152,7 @@ func requireServiceE2EARecord(t TestingT, resp *dns.Msg, want string) {
 	if !ok {
 		t.Fatalf("unexpected answer type: %T", resp.Answer[0])
 	}
-	if got := a.A.String(); got != want {
-		t.Fatalf("unexpected A answer: got %s want %s", got, want)
-	}
+	return a
 }
 
 func requireServiceE2EAAAARecord(t TestingT, resp *dns.Msg, want string) {
