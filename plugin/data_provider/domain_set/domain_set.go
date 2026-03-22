@@ -565,7 +565,7 @@ func LoadFile(f string, m *domain.MixMatcher[struct{}]) error {
 }
 
 func readDomainRulesSource(path string) ([]byte, string, error) {
-	b, err := os.ReadFile(path)
+	b, err := os.ReadFile(coremain.ResolveMainConfigPath(path))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, "text file", nil

@@ -70,6 +70,8 @@ policies:
     type: sequence
     args:
       - exec: $sequence_common_precheck
+      - matches: has_resp
+        exec: exit
       - exec: $top_domains
       - exec: $rewrite
       - matches: qtype 1
@@ -84,6 +86,8 @@ policies:
     type: sequence
     args:
       - exec: $sequence_common_precheck
+      - matches: has_resp
+        exec: exit
       - exec: $rewrite
       - matches: qtype 1
         exec: $sequence_ipv4

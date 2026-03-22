@@ -1,19 +1,28 @@
 sources:
-  - id: base-cn
-    name: Base CN
+  - id: geoip-cn
+    name: GeoIP CN
+    bind_to: geoip_cn
+    enabled: true
+    behavior: ipcidr
+    match_mode: ip_cidr_set
+    format: list
+    source_kind: local
+    path: diversion/geoip-cn.list
+  - id: geosite-cn
+    name: Geosite CN
     bind_to: geosite_cn
     enabled: true
     behavior: domain
     match_mode: domain_set
     format: list
     source_kind: local
-    path: diversion/cn.list
-  - id: base-proxy
-    name: Base Proxy
+    path: diversion/geosite-cn.list
+  - id: geosite-no-cn
+    name: Geosite No CN
     bind_to: geosite_no_cn
     enabled: true
     behavior: domain
     match_mode: domain_set
     format: list
     source_kind: local
-    path: diversion/proxy.list
+    path: diversion/geosite-no-cn.list

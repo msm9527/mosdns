@@ -2,144 +2,54 @@
 <html lang="zh-CN">
 <head>
   <meta charset="UTF-8">
-  <title>mosdns E2E Report</title>
-  <style>
-    :root {
-      color-scheme: light;
-      --bg: #f5f7fb;
-      --card: #ffffff;
-      --line: #d9e0ea;
-      --text: #16202a;
-      --muted: #5d6b7a;
-      --pass: #107a3f;
-      --pass-bg: #e9f8ef;
-      --fail: #b42318;
-      --fail-bg: #fff0ee;
-    }
-    body {
-      margin: 0;
-      padding: 32px;
-      background: linear-gradient(180deg, #f7f8fc 0%, #eef3f8 100%);
-      color: var(--text);
-      font: 14px/1.6 "SFMono-Regular", "Menlo", "Monaco", monospace;
-    }
-    .wrap {
-      max-width: 1080px;
-      margin: 0 auto;
-    }
-    .card {
-      background: var(--card);
-      border: 1px solid var(--line);
-      border-radius: 16px;
-      box-shadow: 0 10px 30px rgba(16, 24, 40, 0.06);
-      padding: 24px;
-      margin-bottom: 20px;
-    }
-    h1, h2 {
-      margin: 0 0 12px;
-      font-weight: 700;
-    }
-    .meta {
-      color: var(--muted);
-    }
-    .summary {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-      gap: 12px;
-      margin-top: 16px;
-    }
-    .pill {
-      border-radius: 12px;
-      padding: 14px 16px;
-      border: 1px solid var(--line);
-    }
-    .status-passed {
-      color: var(--pass);
-      background: var(--pass-bg);
-    }
-    .status-failed {
-      color: var(--fail);
-      background: var(--fail-bg);
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      margin-top: 12px;
-    }
-    th, td {
-      padding: 12px 10px;
-      border-bottom: 1px solid var(--line);
-      text-align: left;
-      vertical-align: top;
-    }
-    th {
-      color: var(--muted);
-      font-weight: 600;
-      font-size: 12px;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-    }
-    .badge {
-      display: inline-block;
-      border-radius: 999px;
-      padding: 2px 10px;
-      font-size: 12px;
-      font-weight: 700;
-    }
-  </style>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ .Title }}</title>
+  <link rel="stylesheet" href="report.css">
 </head>
 <body>
-  <div class="wrap">
-    <div class="card">
-      <h1>mosdns E2E Report</h1>
-      <div class="meta">生成时间: {{ .GeneratedAt }} | 总耗时: {{ .Duration }}</div>
-      <div class="summary">
-        <div class="pill {{ if eq .Status "passed" }}status-passed{{ else }}status-failed{{ end }}">
-          <div>Suite</div>
-          <strong>{{ .Status }}</strong>
-        </div>
-        <div class="pill">
-          <div>Total Cases</div>
-          <strong>{{ .Total }}</strong>
-        </div>
-        <div class="pill status-passed">
-          <div>Passed</div>
-          <strong>{{ .Passed }}</strong>
-        </div>
-        <div class="pill status-failed">
-          <div>Failed</div>
-          <strong>{{ .Failed }}</strong>
-        </div>
+  <div class="page-shell">
+    <header class="hero">
+      <div class="hero-copy">
+        <div class="eyebrow">mosdns / 端到端测试报告</div>
+        <h1>服务 E2E 中文报告</h1>
+        <p>完整配置真实启动，覆盖控制面接口、DNS 数据面、规则变更、生效路径、缓存命中和并发稳定性。</p>
       </div>
-    </div>
+      <div id="hero-summary" class="hero-summary"></div>
+    </header>
 
-    <div class="card">
-      <h2>Cases</h2>
-      <table>
-        <thead>
-          <tr>
-            <th>Case</th>
-            <th>Status</th>
-            <th>Duration</th>
-            <th>Detail</th>
-          </tr>
-        </thead>
-        <tbody>
-          {{ range .Cases }}
-          <tr>
-            <td>{{ .Name }}</td>
-            <td>
-              <span class="badge {{ if eq .Status "passed" }}status-passed{{ else }}status-failed{{ end }}">
-                {{ .Status }}
-              </span>
-            </td>
-            <td>{{ .Duration }}</td>
-            <td>{{ .Detail }}</td>
-          </tr>
-          {{ end }}
-        </tbody>
-      </table>
-    </div>
+    <nav id="tab-nav" class="tab-nav">
+      <button class="tab-button" data-tab="overview">测试总览</button>
+      <button class="tab-button" data-tab="dns">DNS 断言</button>
+      <button class="tab-button" data-tab="api">接口检查</button>
+      <button class="tab-button" data-tab="performance">性能稳定性</button>
+      <button class="tab-button" data-tab="cases">用例详情</button>
+    </nav>
+
+    <main>
+      <section id="tab-overview" class="tab-panel"></section>
+      <section id="tab-dns" class="tab-panel"></section>
+      <section id="tab-api" class="tab-panel"></section>
+      <section id="tab-performance" class="tab-panel"></section>
+      <section id="tab-cases" class="tab-panel"></section>
+    </main>
   </div>
+
+  <aside id="detail-drawer" class="drawer hidden" aria-hidden="true">
+    <div class="drawer-mask" data-close-drawer="true"></div>
+    <div class="drawer-panel">
+      <div class="drawer-head">
+        <div>
+          <div id="drawer-kicker" class="drawer-kicker"></div>
+          <h2 id="drawer-title">详情</h2>
+        </div>
+        <button id="drawer-close" class="drawer-close" type="button">关闭</button>
+      </div>
+      <div id="drawer-body" class="drawer-body"></div>
+    </div>
+  </aside>
+
+  <script id="report-data" type="application/json">{{ .ReportJSON }}</script>
+  <script src="report_renderer.js"></script>
+  <script src="report.js"></script>
 </body>
 </html>
