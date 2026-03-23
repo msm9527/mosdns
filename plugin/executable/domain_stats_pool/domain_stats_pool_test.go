@@ -71,6 +71,9 @@ func TestStatsPoolSaveAndReload(t *testing.T) {
 	if err := loaded.loadFromStore(); err != nil {
 		t.Fatalf("loadFromStore: %v", err)
 	}
+	if loaded.shouldWrite(WriteModeShutdown) {
+		t.Fatal("expected clean reloaded stats pool to skip shutdown write")
+	}
 	items, total, err := loaded.MemoryEntries("", 0, 10)
 	if err != nil {
 		t.Fatalf("MemoryEntries: %v", err)

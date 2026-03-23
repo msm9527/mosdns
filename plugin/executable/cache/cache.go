@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -857,8 +858,10 @@ func (c *Cache) runLazyUpdate(msgKey string, qCtx *query_context.Context, next s
 }
 
 func (c *Cache) Close() error {
-	if err := c.dumpCache(); err != nil {
-		c.logger.Error("failed to dump cache", zap.Error(err))
+	if c.shouldDumpOnClose() {
+		if err := c.dumpCache(); err != nil {
+			c.logger.Error("failed to dump cache", zap.Error(err))
+		}
 	}
 	if err := c.persistence.close(); err != nil {
 		c.logger.Error("failed to close cache persistence", zap.Error(err))
@@ -867,6 +870,21 @@ func (c *Cache) Close() error {
 		close(c.closeNotify)
 	})
 	return c.backend.Close()
+}
+
+func (c *Cache) shouldDumpOnClose() bool {
+	if c.persistence == nil {
+		return false
+	}
+	if c.updatedKey.Load() > 0 {
+		return true
+	}
+	snapshotPath := c.persistence.snapshotPath
+	if len(snapshotPath) == 0 {
+		return false
+	}
+	_, err := os.Stat(snapshotPath)
+	return err != nil
 }
 
 func (c *Cache) PrepareForRestart() error {

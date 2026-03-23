@@ -22,7 +22,6 @@ package coremain
 import (
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"net/http/pprof"
 	"os"
@@ -44,7 +43,8 @@ type Mosdns struct {
 	env    RuntimeEnv
 
 	// Plugins
-	plugins map[string]any
+	plugins     map[string]any
+	pluginTypes map[string]string
 
 	httpMux          *chi.Mux
 	metricsReg       *prometheus.Registry
@@ -78,6 +78,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 		logger:        lg,
 		env:           env,
 		plugins:       make(map[string]any),
+		pluginTypes:   make(map[string]string),
 		httpMux:       chi.NewRouter(),
 		metricsReg:    newMetricsReg(),
 		sc:            safe_close.NewSafeClose(),
@@ -178,14 +179,7 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 			// Stop the audit worker gracefully.
 			GlobalAuditCollector.Stop()
 
-			m.logger.Info("starting shutdown sequences")
-			for tag, p := range m.plugins {
-				if closer, _ := p.(io.Closer); closer != nil {
-					m.logger.Info("closing plugin", zap.String("tag", tag))
-					_ = closer.Close()
-				}
-			}
-			m.logger.Info("all plugins were closed")
+			m.shutdownPlugins()
 			GlobalAuditCollector.StopWorker()
 		}()
 	})
@@ -220,12 +214,13 @@ func NewTestMosdnsWithPluginsAndEnv(p map[string]any, env RuntimeEnv) *Mosdns {
 		env = completeRuntimeEnv(env)
 	}
 	return &Mosdns{
-		logger:     mlog.Nop(),
-		env:        env,
-		httpMux:    chi.NewRouter(),
-		plugins:    p,
-		metricsReg: newMetricsReg(),
-		sc:         safe_close.NewSafeClose(),
+		logger:      mlog.Nop(),
+		env:         env,
+		httpMux:     chi.NewRouter(),
+		plugins:     p,
+		pluginTypes: make(map[string]string),
+		metricsReg:  newMetricsReg(),
+		sc:          safe_close.NewSafeClose(),
 	}
 }
 
@@ -415,12 +410,16 @@ func (m *Mosdns) initHttpMux() {
 }
 
 func (m *Mosdns) loadPresetPlugins() error {
+	if m.pluginTypes == nil {
+		m.pluginTypes = make(map[string]string)
+	}
 	for tag, f := range LoadNewPersetPluginFuncs() {
 		p, err := f(NewBP(tag, m))
 		if err != nil {
 			return fmt.Errorf("failed to init preset plugin %s, %w", tag, err)
 		}
 		m.plugins[tag] = p
+		m.pluginTypes[tag] = "preset"
 	}
 	return nil
 }

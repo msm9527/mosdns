@@ -35,6 +35,8 @@ func (d *domainStatsPool) loadFromStore() error {
 		d.trackEntryCreatedLocked(variant.Domain)
 	}
 	d.rules = buildRulesFromStoredDomains(state.Domains)
+	d.lastRulesHash = hashRules(d.rules)
+	d.hasRulesHash = true
 	atomicStoreIfGreater(&d.totalCount, state.Meta.TotalObservations)
 	return nil
 }
