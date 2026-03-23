@@ -85,4 +85,7 @@ func TestNewPluginProvidesRawArgs(t *testing.T) {
 	if got.effective != "effective" {
 		t.Fatalf("unexpected effective args value: %q", got.effective)
 	}
+	if typ := m.pluginTypes["capture"]; typ != pluginType {
+		t.Fatalf("unexpected plugin type recorded: %q", typ)
+	}
 }

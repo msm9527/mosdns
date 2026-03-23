@@ -130,12 +130,34 @@ func TestMemoryPoolSaveAndReload(t *testing.T) {
 	if err := loaded.loadFromStore(); err != nil {
 		t.Fatalf("loadFromStore: %v", err)
 	}
+	if loaded.shouldWrite(WriteModeShutdown) {
+		t.Fatal("expected clean reloaded pool to skip shutdown write")
+	}
 	items, total, err := loaded.MemoryEntries("", 0, 10)
 	if err != nil {
 		t.Fatalf("MemoryEntries: %v", err)
 	}
 	if total != 1 || len(items) != 1 || items[0].Domain != "example.com" {
 		t.Fatalf("unexpected reloaded items: total=%d items=%+v", total, items)
+	}
+}
+
+func TestMemoryPoolShutdownWriteWhenHotReplacePending(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainMemoryPool("my_fakeiplist", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+
+	pool.hasRulesHash = true
+	pool.hotNeedsReplace.Store(true)
+	if !pool.shouldWrite(WriteModeShutdown) {
+		t.Fatal("expected shutdown write when hot rule replacement is pending")
 	}
 }
 

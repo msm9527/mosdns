@@ -101,6 +101,9 @@ func (m *Mosdns) newPlugin(rawCfg PluginConfig, effectiveCfg PluginConfig) error
 	if len(c.Tag) == 0 {
 		c.Tag = fmt.Sprintf("anonymouse_%s_%d", c.Type, len(m.plugins))
 	}
+	if m.pluginTypes == nil {
+		m.pluginTypes = make(map[string]string)
+	}
 
 	if _, dup := m.plugins[c.Tag]; dup {
 		return fmt.Errorf("duplicated plugin tag %s", c.Tag)
@@ -138,6 +141,7 @@ func (m *Mosdns) newPlugin(rawCfg PluginConfig, effectiveCfg PluginConfig) error
 		return fmt.Errorf("failed to init plugin: %w", err)
 	}
 	m.plugins[c.Tag] = p
+	m.pluginTypes[c.Tag] = c.Type
 	return nil
 }
 

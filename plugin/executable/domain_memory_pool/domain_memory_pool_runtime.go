@@ -38,6 +38,8 @@ func (d *domainMemoryPool) loadFromStore() error {
 	}
 	d.rules = buildRulesFromStoredDomains(state.Domains)
 	d.replaceActiveHotRulesLocked(d.rules)
+	d.lastRulesHash = hashRules(d.rules)
+	d.hasRulesHash = true
 	atomicStoreIfGreater(&d.totalCount, state.Meta.TotalObservations)
 	atomicStoreIfGreater(&d.promotedCount, int64(state.Meta.PromotedDomainCount))
 	atomicStoreIfGreater(&d.publishedCount, int64(len(d.rules)))

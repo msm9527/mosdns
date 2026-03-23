@@ -35,6 +35,8 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/miekg/dns"
+	"github.com/prometheus/client_golang/prometheus"
+	dto "github.com/prometheus/client_model/go"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -451,9 +453,74 @@ func TestInferWALFileFromDump(t *testing.T) {
 	}
 }
 
+func TestCacheCloseSkipsDumpWithoutPendingUpdates(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            64,
+		DumpFile:        filepath.Join(dir, "cache.dump"),
+		DumpInterval:    3600,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 1,
+	}
+
+	c := NewCache(args, Opts{})
+	if err := c.dumpCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	before := counterValue(t, c.dumpTotalCounter)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := counterValue(t, c.dumpTotalCounter)
+	if after != before {
+		t.Fatalf("expected close without pending updates to skip dump, before=%v after=%v", before, after)
+	}
+}
+
+func TestCacheCloseDumpsWhenUpdatesPending(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            64,
+		DumpFile:        filepath.Join(dir, "cache.dump"),
+		DumpInterval:    3600,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 1,
+	}
+
+	c := NewCache(args, Opts{})
+	if err := c.dumpCache(); err != nil {
+		t.Fatal(err)
+	}
+
+	qCtx := testQueryContext(t, "close.example.", net.IPv4(1, 1, 1, 1))
+	if !c.saveRespToCache("close-key", qCtx) {
+		t.Fatal("expected response to be cached")
+	}
+	c.updatedKey.Add(1)
+
+	before := counterValue(t, c.dumpTotalCounter)
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+	after := counterValue(t, c.dumpTotalCounter)
+	if after != before+1 {
+		t.Fatalf("expected close with pending updates to dump once, before=%v after=%v", before, after)
+	}
+}
+
 type testingHelper interface {
 	Helper()
 	Fatal(args ...interface{})
+}
+
+func counterValue(t *testing.T, counter prometheus.Counter) float64 {
+	t.Helper()
+	metric := new(dto.Metric)
+	if err := counter.Write(metric); err != nil {
+		t.Fatalf("counter.Write: %v", err)
+	}
+	return metric.GetCounter().GetValue()
 }
 
 func testQueryContext(t testingHelper, name string, ip net.IP) *query_context.Context {

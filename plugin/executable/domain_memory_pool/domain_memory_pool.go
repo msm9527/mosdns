@@ -512,14 +512,22 @@ func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 }
 
 func (d *domainMemoryPool) shouldWrite(mode WriteMode) bool {
-	if mode != WriteModePeriodic {
+	switch mode {
+	case WriteModePeriodic:
+		return d.dirtyPending.Load() || d.hotNeedsReplace.Load()
+	case WriteModeShutdown:
+		return d.shouldWriteOnShutdown()
+	default:
 		return true
 	}
-	return d.dirtyPending.Load() || d.hotNeedsReplace.Load()
 }
 
 func (d *domainMemoryPool) shouldOnlySyncHotRules(mode WriteMode) bool {
 	return mode == WriteModePeriodic && !d.dirtyPending.Load() && d.hotNeedsReplace.Load()
+}
+
+func (d *domainMemoryPool) shouldWriteOnShutdown() bool {
+	return !d.hasRulesHash || d.dirtyPending.Load() || d.hotNeedsReplace.Load()
 }
 
 func (d *domainMemoryPool) syncHotRulesOnly(rules []string) error {

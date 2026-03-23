@@ -433,7 +433,7 @@ func (d *domainStatsPool) runWrite(mode WriteMode) {
 func (d *domainStatsPool) performWrite(mode WriteMode) error {
 	d.writeMu.Lock()
 	defer d.writeMu.Unlock()
-	if mode == WriteModePeriodic && !d.dirtyPending.Load() {
+	if !d.shouldWrite(mode) {
 		return nil
 	}
 
@@ -461,6 +461,21 @@ func (d *domainStatsPool) performWrite(mode WriteMode) error {
 		d.notifySubscribers()
 	}
 	return nil
+}
+
+func (d *domainStatsPool) shouldWrite(mode WriteMode) bool {
+	switch mode {
+	case WriteModePeriodic:
+		return d.dirtyPending.Load()
+	case WriteModeShutdown:
+		return d.shouldWriteOnShutdown()
+	default:
+		return true
+	}
+}
+
+func (d *domainStatsPool) shouldWriteOnShutdown() bool {
+	return !d.hasRulesHash || d.dirtyPending.Load()
 }
 
 func (d *domainStatsPool) buildSnapshot(mode WriteMode) writeSnapshot {
