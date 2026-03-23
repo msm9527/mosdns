@@ -127,3 +127,43 @@ func TestHandleReplaceUpstreamConfigWithMosdns_RejectsInvalidIPv6(t *testing.T) 
 		t.Fatalf("unexpected response body: %s", w.Body.String())
 	}
 }
+
+func TestNormalizeUpstreamEntryAliAPIRequiresCredentials(t *testing.T) {
+	_, code, msg, ok := normalizeUpstreamEntry(UpstreamOverrideConfig{
+		Tag:      "ali",
+		Enabled:  true,
+		Protocol: "aliapi",
+	}, 0)
+	if ok {
+		t.Fatal("expected aliapi credentials validation to fail")
+	}
+	if code != "ALIAPI_CREDENTIALS_REQUIRED" {
+		t.Fatalf("unexpected error code %q", code)
+	}
+	if !strings.Contains(msg, "account_id, access_key_id, and access_key_secret") {
+		t.Fatalf("unexpected error message %q", msg)
+	}
+}
+
+func TestNormalizeUpstreamEntryAliAPIAcceptsPerUpstreamCredentialsWithoutAddr(t *testing.T) {
+	item, code, msg, ok := normalizeUpstreamEntry(UpstreamOverrideConfig{
+		Tag:             " ali ",
+		Enabled:         true,
+		Protocol:        "AliAPI",
+		AccountID:       " account ",
+		AccessKeyID:     " ak ",
+		AccessKeySecret: " secret ",
+	}, 0)
+	if !ok {
+		t.Fatalf("normalizeUpstreamEntry failed: code=%s msg=%s", code, msg)
+	}
+	if item.Protocol != "aliapi" {
+		t.Fatalf("unexpected protocol %q", item.Protocol)
+	}
+	if item.Addr != "" {
+		t.Fatalf("aliapi upstream should not require addr, got %q", item.Addr)
+	}
+	if item.AccountID != " account " || item.AccessKeyID != " ak " || item.AccessKeySecret != " secret " {
+		t.Fatalf("normalizeUpstreamEntry unexpectedly rewrote aliapi credentials: %+v", item)
+	}
+}

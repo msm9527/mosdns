@@ -58,7 +58,9 @@ type Args struct {
 	UpstreamFailureThreshold    int              `yaml:"upstream_failure_threshold"`
 	UpstreamCircuitBreakSeconds int              `yaml:"upstream_circuit_break_seconds"`
 
-	// AliDNS API specific options, global to this plugin instance.
+	// AliDNS API legacy fallback options. New configs should prefer per-upstream
+	// credentials in UpstreamConfig. These globals are only used to expand old
+	// plugin-level configs into each aliapi upstream at runtime.
 	AccountID       string `yaml:"account_id"`
 	AccessKeyID     string `yaml:"access_key_id"`
 	AccessKeySecret string `yaml:"access_key_secret"`
@@ -83,6 +85,13 @@ type UpstreamConfig struct {
 	UpstreamQueryTimeout int    `yaml:"upstream_query_timeout"`
 
 	Type string `yaml:"type"` // "dns" (default) or "aliapi"
+
+	AccountID       string `yaml:"account_id"`
+	AccessKeyID     string `yaml:"access_key_id"`
+	AccessKeySecret string `yaml:"access_key_secret"`
+	ServerAddr      string `yaml:"server_addr"`
+	EcsClientIP     string `yaml:"ecs_client_ip"`
+	EcsClientMask   uint8  `yaml:"ecs_client_mask"`
 
 	// Deprecated: This option has no affect.
 	// TODO: (v6) Remove this option.
@@ -156,14 +165,12 @@ func buildEffectiveArgs(pluginTag string, base *Args, overrides []coremain.Upstr
 
 		if o.Protocol == "aliapi" {
 			u.Type = "aliapi"
-			if o.AccountID != "" {
-				a.AccountID = o.AccountID
-				a.AccessKeyID = o.AccessKeyID
-				a.AccessKeySecret = o.AccessKeySecret
-				a.ServerAddr = o.ServerAddr
-				a.EcsClientIP = o.EcsClientIP
-				a.EcsClientMask = o.EcsClientMask
-			}
+			u.AccountID = o.AccountID
+			u.AccessKeyID = o.AccessKeyID
+			u.AccessKeySecret = o.AccessKeySecret
+			u.ServerAddr = o.ServerAddr
+			u.EcsClientIP = o.EcsClientIP
+			u.EcsClientMask = o.EcsClientMask
 		} else {
 			u.Type = "dns"
 		}
@@ -235,6 +242,7 @@ type Opts struct {
 // NewAliAPI inits a AliAPI from given args.
 // args must contain at least one upstream.
 func NewAliAPI(args *Args, opt Opts) (*AliAPI, error) {
+	args = materializeRuntimeArgs(args, opt.Logger)
 	if len(args.Upstreams) == 0 {
 		return nil, errors.New("no upstream is configured")
 	}
@@ -285,16 +293,16 @@ func NewAliAPI(args *Args, opt Opts) (*AliAPI, error) {
 		var err error
 
 		if c.Type == "aliapi" {
-			if args.AccountID == "" || args.AccessKeyID == "" || args.AccessKeySecret == "" {
-				return nil, fmt.Errorf("aliapi upstream requires account_id, access_key_id, and access_key_secret to be set in plugin args")
+			if c.AccountID == "" || c.AccessKeyID == "" || c.AccessKeySecret == "" {
+				return nil, fmt.Errorf("aliapi upstream %q requires account_id, access_key_id, and access_key_secret", c.Tag)
 			}
 			aliAPIArgs := AliAPIUpstreamArgs{
-				AccountID:       args.AccountID,
-				AccessKeyID:     args.AccessKeyID,
-				AccessKeySecret: args.AccessKeySecret,
-				ServerAddr:      args.ServerAddr,
-				EcsClientIP:     args.EcsClientIP,
-				EcsClientMask:   args.EcsClientMask,
+				AccountID:       c.AccountID,
+				AccessKeyID:     c.AccessKeyID,
+				AccessKeySecret: c.AccessKeySecret,
+				ServerAddr:      c.ServerAddr,
+				EcsClientIP:     c.EcsClientIP,
+				EcsClientMask:   c.EcsClientMask,
 			}
 			u = NewAliAPIUpstream(aliAPIArgs, opt.Logger)
 		} else {
@@ -396,7 +404,7 @@ func (f *AliAPI) ReloadControlConfig(_ *coremain.GlobalOverrides, upstreams []co
 
 	f.runtimeMu.Lock()
 	oldUs := f.us
-	f.args = effective
+	f.args = rebuilt.args
 	f.us = rebuilt.us
 	f.tag2Upstream = rebuilt.tag2Upstream
 	f.runtimeMu.Unlock()
@@ -476,9 +484,14 @@ func (f *AliAPI) SnapshotUpstreamHealth() []coremain.UpstreamHealthSnapshot {
 }
 
 func (f *AliAPI) SnapshotControlUpstreams() (string, []coremain.UpstreamOverrideConfig) {
-	args, _ := f.snapshotRuntime()
-	items := make([]coremain.UpstreamOverrideConfig, 0, len(args.Upstreams))
-	for _, upstream := range args.Upstreams {
+	f.runtimeMu.RLock()
+	pluginTag := f.pluginTag
+	us := append([]*upstreamWrapper(nil), f.us...)
+	f.runtimeMu.RUnlock()
+
+	items := make([]coremain.UpstreamOverrideConfig, 0, len(us))
+	for _, wrapper := range us {
+		upstream := wrapper.cfg
 		protocol := coremain.UpstreamProtocolFromAddr(upstream.Addr)
 		item := coremain.UpstreamOverrideConfig{
 			Tag:                  upstream.Tag,
@@ -499,16 +512,16 @@ func (f *AliAPI) SnapshotControlUpstreams() (string, []coremain.UpstreamOverride
 		}
 		if upstream.Type == "aliapi" {
 			item.Protocol = "aliapi"
-			item.AccountID = args.AccountID
-			item.AccessKeyID = args.AccessKeyID
-			item.AccessKeySecret = args.AccessKeySecret
-			item.ServerAddr = args.ServerAddr
-			item.EcsClientIP = args.EcsClientIP
-			item.EcsClientMask = args.EcsClientMask
+			item.AccountID = upstream.AccountID
+			item.AccessKeyID = upstream.AccessKeyID
+			item.AccessKeySecret = upstream.AccessKeySecret
+			item.ServerAddr = upstream.ServerAddr
+			item.EcsClientIP = upstream.EcsClientIP
+			item.EcsClientMask = upstream.EcsClientMask
 		}
 		items = append(items, item)
 	}
-	return f.pluginTag, items
+	return pluginTag, items
 }
 
 func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runtimeArgs *Args, us []*upstreamWrapper) (*dns.Msg, error) {
