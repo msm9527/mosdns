@@ -1,0 +1,294 @@
+name: Release mihomo
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '30 21 * * *'
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+  MIHOMO_TAG_NAME: mihomo
+  MIHOMO_SERVER_PATH: /root/dufs/data/mihomo
+  MIHOMO_TAGS: with_gvisor
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  prepare-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Generate target matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          MATRIX='{"include":[{"name":"linux-amd64","goos":"linux","goarch":"amd64","goamd64":"v1","package":"tar.gz","asset_suffix":"linux-amd64"},{"name":"linux-amd64-v3","goos":"linux","goarch":"amd64","goamd64":"v3","package":"tar.gz","asset_suffix":"linux-amd64v3"},{"name":"linux-armv5","goos":"linux","goarch":"arm","goarm":"5","package":"tar.gz","asset_suffix":"linux-armv5"},{"name":"linux-armv6","goos":"linux","goarch":"arm","goarm":"6","package":"tar.gz","asset_suffix":"linux-armv6"},{"name":"linux-armv7","goos":"linux","goarch":"arm","goarm":"7","package":"tar.gz","asset_suffix":"linux-armv7"},{"name":"linux-arm64","goos":"linux","goarch":"arm64","package":"tar.gz","asset_suffix":"linux-arm64"},{"name":"linux-mips-softfloat","goos":"linux","goarch":"mips","gomips":"softfloat","package":"tar.gz","asset_suffix":"linux-mips-softfloat"},{"name":"linux-mipsle-softfloat","goos":"linux","goarch":"mipsle","gomips":"softfloat","package":"tar.gz","asset_suffix":"linux-mipsle-softfloat"},{"name":"linux-mipsle-hardfloat","goos":"linux","goarch":"mipsle","gomips":"hardfloat","package":"tar.gz","asset_suffix":"linux-mipsle-hardfloat"},{"name":"windows-amd64","goos":"windows","goarch":"amd64","goamd64":"v1","package":"exe","asset_suffix":"windows-amd64"},{"name":"windows-amd64-v3","goos":"windows","goarch":"amd64","goamd64":"v3","package":"exe","asset_suffix":"windows-amd64v3"},{"name":"windows-arm64","goos":"windows","goarch":"arm64","package":"exe","asset_suffix":"windows-arm64"},{"name":"darwin-amd64","goos":"darwin","goarch":"amd64","goamd64":"v1","package":"tar.gz","asset_suffix":"darwin-amd64"},{"name":"darwin-amd64-v3","goos":"darwin","goarch":"amd64","goamd64":"v3","package":"tar.gz","asset_suffix":"darwin-amd64v3"},{"name":"darwin-arm64","goos":"darwin","goarch":"arm64","package":"tar.gz","asset_suffix":"darwin-arm64"}]}'
+          echo "matrix=${MATRIX}" >> "$GITHUB_OUTPUT"
+
+  meta-info:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      published_at: ${{ steps.meta.outputs.published_at }}
+    steps:
+      - name: Resolve Meta version
+        id: meta
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/MetaCubeX/mihomo/releases/latest)"
+          version="$(echo "${release_json}" | jq -r '.tag_name')"
+          published_raw="$(echo "${release_json}" | jq -r '.created_at')"
+          if [ -z "${version}" ] || [ "${version}" = "null" ]; then
+            echo "failed to resolve mihomo Meta version" >&2
+            exit 1
+          fi
+          if [ -z "${published_raw}" ] || [ "${published_raw}" = "null" ]; then
+            echo "failed to resolve mihomo Meta publish time" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+  alpha-info:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.alpha.outputs.version }}
+      published_at: ${{ steps.alpha.outputs.published_at }}
+    steps:
+      - name: Resolve Alpha version
+        id: alpha
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          releases_json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/MetaCubeX/mihomo/releases)"
+          version="$(echo "${releases_json}" | jq -r '[.[] | select(.tag_name == "Prerelease-Alpha")][0].assets[].name' | head -n 1 | sed -E 's/.*-(alpha-[^.]+)\..*/\1/')"
+          published_raw="$(echo "${releases_json}" | jq -r '[.[] | select(.tag_name == "Prerelease-Alpha")][0].created_at')"
+          if [ -z "${version}" ] || [ "${version}" = "null" ]; then
+            echo "failed to resolve mihomo Alpha version" >&2
+            exit 1
+          fi
+          if [ -z "${published_raw}" ] || [ "${published_raw}" = "null" ]; then
+            echo "failed to resolve mihomo Alpha publish time" >&2
+            exit 1
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+
+  build-meta:
+    runs-on: ubuntu-latest
+    needs: [prepare-matrix, meta-info]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout mihomo Meta
+        uses: actions/checkout@v6
+        with:
+          repository: MetaCubeX/mihomo
+          ref: Meta
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build Meta artifact
+        id: build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: '0'
+          CHANNEL: meta
+          CHANNEL_VERSION: ${{ needs.meta-info.outputs.version }}
+        run: |
+          set -euo pipefail
+          build_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+          bin_name="mihomo"
+          asset_name="mihomo-${CHANNEL}-${{ matrix.asset_suffix }}"
+          if [ "${GOOS}" = "windows" ]; then
+            bin_name="${bin_name}.exe"
+            asset_name="${asset_name}.exe"
+          else
+            asset_name="${asset_name}.tar.gz"
+          fi
+
+          go build -v -trimpath \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${CHANNEL_VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' -s -w -buildid=" \
+            -tags "${MIHOMO_TAGS}" \
+            -o "${bin_name}"
+
+          if [ "${{ matrix.package }}" = "tar.gz" ]; then
+            chmod +x "${bin_name}"
+            tar --no-same-owner -czf "${asset_name}" "${bin_name}"
+          else
+            mv "${bin_name}" "${asset_name}"
+          fi
+
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Meta artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.asset_name }}
+          path: ./${{ steps.build.outputs.asset_name }}
+          if-no-files-found: error
+
+  build-alpha:
+    runs-on: ubuntu-latest
+    needs: [prepare-matrix, alpha-info]
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    steps:
+      - name: Checkout mihomo Alpha
+        uses: actions/checkout@v6
+        with:
+          repository: MetaCubeX/mihomo
+          ref: Alpha
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          check-latest: true
+
+      - name: Build Alpha artifact
+        id: build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: '0'
+          CHANNEL: alpha
+          CHANNEL_VERSION: ${{ needs.alpha-info.outputs.version }}
+        run: |
+          set -euo pipefail
+          build_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
+          bin_name="mihomo"
+          asset_name="mihomo-${CHANNEL}-${{ matrix.asset_suffix }}"
+          if [ "${GOOS}" = "windows" ]; then
+            bin_name="${bin_name}.exe"
+            asset_name="${asset_name}.exe"
+          else
+            asset_name="${asset_name}.tar.gz"
+          fi
+
+          go build -v -trimpath \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${CHANNEL_VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' -s -w -buildid=" \
+            -tags "${MIHOMO_TAGS}" \
+            -o "${bin_name}"
+
+          if [ "${{ matrix.package }}" = "tar.gz" ]; then
+            chmod +x "${bin_name}"
+            tar --no-same-owner -czf "${asset_name}" "${bin_name}"
+          else
+            mv "${bin_name}" "${asset_name}"
+          fi
+
+          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Alpha artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.asset_name }}
+          path: ./${{ steps.build.outputs.asset_name }}
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [meta-info, alpha-info, build-meta, build-alpha]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download mihomo artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./mihomo
+          merge-multiple: true
+
+      - name: Show downloaded assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -lh ./mihomo
+
+      - name: Delete existing release and tag
+        uses: actions/github-script@v8
+        env:
+          TAG_NAME: ${{ env.MIHOMO_TAG_NAME }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = process.env.TAG_NAME;
+            const { owner, repo } = context.repo;
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.data.id });
+              core.info(`deleted existing release for tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`no existing release for tag ${tag}`);
+            }
+
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+              core.info(`deleted existing tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) {
+                throw error;
+              }
+              core.info(`no existing tag ${tag}`);
+            }
+
+      - name: Publish mihomo release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.MIHOMO_TAG_NAME }}
+          name: ${{ env.MIHOMO_TAG_NAME }}
+          files: ./mihomo/*
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            更新 [mihomo Meta 版](https://github.com/MetaCubeX/mihomo/tree/Meta) 至 ${{ needs.meta-info.outputs.version }}，发布于 ${{ needs.meta-info.outputs.published_at }}
+            更新 [mihomo Alpha 版](https://github.com/MetaCubeX/mihomo/tree/Alpha) 至 ${{ needs.alpha-info.outputs.version }}，发布于 ${{ needs.alpha-info.outputs.published_at }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install sshpass and rsync
+        shell: bash
+        run: |
+          set -euo pipefail
+          sudo apt-get update -y
+          sudo apt-get install -y sshpass rsync
+
+      - name: Upload mihomo binaries to custom server
+        env:
+          VERSION: meta-${{ needs.meta-info.outputs.version }}__alpha-${{ needs.alpha-info.outputs.version }}
+          ARTIFACT_DIR: ./mihomo
+          ARTIFACT_PATTERN: mihomo*
+          DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
+          TARGET_PATH_OVERRIDE: ${{ env.MIHOMO_SERVER_PATH }}
+        run: ./scripts/upload_release_to_server.sh
