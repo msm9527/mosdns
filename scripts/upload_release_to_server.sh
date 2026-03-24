@@ -8,6 +8,7 @@ readonly VERSION="${VERSION:?VERSION is required}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:?ARTIFACT_DIR is required}"
 readonly DEPLOY_SERVERS="${DEPLOY_SERVERS:?DEPLOY_SERVERS is required}"
 readonly TARGET_PATH_OVERRIDE="${TARGET_PATH_OVERRIDE:-}"
+readonly WRITE_VERSION_FILE="${WRITE_VERSION_FILE:-true}"
 TEMP_DIR=""
 
 cleanup() {
@@ -86,7 +87,9 @@ main() {
 
   mkdir -p "$staging_dir"
   collect_artifacts "$ARTIFACT_DIR" "$staging_dir"
-  printf "%s\n" "$VERSION" > "${staging_dir}/.version"
+  if [ "$WRITE_VERSION_FILE" = "true" ]; then
+    printf "%s\n" "$VERSION" > "${staging_dir}/.version"
+  fi
 
   while IFS= read -r line; do
     line="$(echo "$line" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"

@@ -292,4 +292,5 @@ jobs:
           ARTIFACT_PATTERN: mihomo*
           DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
           TARGET_PATH_OVERRIDE: ${{ env.MIHOMO_SERVER_PATH }}
+          WRITE_VERSION_FILE: 'false'
         run: ./scripts/upload_release_to_server.sh
