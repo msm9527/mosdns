@@ -73,7 +73,8 @@ jobs:
         run: |
           set -euo pipefail
           releases_json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H "Accept: application/vnd.github+json" https://api.github.com/repos/MetaCubeX/mihomo/releases)"
-          version="$(echo "${releases_json}" | jq -r '[.[] | select(.tag_name == "Prerelease-Alpha")][0].assets[].name' | head -n 1 | sed -E 's/.*-(alpha-[^.]+)\..*/\1/')"
+          alpha_asset_name="$(echo "${releases_json}" | jq -r '[.[] | select(.tag_name == "Prerelease-Alpha")][0].assets | map(select(.name | startswith("mihomo-") and contains("-alpha-"))) | .[0].name // empty')"
+          version="$(printf '%s\n' "${alpha_asset_name}" | sed -E 's/.*-(alpha-[^.]+)\..*/\1/')"
           published_raw="$(echo "${releases_json}" | jq -r '[.[] | select(.tag_name == "Prerelease-Alpha")][0].created_at')"
           if [ -z "${version}" ] || [ "${version}" = "null" ]; then
             echo "failed to resolve mihomo Alpha version" >&2
