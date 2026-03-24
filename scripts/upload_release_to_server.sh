@@ -7,6 +7,13 @@ readonly ARTIFACT_PATTERN="${ARTIFACT_PATTERN:-mosdns*.zip}"
 readonly VERSION="${VERSION:?VERSION is required}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:?ARTIFACT_DIR is required}"
 readonly DEPLOY_SERVERS="${DEPLOY_SERVERS:?DEPLOY_SERVERS is required}"
+TEMP_DIR=""
+
+cleanup() {
+  if [ -n "$TEMP_DIR" ] && [ -d "$TEMP_DIR" ]; then
+    rm -rf "$TEMP_DIR"
+  fi
+}
 
 mask_host() {
   local host="$1"
@@ -64,14 +71,13 @@ sync_one_server() {
 }
 
 main() {
-  local temp_dir=""
   local staging_dir=""
   local line=""
   local -a servers=()
 
-  temp_dir="$(mktemp -d)"
-  staging_dir="${temp_dir}/payload"
-  trap 'rm -rf "$temp_dir"' EXIT
+  TEMP_DIR="$(mktemp -d)"
+  staging_dir="${TEMP_DIR}/payload"
+  trap cleanup EXIT
 
   mkdir -p "$staging_dir"
   collect_artifacts "$ARTIFACT_DIR" "$staging_dir"
