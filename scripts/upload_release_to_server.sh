@@ -7,6 +7,7 @@ readonly ARTIFACT_PATTERN="${ARTIFACT_PATTERN:-mosdns*.zip}"
 readonly VERSION="${VERSION:?VERSION is required}"
 readonly ARTIFACT_DIR="${ARTIFACT_DIR:?ARTIFACT_DIR is required}"
 readonly DEPLOY_SERVERS="${DEPLOY_SERVERS:?DEPLOY_SERVERS is required}"
+readonly TARGET_PATH_OVERRIDE="${TARGET_PATH_OVERRIDE:-}"
 TEMP_DIR=""
 
 cleanup() {
@@ -46,9 +47,13 @@ sync_one_server() {
   local -a ssh_args=(ssh -o StrictHostKeyChecking=no)
 
   IFS=',' read -r host user pass target port <<< "$entry"
-  if [ -z "$host" ] || [ -z "$user" ] || [ -z "$pass" ] || [ -z "$target" ]; then
+  if [ -z "$host" ] || [ -z "$user" ] || [ -z "$pass" ]; then
     echo "ERROR: invalid DEPLOY_SERVERS entry, expected host,user,password,target_path[,port]" >&2
     exit 1
+  fi
+
+  if [ -n "$TARGET_PATH_OVERRIDE" ]; then
+    target="$TARGET_PATH_OVERRIDE"
   fi
 
   target="${target%/}"
