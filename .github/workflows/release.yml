@@ -120,3 +120,15 @@ jobs:
             Built with Go ${{ env.GO_VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Install sshpass and rsync
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y sshpass rsync
+
+      - name: Upload release binaries to custom server
+        env:
+          VERSION: ${{ env.VERSION }}
+          ARTIFACT_DIR: ./release
+          DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
+        run: ./scripts/upload_release_to_server.sh
