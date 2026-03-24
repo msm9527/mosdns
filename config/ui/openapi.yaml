@@ -43,7 +43,9 @@ tags:
   - name: Memory
     description: 记忆库、统计池与运行时名单
   - name: Lists
-    description: 可编辑列表
+    description: |
+      可编辑列表。
+      其中 `rewrite` 属于特殊列表：每个值都是一条 `<匹配规则> <目标IP或目标域名>` 规则。
   - name: RuntimeStats
     description: 运行时聚合统计
   - name: Misc
@@ -1599,6 +1601,13 @@ paths:
     get:
       tags: [Lists]
       summary: Query editable list values
+      description: |
+        查询可编辑列表的原始行值。
+
+        当 `tag=rewrite` 时：
+        - 每个 `item.value` 都是一条两列规则：`<匹配规则> <目标IP或目标域名>`
+        - 如需为同一匹配规则配置多个目标，请重复写多行
+        - 运行时会按匹配规则聚合目标并自动去重
       parameters:
         - $ref: '#/components/parameters/SearchQuery'
         - $ref: '#/components/parameters/OffsetQuery'
@@ -1617,12 +1626,31 @@ paths:
     put:
       tags: [Lists]
       summary: Replace editable list values
+      description: |
+        整体替换某个可编辑列表的内容。
+
+        当 `tag=rewrite` 时，请按下面格式提交：
+        - 每个数组元素对应一条规则
+        - 规则格式：`<匹配规则> <目标IP或目标域名>`
+        - 支持普通域名和 `full:`、`domain:` 等匹配写法
+        - 同一匹配规则可重复写多行，用于配置多个目标
+        - `rewrite` 仅影响 `A` / `AAAA` 查询，其他查询类型仍会继续走原解析链路
+        - 目标为域名时，会查询 `rewrite` 插件配置中的 `dns` 上游，并直接返回展开后的 `A` / `AAAA` 结果
       requestBody:
         required: true
         content:
           application/json:
             schema:
               $ref: '#/components/schemas/ListReplaceRequest'
+            examples:
+              rewrite:
+                summary: Replace rewrite rules
+                value:
+                  values:
+                    - example.com 1.2.3.4
+                    - example.com 1.2.3.5
+                    - example.com example.net
+                    - full:api.example.com example.net
       responses:
         '200':
           description: Replace result
@@ -3638,6 +3666,7 @@ components:
       properties:
         value:
           type: string
+          description: 原始列表行内容；当列表 tag 为 `rewrite` 时，格式为 `<匹配规则> <目标IP或目标域名>`
     ListEntriesResponse:
       type: object
       properties:
@@ -3658,6 +3687,7 @@ components:
       properties:
         values:
           type: array
+          description: 要整体替换的列表行；当 tag 为 `rewrite` 时，每个元素都是一条 `<匹配规则> <目标IP或目标域名>` 规则
           items:
             type: string
     ListReplaceResponse:

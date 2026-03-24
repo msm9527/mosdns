@@ -55,7 +55,7 @@
 | `domain_set_light` | 是 | `plugin/data_provider/domain_set_light/domain_set_light.go` | `config/sub_config/rule_set.yaml` | 轻量规则集改动现在可热应用 |
 | `sequence` | 是 | `plugin/executable/sequence/sequence.go` | `config/config.yaml` `config/sub_config/process_v4.yaml` `config/sub_config/process_v6.yaml` `config/sub_config/process_ot.yaml` `config/sub_config/not_in_list_ipmatch.yaml` `config/sub_config/not_in_list_leak_v4.yaml` `config/sub_config/not_in_list_leak_v6.yaml` `config/sub_config/not_in_list_noleak_v4.yaml` `config/sub_config/not_in_list_noleak_v6.yaml` `config/sub_config/forward_nocn.yaml` `config/sub_config/forward_nocn_ecs.yaml` `config/sub_config/forward_1.yaml` `config/sub_config/requery_refresh.yaml` `config/sub_config/for_singbox.yaml` | 当前全局 `ECS IP` 热生效，核心就是这里也支持运行时重建 |
 | `ip_set` | 是 | `plugin/data_provider/ip_set/ip_set.go` | `config/sub_config/rule_set.yaml` | IP 集合配置支持运行时重建 |
-| `rewrite` | 是 | `plugin/executable/rewrite/rewrite.go` | `config/sub_config/rule_set.yaml` | 重写规则和上游 DNS 地址支持热重载 |
+| `rewrite` | 是 | `plugin/executable/rewrite/rewrite.go` | `config/sub_config/20-data-sources.yaml` | 重写规则和上游 DNS 地址支持热重载；规则格式见 `docs/REWRITE_RULES.md` |
 | `sd_set_light` | 是 | `plugin/data_provider/sd_set_light/sd_set_light.go` | `config/sub_config/rule_set.yaml` | 规则源配置文件和 `socks5` 覆盖支持热重载 |
 | `si_set` | 是 | `plugin/data_provider/si_set/si_set.go` | `config/sub_config/rule_set.yaml` | 规则源配置文件和 `socks5` 覆盖支持热重载 |
 | `forward` | 否 | `plugin/executable/forward/forward.go` | 无 | 代码支持热重载，但当前默认配置没有启用，仓库也不再附带示例配置 |

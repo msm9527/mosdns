@@ -1515,11 +1515,13 @@
                                     style="display: none; font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 1rem;">
                                     不在任何域名清单中的域名解析后的IP属于此IP清单时，此域名向被归入直连域名。以苹果公司IP段为例：17.0.0.0/8</p>
                                 <p id="list-mgmt-rewrite-hint"
-                                    style="display: none; font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 1rem;">
-                                    格式: &lt;域名&gt; &lt;IP或域名&gt;。例如:
-                                    <code>example.com 1.2.3.4</code> 或
-                                    <code>test.com example.com</code>。如需多个目标，请对同一域名重复写多行，目标会自动合并；支持
-                                    <code>full:</code>、<code>domain:</code> 等匹配规则。
+                                    style="display: none; font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 1rem; line-height: 1.7;">
+                                    格式：<code>&lt;匹配规则&gt; &lt;目标IP或目标域名&gt;</code><br>
+                                    示例：<code>example.com 1.2.3.4</code>、<code>example.com 1.2.3.5</code>、<code>example.com example.net</code><br>
+                                    同一域名如需多个目标，请重复写多行；运行时会自动合并并去重。<br>
+                                    匹配规则支持普通域名以及 <code>full:</code>、<code>domain:</code> 等写法。<br>
+                                    仅对 <code>A</code>/<code>AAAA</code> 查询生效；<code>TXT</code>/<code>MX</code> 等其他类型会继续走原有解析链路。<br>
+                                    当目标写成域名时，会向配置里的 <code>dns</code> 上游查询并直接返回展开后的 <code>A</code>/<code>AAAA</code> 结果，不返回 <code>CNAME</code>。
                                 </p>
                                 <p id="list-mgmt-realip-hint"
                                     style="display: none; font-size: 0.85rem; color: var(--color-text-secondary); margin-top: 1rem;">
