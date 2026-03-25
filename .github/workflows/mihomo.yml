@@ -270,6 +270,7 @@ jobs:
           tag_name: ${{ env.MIHOMO_TAG_NAME }}
           name: ${{ env.MIHOMO_TAG_NAME }}
           files: ./mihomo/*
+          make_latest: false
           prerelease: false
           generate_release_notes: false
           body: |
