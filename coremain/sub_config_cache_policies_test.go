@@ -26,7 +26,7 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_fakeip_proxy"].Persist {
 		t.Fatalf("expected fakeip proxy cache to default to non-persistent, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
-	if cfg.UDPFastPath.InternalTTL != 5 {
+	if cfg.UDPFastPath.InternalTTL != 5 || cfg.UDPFastPath.StaleRetry != 10 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
 }
@@ -51,6 +51,7 @@ response:
     persist: false
 udp_fast_path:
   internal_ttl: 3
+  stale_retry_seconds: 9
   ttl_min: 1
   ttl_max: 3
 `
@@ -68,7 +69,7 @@ udp_fast_path:
 	if cfg.Response["cache_main"].Size != 2048 || cfg.Response["cache_main"].Persist {
 		t.Fatalf("unexpected cache_main policy: %+v", cfg.Response["cache_main"])
 	}
-	if cfg.UDPFastPath.InternalTTL != 3 || cfg.UDPFastPath.TTLMax != 3 {
+	if cfg.UDPFastPath.InternalTTL != 3 || cfg.UDPFastPath.StaleRetry != 9 || cfg.UDPFastPath.TTLMax != 3 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
 }
@@ -118,7 +119,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		L1Enabled: true, L1TotalCap: 22, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
-	cfg.UDPFastPath = UDPFastCachePolicy{InternalTTL: 9, TTLMin: 2, TTLMax: 4}
+	cfg.UDPFastPath = UDPFastCachePolicy{InternalTTL: 9, StaleRetry: 12, TTLMin: 2, TTLMax: 4}
 
 	pc := PluginConfig{Tag: "cache_main", Type: "cache", Args: map[string]any{"size": 1}}
 	if err := ApplyRuntimeCachePolicy(&pc, cfg); err != nil {
@@ -134,7 +135,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("ApplyRuntimeCachePolicy(udp): %v", err)
 	}
 	udpArgs := udp.Args.(map[string]any)
-	if udpArgs["fast_cache_internal_ttl"] != 9 || udpArgs["fast_cache_ttl_max"] != uint32(4) {
+	if udpArgs["fast_cache_internal_ttl"] != 9 || udpArgs["fast_cache_stale_retry_seconds"] != 12 || udpArgs["fast_cache_ttl_max"] != uint32(4) {
 		t.Fatalf("unexpected udp args: %+v", udpArgs)
 	}
 }

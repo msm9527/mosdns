@@ -36,6 +36,11 @@
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
 # - UDP 快路径默认只保留极短时间热点结果。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
+#
+# udp_fast_path 字段说明：
+# - internal_ttl: 快路径内部缓存保留秒数；只影响服务端热点缓存寿命。
+# - stale_retry_seconds: 过期条目进入 stale 刷新后，最短多久允许再次强制重试刷新。
+# - ttl_min / ttl_max: 返回给客户端的 TTL 裁剪范围；0 表示不限制该边界。
 
 response:
   cache_main:
@@ -115,5 +120,6 @@ response:
 
 udp_fast_path:
   internal_ttl: 5
+  stale_retry_seconds: 10
   ttl_min: 1
   ttl_max: 5
