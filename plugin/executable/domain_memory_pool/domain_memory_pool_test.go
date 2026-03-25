@@ -346,3 +346,46 @@ func TestMemoryPoolSaveCancelsPendingHotAdd(t *testing.T) {
 
 	assertNoHotRuleCall(t, consumer.addCh, 260*time.Millisecond)
 }
+
+func TestMemoryPoolSkipsUnchangedHotRuleReplace(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	saveMemoryPoolPolicyForTest(t, "my_realiplist", coremain.DomainPoolPolicy{
+		Kind:                 coremain.DomainPoolKindMemory,
+		PublishTo:            "my_realiprule",
+		PromoteAfter:         1,
+		MaxDomains:           100,
+		MaxVariantsPerDomain: 4,
+		EvictionPolicy:       "lru",
+		FlushIntervalMS:      1000,
+		PruneIntervalSec:     60,
+	})
+
+	consumer := newMockHotRuleConsumer()
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{"mapper": consumer})
+	pool, err := newDomainMemoryPool("my_realiplist", m, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+	t.Cleanup(func() { _ = pool.Close() })
+
+	pool.processRecord(&logItem{name: "stable.example.", source: "live"})
+	_ = waitHotRuleCall(t, consumer.addCh)
+
+	if err := pool.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite first save: %v", err)
+	}
+	firstReplace := waitHotRuleCall(t, consumer.replaceCh)
+	if len(firstReplace.rules) != 1 || firstReplace.rules[0] != "full:stable.example" {
+		t.Fatalf("unexpected first replace rules: %+v", firstReplace)
+	}
+
+	if err := pool.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite second save: %v", err)
+	}
+	assertNoHotRuleCall(t, consumer.replaceCh, 150*time.Millisecond)
+}

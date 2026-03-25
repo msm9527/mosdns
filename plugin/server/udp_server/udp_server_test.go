@@ -1,15 +1,19 @@
 package udp_server
 
 import (
+	"context"
+	"encoding/binary"
 	"fmt"
 	"hash/maphash"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"testing"
 	"time"
 	"unsafe"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/miekg/dns"
 )
@@ -33,6 +37,14 @@ func TestInferFastBypassWarmupSec(t *testing.T) {
 	}
 }
 
+func TestArgsInitSetsDefaultStaleRetry(t *testing.T) {
+	args := &Args{}
+	args.init()
+	if args.FastCacheStaleRetrySec != defaultStaleRefreshRetrySec {
+		t.Fatalf("stale retry = %d, want %d", args.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
+	}
+}
+
 func mustPack(t *testing.T, m *dns.Msg) []byte {
 	t.Helper()
 	b, err := m.Pack()
@@ -47,6 +59,15 @@ func makeQuery(t *testing.T, name string, qtype uint16, id uint16) []byte {
 	q := new(dns.Msg)
 	q.SetQuestion(name, qtype)
 	q.Id = id
+	return mustPack(t, q)
+}
+
+func makeQueryWithOPT(t *testing.T, name string, qtype uint16, id uint16) []byte {
+	t.Helper()
+	q := new(dns.Msg)
+	q.SetQuestion(name, qtype)
+	q.Id = id
+	q.SetEdns0(1232, false)
 	return mustPack(t, q)
 }
 
@@ -137,6 +158,43 @@ func makeAnswerWithIPNoTest(name string, qtype uint16, id uint16, ttl uint32, ip
 	return mustPackNoTest(r)
 }
 
+func makeNXDomainWithSOA(t *testing.T, name string, id uint16, ttl uint32) []byte {
+	t.Helper()
+	q := new(dns.Msg)
+	q.SetQuestion(name, dns.TypeA)
+	q.Id = id
+
+	resp := new(dns.Msg)
+	resp.SetRcode(q, dns.RcodeNameError)
+	soa, err := dns.NewRR(fmt.Sprintf(
+		"%s %d IN SOA ns1.%s hostmaster.%s 1 60 60 60 60",
+		name, ttl, name, name,
+	))
+	if err != nil {
+		t.Fatalf("new soa rr: %v", err)
+	}
+	resp.Ns = []dns.RR{soa}
+	return mustPack(t, resp)
+}
+
+func findCollisionCandidates(t *testing.T, baseName string, qtype uint16, count int) []string {
+	t.Helper()
+	baseHash := maphash.String(maphashSeed, baseName) ^ uint64(qtype)
+	baseSlot := baseHash & cacheMask
+	candidates := make([]string, 0, count)
+	for i := 0; len(candidates) < count && i < 2_000_000; i++ {
+		name := fmt.Sprintf("c-%d.example.org.", i)
+		hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+		if hash != baseHash && (hash&cacheMask) == baseSlot {
+			candidates = append(candidates, name)
+		}
+	}
+	if len(candidates) != count {
+		t.Fatalf("failed to find %d collision candidates, got %d", count, len(candidates))
+	}
+	return candidates
+}
+
 func TestParseFastQuestion(t *testing.T) {
 	q := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
 	qname, qtype, end, ok := parseFastQuestion(len(q), q)
@@ -170,20 +228,7 @@ func TestFastCacheCollisionProtection(t *testing.T) {
 	baseName := "example.org."
 	qtype := uint16(dns.TypeA)
 	baseHash := maphash.String(maphashSeed, baseName) ^ uint64(qtype)
-	baseSlot := baseHash & cacheMask
-
-	collisionName := ""
-	for i := 0; i < 1_000_000; i++ {
-		candidate := fmt.Sprintf("c-%d.example.org.", i)
-		h := maphash.String(maphashSeed, candidate) ^ uint64(qtype)
-		if h != baseHash && (h&cacheMask) == baseSlot {
-			collisionName = candidate
-			break
-		}
-	}
-	if collisionName == "" {
-		t.Fatal("failed to find collision candidate")
-	}
+	collisionName := findCollisionCandidates(t, baseName, qtype, 1)[0]
 
 	fc.Store(collisionName, qtype, makeAnswer(t, collisionName, qtype, 0x2222, 30), "", false)
 
@@ -191,12 +236,42 @@ func TestFastCacheCollisionProtection(t *testing.T) {
 	query := makeQuery(t, baseName, qtype, 0x9999)
 	copy(buf, query)
 
-	action, _, _, _ := fc.GetOrUpdating(baseHash, buf, baseName, qtype, true)
+	action, _, _, _, _ := fc.GetOrUpdating(baseHash, buf, baseName, qtype, true)
 	if action != server.FastActionContinue {
 		t.Fatalf("expected cache miss due to collision protection, got action=%d", action)
 	}
 	if stats.cacheCollision.Load() == 0 {
 		t.Fatal("expected cache collision metric to increase")
+	}
+}
+
+func TestFastCacheKeepsTwoCollidingEntries(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+
+	qtype := uint16(dns.TypeA)
+	names := append([]string{"base.example.org."}, findCollisionCandidates(t, "base.example.org.", qtype, 2)...)
+	for i, name := range names[:2] {
+		fc.Store(name, qtype, makeAnswer(t, name, qtype, uint16(0x1000+i), 30), name, false)
+	}
+
+	for _, name := range names[:2] {
+		query := makeQuery(t, name, qtype, 0x9999)
+		buf := make([]byte, 512)
+		copy(buf, query)
+		hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+		action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+		if action != server.FastActionReply {
+			t.Fatalf("expected cache hit for %s, got action=%d", name, action)
+		}
+	}
+
+	fc.Store(names[2], qtype, makeAnswer(t, names[2], qtype, 0x3333, 30), names[2], false)
+	if stats.cacheEviction.Load() == 0 {
+		t.Fatal("expected cache eviction after third colliding store")
 	}
 }
 
@@ -218,7 +293,7 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	copy(buf, query)
 
 	h := maphash.String(maphashSeed, name) ^ uint64(qtype)
-	action, respLen, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
+	action, respLen, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache hit, got action=%d", action)
 	}
@@ -242,7 +317,7 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	fc.Store(name, qtype, respLow, "dset", false)
 	buf = make([]byte, len(respLow))
 	copy(buf, query)
-	action, respLen, _, _ = fc.GetOrUpdating(h, buf, name, qtype, true)
+	action, respLen, _, _, _ = fc.GetOrUpdating(h, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache hit after re-store, got action=%d", action)
 	}
@@ -251,6 +326,43 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	}
 	if out.Answer[0].Header().Ttl != 5 {
 		t.Fatalf("ttl should be clamped to 5, got %d", out.Answer[0].Header().Ttl)
+	}
+}
+
+func TestFastCacheClampsAuthorityTTLForNegativeResponse(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMin:      5,
+		ttlMax:      30,
+	}, stats)
+
+	name := "negative.example.org."
+	qtype := uint16(dns.TypeA)
+	resp := makeNXDomainWithSOA(t, name, 0x1111, 120)
+	fc.Store(name, qtype, resp, "negative", false)
+
+	query := makeQuery(t, name, qtype, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	action, respLen, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionReply {
+		t.Fatalf("expected cache hit, got action=%d", action)
+	}
+
+	var out dns.Msg
+	if err := out.Unpack(buf[:respLen]); err != nil {
+		t.Fatalf("unpack negative response: %v", err)
+	}
+	if out.Rcode != dns.RcodeNameError {
+		t.Fatalf("expected NXDOMAIN, got rcode=%d", out.Rcode)
+	}
+	if len(out.Ns) != 1 {
+		t.Fatalf("expected authority SOA, got %d records", len(out.Ns))
+	}
+	if out.Ns[0].Header().Ttl != 30 {
+		t.Fatalf("authority ttl should be clamped to 30, got %d", out.Ns[0].Header().Ttl)
 	}
 }
 
@@ -271,13 +383,13 @@ func TestFastCacheRespectsFakeIPToggle(t *testing.T) {
 	copy(buf, query)
 	h := maphash.String(maphashSeed, name) ^ uint64(qtype)
 
-	action, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, false)
+	action, _, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, false)
 	if action != server.FastActionContinue {
 		t.Fatalf("expected fakeip cache to be bypassed when disabled, got %d", action)
 	}
 
 	copy(buf, query)
-	action, respLen, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
+	action, respLen, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected fakeip cache hit when enabled, got %d", action)
 	}
@@ -296,6 +408,45 @@ func TestIsFakeIPResponse(t *testing.T) {
 	}
 	if isFakeIPResponse(makeAnswerWithIP(t, "real.example.", dns.TypeA, 0x1111, 30, "1.1.1.1")) {
 		t.Fatal("expected real response not to be detected as fake")
+	}
+}
+
+func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
+	name := "retry.example."
+	qtype := uint16(dns.TypeA)
+	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	resp := makeAnswer(t, name, qtype, 0x1111, 30)
+
+	fcSlow := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		staleRetry:  time.Hour,
+	}, &fastStats{})
+	fcSlow.Store(name, qtype, resp, "", false)
+	item, _ := fcSlow.findItem(hash, name, qtype)
+	atomic.StoreInt64(&item.expire, time.Now().Add(-30*time.Second).Unix())
+	atomic.StoreUint32(&item.updating, 1)
+
+	buf := make([]byte, len(resp))
+	copy(buf, makeQuery(t, name, qtype, 0x9999))
+	_, _, _, _, staleRefresh := fcSlow.GetOrUpdating(hash, buf, name, qtype, true)
+	if staleRefresh {
+		t.Fatal("expected stale refresh to stay suppressed before configured retry window")
+	}
+
+	fcFast := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		staleRetry:  time.Second,
+	}, &fastStats{})
+	fcFast.Store(name, qtype, resp, "", false)
+	item, _ = fcFast.findItem(hash, name, qtype)
+	atomic.StoreInt64(&item.expire, time.Now().Add(-30*time.Second).Unix())
+	atomic.StoreUint32(&item.updating, 1)
+
+	buf = make([]byte, len(resp))
+	copy(buf, makeQuery(t, name, qtype, 0x9999))
+	_, _, _, _, staleRefresh = fcFast.GetOrUpdating(hash, buf, name, qtype, true)
+	if !staleRefresh {
+		t.Fatal("expected stale refresh after retry window elapsed")
 	}
 }
 
@@ -323,6 +474,23 @@ type testIPSetPlugin struct {
 
 func (p testIPSetPlugin) Match(addr netip.Addr) bool {
 	return p.match
+}
+
+type pooledHandler struct {
+	payload []byte
+	called  chan struct{}
+}
+
+func (h pooledHandler) Handle(_ context.Context, _ *dns.Msg, _ server.QueryMeta, _ func(*dns.Msg) (*[]byte, error)) *[]byte {
+	buf := pool.GetBuf(len(h.payload))
+	copy(*buf, h.payload)
+	if h.called != nil {
+		select {
+		case h.called <- struct{}{}:
+		default:
+		}
+	}
+	return buf
 }
 
 func TestBuildFastBypassSetsMapperMarksOnlyOnMatch(t *testing.T) {
@@ -361,9 +529,12 @@ func TestBuildFastBypassSetsMapperMarksOnlyOnMatch(t *testing.T) {
 			}, &fastStats{}), &fastStats{}, 0)
 
 			req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
-			action, _, marks, _, matched := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+			action, _, marks, _, matched, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
 			if action != server.FastActionContinue {
 				t.Fatalf("expected continue action, got %d", action)
+			}
+			if staleRefresh {
+				t.Fatal("unexpected stale refresh flag on normal mapper match test")
 			}
 			if matched != tt.dm.match {
 				t.Fatalf("matched = %v, want %v", matched, tt.dm.match)
@@ -390,9 +561,12 @@ func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 
 	req := makeQuery(t, "blocked.example.", dns.TypeA, 0x1234)
 	buf := append([]byte(nil), req...)
-	action, respLen, marks, _, _ := fastBypass(len(buf), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, respLen, marks, _, _, staleRefresh := fastBypass(len(buf), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionReply {
 		t.Fatalf("expected fast reject reply, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("reject path should not request stale refresh")
 	}
 	if respLen != len(req) {
 		t.Fatalf("unexpected reply length: got %d want %d", respLen, len(req))
@@ -402,6 +576,37 @@ func TestBuildFastBypassRejectsByRuleMark(t *testing.T) {
 	}
 	if gotRcode := buf[3] & 0x0F; gotRcode != 3 {
 		t.Fatalf("expected NXDOMAIN-style reject rcode=3, got %d", gotRcode)
+	}
+}
+
+func TestBuildFastBypassRejectClearsHeaderCounts(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"block_response":   testSwitchPlugin{value: "on"},
+		"unified_matcher1": testDomainMapperPlugin{marks: []uint8{1}, match: true},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), &fastStats{}, 0)
+
+	req := makeQueryWithOPT(t, "blocked.example.", dns.TypeA, 0x1234)
+	buf := append([]byte(nil), req...)
+	action, respLen, _, _, _, _ := fastBypass(len(buf), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected fast reject reply, got %d", action)
+	}
+	if respLen >= len(req) {
+		t.Fatalf("expected reject response to drop extra section, got respLen=%d reqLen=%d", respLen, len(req))
+	}
+	if got := binary.BigEndian.Uint16(buf[6:8]); got != 0 {
+		t.Fatalf("answer count should be zero, got %d", got)
+	}
+	if got := binary.BigEndian.Uint16(buf[8:10]); got != 0 {
+		t.Fatalf("ns count should be zero, got %d", got)
+	}
+	if got := binary.BigEndian.Uint16(buf[10:12]); got != 0 {
+		t.Fatalf("extra count should be zero, got %d", got)
 	}
 }
 
@@ -417,9 +622,12 @@ func TestBuildFastBypassClientIPFastMarks(t *testing.T) {
 	}, &fastStats{}), &fastStats{}, 0)
 
 	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
-	action, _, marks, _, _ := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionContinue {
 		t.Fatalf("expected continue action, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("client_ip fast marks should not request stale refresh")
 	}
 	if (marks & (uint64(1) << 48)) == 0 {
 		t.Fatalf("expected fast mark 48 to indicate client_ip fast-checked, got %064b", marks)
@@ -448,9 +656,12 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	req := makeQuery(t, name, dns.TypeA, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, req)
-	action, respLen, marks, dset, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, respLen, marks, dset, _, staleRefresh := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache reply, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("cache hit should not request stale refresh")
 	}
 	if marks != 0 {
 		t.Fatalf("cache hit should not return pre marks, got %064b", marks)
@@ -486,13 +697,129 @@ func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
 	req := makeQuery(t, name, dns.TypeA, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, req)
-	action, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, _, _, _, _, staleRefresh := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
 	if action != server.FastActionContinue {
 		t.Fatalf("expected warmup to skip fast path, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("warmup path should not request stale refresh")
 	}
 	if stats.bypassWarmupSkip.Load() == 0 {
 		t.Fatal("expected bypassWarmupSkip metric to increase during warmup")
 	}
+}
+
+func TestBuildFastBypassExpiredCacheRequestsStaleRefresh(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "expired.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "stale", false)
+
+	hash := maphash.String(maphashSeed, name) ^ uint64(dns.TypeA)
+	ptr, _ := fc.findItem(hash, name, dns.TypeA)
+	atomic.StoreInt64(&ptr.expire, time.Now().Add(-time.Second).Unix())
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	action, _, marks, dset, matched, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected continue action, got %d", action)
+	}
+	if marks != 0 {
+		t.Fatalf("expected no pre marks, got %064b", marks)
+	}
+	if dset != "" || matched {
+		t.Fatalf("unexpected pre fast match result: dset=%q matched=%v", dset, matched)
+	}
+	if !staleRefresh {
+		t.Fatal("expected stale refresh flag on expired cached item")
+	}
+	if stats.refreshRequested.Load() == 0 {
+		t.Fatal("expected refresh requested metric to increase")
+	}
+}
+
+func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, &fastStats{})
+	name := "refresh.example."
+	oldResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "1.1.1.1")
+	newResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "8.8.8.8")
+	fc.Store(name, dns.TypeA, oldResp, "stale", false)
+
+	hash := maphash.String(maphashSeed, name) ^ uint64(dns.TypeA)
+	ptr, _ := fc.findItem(hash, name, dns.TypeA)
+	atomic.StoreInt64(&ptr.expire, time.Now().Add(-time.Second).Unix())
+	atomic.StoreUint32(&ptr.updating, 1)
+
+	called := make(chan struct{}, 1)
+	handler := &fastHandler{
+		next: pooledHandler{payload: newResp, called: called},
+		fc:   fc,
+		sw:   testSwitchPlugin{value: "on"},
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion(name, dns.TypeA)
+	q.Id = 0x9999
+
+	payload := handler.Handle(context.Background(), q, server.QueryMeta{PreFastStaleRefresh: true}, nil)
+	if payload == nil {
+		t.Fatal("expected stale payload")
+	}
+	defer pool.ReleaseBuf(payload)
+
+	var stale dns.Msg
+	if err := stale.Unpack(*payload); err != nil {
+		t.Fatalf("unpack stale payload: %v", err)
+	}
+	if got := stale.Answer[0].(*dns.A).A.String(); got != "1.1.1.1" {
+		t.Fatalf("expected stale IP 1.1.1.1, got %s", got)
+	}
+	if fc.stats.bypassStaleReply.Load() == 0 {
+		t.Fatal("expected stale reply metric to increase")
+	}
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for background refresh")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		query := makeQuery(t, name, dns.TypeA, 0x8888)
+		buf := make([]byte, len(newResp))
+		copy(buf, query)
+		action, respLen, _, _, _ := fc.GetOrUpdating(hash, buf, name, dns.TypeA, true)
+		if action != server.FastActionReply {
+			time.Sleep(10 * time.Millisecond)
+			continue
+		}
+		var fresh dns.Msg
+		if err := fresh.Unpack(buf[:respLen]); err != nil {
+			t.Fatalf("unpack refreshed payload: %v", err)
+		}
+		if got := fresh.Answer[0].(*dns.A).A.String(); got == "8.8.8.8" {
+			if fc.stats.refreshStore.Load() == 0 {
+				t.Fatal("expected refresh store metric to increase")
+			}
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected refreshed cache to replace stale payload")
 }
 
 func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
@@ -510,7 +837,7 @@ func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		buf := append([]byte(nil), req...)
-		_, _, _, _, _ = fastBypass(len(buf), buf, addr)
+		_, _, _, _, _, _ = fastBypass(len(buf), buf, addr)
 	}
 }
 
@@ -537,6 +864,6 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		buf := make([]byte, len(resp))
 		copy(buf, req)
-		_, _, _, _, _ = fastBypass(len(req), buf, addr)
+		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
 	}
 }

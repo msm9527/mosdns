@@ -1,5 +1,6 @@
 full:localhost.pan.baidu.com
 domain:alibabachengdun.com
+full:cn.download.nvidia.com
 domain:wocloud.cn
 domain:wo.cn
 domain:ugnas.com

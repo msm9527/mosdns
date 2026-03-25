@@ -1,7 +1,7 @@
 package udp_server
 
 import (
-	"net"
+	"encoding/binary"
 	"net/netip"
 
 	"github.com/miekg/dns"
@@ -27,31 +27,63 @@ func mustParseFakeIPPrefixes(raw ...string) []netip.Prefix {
 }
 
 func isFakeIPResponse(payload []byte) bool {
-	if len(payload) == 0 {
+	if len(payload) < dnsHeaderSize {
 		return false
 	}
-	var msg dns.Msg
-	if err := msg.Unpack(payload); err != nil {
+	qdcount := binary.BigEndian.Uint16(payload[4:6])
+	ancount := binary.BigEndian.Uint16(payload[6:8])
+	if ancount == 0 {
 		return false
 	}
-	for _, rr := range msg.Answer {
-		switch v := rr.(type) {
-		case *dns.A:
-			if isFakeIPAddr(v.A) {
-				return true
+
+	offset := dnsHeaderSize
+	for i := 0; i < int(qdcount); i++ {
+		nextOffset, ok := skipDNSName(payload, offset)
+		if !ok || nextOffset+4 > len(payload) {
+			return false
+		}
+		offset = nextOffset + 4
+	}
+
+	for i := 0; i < int(ancount); i++ {
+		nextOffset, ok := skipDNSName(payload, offset)
+		if !ok || nextOffset+10 > len(payload) {
+			return false
+		}
+		offset = nextOffset
+		rrType := binary.BigEndian.Uint16(payload[offset : offset+2])
+		offset += 2
+		offset += 2
+		offset += 4
+		rdlen := int(binary.BigEndian.Uint16(payload[offset : offset+2]))
+		offset += 2
+		if offset+rdlen > len(payload) {
+			return false
+		}
+
+		switch rrType {
+		case dns.TypeA:
+			if rdlen == 4 {
+				addr, ok := netip.AddrFromSlice(payload[offset : offset+rdlen])
+				if ok && isFakeIPAddr(addr.Unmap()) {
+					return true
+				}
 			}
-		case *dns.AAAA:
-			if isFakeIPAddr(v.AAAA) {
-				return true
+		case dns.TypeAAAA:
+			if rdlen == 16 {
+				addr, ok := netip.AddrFromSlice(payload[offset : offset+rdlen])
+				if ok && isFakeIPAddr(addr.Unmap()) {
+					return true
+				}
 			}
 		}
+		offset += rdlen
 	}
 	return false
 }
 
-func isFakeIPAddr(ip net.IP) bool {
-	addr, ok := netip.AddrFromSlice(ip)
-	if !ok {
+func isFakeIPAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
 		return false
 	}
 	for _, prefix := range fakeIPPrefixes {

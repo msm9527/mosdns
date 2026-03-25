@@ -93,7 +93,7 @@ func TestFastHandlerSkipsCachingServerFailure(t *testing.T) {
 	buf := make([]byte, len(resp))
 	copy(buf, query)
 	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
-	action, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
 	if action != server.FastActionContinue {
 		t.Fatalf("expected SERVFAIL response to skip fast cache, got action=%d", action)
 	}

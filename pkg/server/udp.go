@@ -37,7 +37,7 @@ const (
 
 type UDPServerOpts struct {
 	Logger     *zap.Logger
-	FastBypass func(reqLen int, buf []byte, clientAddr netip.AddrPort) (action int, respLen int, preMarks uint64, preDset string, preDsetMatched bool)
+	FastBypass func(reqLen int, buf []byte, clientAddr netip.AddrPort) (action int, respLen int, preMarks uint64, preDset string, preDsetMatched bool, preStaleRefresh bool)
 }
 
 func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
@@ -81,8 +81,9 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 		var preMarks uint64
 		var preDset string
 		var preDsetMatched bool
+		var preStaleRefresh bool
 		if opts.FastBypass != nil {
-			action, respLen, marks, dset, dsetMatched := opts.FastBypass(n, *rb, remoteAddr)
+			action, respLen, marks, dset, dsetMatched, staleRefresh := opts.FastBypass(n, *rb, remoteAddr)
 			if action == FastActionReply {
 				if respLen > 0 {
 					var oob []byte
@@ -96,6 +97,7 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 			preMarks = marks
 			preDset = dset
 			preDsetMatched = dsetMatched
+			preStaleRefresh = staleRefresh
 		}
 
 		q := new(dns.Msg)
@@ -111,6 +113,7 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 				PreFastFlags:         preMarks,
 				PreFastDomainSet:     preDset,
 				PreFastDomainMatched: preDsetMatched,
+				PreFastStaleRefresh:  preStaleRefresh,
 			}, pool.PackBuffer)
 
 			if payload == nil {

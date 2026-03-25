@@ -123,7 +123,8 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 		mlog.L().Info("loaded cache policies from sub config",
 			zap.String("path", cachePoliciesConfigPathForBaseDir(env.BaseDir)),
 			zap.Int("response_policies", len(cachePolicies.Response)),
-			zap.Int("udp_fast_internal_ttl", cachePolicies.UDPFastPath.InternalTTL))
+			zap.Int("udp_fast_internal_ttl", cachePolicies.UDPFastPath.InternalTTL),
+			zap.Int("udp_fast_stale_retry_seconds", cachePolicies.UDPFastPath.StaleRetry))
 	}
 	// <<< END OF MODIFICATIONS >>>
 

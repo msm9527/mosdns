@@ -541,6 +541,7 @@ func (d *domainMemoryPool) syncHotRulesOnly(rules []string) error {
 func (d *domainMemoryPool) persistSnapshot(mode WriteMode, snapshot writeSnapshot) error {
 	rulesHash := hashRules(snapshot.rules)
 	rulesChanged := mode == WriteModeFlush || !d.hasRulesHash || d.lastRulesHash != rulesHash
+	needsHotReplace := rulesChanged || d.hotNeedsReplace.Load()
 	if rulesChanged {
 		snapshot.state.Meta.LastPublishAtUnixMS = time.Now().UTC().UnixMilli()
 	}
@@ -556,10 +557,12 @@ func (d *domainMemoryPool) persistSnapshot(mode WriteMode, snapshot writeSnapsho
 	d.mu.Lock()
 	d.rules = append([]string(nil), snapshot.rules...)
 	d.mu.Unlock()
-	if err := d.pushHotRulesReplace(snapshot.rules); err != nil {
-		return err
+	if needsHotReplace {
+		if err := d.pushHotRulesReplace(snapshot.rules); err != nil {
+			return err
+		}
+		atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
 	}
-	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
 
 	if mode != WriteModeShutdown && rulesChanged {
 		d.notifySubscribers()

@@ -46,12 +46,14 @@ type cachePolicyFile struct {
 
 type UDPFastCachePolicy struct {
 	InternalTTL int    `yaml:"internal_ttl"`
+	StaleRetry  int    `yaml:"stale_retry_seconds"`
 	TTLMin      uint32 `yaml:"ttl_min"`
 	TTLMax      uint32 `yaml:"ttl_max"`
 }
 
 type udpFastCachePolicyFile struct {
 	InternalTTL *int    `yaml:"internal_ttl,omitempty"`
+	StaleRetry  *int    `yaml:"stale_retry_seconds,omitempty"`
 	TTLMin      *uint32 `yaml:"ttl_min,omitempty"`
 	TTLMax      *uint32 `yaml:"ttl_max,omitempty"`
 }
@@ -114,7 +116,7 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 				L1Enabled: true, L1TotalCap: 2048, Persist: false,
 			},
 		},
-		UDPFastPath: UDPFastCachePolicy{InternalTTL: 5, TTLMin: 1, TTLMax: 5},
+		UDPFastPath: UDPFastCachePolicy{InternalTTL: 5, StaleRetry: 10, TTLMin: 1, TTLMax: 5},
 	}
 }
 
@@ -166,6 +168,9 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	if raw.UDPFastPath.InternalTTL != nil {
 		cfg.UDPFastPath.InternalTTL = *raw.UDPFastPath.InternalTTL
 	}
+	if raw.UDPFastPath.StaleRetry != nil {
+		cfg.UDPFastPath.StaleRetry = *raw.UDPFastPath.StaleRetry
+	}
 	if raw.UDPFastPath.TTLMin != nil {
 		cfg.UDPFastPath.TTLMin = *raw.UDPFastPath.TTLMin
 	}
@@ -174,6 +179,9 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	}
 	if cfg.UDPFastPath.InternalTTL <= 0 {
 		return nil, fmt.Errorf("udp_fast_path.internal_ttl requires > 0")
+	}
+	if cfg.UDPFastPath.StaleRetry <= 0 {
+		return nil, fmt.Errorf("udp_fast_path.stale_retry_seconds requires > 0")
 	}
 	if cfg.UDPFastPath.TTLMax > 0 && cfg.UDPFastPath.TTLMin > cfg.UDPFastPath.TTLMax {
 		return nil, fmt.Errorf("udp_fast_path.ttl_min cannot exceed ttl_max")
@@ -286,6 +294,7 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 			return err
 		}
 		args["fast_cache_internal_ttl"] = cfg.UDPFastPath.InternalTTL
+		args["fast_cache_stale_retry_seconds"] = cfg.UDPFastPath.StaleRetry
 		args["fast_cache_ttl_min"] = cfg.UDPFastPath.TTLMin
 		args["fast_cache_ttl_max"] = cfg.UDPFastPath.TTLMax
 		pluginConf.Args = args

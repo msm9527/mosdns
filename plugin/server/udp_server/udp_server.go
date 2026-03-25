@@ -24,6 +24,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash/maphash"
+	"math"
 	"net"
 	"net/netip"
 	"strings"
@@ -32,6 +33,7 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/IrineSistiana/mosdns/v5/plugin/server/server_utils"
@@ -42,11 +44,13 @@ import (
 
 const (
 	PluginType = "udp_server"
-	cacheSize  = 65536
+	cacheWays  = 2
+	cacheSize  = 32768
 	cacheMask  = cacheSize - 1
 
 	defaultFastBypassWarmupMain    = 3
 	defaultFastBypassWarmupRequery = 1
+	defaultStaleRefreshRetrySec    = 10
 )
 
 var maphashSeed = maphash.MakeSeed()
@@ -60,6 +64,7 @@ type Args struct {
 	Listen                 string `yaml:"listen"`
 	EnableAudit            bool   `yaml:"enable_audit"`
 	FastCacheInternalTTL   int    `yaml:"fast_cache_internal_ttl"`
+	FastCacheStaleRetrySec int    `yaml:"fast_cache_stale_retry_seconds"`
 	FastCacheTTLMin        uint32 `yaml:"fast_cache_ttl_min"`
 	FastCacheTTLMax        uint32 `yaml:"fast_cache_ttl_max"`
 	FastMetricsLogInterval int    `yaml:"fast_metrics_log_interval"`
@@ -69,6 +74,7 @@ type Args struct {
 func (a *Args) init() {
 	utils.SetDefaultString(&a.Listen, "127.0.0.1:53")
 	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 5)
+	utils.SetDefaultUnsignNum(&a.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
 	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(30))
 	utils.SetDefaultUnsignNum(&a.FastMetricsLogInterval, 60)
 	if a.FastBypassWarmupSec <= 0 {
@@ -119,14 +125,19 @@ type fastCacheItem struct {
 	qtype     uint16
 }
 
+type fastCacheBucket struct {
+	slots [cacheWays]atomic.Pointer[fastCacheItem]
+}
+
 type fastCache struct {
-	m     [cacheSize]atomic.Pointer[fastCacheItem]
+	m     [cacheSize]fastCacheBucket
 	cfg   fastCacheConfig
 	stats *fastStats
 }
 
 type fastCacheConfig struct {
 	internalTTL time.Duration
+	staleRetry  time.Duration
 	ttlMin      uint32
 	ttlMax      uint32
 }
@@ -136,7 +147,14 @@ type fastStats struct {
 	bypassBadPacket  atomic.Uint64
 	bypassRuleReply  atomic.Uint64
 	bypassCacheReply atomic.Uint64
+	bypassStaleReply atomic.Uint64
 	bypassWarmupSkip atomic.Uint64
+
+	refreshRequested atomic.Uint64
+	refreshMiss      atomic.Uint64
+	refreshNoPayload atomic.Uint64
+	refreshStore     atomic.Uint64
+	refreshStoreSkip atomic.Uint64
 
 	cacheLookup    atomic.Uint64
 	cacheStore     atomic.Uint64
@@ -144,6 +162,7 @@ type fastStats struct {
 	cacheMiss      atomic.Uint64
 	cacheCollision atomic.Uint64
 	cacheExpired   atomic.Uint64
+	cacheEviction  atomic.Uint64
 }
 
 type fastStatsSnapshot struct {
@@ -151,13 +170,20 @@ type fastStatsSnapshot struct {
 	BypassBadPacket  uint64
 	BypassRuleReply  uint64
 	BypassCacheReply uint64
+	BypassStaleReply uint64
 	BypassWarmupSkip uint64
+	RefreshRequested uint64
+	RefreshMiss      uint64
+	RefreshNoPayload uint64
+	RefreshStore     uint64
+	RefreshStoreSkip uint64
 	CacheLookup      uint64
 	CacheStore       uint64
 	CacheHit         uint64
 	CacheMiss        uint64
 	CacheCollision   uint64
 	CacheExpired     uint64
+	CacheEviction    uint64
 }
 
 func (s *fastStats) snapshot() fastStatsSnapshot {
@@ -169,52 +195,74 @@ func (s *fastStats) snapshot() fastStatsSnapshot {
 		BypassBadPacket:  s.bypassBadPacket.Load(),
 		BypassRuleReply:  s.bypassRuleReply.Load(),
 		BypassCacheReply: s.bypassCacheReply.Load(),
+		BypassStaleReply: s.bypassStaleReply.Load(),
 		BypassWarmupSkip: s.bypassWarmupSkip.Load(),
+		RefreshRequested: s.refreshRequested.Load(),
+		RefreshMiss:      s.refreshMiss.Load(),
+		RefreshNoPayload: s.refreshNoPayload.Load(),
+		RefreshStore:     s.refreshStore.Load(),
+		RefreshStoreSkip: s.refreshStoreSkip.Load(),
 		CacheLookup:      s.cacheLookup.Load(),
 		CacheStore:       s.cacheStore.Load(),
 		CacheHit:         s.cacheHit.Load(),
 		CacheMiss:        s.cacheMiss.Load(),
 		CacheCollision:   s.cacheCollision.Load(),
 		CacheExpired:     s.cacheExpired.Load(),
+		CacheEviction:    s.cacheEviction.Load(),
 	}
 }
 
 func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
+	if cfg.staleRetry <= 0 {
+		cfg.staleRetry = defaultStaleRefreshRetrySec * time.Second
+	}
 	return &fastCache{cfg: cfg, stats: stats}
 }
 
-func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string) {
-	ptr := fc.m[hash&cacheMask].Load()
+func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
+	ptr, occupied := fc.findItem(hash, qname, qtype)
 	if ptr == nil {
 		if fc.stats != nil {
+			if occupied {
+				fc.stats.cacheCollision.Add(1)
+			}
 			fc.stats.cacheMiss.Add(1)
 		}
-		return server.FastActionContinue, 0, 0, ""
-	}
-	if ptr.hash != hash || ptr.qtype != qtype || ptr.qname != qname {
-		if fc.stats != nil {
-			fc.stats.cacheCollision.Add(1)
-			fc.stats.cacheMiss.Add(1)
-		}
-		return server.FastActionContinue, 0, 0, ""
+		return server.FastActionContinue, 0, 0, "", false
 	}
 	if ptr.fakeIP && !allowFakeIP {
 		if fc.stats != nil {
 			fc.stats.cacheMiss.Add(1)
 		}
-		return server.FastActionContinue, 0, 0, ""
+		return server.FastActionContinue, 0, 0, "", false
 	}
 
 	now := time.Now().Unix()
-	if now > atomic.LoadInt64(&ptr.expire) {
+	expire := atomic.LoadInt64(&ptr.expire)
+	if now > expire {
 		if fc.stats != nil {
 			fc.stats.cacheExpired.Add(1)
 		}
 		if atomic.CompareAndSwapUint32(&ptr.updating, 0, 1) {
 			if fc.stats != nil {
 				fc.stats.cacheMiss.Add(1)
+				if ptr.resp != nil {
+					fc.stats.refreshRequested.Add(1)
+				}
 			}
-			return server.FastActionContinue, 0, 0, ""
+			return server.FastActionContinue, 0, 0, ptr.domainSet, ptr.resp != nil
+		}
+		retryAfter := int64(fc.cfg.staleRetry / time.Second)
+		if now-expire > retryAfter && atomic.CompareAndSwapUint32(&ptr.updating, 1, 0) {
+			if atomic.CompareAndSwapUint32(&ptr.updating, 0, 1) {
+				if fc.stats != nil {
+					fc.stats.cacheMiss.Add(1)
+					if ptr.resp != nil {
+						fc.stats.refreshRequested.Add(1)
+					}
+				}
+				return server.FastActionContinue, 0, 0, ptr.domainSet, ptr.resp != nil
+			}
 		}
 	}
 
@@ -226,12 +274,12 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 		txid0, txid1 := buf[0], buf[1]
 		copy(buf, ptr.resp)
 		buf[0], buf[1] = txid0, txid1
-		return server.FastActionReply, respLen, 0, ptr.domainSet
+		return server.FastActionReply, respLen, 0, ptr.domainSet, false
 	}
 	if fc.stats != nil {
 		fc.stats.cacheMiss.Add(1)
 	}
-	return server.FastActionContinue, 0, 0, ""
+	return server.FastActionContinue, 0, 0, "", false
 }
 
 func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string, fakeIP bool) {
@@ -257,9 +305,81 @@ func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string,
 		qname:     qname,
 		qtype:     qtype,
 	}
-	fc.m[h&cacheMask].Store(item)
+	fc.storeItem(item)
 	if fc.stats != nil {
 		fc.stats.cacheStore.Add(1)
+	}
+}
+
+func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allowFakeIP bool) *[]byte {
+	hash := maphash.String(maphashSeed, qname) ^ uint64(qtype)
+	ptr, _ := fc.findItem(hash, qname, qtype)
+	if ptr == nil {
+		return nil
+	}
+	if ptr.fakeIP && !allowFakeIP {
+		return nil
+	}
+	if len(ptr.resp) == 0 {
+		return nil
+	}
+	resp := pool.GetBuf(len(ptr.resp))
+	copy(*resp, ptr.resp)
+	binary.BigEndian.PutUint16((*resp)[:2], txid)
+	return resp
+}
+
+func (fc *fastCache) findItem(hash uint64, qname string, qtype uint16) (*fastCacheItem, bool) {
+	bucket := &fc.m[hash&cacheMask]
+	occupied := false
+	for i := range bucket.slots {
+		ptr := bucket.slots[i].Load()
+		if ptr == nil {
+			continue
+		}
+		occupied = true
+		if ptr.hash == hash && ptr.qtype == qtype && ptr.qname == qname {
+			return ptr, true
+		}
+	}
+	return nil, occupied
+}
+
+func (fc *fastCache) storeItem(item *fastCacheItem) {
+	bucket := &fc.m[item.hash&cacheMask]
+	var emptySlot *atomic.Pointer[fastCacheItem]
+	var victimSlot *atomic.Pointer[fastCacheItem]
+	victimExpire := int64(math.MaxInt64)
+
+	for i := range bucket.slots {
+		slot := &bucket.slots[i]
+		current := slot.Load()
+		if current == nil {
+			if emptySlot == nil {
+				emptySlot = slot
+			}
+			continue
+		}
+		if current.hash == item.hash && current.qtype == item.qtype && current.qname == item.qname {
+			slot.Store(item)
+			return
+		}
+		expire := atomic.LoadInt64(&current.expire)
+		if expire < victimExpire {
+			victimExpire = expire
+			victimSlot = slot
+		}
+	}
+
+	if emptySlot != nil {
+		emptySlot.Store(item)
+		return
+	}
+	if victimSlot != nil {
+		victimSlot.Store(item)
+		if fc.stats != nil {
+			fc.stats.cacheEviction.Add(1)
+		}
 	}
 }
 
@@ -272,27 +392,86 @@ type fastHandler struct {
 }
 
 func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
+	if meta.PreFastStaleRefresh {
+		if payload := h.serveStaleWhileRefresh(ctx, q, meta, pack); payload != nil {
+			return payload
+		}
+	}
+
 	payload := h.next.Handle(ctx, q, meta, pack)
-
-	if h.sw != nil && h.sw.GetValue() != "on" {
-		return payload
-	}
-
-	if payload != nil && (meta.PreFastFlags&(1<<39)) == 0 && q.Opcode == dns.OpcodeQuery && len(q.Question) > 0 {
-		if !shouldStoreFastResponse(*payload) {
-			return payload
-		}
-		dsetName := meta.PreFastDomainSet
-		if dsetName == "" && h.dm != nil {
-			_, dsetName, _ = h.dm.FastMatch(q.Question[0].Name)
-		}
-		fakeIP := isFakeIPResponse(*payload)
-		if fakeIP && (h.fakeCacheSwitch == nil || h.fakeCacheSwitch.GetValue() != "on") {
-			return payload
-		}
-		h.fc.Store(q.Question[0].Name, q.Question[0].Qtype, *payload, dsetName, fakeIP)
-	}
+	h.storeFastResponse(q, meta, payload)
 	return payload
+}
+
+func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
+	if !h.fastCacheEnabled() || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
+		return nil
+	}
+	question := q.Question[0]
+	stalePayload := h.fc.CopyResponse(q.Id, question.Name, question.Qtype, h.allowFakeIPCache())
+	if stalePayload == nil {
+		if h.fc != nil && h.fc.stats != nil {
+			h.fc.stats.refreshMiss.Add(1)
+		}
+		return nil
+	}
+
+	if h.fc != nil && h.fc.stats != nil {
+		h.fc.stats.bypassStaleReply.Add(1)
+	}
+	go h.refreshExpiredCache(ctx, q.Copy(), meta, pack)
+	return stalePayload
+}
+
+func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) {
+	meta.PreFastStaleRefresh = false
+	payload := h.next.Handle(ctx, q, meta, pack)
+	if payload == nil {
+		if h.fc != nil && h.fc.stats != nil {
+			h.fc.stats.refreshNoPayload.Add(1)
+		}
+		return
+	}
+	defer pool.ReleaseBuf(payload)
+	if h.storeFastResponse(q, meta, payload) {
+		if h.fc != nil && h.fc.stats != nil {
+			h.fc.stats.refreshStore.Add(1)
+		}
+		return
+	}
+	if h.fc != nil && h.fc.stats != nil {
+		h.fc.stats.refreshStoreSkip.Add(1)
+	}
+}
+
+func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, payload *[]byte) bool {
+	if h.sw != nil && h.sw.GetValue() != "on" {
+		return false
+	}
+	if payload == nil || (meta.PreFastFlags&(1<<39)) != 0 || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
+		return false
+	}
+	if !shouldStoreFastResponse(*payload) {
+		return false
+	}
+	dsetName := meta.PreFastDomainSet
+	if dsetName == "" && h.dm != nil {
+		_, dsetName, _ = h.dm.FastMatch(q.Question[0].Name)
+	}
+	fakeIP := isFakeIPResponse(*payload)
+	if fakeIP && !h.allowFakeIPCache() {
+		return false
+	}
+	h.fc.Store(q.Question[0].Name, q.Question[0].Qtype, *payload, dsetName, fakeIP)
+	return true
+}
+
+func (h *fastHandler) fastCacheEnabled() bool {
+	return h.sw == nil || h.sw.GetValue() == "on"
+}
+
+func (h *fastHandler) allowFakeIPCache() bool {
+	return h.fakeCacheSwitch != nil && h.fakeCacheSwitch.GetValue() == "on"
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
@@ -319,6 +498,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
 		internalTTL: time.Duration(args.FastCacheInternalTTL) * time.Second,
+		staleRetry:  time.Duration(args.FastCacheStaleRetrySec) * time.Second,
 		ttlMin:      args.FastCacheTTLMin,
 		ttlMax:      args.FastCacheTTLMax,
 	}, stats)
@@ -351,13 +531,20 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 						zap.Uint64("bypass_bad_packet", s.BypassBadPacket),
 						zap.Uint64("bypass_rule_reply", s.BypassRuleReply),
 						zap.Uint64("bypass_cache_reply", s.BypassCacheReply),
+						zap.Uint64("bypass_stale_reply", s.BypassStaleReply),
 						zap.Uint64("bypass_warmup_skip", s.BypassWarmupSkip),
+						zap.Uint64("refresh_requested", s.RefreshRequested),
+						zap.Uint64("refresh_miss", s.RefreshMiss),
+						zap.Uint64("refresh_no_payload", s.RefreshNoPayload),
+						zap.Uint64("refresh_store", s.RefreshStore),
+						zap.Uint64("refresh_store_skip", s.RefreshStoreSkip),
 						zap.Uint64("cache_lookup", s.CacheLookup),
 						zap.Uint64("cache_store", s.CacheStore),
 						zap.Uint64("cache_hit", s.CacheHit),
 						zap.Uint64("cache_miss", s.CacheMiss),
 						zap.Uint64("cache_collision", s.CacheCollision),
 						zap.Uint64("cache_expired", s.CacheExpired),
+						zap.Uint64("cache_eviction", s.CacheEviction),
 					)
 				}
 			}
@@ -375,14 +562,14 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	return &UdpServer{args: args, c: c}, nil
 }
 
-func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool) {
+func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
 	var once sync.Once
 	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache SwitchPlugin
 	var dm DomainMapperPlugin
 	var ipSet IPSetPlugin
 	readyAt := time.Now().Add(warmup)
 
-	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool) {
+	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
 		if stats != nil {
 			stats.bypassRequests.Add(1)
 		}
@@ -390,7 +577,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if stats != nil {
 				stats.bypassWarmupSkip.Add(1)
 			}
-			return server.FastActionContinue, 0, 0, "", false
+			return server.FastActionContinue, 0, 0, "", false, false
 		}
 		once.Do(func() {
 			sw15 = findSwitchPlugin(bp, switchmeta.MustLookup("udp_fast_path"))
@@ -409,14 +596,14 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		})
 
 		if sw15 == nil || sw15.GetValue() != "on" {
-			return server.FastActionContinue, 0, 0, "", false
+			return server.FastActionContinue, 0, 0, "", false, false
 		}
 		qname, qtype, qEnd, ok := parseFastQuestion(reqLen, buf)
 		if !ok {
 			if stats != nil {
 				stats.bypassBadPacket.Add(1)
 			}
-			return server.FastActionContinue, 0, 0, "", false
+			return server.FastActionContinue, 0, 0, "", false, false
 		}
 
 		if qtype == 6 || qtype == 12 || qtype == 65 {
@@ -424,7 +611,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false, false
 			}
 		}
 		if qtype == 28 {
@@ -432,7 +619,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false, false
 			}
 		}
 
@@ -457,19 +644,19 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false, false
 			}
 			if (marks&(1<<2)) != 0 && qtype == 1 && sw1Val == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false, false
 			}
 			if (marks&(1<<3)) != 0 && qtype == 28 && sw1Val == "on" {
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false, false
 			}
 		}
 		if sw7 != nil {
@@ -477,7 +664,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false
+				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 3), 0, "", false, false
 			}
 		}
 
@@ -503,15 +690,18 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				stats.cacheLookup.Add(1)
 			}
 			allowFakeIP := fakeipCache != nil && fakeipCache.GetValue() == "on"
-			action, rLen, _, ds := fc.GetOrUpdating(hKey, buf, qname, qtype, allowFakeIP)
+			action, rLen, _, ds, staleRefresh := fc.GetOrUpdating(hKey, buf, qname, qtype, allowFakeIP)
 			if action == server.FastActionReply {
 				if stats != nil {
 					stats.bypassCacheReply.Add(1)
 				}
-				return action, rLen, 0, ds, false
+				return action, rLen, 0, ds, false, false
+			}
+			if staleRefresh {
+				return server.FastActionContinue, 0, marks, dset, dsetMatched, true
 			}
 		}
-		return server.FastActionContinue, 0, marks, dset, dsetMatched
+		return server.FastActionContinue, 0, marks, dset, dsetMatched, false
 	}
 }
 
@@ -531,6 +721,9 @@ func makeReject(reqLen int, buf []byte, offset int, rcode byte) int {
 	buf[2] |= 0x80
 	buf[3] |= 0x80
 	buf[3] = (buf[3] & 0xF0) | (rcode & 0x0F)
+	buf[6], buf[7] = 0, 0
+	buf[8], buf[9] = 0, 0
+	buf[10], buf[11] = 0, 0
 	return offset
 }
 
@@ -626,7 +819,9 @@ func findTTLOffsets(msg []byte) []int {
 	}
 	qdcount := binary.BigEndian.Uint16(msg[4:6])
 	ancount := binary.BigEndian.Uint16(msg[6:8])
-	if ancount == 0 {
+	nscount := binary.BigEndian.Uint16(msg[8:10])
+	totalRRs := int(ancount) + int(nscount)
+	if totalRRs == 0 {
 		return nil
 	}
 	offset := 12
@@ -640,7 +835,7 @@ func findTTLOffsets(msg []byte) []int {
 	}
 
 	var offsets []int
-	for i := 0; i < int(ancount); i++ {
+	for i := 0; i < totalRRs; i++ {
 		nextOffset, ok := skipDNSName(msg, offset)
 		if !ok || nextOffset+10 > len(msg) {
 			break

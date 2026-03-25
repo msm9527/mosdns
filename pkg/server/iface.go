@@ -21,4 +21,7 @@ type QueryMeta struct {
 	PreFastDomainSet string
 	// PreFastDomainMatched reports whether domain_mapper already matched in UDP fast path.
 	PreFastDomainMatched bool
+	// PreFastStaleRefresh reports that UDP fast path should serve stale cache and
+	// refresh the answer in background.
+	PreFastStaleRefresh bool
 }
