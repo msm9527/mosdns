@@ -32,6 +32,7 @@ import (
 	"time"
 
 	pcache "github.com/IrineSistiana/mosdns/v5/pkg/cache"
+	"github.com/IrineSistiana/mosdns/v5/pkg/concurrent_map"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/miekg/dns"
@@ -40,6 +41,8 @@ import (
 )
 
 func boolPtr(v bool) *bool { return &v }
+
+const purgeDomainRuntimeTestCacheSize = 3 * concurrent_map.MapShardSize
 
 func Test_cachePlugin_Dump(t *testing.T) {
 	c := NewCache(&Args{Size: 16 * dumpBlockSize}, Opts{}) // Big enough to create dump fragments.
@@ -207,7 +210,9 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 func Test_cachePlugin_PurgeDomainRuntime(t *testing.T) {
 	dir := t.TempDir()
 	args := &Args{
-		Size:            64,
+		// The cache backend spreads capacity across 64 shards. Keep room for
+		// three colliding keys so this test does not depend on maphash seed.
+		Size:            purgeDomainRuntimeTestCacheSize,
 		DumpFile:        filepath.Join(dir, "cache.dump"),
 		DumpInterval:    3600,
 		WALFile:         filepath.Join(dir, "cache.wal"),
