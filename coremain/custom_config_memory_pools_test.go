@@ -69,7 +69,7 @@ func TestDefaultMemoryPoolPoliciesUseConservativeCapacities(t *testing.T) {
 	if values["my_realiplist"].MaxDomains != defaultRealIPPoolMaxDomains {
 		t.Fatalf("my_realiplist max_domains = %d, want %d", values["my_realiplist"].MaxDomains, defaultRealIPPoolMaxDomains)
 	}
-	if totalMaxDomains > 220000 {
+	if totalMaxDomains > 90000 {
 		t.Fatalf("default memory pool total max_domains is too large: %d", totalMaxDomains)
 	}
 }

@@ -332,6 +332,36 @@ func Test_cachePlugin_StatsAPI(t *testing.T) {
 	}
 }
 
+func TestCacheDomainSetInterningReleasesOnDeleteAndFlush(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	first := testQueryContext(t, "intern-a.example.", net.IPv4(1, 1, 1, 1))
+	first.StoreValue(query_context.KeyDomainSet, "记忆直连|白名单")
+	second := testQueryContext(t, "intern-b.example.", net.IPv4(2, 2, 2, 2))
+	second.StoreValue(query_context.KeyDomainSet, "记忆直连|白名单")
+
+	if _, ok := c.saveRespToCache("intern-a", first); !ok {
+		t.Fatal("expected first response to be cached")
+	}
+	if _, ok := c.saveRespToCache("intern-b", second); !ok {
+		t.Fatal("expected second response to be cached")
+	}
+	if got := c.domainSets.Len(); got != 1 {
+		t.Fatalf("domainSets.Len() = %d, want 1", got)
+	}
+
+	c.backend.Delete("intern-a")
+	if got := c.domainSets.Len(); got != 1 {
+		t.Fatalf("domainSets.Len() after delete = %d, want 1", got)
+	}
+
+	c.backend.Flush()
+	if got := c.domainSets.Len(); got != 0 {
+		t.Fatalf("domainSets.Len() after flush = %d, want 0", got)
+	}
+}
+
 func Test_cachePlugin_ServfailTTL(t *testing.T) {
 	c := NewCache(&Args{Size: 64, ServfailTTL: 42}, Opts{})
 	defer c.Close()

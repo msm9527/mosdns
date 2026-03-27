@@ -133,3 +133,34 @@ func TestStatsPoolPruneCompactsSparseState(t *testing.T) {
 		t.Fatal("expected domainVariantCount map to be compacted after prune")
 	}
 }
+
+func TestStatsPoolInternsDomainKeys(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainStatsPool("top_domains", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainStatsPool: %v", err)
+	}
+
+	pool.processRecord(&logItem{name: "example.com."})
+
+	pool.mu.Lock()
+	if got := pool.strings.Len(); got != 1 {
+		pool.mu.Unlock()
+		t.Fatalf("strings.Len() = %d, want 1", got)
+	}
+	var storageKey string
+	for key := range pool.stats {
+		storageKey = key
+	}
+	pool.deleteEntryLocked(storageKey)
+	if got := pool.strings.Len(); got != 0 {
+		pool.mu.Unlock()
+		t.Fatalf("strings.Len() after delete = %d, want 0", got)
+	}
+	pool.mu.Unlock()
+}

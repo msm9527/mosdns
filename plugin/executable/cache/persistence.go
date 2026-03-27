@@ -268,6 +268,7 @@ func (c *Cache) replayWAL() error {
 			c.runtimeState.recordReplay(entries, time.Since(start), err)
 			return err
 		}
+		c.prepareCacheItemForStore(record.cacheItem)
 		c.backend.Store(record.key, record.cacheItem, record.cacheExp)
 		entries++
 	}

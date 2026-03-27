@@ -15,7 +15,7 @@ func (d *domainStatsPool) loadFromStore() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, variant := range state.Variants {
-		storageKey := buildStorageKeyFromFlags(variant.Domain, variant.FlagsMask)
+		domain, storageKey := d.acquireStorageKeyFromFlags(variant.Domain, variant.FlagsMask)
 		entry := &statEntry{
 			Count:          variant.TotalCount,
 			LastDate:       formatDate(variant.LastSeenAtUnixMS),
@@ -32,7 +32,7 @@ func (d *domainStatsPool) loadFromStore() error {
 			LastSource:     variant.LastSource,
 		}
 		d.stats[storageKey] = entry
-		d.trackEntryCreatedLocked(variant.Domain)
+		d.trackEntryCreatedLocked(domain)
 	}
 	d.rules = buildRulesFromStoredDomains(state.Domains)
 	d.lastRulesHash = hashRules(d.rules)

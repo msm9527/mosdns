@@ -144,8 +144,16 @@ func (m *shard[K, V]) set(key K, v V) {
 func (m *shard[K, V]) setWithEvicted(key K, v V, onEvicted func(key K, v V)) {
 	m.l.Lock()
 	defer m.l.Unlock()
+	if existing, exists := m.m[key]; exists {
+		if onEvicted != nil {
+			onEvicted(key, existing)
+		}
+		m.m[key] = v
+		m.notePeakLocked()
+		return
+	}
 	if m.max > 0 {
-		if _, exists := m.m[key]; !exists && len(m.m)+1 > m.max {
+		if len(m.m)+1 > m.max {
 			for k, existing := range m.m {
 				delete(m.m, k)
 				if onEvicted != nil {

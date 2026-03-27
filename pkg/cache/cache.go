@@ -95,7 +95,7 @@ func (c *Cache[K, V]) SetOnEvicted(f func(key K, v V)) {
 func (c *Cache[K, V]) Get(key K) (v V, expirationTime time.Time, ok bool) {
 	if e, hasEntry := c.m.Get(key); hasEntry {
 		if e.expirationTime.Before(time.Now()) {
-			c.m.Del(key)
+			c.Delete(key)
 			return
 		}
 		return e.v, e.expirationTime, true
@@ -134,7 +134,15 @@ func (c *Cache[K, V]) Store(key K, v V, expirationTime time.Time) {
 
 // Delete removes key from cache if it exists.
 func (c *Cache[K, V]) Delete(key K) {
-	c.m.Del(key)
+	var evicted *elem[V]
+	c.m.TestAndSet(key, func(v *elem[V], ok bool) (newV *elem[V], setV, delV bool) {
+		if !ok {
+			return nil, false, false
+		}
+		evicted = v
+		return nil, false, true
+	})
+	c.fireEvicted(key, evicted)
 }
 
 func (c *Cache[K, V]) gcLoop(interval time.Duration) {
@@ -154,10 +162,22 @@ func (c *Cache[K, V]) gcLoop(interval time.Duration) {
 }
 
 func (c *Cache[K, V]) gc(now time.Time) {
+	type evictedItem struct {
+		key  K
+		elem *elem[V]
+	}
+	evicted := make([]evictedItem, 0)
 	f := func(key K, v *elem[V]) (newV *elem[V], setV, delV bool, err error) {
-		return nil, false, now.After(v.expirationTime), nil
+		if now.After(v.expirationTime) {
+			evicted = append(evicted, evictedItem{key: key, elem: v})
+			return nil, false, true, nil
+		}
+		return nil, false, false, nil
 	}
 	_ = c.m.RangeDo(f)
+	for _, item := range evicted {
+		c.fireEvicted(item.key, item.elem)
+	}
 }
 
 // Len returns the current size of this cache.
@@ -167,5 +187,23 @@ func (c *Cache[K, V]) Len() int {
 
 // Flush removes all stored entries from this cache.
 func (c *Cache[K, V]) Flush() {
-	c.m.Flush()
+	type evictedItem struct {
+		key  K
+		elem *elem[V]
+	}
+	evicted := make([]evictedItem, 0)
+	_ = c.m.RangeDo(func(key K, v *elem[V]) (newV *elem[V], setV, delV bool, err error) {
+		evicted = append(evicted, evictedItem{key: key, elem: v})
+		return nil, false, true, nil
+	})
+	for _, item := range evicted {
+		c.fireEvicted(item.key, item.elem)
+	}
+}
+
+func (c *Cache[K, V]) fireEvicted(key K, e *elem[V]) {
+	if c.onEvicted == nil || e == nil {
+		return
+	}
+	c.onEvicted(key, e.v)
 }

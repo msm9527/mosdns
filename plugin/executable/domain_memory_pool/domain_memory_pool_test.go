@@ -192,6 +192,37 @@ func TestMemoryPoolPruneCompactsSparseState(t *testing.T) {
 	}
 }
 
+func TestMemoryPoolInternsDomainKeys(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainMemoryPool("my_fakeiplist", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+
+	pool.processRecord(&logItem{name: "example.com."})
+
+	pool.mu.Lock()
+	if got := pool.strings.Len(); got != 1 {
+		pool.mu.Unlock()
+		t.Fatalf("strings.Len() = %d, want 1", got)
+	}
+	var storageKey string
+	for key := range pool.stats {
+		storageKey = key
+	}
+	pool.deleteEntryLocked(storageKey)
+	if got := pool.strings.Len(); got != 0 {
+		pool.mu.Unlock()
+		t.Fatalf("strings.Len() after delete = %d, want 0", got)
+	}
+	pool.mu.Unlock()
+}
+
 func TestMemoryPoolShutdownWriteWhenHotReplacePending(t *testing.T) {
 	oldBaseDir := coremain.MainConfigBaseDir
 	coremain.MainConfigBaseDir = t.TempDir()

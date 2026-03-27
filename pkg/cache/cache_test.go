@@ -128,3 +128,54 @@ func TestCacheOnEvicted(t *testing.T) {
 		t.Fatalf("expected key 0 to be evicted with value 1, got %#v", evicted)
 	}
 }
+
+func TestCacheOnEvictedOnReplaceDeleteAndFlush(t *testing.T) {
+	c := New[testKey, int](Opts{Size: 16})
+	defer c.Close()
+
+	evicted := make([]int, 0, 4)
+	c.SetOnEvicted(func(_ testKey, v int) {
+		evicted = append(evicted, v)
+	})
+
+	c.Store(1, 10, time.Now().Add(time.Minute))
+	c.Store(1, 11, time.Now().Add(time.Minute))
+	c.Store(2, 20, time.Now().Add(time.Minute))
+	c.Delete(2)
+	c.Store(3, 30, time.Now().Add(time.Minute))
+	c.Flush()
+
+	if len(evicted) != 4 {
+		t.Fatalf("len(evicted) = %d, want 4", len(evicted))
+	}
+	want := []int{10, 20, 11, 30}
+	for i, v := range want {
+		if evicted[i] != v {
+			t.Fatalf("evicted[%d] = %d, want %d", i, evicted[i], v)
+		}
+	}
+}
+
+func TestCacheOnEvictedOnGC(t *testing.T) {
+	c := New[testKey, int](Opts{Size: 16})
+	defer c.Close()
+
+	evicted := 0
+	c.SetOnEvicted(func(_ testKey, v int) {
+		if v != 42 {
+			t.Fatalf("unexpected evicted value %d", v)
+		}
+		evicted++
+	})
+
+	now := time.Now()
+	c.Store(1, 42, now.Add(time.Second))
+	c.gc(now.Add(2 * time.Second))
+
+	if evicted != 1 {
+		t.Fatalf("evicted = %d, want 1", evicted)
+	}
+	if got := c.Len(); got != 0 {
+		t.Fatalf("Len() = %d, want 0", got)
+	}
+}

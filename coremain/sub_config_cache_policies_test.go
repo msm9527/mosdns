@@ -44,10 +44,10 @@ func TestDefaultCachePolicyConfigUsesConservativeMemoryProfile(t *testing.T) {
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
 	}
-	if totalSize > 350000 {
+	if totalSize > 120000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)
 	}
-	if totalL1Cap > 12000 {
+	if totalL1Cap > 3500 {
 		t.Fatalf("default cache total l1 cap is too large: %d", totalL1Cap)
 	}
 }

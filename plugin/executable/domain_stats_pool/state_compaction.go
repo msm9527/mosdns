@@ -28,6 +28,7 @@ func (d *domainStatsPool) maybeCompactStateLocked() {
 func (d *domainStatsPool) resetStateStorageLocked() {
 	d.stats = make(map[string]*statEntry)
 	d.domainVariantCount = make(map[string]int)
+	d.strings.Reset()
 	d.statsPeak = 0
 	d.domainVariantPeak = 0
 }

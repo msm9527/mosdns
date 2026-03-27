@@ -13,14 +13,14 @@ const (
 	domainPoolEvictionLFU     = "lfu"
 	memoryPoolsConfigFilename = "memory_pools.yaml"
 
-	defaultTopDomainsMaxDomains   = 50000
-	defaultRealIPPoolMaxDomains   = 30000
-	defaultFakeIPPoolMaxDomains   = 30000
-	defaultNoV6PoolMaxDomains     = 40000
-	defaultNoV4PoolMaxDomains     = 30000
-	defaultNodeNoV6PoolMaxDomains = 12000
-	defaultNodeNoV4PoolMaxDomains = 12000
-	defaultGenericPoolMaxDomains  = 20000
+	defaultTopDomainsMaxDomains   = 20000
+	defaultRealIPPoolMaxDomains   = 12000
+	defaultFakeIPPoolMaxDomains   = 12000
+	defaultNoV6PoolMaxDomains     = 16000
+	defaultNoV4PoolMaxDomains     = 12000
+	defaultNodeNoV6PoolMaxDomains = 6000
+	defaultNodeNoV4PoolMaxDomains = 6000
+	defaultGenericPoolMaxDomains  = 8000
 )
 
 type DomainPoolPolicy struct {

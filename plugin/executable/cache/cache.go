@@ -24,6 +24,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/dnsutils"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/stringintern"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/go-chi/chi/v5"
@@ -267,6 +268,7 @@ type Cache struct {
 	updatedKey   atomic.Uint64
 	persistence  *persistenceManager
 	runtimeState *cacheRuntimeState
+	domainSets   *stringintern.Pool
 
 	queryCount             atomic.Uint64
 	hitCount               atomic.Uint64
@@ -381,6 +383,7 @@ func NewCache(args *Args, opts Opts) *Cache {
 		l1Enabled:       l1Enabled,
 		l1ShardCap:      l1ShardCap,
 		lazyRefresh:     make(map[string]*lazyRefreshState),
+		domainSets:      stringintern.New(),
 	}
 	p.persistence = newPersistenceManager(args, logger)
 	p.initMetrics(lb)
@@ -398,7 +401,8 @@ func NewCache(args *Args, opts Opts) *Cache {
 			maxSize: l1ShardCap,
 		}
 	}
-	backend.SetOnEvicted(func(k key, _ *item) {
+	backend.SetOnEvicted(func(k key, v *item) {
+		p.releaseCacheItemResources(v)
 		p.deleteL1Key(k)
 	})
 
@@ -1350,6 +1354,7 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 				expirationTime: msgExpTime,
 				domainSet:      entry.GetDomainSet(),
 			}
+			c.prepareCacheItemForStore(i)
 			c.backend.Store(key(entry.GetKey()), i, cacheExpTime)
 		}
 		return nil
@@ -1603,6 +1608,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 			v.domainSet = name
 		}
 	}
+	c.prepareCacheItemForStore(v)
 
 	cacheExp := now.Add(cacheTtl)
 	c.backend.Store(key(msgKey), v, cacheExp)

@@ -194,19 +194,22 @@ func TestShardSetWithEvicted(t *testing.T) {
 	}
 }
 
-func TestShardSetUpdateDoesNotEvict(t *testing.T) {
+func TestShardSetUpdateReleasesPreviousValue(t *testing.T) {
 	s := newShard[testMapHashable, int](1)
-	evicted := 0
+	released := 0
 
 	s.setWithEvicted(1, 1, func(key testMapHashable, v int) {
-		evicted++
+		released++
 	})
 	s.setWithEvicted(1, 2, func(key testMapHashable, v int) {
-		evicted++
+		if key != 1 || v != 1 {
+			t.Fatalf("unexpected replaced value: key=%d v=%d", key, v)
+		}
+		released++
 	})
 
-	if evicted != 0 {
-		t.Fatalf("evicted = %d, want 0", evicted)
+	if released != 1 {
+		t.Fatalf("released = %d, want 1", released)
 	}
 	if got, ok := s.get(1); !ok || got != 2 {
 		t.Fatalf("got (%d, %v), want (2, true)", got, ok)

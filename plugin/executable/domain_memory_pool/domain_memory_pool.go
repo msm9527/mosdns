@@ -12,6 +12,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/stringintern"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"go.uber.org/zap"
 )
@@ -118,6 +119,7 @@ type domainMemoryPool struct {
 
 	stats              map[string]*statEntry
 	domainVariantCount map[string]int
+	strings            *stringintern.Pool
 	domainCount        int
 	statsPeak          int
 	domainVariantPeak  int
@@ -214,6 +216,7 @@ func newDomainMemoryPoolWithDeps(
 		enableFlags:        policy.trackFlags,
 		stats:              make(map[string]*statEntry),
 		domainVariantCount: make(map[string]int),
+		strings:            stringintern.New(),
 		rules:              make([]string, 0),
 		subscribers:        make([]func(), 0),
 		hotActiveRules:     make(map[string]struct{}),
@@ -346,9 +349,10 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 			atomic.AddInt64(&d.droppedCount, 1)
 			return
 		}
+		canonicalDomain, canonicalStorageKey := d.acquireStorageKey(bareDomain, item)
 		entry = &statEntry{}
-		d.stats[storageKey] = entry
-		d.trackEntryCreatedLocked(bareDomain)
+		d.stats[canonicalStorageKey] = entry
+		d.trackEntryCreatedLocked(canonicalDomain)
 	}
 	entry.Count++
 	entry.Score++
@@ -421,9 +425,11 @@ func (d *domainMemoryPool) trackEntryCreatedLocked(domain string) {
 func (d *domainMemoryPool) deleteEntryLocked(storageKey string) {
 	domain, _ := splitStorageKey(storageKey)
 	delete(d.stats, storageKey)
+	d.releaseStorageKey(storageKey)
 	remaining := d.domainVariantCount[domain] - 1
 	if remaining <= 0 {
 		delete(d.domainVariantCount, domain)
+		d.releaseDomain(domain)
 		if d.domainCount > 0 {
 			d.domainCount--
 		}

@@ -15,18 +15,18 @@ import (
 const cachePoliciesConfigRelPath = "sub_config/cache_policies.yaml"
 
 const (
-	defaultCacheMainSize             = 120000
-	defaultCacheBranchDomesticSize   = 60000
-	defaultCacheBranchForeignSize    = 50000
-	defaultCacheBranchForeignECSSize = 30000
-	defaultCacheFakeIPDomesticSize   = 30000
-	defaultCacheFakeIPProxySize      = 40000
-	defaultCacheProbeSize            = 20000
-	defaultCacheMainL1TotalCap       = 4096
-	defaultCacheBranchL1TotalCap     = 2048
-	defaultCacheForeignECSL1TotalCap = 1024
-	defaultCacheFakeIPL1TotalCap     = 1024
-	defaultCacheProbeL1TotalCap      = 512
+	defaultCacheMainSize             = 40000
+	defaultCacheBranchDomesticSize   = 20000
+	defaultCacheBranchForeignSize    = 20000
+	defaultCacheBranchForeignECSSize = 8000
+	defaultCacheFakeIPDomesticSize   = 10000
+	defaultCacheFakeIPProxySize      = 12000
+	defaultCacheProbeSize            = 4000
+	defaultCacheMainL1TotalCap       = 1024
+	defaultCacheBranchL1TotalCap     = 512
+	defaultCacheForeignECSL1TotalCap = 256
+	defaultCacheFakeIPL1TotalCap     = 256
+	defaultCacheProbeL1TotalCap      = 128
 )
 
 type CachePolicy struct {
