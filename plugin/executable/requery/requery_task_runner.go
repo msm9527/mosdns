@@ -241,7 +241,6 @@ func (p *Requery) prepareRecoveryTask(plan taskCandidatePlan, recovery *FullRebu
 		p.status.ActiveRunID = recovery.TaskID
 		p.mu.Unlock()
 	} else {
-		recovery = cloneFullRebuildTask(recovery)
 		recovery.ResumeCount++
 		recovery.UpdatedAt = time.Now().UTC()
 	}

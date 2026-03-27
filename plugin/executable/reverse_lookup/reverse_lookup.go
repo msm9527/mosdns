@@ -34,7 +34,8 @@ import (
 )
 
 const (
-	PluginType = "reverse_lookup"
+	PluginType               = "reverse_lookup"
+	defaultReverseLookupSize = 32 * 1024
 )
 
 func init() {
@@ -44,13 +45,13 @@ func init() {
 var _ sequence.RecursiveExecutable = (*ReverseLookup)(nil)
 
 type Args struct {
-	Size      int  `yaml:"size"` // Default is 64*1024
+	Size      int  `yaml:"size"` // Default is 32*1024
 	HandlePTR bool `yaml:"handle_ptr"`
 	TTL       int  `yaml:"ttl"` // Default is 7200 (2h)
 }
 
 func (a *Args) init() {
-	utils.SetDefaultUnsignNum(&a.Size, 64*1024)
+	utils.SetDefaultUnsignNum(&a.Size, defaultReverseLookupSize)
 	utils.SetDefaultUnsignNum(&a.TTL, 7200)
 }
 

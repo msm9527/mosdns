@@ -3,7 +3,6 @@ package domain_stats_pool
 import (
 	"context"
 	"errors"
-	"hash/fnv"
 	"sort"
 	"strings"
 	"sync"
@@ -100,8 +99,6 @@ type aggregateEntry struct {
 }
 
 type writeSnapshot struct {
-	items         []outputRankItem
-	rules         []string
 	state         coremain.DomainPoolState
 	promotedCount int
 	dirtyCount    int
@@ -121,7 +118,6 @@ type domainStatsPool struct {
 	domainCount        int
 	statsPeak          int
 	domainVariantPeak  int
-	rules              []string
 	subscribers        []func()
 
 	mu      sync.Mutex
@@ -188,7 +184,6 @@ func newDomainStatsPoolWithDeps(pluginTag string, logger *zap.Logger, dbPath str
 		stats:              make(map[string]*statEntry),
 		domainVariantCount: make(map[string]int),
 		strings:            stringintern.New(),
-		rules:              make([]string, 0),
 		subscribers:        make([]func(), 0),
 		recordChan:         make(chan *logItem, RecordBufferLimit),
 		writeSignalChan:    make(chan struct{}, 1),
@@ -447,7 +442,7 @@ func (d *domainStatsPool) performWrite(mode WriteMode) error {
 	}
 
 	snapshot := d.buildSnapshot(mode)
-	rulesHash := hashRules(snapshot.rules)
+	rulesHash := uint64(0)
 	rulesChanged := mode == WriteModeFlush || !d.hasRulesHash || d.lastRulesHash != rulesHash
 	if rulesChanged {
 		snapshot.state.Meta.LastPublishAtUnixMS = time.Now().UTC().UnixMilli()
@@ -460,11 +455,7 @@ func (d *domainStatsPool) performWrite(mode WriteMode) error {
 	d.hasRulesHash = true
 	d.dirtyPending.Store(false)
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
-	atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
-
-	d.mu.Lock()
-	d.rules = append([]string(nil), snapshot.rules...)
-	d.mu.Unlock()
+	atomic.StoreInt64(&d.publishedCount, 0)
 
 	if mode != WriteModeShutdown && rulesChanged {
 		d.notifySubscribers()
@@ -510,15 +501,13 @@ func (d *domainStatsPool) buildSnapshot(mode WriteMode) writeSnapshot {
 		variants = append(variants, buildVariantRecord(d.pluginTag, domain, flagsMask, entry))
 	}
 
-	items, rules, promotedCount, dirtyCount, domains := buildAggregatedOutputs(aggregated)
+	promotedCount, dirtyCount, domains := buildAggregatedOutputs(aggregated)
 	state := coremain.DomainPoolState{
-		Meta:     buildPoolMeta(d, len(domains), len(variants), promotedCount, dirtyCount, len(rules)),
+		Meta:     buildPoolMeta(d, len(domains), len(variants), promotedCount, dirtyCount, 0),
 		Domains:  domains,
 		Variants: variants,
 	}
 	return writeSnapshot{
-		items:         items,
-		rules:         rules,
 		state:         state,
 		promotedCount: promotedCount,
 		dirtyCount:    dirtyCount,
@@ -546,14 +535,11 @@ func (d *domainStatsPool) pruneExpiredLocked() {
 func (d *domainStatsPool) resetStateLocked() {
 	d.resetStateStorageLocked()
 	d.domainCount = 0
-	d.rules = nil
 	atomic.StoreInt64(&d.totalCount, 0)
 }
 
 func (d *domainStatsPool) emptySnapshot() writeSnapshot {
 	return writeSnapshot{
-		items: []outputRankItem{},
-		rules: []string{},
 		state: coremain.DomainPoolState{
 			Meta: buildPoolMeta(d, 0, 0, 0, 0, 0),
 		},
@@ -583,9 +569,7 @@ func mergeAggregateEntry(target *aggregateEntry, entry *statEntry, flagsMask uin
 	}
 }
 
-func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) ([]outputRankItem, []string, int, int, []coremain.DomainPoolDomain) {
-	items := make([]outputRankItem, 0, len(aggregated))
-	rules := make([]string, 0, len(aggregated))
+func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) (int, int, []coremain.DomainPoolDomain) {
 	domains := make([]coremain.DomainPoolDomain, 0, len(aggregated))
 	promotedCount := 0
 	dirtyCount := 0
@@ -598,23 +582,7 @@ func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) ([]outputRank
 
 	for _, domain := range keys {
 		entry := aggregated[domain]
-		items = append(items, outputRankItem{
-			Domain:         entry.Domain,
-			Count:          entry.Count,
-			Date:           entry.Date,
-			Score:          entry.Score,
-			QMask:          entry.QMask,
-			Prom:           entry.Promoted,
-			LastSeenAt:     entry.LastSeenAt,
-			LastDirtyAt:    entry.LastDirtyAt,
-			LastVerifiedAt: entry.LastVerifiedAt,
-			DirtyReason:    entry.DirtyReason,
-			RefreshState:   entry.RefreshState,
-			CooldownUntil:  entry.CooldownUntil,
-			ConflictCount:  entry.ConflictCount,
-		})
 		if entry.Promoted {
-			rules = append(rules, "full:"+entry.Domain)
 			promotedCount++
 		}
 		if entry.DirtyVariantCount > 0 {
@@ -639,16 +607,10 @@ func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) ([]outputRank
 			RefreshState:         entry.RefreshState,
 		})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			return items[i].Domain < items[j].Domain
-		}
-		return items[i].Count > items[j].Count
-	})
 	for i := range domains {
 		domains[i].PoolTag = ""
 	}
-	return items, rules, promotedCount, dirtyCount, domains
+	return promotedCount, dirtyCount, domains
 }
 
 func buildPoolMeta(d *domainStatsPool, domainCount, variantCount, promotedCount, dirtyCount, publishedCount int) coremain.DomainPoolMeta {
@@ -699,15 +661,6 @@ func (d *domainStatsPool) shouldPromote(entry *statEntry) bool {
 func (d *domainStatsPool) isStale(lastDate string) bool {
 	_ = lastDate
 	return false
-}
-
-func hashRules(rules []string) uint64 {
-	h := fnv.New64a()
-	for _, rule := range rules {
-		_, _ = h.Write([]byte(rule))
-		_, _ = h.Write([]byte{'\n'})
-	}
-	return h.Sum64()
 }
 
 func (d *domainStatsPool) nextDirtyReason(entry *statEntry, now time.Time) string {

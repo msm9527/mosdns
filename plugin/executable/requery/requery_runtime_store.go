@@ -172,14 +172,13 @@ func (p *Requery) persistCheckpoint(task *FullRebuildTask) error {
 	if task == nil {
 		return nil
 	}
-	snapshot := cloneFullRebuildTask(task)
 	return requeryruntime.SaveCheckpoint(p.runtimeDBPath(), requeryruntime.Checkpoint{
 		ConfigKey: p.runtimeConfigKey(),
-		RunID:     snapshot.TaskID,
-		Stage:     snapshot.Stage,
-		Completed: snapshot.Completed,
-		Total:     snapshot.Total,
-		Snapshot:  marshalRuntimeJSON(snapshot),
+		RunID:     task.TaskID,
+		Stage:     task.Stage,
+		Completed: task.Completed,
+		Total:     task.Total,
+		Snapshot:  marshalRuntimeJSON(task),
 	})
 }
 
