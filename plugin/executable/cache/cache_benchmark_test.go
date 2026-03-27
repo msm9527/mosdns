@@ -12,7 +12,7 @@ func BenchmarkCacheGetRespFromCache(b *testing.B) {
 	defer c.Close()
 
 	qCtx := testQueryContext(nilSafeTB{b}, "bench.example.", net.IPv4(1, 1, 1, 1))
-	if !c.saveRespToCache("bench-key", qCtx) {
+	if _, ok := c.saveRespToCache("bench-key", qCtx); !ok {
 		b.Fatal("expected response to be cached")
 	}
 
@@ -32,7 +32,7 @@ func BenchmarkCacheWriteDump(b *testing.B) {
 
 	qCtx := testQueryContext(nilSafeTB{b}, "dump.example.", net.IPv4(8, 8, 4, 4))
 	for i := 0; i < 1024; i++ {
-		_ = c.saveRespToCache(strconv.Itoa(i)+"-dump-key", qCtx)
+		_, _ = c.saveRespToCache(strconv.Itoa(i)+"-dump-key", qCtx)
 	}
 
 	b.ReportAllocs()

@@ -2,6 +2,8 @@ package domain_memory_pool
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"testing"
 	"time"
 
@@ -139,6 +141,54 @@ func TestMemoryPoolSaveAndReload(t *testing.T) {
 	}
 	if total != 1 || len(items) != 1 || items[0].Domain != "example.com" {
 		t.Fatalf("unexpected reloaded items: total=%d items=%+v", total, items)
+	}
+}
+
+func TestMemoryPoolPruneCompactsSparseState(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainMemoryPool("my_fakeiplist", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+
+	expiredDate := time.Now().AddDate(0, 0, -120).Format("2006-01-02")
+	freshDate := time.Now().UTC().Format("2006-01-02")
+
+	pool.mu.Lock()
+	for i := 0; i < stateCompactionMinEntries; i++ {
+		domain := fmt.Sprintf("expired-%d.example", i)
+		pool.stats[domain] = &statEntry{LastDate: expiredDate}
+		pool.trackEntryCreatedLocked(domain)
+	}
+	for i := 0; i < stateCompactionMinEntries/4; i++ {
+		domain := fmt.Sprintf("fresh-%d.example", i)
+		pool.stats[domain] = &statEntry{LastDate: freshDate}
+		pool.trackEntryCreatedLocked(domain)
+	}
+
+	oldStatsPtr := reflect.ValueOf(pool.stats).Pointer()
+	oldVariantsPtr := reflect.ValueOf(pool.domainVariantCount).Pointer()
+	pool.pruneExpiredLocked()
+	newStatsPtr := reflect.ValueOf(pool.stats).Pointer()
+	newVariantsPtr := reflect.ValueOf(pool.domainVariantCount).Pointer()
+	pool.mu.Unlock()
+
+	if len(pool.stats) != stateCompactionMinEntries/4 {
+		t.Fatalf("len(pool.stats) = %d, want %d", len(pool.stats), stateCompactionMinEntries/4)
+	}
+	if pool.domainCount != stateCompactionMinEntries/4 {
+		t.Fatalf("domainCount = %d, want %d", pool.domainCount, stateCompactionMinEntries/4)
+	}
+	if oldStatsPtr == newStatsPtr {
+		t.Fatal("expected stats map to be compacted after prune")
+	}
+	if oldVariantsPtr == newVariantsPtr {
+		t.Fatal("expected domainVariantCount map to be compacted after prune")
 	}
 }
 

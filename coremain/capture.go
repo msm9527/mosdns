@@ -12,17 +12,20 @@ import (
 // MODIFIED: Exported LogMarkKey to be accessible from other packages.
 const LogMarkKey = 0xFEEDBEEF // ADDED: A globally accessible key for marking contexts.
 
+const maxCapturedLogs = 1024
+
 // InMemoryLogCollector is a thread-safe in-memory log collector.
 type InMemoryLogCollector struct {
 	mu        sync.Mutex
 	capturing atomic.Bool
 	logs      []map[string]interface{}
+	dropped   int
 	stopTimer *time.Timer
 }
 
 // GlobalLogCollector is a singleton instance for log capturing.
 var GlobalLogCollector = &InMemoryLogCollector{
-	logs: make([]map[string]interface{}, 0, 2048), // Pre-allocate capacity
+	logs: make([]map[string]interface{}, 0, maxCapturedLogs),
 }
 
 // StartCapture begins capturing logs for a given duration.
@@ -35,8 +38,9 @@ func (c *InMemoryLogCollector) StartCapture(duration time.Duration, logLevel zap
 	}
 
 	// Reset log buffer for the new capture session.
-	c.logs = make([]map[string]interface{}, 0, 2048)
-	
+	c.logs = make([]map[string]interface{}, 0, maxCapturedLogs)
+	c.dropped = 0
+
 	c.capturing.Store(true)
 	logLevel.SetLevel(zap.DebugLevel) // Switch to DEBUG level
 
@@ -62,11 +66,11 @@ func (c *InMemoryLogCollector) StopCapture(logLevel zap.AtomicLevel) {
 }
 
 // AddLog adds a structured log entry to the in-memory buffer if capturing is active.
-func (c *InMemoryLogCollector) AddLog(entry zapcore.Entry, fields[]zapcore.Field) {
+func (c *InMemoryLogCollector) AddLog(entry zapcore.Entry, fields []zapcore.Field) {
 	if !c.capturing.Load() {
 		return
 	}
-    
+
 	if entry.Level != zap.DebugLevel {
 		return
 	}
@@ -91,6 +95,10 @@ func (c *InMemoryLogCollector) AddLog(entry zapcore.Entry, fields[]zapcore.Field
 	logMap["msg"] = entry.Message
 	logMap["logger_name"] = entry.LoggerName
 
+	if len(c.logs) >= maxCapturedLogs {
+		c.dropped++
+		return
+	}
 	c.logs = append(c.logs, logMap)
 }
 
@@ -103,7 +111,8 @@ func (c *InMemoryLogCollector) GetLogs() []map[string]interface{} {
 	// Efficiently swap out the logs buffer with a new empty one.
 	// This avoids holding the lock while copying and is very fast.
 	logsToReturn := c.logs
-	c.logs = make([]map[string]interface{}, 0, 2048)
+	c.logs = make([]map[string]interface{}, 0, maxCapturedLogs)
+	c.dropped = 0
 
 	return logsToReturn
 }

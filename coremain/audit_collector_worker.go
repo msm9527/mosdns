@@ -45,20 +45,19 @@ func (c *AuditCollector) runWriter() {
 
 func (c *AuditCollector) runMaintenance() {
 	defer close(c.maintDone)
-	ticker := time.NewTicker(c.maintenanceInterval())
-	defer ticker.Stop()
+	workTicker := time.NewTicker(c.maintenanceInterval())
+	checkTicker := time.NewTicker(100 * time.Millisecond)
+	defer workTicker.Stop()
+	defer checkTicker.Stop()
 
 	for {
-		if c.closed.Load() {
-			return
-		}
 		select {
-		case <-ticker.C:
+		case <-workTicker.C:
 			if err := c.enforceRetention(); err != nil {
 				c.degraded.Store(true)
 				mlog.L().Warn("failed to enforce audit retention", zap.Error(err))
 			}
-		case <-time.After(100 * time.Millisecond):
+		case <-checkTicker.C:
 			if c.closed.Load() {
 				return
 			}
@@ -85,7 +84,7 @@ func (c *AuditCollector) writeBatch(batch []AuditLog) error {
 	if storage == nil {
 		return nil
 	}
-	return storage.WriteBatch(append([]AuditLog(nil), batch...))
+	return storage.WriteBatch(batch)
 }
 
 func (c *AuditCollector) enforceRetention() error {

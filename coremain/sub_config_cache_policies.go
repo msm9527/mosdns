@@ -14,6 +14,21 @@ import (
 
 const cachePoliciesConfigRelPath = "sub_config/cache_policies.yaml"
 
+const (
+	defaultCacheMainSize             = 120000
+	defaultCacheBranchDomesticSize   = 60000
+	defaultCacheBranchForeignSize    = 50000
+	defaultCacheBranchForeignECSSize = 30000
+	defaultCacheFakeIPDomesticSize   = 30000
+	defaultCacheFakeIPProxySize      = 40000
+	defaultCacheProbeSize            = 20000
+	defaultCacheMainL1TotalCap       = 4096
+	defaultCacheBranchL1TotalCap     = 2048
+	defaultCacheForeignECSL1TotalCap = 1024
+	defaultCacheFakeIPL1TotalCap     = 1024
+	defaultCacheProbeL1TotalCap      = 512
+)
+
 type CachePolicy struct {
 	Size            int
 	LazyCacheTTL    int
@@ -84,36 +99,36 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: 400000, LazyCacheTTL: 86400, NXDomainTTL: 300, ServfailTTL: 30,
-				L1Enabled: true, L1TotalCap: 8192, Persist: true,
+				Size: defaultCacheMainSize, LazyCacheTTL: 86400, NXDomainTTL: 300, ServfailTTL: 30,
+				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				DumpFile: "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: 200000, LazyCacheTTL: 21600, NXDomainTTL: 180, ServfailTTL: 30,
-				L1Enabled: true, L1TotalCap: 4096, Persist: true,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 21600, NXDomainTTL: 180, ServfailTTL: 30,
+				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				DumpFile: "db/cache/cache_branch_domestic.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign": {
-				Size: 150000, LazyCacheTTL: 21600, NXDomainTTL: 180, ServfailTTL: 30,
-				L1Enabled: true, L1TotalCap: 4096, Persist: true,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 21600, NXDomainTTL: 180, ServfailTTL: 30,
+				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				DumpFile: "db/cache/cache_branch_foreign.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign_ecs": {
-				Size: 100000, LazyCacheTTL: 7200, NXDomainTTL: 120, ServfailTTL: 20,
-				L1Enabled: true, L1TotalCap: 2048, Persist: true,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 7200, NXDomainTTL: 120, ServfailTTL: 20,
+				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: true,
 				DumpFile: "db/cache/cache_branch_foreign_ecs.dump", DumpInterval: 1800, WALSyncInterval: 1,
 			},
 			"cache_fakeip_domestic": {
-				Size: 100000, LazyCacheTTL: 0, NXDomainTTL: 60, ServfailTTL: 15,
-				L1Enabled: true, L1TotalCap: 2048, Persist: false,
+				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 0, NXDomainTTL: 60, ServfailTTL: 15,
+				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 			},
 			"cache_fakeip_proxy": {
-				Size: 120000, LazyCacheTTL: 0, NXDomainTTL: 60, ServfailTTL: 15,
-				L1Enabled: true, L1TotalCap: 2048, Persist: false,
+				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 0, NXDomainTTL: 60, ServfailTTL: 15,
+				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 			},
 			"cache_probe": {
-				Size: 80000, LazyCacheTTL: 600, NXDomainTTL: 60, ServfailTTL: 15,
-				L1Enabled: true, L1TotalCap: 2048, Persist: false,
+				Size: defaultCacheProbeSize, LazyCacheTTL: 600, NXDomainTTL: 60, ServfailTTL: 15,
+				L1Enabled: true, L1TotalCap: defaultCacheProbeL1TotalCap, Persist: false,
 			},
 		},
 		UDPFastPath: UDPFastCachePolicy{InternalTTL: 5, StaleRetry: 10, TTLMin: 1, TTLMax: 5},

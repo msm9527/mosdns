@@ -31,6 +31,27 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	}
 }
 
+func TestDefaultCachePolicyConfigUsesConservativeMemoryProfile(t *testing.T) {
+	cfg := defaultCachePolicyConfig()
+
+	totalSize := 0
+	totalL1Cap := 0
+	for _, policy := range cfg.Response {
+		totalSize += policy.Size
+		totalL1Cap += policy.L1TotalCap
+	}
+
+	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
+		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
+	}
+	if totalSize > 350000 {
+		t.Fatalf("default cache total size is too large: %d", totalSize)
+	}
+	if totalL1Cap > 12000 {
+		t.Fatalf("default cache total l1 cap is too large: %d", totalL1Cap)
+	}
+}
+
 func TestLoadCachePolicyConfigFromSubConfigOverride(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()

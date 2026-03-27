@@ -98,7 +98,7 @@ func Test_cachePlugin_WALReplay(t *testing.T) {
 	}
 
 	qCtx := testQueryContext(t, "wal.example.", net.IPv4(1, 1, 1, 1))
-	if !c.saveRespToCache("wal-key", qCtx) {
+	if _, ok := c.saveRespToCache("wal-key", qCtx); !ok {
 		t.Fatal("expected response to be cached")
 	}
 	if err := c.persistence.close(); err != nil {
@@ -163,9 +163,9 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 
 	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
 	msgKey := string(keyBuf)
-	keyBufferPool.Put(bufPtr)
+	releaseKeyBuffer(bufPtr)
 
-	if !c.saveRespToCache(msgKey, seedCtx) {
+	if _, ok := c.saveRespToCache(msgKey, seedCtx); !ok {
 		t.Fatal("expected seed response to be cached")
 	}
 
@@ -174,7 +174,7 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 	if stored == nil {
 		t.Fatal("expected stored cache item")
 	}
-	c.shards[k.Sum()%shardCount].updateL1(k, seedCtx.R(), stored.storedTime, stored.expirationTime, stored.domainSet)
+	c.shards[k.Sum()%shardCount].updateL1(k, stored)
 
 	qCtx := testQueryContext(t, "route-change.example.", net.IPv4(2, 2, 2, 2))
 	qCtx.StoreValue(query_context.KeyDomainSet, "未命中")
@@ -223,17 +223,17 @@ func Test_cachePlugin_PurgeDomainRuntime(t *testing.T) {
 	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false)
 	keyAAAABuf, ptrAAAA := getMsgKeyBytes(qCtxAAAA.Q(), qCtxAAAA, false)
 	keyOtherBuf, ptrOther := getMsgKeyBytes(qCtxOther.Q(), qCtxOther, false)
-	defer keyBufferPool.Put(ptrA)
-	defer keyBufferPool.Put(ptrAAAA)
-	defer keyBufferPool.Put(ptrOther)
+	defer releaseKeyBuffer(ptrA)
+	defer releaseKeyBuffer(ptrAAAA)
+	defer releaseKeyBuffer(ptrOther)
 
-	if !c.saveRespToCache(string(keyABuf), qCtxA) {
+	if _, ok := c.saveRespToCache(string(keyABuf), qCtxA); !ok {
 		t.Fatal("expected A response to be cached")
 	}
-	if !c.saveRespToCache(string(keyAAAABuf), qCtxAAAA) {
+	if _, ok := c.saveRespToCache(string(keyAAAABuf), qCtxAAAA); !ok {
 		t.Fatal("expected AAAA response to be cached")
 	}
-	if !c.saveRespToCache(string(keyOtherBuf), qCtxOther) {
+	if _, ok := c.saveRespToCache(string(keyOtherBuf), qCtxOther); !ok {
 		t.Fatal("expected other response to be cached")
 	}
 
@@ -262,8 +262,8 @@ func Test_cachePlugin_PurgeDomainAPI(t *testing.T) {
 
 	qCtx := testQueryContext(t, "api-purge.example.", net.IPv4(3, 3, 3, 3))
 	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
-	defer keyBufferPool.Put(bufPtr)
-	if !c.saveRespToCache(string(keyBuf), qCtx) {
+	defer releaseKeyBuffer(bufPtr)
+	if _, ok := c.saveRespToCache(string(keyBuf), qCtx); !ok {
 		t.Fatal("expected response to be cached")
 	}
 
@@ -308,7 +308,7 @@ func Test_cachePlugin_StatsAPI(t *testing.T) {
 	defer c.Close()
 
 	qCtx := testQueryContext(t, "stats.example.", net.IPv4(8, 8, 8, 8))
-	if !c.saveRespToCache("stats-key", qCtx) {
+	if _, ok := c.saveRespToCache("stats-key", qCtx); !ok {
 		t.Fatal("expected response to be cached")
 	}
 
@@ -343,7 +343,7 @@ func Test_cachePlugin_ServfailTTL(t *testing.T) {
 	r.SetRcode(q, dns.RcodeServerFailure)
 	qCtx.SetResponse(r)
 
-	if !c.saveRespToCache("servfail-key", qCtx) {
+	if _, ok := c.saveRespToCache("servfail-key", qCtx); !ok {
 		t.Fatal("expected servfail response to be cached")
 	}
 
@@ -372,7 +372,7 @@ func Test_cachePlugin_L1Disabled(t *testing.T) {
 	}
 
 	qCtx := testQueryContext(t, "nol1.example.", net.IPv4(9, 9, 9, 9))
-	if !c.saveRespToCache("nol1-key", qCtx) {
+	if _, ok := c.saveRespToCache("nol1-key", qCtx); !ok {
 		t.Fatal("expected response to be cached")
 	}
 	stats := c.snapshotStats()
@@ -453,6 +453,49 @@ func TestInferWALFileFromDump(t *testing.T) {
 	}
 }
 
+func TestResetKeyBuffer(t *testing.T) {
+	t.Run("keep normal capacity", func(t *testing.T) {
+		buf := make([]byte, 8, defaultKeyBufferCap)
+		got := resetKeyBuffer(buf)
+		if len(got) != 0 {
+			t.Fatalf("expected len 0, got %d", len(got))
+		}
+		if cap(got) != defaultKeyBufferCap {
+			t.Fatalf("expected cap %d, got %d", defaultKeyBufferCap, cap(got))
+		}
+	})
+
+	t.Run("shrink oversized buffer", func(t *testing.T) {
+		buf := make([]byte, 8, maxPooledKeyBufferCap+1)
+		got := resetKeyBuffer(buf)
+		if len(got) != 0 {
+			t.Fatalf("expected len 0, got %d", len(got))
+		}
+		if cap(got) != defaultKeyBufferCap {
+			t.Fatalf("expected cap %d after shrink, got %d", defaultKeyBufferCap, cap(got))
+		}
+	})
+}
+
+func TestResetDNSMsg(t *testing.T) {
+	m := new(dns.Msg)
+	m.SetQuestion("reset.example.", dns.TypeA)
+	m.Answer = append(m.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "reset.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   net.IPv4(1, 1, 1, 1),
+	})
+	m.Extra = append(m.Extra, &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}})
+
+	resetDNSMsg(m)
+
+	if m.Id != 0 || m.Response || m.Opcode != 0 {
+		t.Fatalf("expected header fields to be reset, got %+v", m.MsgHdr)
+	}
+	if m.Question != nil || m.Answer != nil || m.Ns != nil || m.Extra != nil {
+		t.Fatalf("expected slices to be cleared, got question=%v answer=%v ns=%v extra=%v", m.Question, m.Answer, m.Ns, m.Extra)
+	}
+}
+
 func TestCacheCloseSkipsDumpWithoutPendingUpdates(t *testing.T) {
 	dir := t.TempDir()
 	args := &Args{
@@ -494,7 +537,7 @@ func TestCacheCloseDumpsWhenUpdatesPending(t *testing.T) {
 	}
 
 	qCtx := testQueryContext(t, "close.example.", net.IPv4(1, 1, 1, 1))
-	if !c.saveRespToCache("close-key", qCtx) {
+	if _, ok := c.saveRespToCache("close-key", qCtx); !ok {
 		t.Fatal("expected response to be cached")
 	}
 	c.updatedKey.Add(1)

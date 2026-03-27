@@ -12,6 +12,15 @@ const (
 	domainPoolEvictionLRU     = "lru"
 	domainPoolEvictionLFU     = "lfu"
 	memoryPoolsConfigFilename = "memory_pools.yaml"
+
+	defaultTopDomainsMaxDomains   = 50000
+	defaultRealIPPoolMaxDomains   = 30000
+	defaultFakeIPPoolMaxDomains   = 30000
+	defaultNoV6PoolMaxDomains     = 40000
+	defaultNoV4PoolMaxDomains     = 30000
+	defaultNodeNoV6PoolMaxDomains = 12000
+	defaultNodeNoV4PoolMaxDomains = 12000
+	defaultGenericPoolMaxDomains  = 20000
 )
 
 type DomainPoolPolicy struct {
@@ -141,7 +150,7 @@ func defaultDomainPoolPolicy(tag string) DomainPoolPolicy {
 		return DomainPoolPolicy{
 			Kind:                 DomainPoolKindStats,
 			TrackFlags:           true,
-			MaxDomains:           200000,
+			MaxDomains:           defaultTopDomainsMaxDomains,
 			MaxVariantsPerDomain: 8,
 			EvictionPolicy:       domainPoolEvictionLFU,
 			FlushIntervalMS:      30000,
@@ -150,19 +159,19 @@ func defaultDomainPoolPolicy(tag string) DomainPoolPolicy {
 			MemoryID:             "top",
 		}
 	case "realip":
-		return defaultMemoryDomainPoolPolicy("realip", "my_realiprule", 80000, 360)
+		return defaultMemoryDomainPoolPolicy("realip", "my_realiprule", defaultRealIPPoolMaxDomains, 360)
 	case "fakeip":
-		return defaultMemoryDomainPoolPolicy("fakeip", "my_fakeiprule", 80000, 240)
+		return defaultMemoryDomainPoolPolicy("fakeip", "my_fakeiprule", defaultFakeIPPoolMaxDomains, 240)
 	case "nov6":
-		return defaultMemoryDomainPoolPolicy("nov6", "my_nov6rule", 120000, 180)
+		return defaultMemoryDomainPoolPolicy("nov6", "my_nov6rule", defaultNoV6PoolMaxDomains, 180)
 	case "nov4":
-		return defaultMemoryDomainPoolPolicy("nov4", "my_nov4rule", 80000, 180)
+		return defaultMemoryDomainPoolPolicy("nov4", "my_nov4rule", defaultNoV4PoolMaxDomains, 180)
 	case "nodenov6":
-		return defaultMemoryDomainPoolPolicy("nodenov6", "my_nodenov6rule", 50000, 180)
+		return defaultMemoryDomainPoolPolicy("nodenov6", "my_nodenov6rule", defaultNodeNoV6PoolMaxDomains, 180)
 	case "nodenov4":
-		return defaultMemoryDomainPoolPolicy("nodenov4", "my_nodenov4rule", 50000, 180)
+		return defaultMemoryDomainPoolPolicy("nodenov4", "my_nodenov4rule", defaultNodeNoV4PoolMaxDomains, 180)
 	default:
-		return defaultMemoryDomainPoolPolicy("generic", "", 50000, 180)
+		return defaultMemoryDomainPoolPolicy("generic", "", defaultGenericPoolMaxDomains, 180)
 	}
 }
 

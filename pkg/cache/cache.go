@@ -47,6 +47,7 @@ type Cache[K Key, V Value] struct {
 	closed      atomic.Bool
 	closeNotify chan struct{}
 	m           *concurrent_map.Map[K, *elem[V]]
+	onEvicted   func(key K, v V)
 }
 
 type Opts struct {
@@ -65,7 +66,7 @@ type elem[V Value] struct {
 }
 
 // New initializes a Cache.
-// The minimum size is 1024.
+// If opts.Size <= 0, a default size will be used.
 // cleanerInterval specifies the interval that Cache scans
 // and discards expired values. If cleanerInterval <= 0, a default
 // interval will be used.
@@ -85,6 +86,10 @@ func (c *Cache[K, V]) Close() error {
 		close(c.closeNotify)
 	}
 	return nil
+}
+
+func (c *Cache[K, V]) SetOnEvicted(f func(key K, v V)) {
+	c.onEvicted = f
 }
 
 func (c *Cache[K, V]) Get(key K) (v V, expirationTime time.Time, ok bool) {
@@ -119,7 +124,11 @@ func (c *Cache[K, V]) Store(key K, v V, expirationTime time.Time) {
 		v:              v,
 		expirationTime: expirationTime,
 	}
-	c.m.Set(key, e)
+	c.m.SetWithEvicted(key, e, func(key K, v *elem[V]) {
+		if c.onEvicted != nil {
+			c.onEvicted(key, v.v)
+		}
+	})
 	return
 }
 

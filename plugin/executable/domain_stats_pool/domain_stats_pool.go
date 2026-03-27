@@ -117,6 +117,8 @@ type domainStatsPool struct {
 	stats              map[string]*statEntry
 	domainVariantCount map[string]int
 	domainCount        int
+	statsPeak          int
+	domainVariantPeak  int
 	rules              []string
 	subscribers        []func()
 
@@ -346,6 +348,7 @@ func (d *domainStatsPool) trackEntryCreatedLocked(domain string) {
 		d.domainCount++
 	}
 	d.domainVariantCount[domain]++
+	d.noteStatePeaksLocked()
 }
 
 func (d *domainStatsPool) deleteEntryLocked(storageKey string) {
@@ -518,6 +521,7 @@ func (d *domainStatsPool) buildSnapshot(mode WriteMode) writeSnapshot {
 
 func (d *domainStatsPool) pruneExpiredLocked() {
 	evictBefore := time.Now().AddDate(0, 0, -d.policy.retentionDays)
+	deleted := false
 	for key, entry := range d.stats {
 		if entry.LastDate == "" {
 			continue
@@ -525,13 +529,16 @@ func (d *domainStatsPool) pruneExpiredLocked() {
 		ts, err := time.Parse("2006-01-02", entry.LastDate)
 		if err == nil && ts.Before(evictBefore) {
 			d.deleteEntryLocked(key)
+			deleted = true
 		}
+	}
+	if deleted {
+		d.maybeCompactStateLocked()
 	}
 }
 
 func (d *domainStatsPool) resetStateLocked() {
-	d.stats = make(map[string]*statEntry)
-	d.domainVariantCount = make(map[string]int)
+	d.resetStateStorageLocked()
 	d.domainCount = 0
 	d.rules = nil
 	atomic.StoreInt64(&d.totalCount, 0)

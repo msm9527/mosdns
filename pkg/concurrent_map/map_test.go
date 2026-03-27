@@ -21,6 +21,7 @@ package concurrent_map
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 )
@@ -136,6 +137,79 @@ func TestConcurrentMap_TestAndSet(t *testing.T) {
 	_, ok := cm.Get(1)
 	if ok {
 		t.Fatal()
+	}
+}
+
+func TestShardCompactsAfterLargeDelete(t *testing.T) {
+	s := newShard[testMapHashable, int](0)
+	for i := 0; i < mapCompactionMinEntries*2; i++ {
+		s.set(testMapHashable(i), i)
+	}
+
+	oldPtr := reflect.ValueOf(s.m).Pointer()
+	for i := 0; i < mapCompactionMinEntries*2-mapCompactionMinEntries/4; i++ {
+		s.del(testMapHashable(i))
+	}
+
+	if got := len(s.m); got != mapCompactionMinEntries/4 {
+		t.Fatalf("len(s.m) = %d, want %d", got, mapCompactionMinEntries/4)
+	}
+	if s.peakLen != mapCompactionMinEntries/2 {
+		t.Fatalf("peakLen = %d, want %d", s.peakLen, mapCompactionMinEntries/2)
+	}
+	if newPtr := reflect.ValueOf(s.m).Pointer(); newPtr == oldPtr {
+		t.Fatal("expected shard map to be compacted after large delete")
+	}
+}
+
+func TestNewMapCacheHonorsSmallCapacity(t *testing.T) {
+	m := NewMapCache[testMapHashable, int](1)
+	for i := 0; i < 10; i++ {
+		m.Set(testMapHashable(i*MapShardSize), i)
+	}
+	if got := m.Len(); got != 1 {
+		t.Fatalf("Len() = %d, want 1", got)
+	}
+}
+
+func TestShardSetWithEvicted(t *testing.T) {
+	s := newShard[testMapHashable, int](1)
+	evicted := make(map[testMapHashable]int)
+
+	s.setWithEvicted(1, 1, func(key testMapHashable, v int) {
+		evicted[key] = v
+	})
+	s.setWithEvicted(2, 2, func(key testMapHashable, v int) {
+		evicted[key] = v
+	})
+
+	if got := len(s.m); got != 1 {
+		t.Fatalf("len(s.m) = %d, want 1", got)
+	}
+	if got := len(evicted); got != 1 {
+		t.Fatalf("len(evicted) = %d, want 1", got)
+	}
+	if evicted[1] != 1 {
+		t.Fatalf("expected key 1 to be evicted with value 1, got %#v", evicted)
+	}
+}
+
+func TestShardSetUpdateDoesNotEvict(t *testing.T) {
+	s := newShard[testMapHashable, int](1)
+	evicted := 0
+
+	s.setWithEvicted(1, 1, func(key testMapHashable, v int) {
+		evicted++
+	})
+	s.setWithEvicted(1, 2, func(key testMapHashable, v int) {
+		evicted++
+	})
+
+	if evicted != 0 {
+		t.Fatalf("evicted = %d, want 0", evicted)
+	}
+	if got, ok := s.get(1); !ok || got != 2 {
+		t.Fatalf("got (%d, %v), want (2, true)", got, ok)
 	}
 }
 

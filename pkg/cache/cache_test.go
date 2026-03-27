@@ -23,6 +23,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/pkg/concurrent_map"
 )
 
 type testKey int
@@ -104,5 +106,25 @@ func Test_Cache_Delete(t *testing.T) {
 	c.Delete(key)
 	if _, _, ok := c.Get(key); ok {
 		t.Fatal("expected key to be deleted")
+	}
+}
+
+func TestCacheOnEvicted(t *testing.T) {
+	c := New[testKey, int](Opts{Size: 1})
+	defer c.Close()
+
+	evicted := make(map[testKey]int)
+	c.SetOnEvicted(func(key testKey, v int) {
+		evicted[key] = v
+	})
+
+	c.Store(0, 1, time.Now().Add(time.Minute))
+	c.Store(testKey(concurrent_map.MapShardSize), 2, time.Now().Add(time.Minute))
+
+	if got := len(evicted); got != 1 {
+		t.Fatalf("len(evicted) = %d, want 1", got)
+	}
+	if evicted[0] != 1 {
+		t.Fatalf("expected key 0 to be evicted with value 1, got %#v", evicted)
 	}
 }
