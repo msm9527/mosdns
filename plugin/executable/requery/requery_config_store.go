@@ -205,7 +205,7 @@ func configFromPersisted(cfg *Config) persistedConfig {
 func cloneState(status Status, task *FullRebuildTask) persistedState {
 	return persistedState{
 		Status:          status,
-		FullRebuildTask: cloneFullRebuildTask(task),
+		FullRebuildTask: task,
 	}
 }
 
@@ -272,7 +272,7 @@ func (p *Requery) loadStateUnlocked() (bool, error) {
 		if p.status.TaskState == "" {
 			p.status.TaskState = "idle"
 		}
-		p.fullTask = cloneFullRebuildTask(runtimeState.FullRebuildTask)
+		p.fullTask = runtimeState.FullRebuildTask
 		p.activeRunID = p.status.ActiveRunID
 		if p.activeRunID == "" && p.fullTask != nil {
 			p.activeRunID = p.fullTask.TaskID

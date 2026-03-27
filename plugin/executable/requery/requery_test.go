@@ -608,6 +608,52 @@ func TestLoadConfigInitializesRuntimeStateWithoutFiles(t *testing.T) {
 	}
 }
 
+func TestRequeryCloseStopsOnDemandLoopAndScheduler(t *testing.T) {
+	t.Parallel()
+
+	p := &Requery{
+		config: &Config{
+			Workflow: WorkflowSettings{Mode: "hybrid"},
+			Scheduler: SchedulerConfig{
+				Enabled:         true,
+				StartDatetime:   time.Now().Add(time.Minute).UTC().Format(time.RFC3339),
+				IntervalMinutes: 1,
+			},
+		},
+		queueKick:    make(chan struct{}, 1),
+		closeCh:      make(chan struct{}),
+		onDemandDone: make(chan struct{}),
+	}
+
+	go p.runOnDemandLoop()
+	if err := p.setupScheduler(); err != nil {
+		t.Fatalf("setupScheduler: %v", err)
+	}
+
+	p.mu.RLock()
+	timer := p.scheduleTimer
+	p.mu.RUnlock()
+	if timer == nil {
+		t.Fatal("expected scheduler timer to be installed")
+	}
+
+	if err := p.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !p.isClosed() {
+		t.Fatal("expected requery to report closed")
+	}
+
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	if p.scheduleTimer != nil {
+		t.Fatal("expected scheduler timer to be cleared on close")
+	}
+	if p.taskCancel != nil || p.taskCtx != nil {
+		t.Fatal("expected task context to be cleared on close")
+	}
+}
+
 func TestBeginTaskExecutionRollsBackOnPersistFailure(t *testing.T) {
 	dir := t.TempDir()
 

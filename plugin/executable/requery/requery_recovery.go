@@ -16,8 +16,8 @@ func newFullRebuildTask(plan taskCandidatePlan) *FullRebuildTask {
 		StartedAt:  time.Now().UTC(),
 		UpdatedAt:  time.Now().UTC(),
 		Total:      total,
-		Primary:    cloneDomainCandidates(plan.Primary),
-		Secondary:  cloneDomainCandidates(plan.Secondary),
+		Primary:    plan.Primary,
+		Secondary:  plan.Secondary,
 	}
 }
 
@@ -26,8 +26,8 @@ func planFromRecovery(task *FullRebuildTask) taskCandidatePlan {
 		return taskCandidatePlan{}
 	}
 	return taskCandidatePlan{
-		Primary:   cloneDomainCandidates(task.Primary),
-		Secondary: cloneDomainCandidates(task.Secondary),
+		Primary:   task.Primary,
+		Secondary: task.Secondary,
 	}
 }
 
@@ -113,10 +113,11 @@ func (p *Requery) resumeDelay() time.Duration {
 }
 
 func (p *Requery) persistFullRebuildTask(task *FullRebuildTask) error {
+	snapshot := cloneFullRebuildTask(task)
 	p.mu.Lock()
-	p.fullTask = cloneFullRebuildTask(task)
-	p.activeRunID = task.TaskID
-	p.status.ActiveRunID = task.TaskID
+	p.fullTask = snapshot
+	p.activeRunID = snapshot.TaskID
+	p.status.ActiveRunID = snapshot.TaskID
 	err := p.saveStateUnlocked()
 	p.mu.Unlock()
 	if err != nil {
@@ -125,7 +126,7 @@ func (p *Requery) persistFullRebuildTask(task *FullRebuildTask) error {
 	if err := p.persistRunSnapshot("running", time.Time{}); err != nil {
 		return err
 	}
-	if err := p.persistCheckpoint(task); err != nil {
+	if err := p.persistCheckpoint(snapshot); err != nil {
 		return err
 	}
 	return nil
@@ -195,11 +196,22 @@ func (p *Requery) scheduleRecoveryIfNeeded() {
 	}
 
 	p.resumeOnce.Do(func() {
-		time.AfterFunc(delay, func() {
+		timer := time.AfterFunc(delay, func() {
+			if p.isClosed() {
+				return
+			}
 			profile := p.profileForMode("full_rebuild", 0)
 			if ok := p.startTaskWithRecovery(profile, task); !ok {
 				log.Println("[requery] Resume skipped: another task is already running.")
 			}
 		})
+		p.mu.Lock()
+		if p.isClosed() {
+			p.mu.Unlock()
+			timer.Stop()
+			return
+		}
+		p.resumeTimer = timer
+		p.mu.Unlock()
 	})
 }

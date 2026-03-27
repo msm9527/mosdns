@@ -55,3 +55,21 @@ func TestLoadMemoryPoolsCustomConfigFallsBackToDefaults(t *testing.T) {
 		t.Fatalf("unexpected defaults: %+v", values["my_fakeiplist"])
 	}
 }
+
+func TestDefaultMemoryPoolPoliciesUseConservativeCapacities(t *testing.T) {
+	values := defaultDomainPoolPolicyMap()
+	totalMaxDomains := 0
+	for _, policy := range values {
+		totalMaxDomains += policy.MaxDomains
+	}
+
+	if values["top_domains"].MaxDomains != defaultTopDomainsMaxDomains {
+		t.Fatalf("top_domains max_domains = %d, want %d", values["top_domains"].MaxDomains, defaultTopDomainsMaxDomains)
+	}
+	if values["my_realiplist"].MaxDomains != defaultRealIPPoolMaxDomains {
+		t.Fatalf("my_realiplist max_domains = %d, want %d", values["my_realiplist"].MaxDomains, defaultRealIPPoolMaxDomains)
+	}
+	if totalMaxDomains > 90000 {
+		t.Fatalf("default memory pool total max_domains is too large: %d", totalMaxDomains)
+	}
+}

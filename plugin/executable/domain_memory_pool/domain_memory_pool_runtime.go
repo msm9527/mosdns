@@ -17,7 +17,7 @@ func (d *domainMemoryPool) loadFromStore() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, variant := range state.Variants {
-		storageKey := buildStorageKeyFromFlags(variant.Domain, variant.FlagsMask)
+		domain, storageKey := d.acquireStorageKeyFromFlags(variant.Domain, variant.FlagsMask)
 		entry := &statEntry{
 			Count:          variant.TotalCount,
 			LastDate:       formatDate(variant.LastSeenAtUnixMS),
@@ -34,15 +34,15 @@ func (d *domainMemoryPool) loadFromStore() error {
 			LastSource:     variant.LastSource,
 		}
 		d.stats[storageKey] = entry
-		d.trackEntryCreatedLocked(variant.Domain)
+		d.trackEntryCreatedLocked(domain)
 	}
-	d.rules = buildRulesFromStoredDomains(state.Domains)
-	d.replaceActiveHotRulesLocked(d.rules)
-	d.lastRulesHash = hashRules(d.rules)
+	rules := buildRulesFromStoredDomains(state.Domains)
+	d.replaceActiveHotRulesLocked(rules)
+	d.lastRulesHash = hashPromotedDomains(state.Domains)
 	d.hasRulesHash = true
 	atomicStoreIfGreater(&d.totalCount, state.Meta.TotalObservations)
 	atomicStoreIfGreater(&d.promotedCount, int64(state.Meta.PromotedDomainCount))
-	atomicStoreIfGreater(&d.publishedCount, int64(len(d.rules)))
+	atomicStoreIfGreater(&d.publishedCount, int64(len(rules)))
 	atomicStoreIfGreater(&d.lastHotSyncAtUnixMS, state.Meta.LastPublishAtUnixMS)
 	return nil
 }
@@ -96,7 +96,7 @@ func (d *domainMemoryPool) notifyDirty(job coremain.DomainRefreshJob) {
 func (d *domainMemoryPool) GetRules() ([]string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	return append([]string(nil), d.rules...), nil
+	return d.snapshotActiveHotRulesLocked(), nil
 }
 
 func (d *domainMemoryPool) Subscribe(cb func()) {

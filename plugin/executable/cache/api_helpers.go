@@ -15,7 +15,7 @@ func (c *Cache) resetL1() {
 	}
 	for i := 0; i < shardCount; i++ {
 		c.shards[i].Lock()
-		c.shards[i].items = make(map[key]*l1Item, capHint)
+		c.shards[i].items = make(map[key]*item, capHint)
 		c.shards[i].order = make([]key, capHint)
 		c.shards[i].pos = 0
 		c.shards[i].ref = make(map[key]bool, capHint)

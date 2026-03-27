@@ -17,13 +17,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
 	"github.com/go-chi/chi/v5"
 	"github.com/miekg/dns"
-	"github.com/robfig/cron/v3"
 )
 
 const (
@@ -56,16 +56,17 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 	}
 
 	p := &Requery{
-		plugin:     bp.Plugin,
-		pluginTag:  bp.Tag(),
-		baseDir:    bp.BaseDir(),
-		runtimeKey: cfg.Key,
-		dbPath:     bp.ControlDBPath(),
-		scheduler:  cron.New(),
-		httpClient: &http.Client{Timeout: 30 * time.Second},
-		queue:      make(refreshJobHeap, 0),
-		queueIndex: make(map[string]struct{}),
-		queueKick:  make(chan struct{}, 1),
+		plugin:       bp.Plugin,
+		pluginTag:    bp.Tag(),
+		baseDir:      bp.BaseDir(),
+		runtimeKey:   cfg.Key,
+		dbPath:       bp.ControlDBPath(),
+		httpClient:   &http.Client{Timeout: 30 * time.Second},
+		queue:        make(refreshJobHeap, 0),
+		queueIndex:   make(map[string]struct{}),
+		queueKick:    make(chan struct{}, 1),
+		closeCh:      make(chan struct{}),
+		onDemandDone: make(chan struct{}),
 	}
 	heap.Init(&p.queue)
 
@@ -75,9 +76,6 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 
 	p.prepareRecoveryOnStartup()
 
-	// Start the scheduler's goroutine once. It will run forever.
-	p.scheduler.Start()
-	log.Println("[requery] Scheduler started.")
 	go p.runOnDemandLoop()
 
 	// Now, add the initial job based on the loaded config.
@@ -108,7 +106,6 @@ type Requery struct {
 	status              Status
 	fullTask            *FullRebuildTask
 	lastError           string
-	scheduler           *cron.Cron
 	taskCtx             context.Context
 	taskCancel          context.CancelFunc
 	activeRunID         string
@@ -118,6 +115,12 @@ type Requery struct {
 	queueIndex          map[string]struct{}
 	queueKick           chan struct{}
 	resumeOnce          sync.Once
+	closeOnce           sync.Once
+	closeCh             chan struct{}
+	onDemandDone        chan struct{}
+	onDemandStarted     atomic.Bool
+	scheduleTimer       *time.Timer
+	resumeTimer         *time.Timer
 }
 
 // Config is the persisted requery runtime config stored in control.db.
@@ -337,6 +340,8 @@ type refreshJob struct {
 
 type refreshJobHeap []refreshJob
 
+type candidateRankHeap []domainCandidate
+
 func (h refreshJobHeap) Len() int { return len(h) }
 
 func (h refreshJobHeap) Less(i, j int) bool {
@@ -363,6 +368,29 @@ func (h *refreshJobHeap) Pop() any {
 	return item
 }
 
+func (h candidateRankHeap) Len() int { return len(h) }
+
+func (h candidateRankHeap) Less(i, j int) bool {
+	if h[i].Weight == h[j].Weight {
+		return h[i].Name > h[j].Name
+	}
+	return h[i].Weight < h[j].Weight
+}
+
+func (h candidateRankHeap) Swap(i, j int) { h[i], h[j] = h[j], h[i] }
+
+func (h *candidateRankHeap) Push(x any) {
+	*h = append(*h, x.(domainCandidate))
+}
+
+func (h *candidateRankHeap) Pop() any {
+	old := *h
+	n := len(old)
+	item := old[n-1]
+	*h = old[:n-1]
+	return item
+}
+
 func (j refreshJob) key() string {
 	return strings.ToLower(j.MemoryID + "|" + j.Domain)
 }
@@ -378,6 +406,55 @@ func priorityForReason(reason string) int {
 	default:
 		return 40
 	}
+}
+
+func candidateBetter(left, right domainCandidate) bool {
+	if left.Weight == right.Weight {
+		return left.Name < right.Name
+	}
+	return left.Weight > right.Weight
+}
+
+func normalizeCandidate(candidate domainCandidate) domainCandidate {
+	if candidate.QTypeMask == 0 {
+		candidate.QTypeMask = qtypeMaskA | qtypeMaskAAAA
+	}
+	return candidate
+}
+
+func collectSortedCandidates(candidates map[string]domainCandidate, limit int) []domainCandidate {
+	if len(candidates) == 0 {
+		return nil
+	}
+	if limit <= 0 || len(candidates) <= limit {
+		items := make([]domainCandidate, 0, len(candidates))
+		for _, candidate := range candidates {
+			items = append(items, normalizeCandidate(candidate))
+		}
+		sort.Slice(items, func(i, j int) bool {
+			return candidateBetter(items[i], items[j])
+		})
+		return items
+	}
+
+	heapItems := make(candidateRankHeap, 0, limit)
+	for _, candidate := range candidates {
+		candidate = normalizeCandidate(candidate)
+		if len(heapItems) < limit {
+			heap.Push(&heapItems, candidate)
+			continue
+		}
+		if candidateBetter(candidate, heapItems[0]) {
+			heap.Pop(&heapItems)
+			heap.Push(&heapItems, candidate)
+		}
+	}
+
+	items := make([]domainCandidate, len(heapItems))
+	for i := len(items) - 1; i >= 0; i-- {
+		items[i] = heap.Pop(&heapItems).(domainCandidate)
+	}
+	return items
 }
 
 // ----------------------------------------------------------------------------
@@ -568,20 +645,7 @@ func (p *Requery) scanDomainsFromSourceFiles(ctx context.Context, limit int) ([]
 		return []domainCandidate{}, nil
 	}
 
-	domains := make([]domainCandidate, 0, len(domainSet))
-	for _, candidate := range domainSet {
-		if candidate.QTypeMask == 0 {
-			candidate.QTypeMask = qtypeMaskA | qtypeMaskAAAA
-		}
-		domains = append(domains, candidate)
-	}
-	sort.Slice(domains, func(i, j int) bool {
-		if domains[i].Weight == domains[j].Weight {
-			return domains[i].Name < domains[j].Name
-		}
-		return domains[i].Weight > domains[j].Weight
-	})
-	domains = applyCandidateLimit(domains, limit)
+	domains := collectSortedCandidates(domainSet, limit)
 	domainSet = nil
 	// 此时不再写入 output_file (requery_backup.txt)
 
@@ -643,17 +707,7 @@ func (p *Requery) collectRuntimeCandidates(profile taskProfile) ([]domainCandida
 		return nil, nil
 	}
 
-	domains := make([]domainCandidate, 0, len(candidateSet))
-	for _, candidate := range candidateSet {
-		domains = append(domains, candidate)
-	}
-	sort.Slice(domains, func(i, j int) bool {
-		if domains[i].Weight == domains[j].Weight {
-			return domains[i].Name < domains[j].Name
-		}
-		return domains[i].Weight > domains[j].Weight
-	})
-	return applyCandidateLimit(domains, req.Limit), nil
+	return collectSortedCandidates(candidateSet, req.Limit), nil
 }
 
 func mergeDomainCandidates(primary []domainCandidate, secondary []domainCandidate) []domainCandidate {
@@ -689,17 +743,7 @@ func mergeDomainCandidates(primary []domainCandidate, secondary []domainCandidat
 		merged[candidate.Name] = candidate
 	}
 
-	items := make([]domainCandidate, 0, len(merged))
-	for _, candidate := range merged {
-		items = append(items, candidate)
-	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Weight == items[j].Weight {
-			return items[i].Name < items[j].Name
-		}
-		return items[i].Weight > items[j].Weight
-	})
-	return items
+	return collectSortedCandidates(merged, 0)
 }
 
 func applyCandidateLimit(domains []domainCandidate, limit int) []domainCandidate {
@@ -762,14 +806,16 @@ func (p *Requery) runStageWithCheckpoint(ctx context.Context, profile taskProfil
 		recovery.UpdatedAt = time.Now().UTC()
 		switch stage {
 		case "priority":
-			recovery.Primary = cloneDomainCandidates(domains[end:])
+			remainder := domains[end:]
+			recovery.Primary = remainder
 			if primaryRef != nil {
-				*primaryRef = cloneDomainCandidates(domains[end:])
+				*primaryRef = remainder
 			}
 		case "tail":
-			recovery.Secondary = cloneDomainCandidates(domains[end:])
+			remainder := domains[end:]
+			recovery.Secondary = remainder
 			if secondaryRef != nil {
-				*secondaryRef = cloneDomainCandidates(domains[end:])
+				*secondaryRef = remainder
 			}
 		}
 		if err := p.persistFullRebuildTask(recovery); err != nil {
@@ -1135,16 +1181,25 @@ func (p *Requery) dequeueRefreshBatch(max int) []refreshJob {
 }
 
 func (p *Requery) runOnDemandLoop() {
+	p.onDemandStarted.Store(true)
+	if p.onDemandDone != nil {
+		defer close(p.onDemandDone)
+	}
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-p.closeCh:
+			return
 		case <-p.queueKick:
 		case <-ticker.C:
 		}
 
 		for {
+			if p.isClosed() {
+				return
+			}
 			jobs := p.dequeueRefreshBatch(p.onDemandBatchSize())
 			if len(jobs) == 0 {
 				break
@@ -1705,8 +1760,6 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	p.config.Scheduler = payload.SchedulerConfig
 	normalizeSchedulerDefaults(&p.config.Scheduler)
 	if payload.Mode != "" {
@@ -1742,14 +1795,20 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 	}
 
 	if err := p.saveConfigUnlocked(); err != nil {
+		p.mu.Unlock()
 		p.jsonError(w, "Failed to save updated config", http.StatusInternalServerError)
 		return
 	}
+	enabled := p.config.Scheduler.Enabled
+	mode := p.config.Workflow.Mode
+	intervalMinutes := p.config.Scheduler.IntervalMinutes
+	p.mu.Unlock()
+
 	p.rescheduleTasks()
 	_ = coremain.RecordSystemEventToPath(p.runtimeDBPath(), "control.requery", "info", "updated requery scheduler config", map[string]any{
-		"enabled":          p.config.Scheduler.Enabled,
-		"mode":             p.config.Workflow.Mode,
-		"interval_minutes": p.config.Scheduler.IntervalMinutes,
+		"enabled":          enabled,
+		"mode":             mode,
+		"interval_minutes": intervalMinutes,
 	})
 	p.jsonResponse(w, map[string]string{"status": "success", "message": "Scheduler configuration updated successfully."}, http.StatusOK)
 }
@@ -1818,89 +1877,6 @@ func (p *Requery) handleGetSourceFileCounts(w http.ResponseWriter, r *http.Reque
 // ----------------------------------------------------------------------------
 // 5. Helper and Utility Functions
 // ----------------------------------------------------------------------------
-
-// [FIX] Corrected rescheduleTasks logic
-func (p *Requery) rescheduleTasks() {
-	if err := p.setupScheduler(); err != nil {
-		log.Printf("[requery] WARN: Failed to reschedule tasks: %v", err)
-	}
-}
-
-// [Modified] Rewrite setupScheduler to implement precise periodic scheduling based on the start time
-func (p *Requery) setupScheduler() error {
-	// 1. Remove all old scheduled jobs. This logic remains unchanged.
-	for _, entry := range p.scheduler.Entries() {
-		p.scheduler.Remove(entry.ID)
-	}
-
-	// 2. Check if the scheduler is enabled in the config. This logic remains unchanged.
-	if !p.allowsSweep() {
-		log.Println("[requery] Sweep scheduler is disabled or interval is invalid in config.")
-		return nil
-	}
-
-	// 3. Check and parse the start time (start_datetime).
-	// If it's not set, precise scheduling is not possible, so we return directly.
-	startTime := time.Now().UTC()
-	if p.config.Scheduler.StartDatetime != "" {
-		parsed, err := time.Parse(time.RFC3339, p.config.Scheduler.StartDatetime)
-		if err != nil {
-			log.Printf("[requery] WARN: Invalid 'start_datetime' format ('%s'), using interval from now: %v", p.config.Scheduler.StartDatetime, err)
-		} else {
-			startTime = parsed
-		}
-	}
-
-	// 4. Define the job to be executed. This logic remains unchanged and already includes the check to prevent task overlap.
-	jobFunc := func() {
-		profile := p.profileForMode("quick_rebuild", 0)
-		log.Printf("[requery] Scheduler is triggering a task: %s.", profile.Mode)
-		if ok := p.startTaskWithSource(profile, nil, "scheduler"); !ok {
-			log.Println("[requery] Scheduler skipped: previous task is still running.")
-		}
-	}
-
-	// 5. [Core Modification] Calculate the next precise execution time point.
-	now := time.Now().UTC()
-	interval := time.Duration(p.config.Scheduler.IntervalMinutes) * time.Minute
-	var nextRunTime time.Time
-
-	if startTime.After(now) {
-		// If the start time is in the future, the next run time is the start time itself.
-		nextRunTime = startTime
-	} else {
-		// If the start time has passed, calculate the next period from that point.
-		// a. Calculate the duration that has elapsed since the start time.
-		elapsed := now.Sub(startTime)
-		// b. Calculate how many full intervals have passed.
-		cyclesPassed := elapsed / interval
-		// c. The next run time = start time + (number of cycles passed + 1) * interval.
-		nextRunTime = startTime.Add(time.Duration(cyclesPassed+1) * interval)
-	}
-
-	// 6. Use time.AfterFunc to create a one-off timer to schedule the next job.
-	delay := nextRunTime.Sub(now)
-
-	if delay > 0 {
-		log.Printf("[requery] Next scheduled run will be at %v (in %v).", nextRunTime.Local(), delay.Round(time.Second))
-
-		// When the timer fires, it will execute the job and then immediately call rescheduleTasks
-		// to schedule the subsequent job, creating a chain.
-		time.AfterFunc(delay, func() {
-			jobFunc()
-			// Immediately reschedule to calculate and arrange the next execution cycle.
-			p.rescheduleTasks()
-		})
-	} else {
-		// This is an edge case, which should rarely happen. If the calculated run time is in the past
-		// (possibly due to system clock issues or a long-running task),
-		// reschedule immediately to find the next valid time point.
-		log.Printf("[requery] Calculated next run time (%v) is in the past. Attempting to reschedule immediately.", nextRunTime.Local())
-		go p.rescheduleTasks()
-	}
-
-	return nil
-}
 
 func (p *Requery) callURLs(ctx context.Context, action string, urls []string) batchActionResult {
 	start := time.Now()

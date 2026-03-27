@@ -24,6 +24,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/dnsutils"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/stringintern"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"github.com/go-chi/chi/v5"
@@ -61,9 +62,13 @@ const (
 
 	shardCount = 256 // 256分段锁，平衡锁竞争与内存开销
 
-	defaultL1TotalCap = 8192 // 默认 L1 总容量（按路由器场景收敛）
-	defaultL1SmallCap = 4096 // 小容量实例默认 L1 总容量
-	maxL1ShardCap     = 1024 // 防止误配导致单分片过大
+	defaultL1TotalCap = 4096 // 默认 L1 总容量（按 1G 级小机更保守地收敛）
+	defaultL1SmallCap = 1024 // 小容量实例默认 L1 总容量
+	maxL1ShardCap     = 512  // 防止误配导致单分片过大
+
+	defaultKeyBufferCap   = 256
+	keyBufferExtraCap     = 32
+	maxPooledKeyBufferCap = 1024
 
 	// size <= 600000 视为中小实例，自动使用更保守的 L1 档位。
 	l1SmallCapThreshold = 600000
@@ -83,7 +88,7 @@ var _ sequence.RecursiveExecutable = (*Cache)(nil)
 // keyBufferPool 用于复用生成 Key 时的字节缓冲区，显著降低内存分配压力
 var keyBufferPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 0, 256)
+		b := make([]byte, 0, defaultKeyBufferCap)
 		return &b
 	},
 }
@@ -112,18 +117,10 @@ type item struct {
 	domainSet      string
 }
 
-// l1Item 存储解包后的对象，携带 domainSet，用于热点极速查询
-type l1Item struct {
-	msg            *dns.Msg
-	storedTime     time.Time
-	expirationTime time.Time
-	domainSet      string
-}
-
-// l1Shard 带有 FIFO 限制的分段锁桶
+// l1Shard 带有 FIFO 限制的分段锁桶，保存对 L2 条目的共享引用，避免重复持有响应对象。
 type l1Shard struct {
 	sync.RWMutex
-	items   map[key]*l1Item
+	items   map[key]*item
 	order   []key
 	pos     int
 	ref     map[key]bool
@@ -271,6 +268,7 @@ type Cache struct {
 	updatedKey   atomic.Uint64
 	persistence  *persistenceManager
 	runtimeState *cacheRuntimeState
+	domainSets   *stringintern.Pool
 
 	queryCount             atomic.Uint64
 	hitCount               atomic.Uint64
@@ -385,6 +383,7 @@ func NewCache(args *Args, opts Opts) *Cache {
 		l1Enabled:       l1Enabled,
 		l1ShardCap:      l1ShardCap,
 		lazyRefresh:     make(map[string]*lazyRefreshState),
+		domainSets:      stringintern.New(),
 	}
 	p.persistence = newPersistenceManager(args, logger)
 	p.initMetrics(lb)
@@ -396,12 +395,16 @@ func NewCache(args *Args, opts Opts) *Cache {
 	}
 	for i := 0; i < shardCount; i++ {
 		p.shards[i] = &l1Shard{
-			items:   make(map[key]*l1Item, capHint),
+			items:   make(map[key]*item, capHint),
 			order:   make([]key, capHint),
 			ref:     make(map[key]bool, capHint),
 			maxSize: l1ShardCap,
 		}
 	}
+	backend.SetOnEvicted(func(k key, v *item) {
+		p.releaseCacheItemResources(v)
+		p.deleteL1Key(k)
+	})
 
 	if err := p.loadDump(); err != nil {
 		p.logger.Error("failed to load cache dump", zap.Error(err))
@@ -436,8 +439,8 @@ func computeL1ShardCap(args *Args, enabled bool) int {
 }
 
 // updateL1 实现热路径环形淘汰
-func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.Time, domainSet string) {
-	if s.maxSize <= 0 {
+func (s *l1Shard) updateL1(k key, cachedItem *item) {
+	if s.maxSize <= 0 || cachedItem == nil {
 		return
 	}
 	s.Lock()
@@ -445,7 +448,7 @@ func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.
 
 	// 命中则更新并标记为最近使用
 	if _, ok := s.items[k]; ok {
-		s.items[k] = &l1Item{msg: msg.Copy(), storedTime: storedTime, expirationTime: expirationTime, domainSet: domainSet}
+		s.items[k] = cachedItem
 		s.ref[k] = true
 		return
 	}
@@ -471,7 +474,7 @@ func (s *l1Shard) updateL1(k key, msg *dns.Msg, storedTime, expirationTime time.
 		break
 	}
 
-	s.items[k] = &l1Item{msg: msg.Copy(), storedTime: storedTime, expirationTime: expirationTime, domainSet: domainSet}
+	s.items[k] = cachedItem
 	s.order[s.pos] = k
 	s.ref[k] = true
 	s.pos = (s.pos + 1) % s.maxSize
@@ -552,9 +555,9 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	shard := c.shards[h%shardCount]
 	currentSig := currentRouteSignature(qCtx)
 
-	// --- L1 极速路径查询 (免解包) ---
+	// --- L1 热路径查询 ---
 	var (
-		v1  *l1Item
+		v1  *item
 		ok1 bool
 	)
 	if c.l1Enabled {
@@ -570,28 +573,29 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		ok1 = false
 	}
 	if ok1 && now.Before(v1.expirationTime) {
-		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
-		c.hitTotal.Inc()
-		c.hitCount.Add(1)
-		c.l1HitTotalMetric.Inc()
-		c.l1HitCount.Add(1)
+		r, lazy, domainSet, corrupt := respFromCacheItem(v1, false, expiredMsgTtl)
+		if corrupt {
+			c.backend.Delete(k)
+			c.deleteL1Key(k)
+			ok1 = false
+		} else if r != nil && !lazy {
+			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
+			c.hitTotal.Inc()
+			c.hitCount.Add(1)
+			c.l1HitTotalMetric.Inc()
+			c.l1HitCount.Add(1)
 
-		// 仅 Copy 一次，避免 TTL 修改污染缓存
-		r := v1.msg.Copy()
-		dnsutils.SubtractTTL(r, uint32(now.Sub(v1.storedTime).Seconds()))
-		r.Id = q.Id
+			r.Id = q.Id
+			qCtx.SetResponse(r)
+			if domainSet != "" {
+				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
+			}
+			c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedTime, v1.expirationTime, v1.domainSet)
 
-		qCtx.SetResponse(r)
-
-		if v1.domainSet != "" {
-			qCtx.StoreValue(query_context.KeyDomainSet, v1.domainSet)
+			// 归还 Key 缓冲区
+			releaseKeyBuffer(bufPtr)
+			return nil
 		}
-
-		c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedTime, v1.expirationTime, v1.domainSet)
-
-		// 归还 Key 缓冲区
-		keyBufferPool.Put(bufPtr)
-		return nil
 	}
 
 	// 命中 L1 失败或过期，需要正式生成 string Key 用于后续 L2 存储或异步任务
@@ -599,7 +603,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	kReal := key(msgKey)
 
 	// 归还 Key 缓冲区
-	keyBufferPool.Put(bufPtr)
+	releaseKeyBuffer(bufPtr)
 
 	// --- L2 路径查询 ---
 	cachedItem, _, _ := c.backend.Get(kReal)
@@ -677,7 +681,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 		// 命中 L2 且未过期：晋升到 L1
 		if c.l1Enabled && !lazyHit && cachedItem != nil {
-			shard.updateL1(kReal, cachedResp, cachedItem.storedTime, cachedItem.expirationTime, cachedItem.domainSet)
+			shard.updateL1(kReal, cachedItem)
 			c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedTime, cachedItem.expirationTime, cachedItem.domainSet)
 		}
 		return nil
@@ -721,19 +725,12 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	r := qCtx.R()
 
 	if r != nil && !c.containsExcluded(r) {
-		if c.saveRespToCache(msgKey, qCtx) {
+		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
 			c.updatedKey.Add(1)
 
 			// 同时更新 L1
-			minTTL := dnsutils.GetMinimalTTL(r)
-			var dset string
-			if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
-				if s, isString := val.(string); isString {
-					dset = s
-				}
-			}
 			if c.l1Enabled {
-				shard.updateL1(kReal, r, now, now.Add(time.Duration(minTTL)*time.Second), dset)
+				shard.updateL1(kReal, cachedItem)
 			}
 		}
 	}
@@ -835,21 +832,13 @@ func (c *Cache) runLazyUpdate(msgKey string, qCtx *query_context.Context, next s
 
 	r := qCtx.R()
 	if r != nil && !c.containsExcluded(r) {
-		if c.saveRespToCache(msgKey, qCtx) {
+		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
 			c.updatedKey.Add(1)
 			if c.l1Enabled {
 				k := key(msgKey)
 				h := k.Sum()
 				shard := c.shards[h%shardCount]
-				minTTL := dnsutils.GetMinimalTTL(r)
-				var dset string
-				if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
-					if s, isString := val.(string); isString {
-						dset = s
-					}
-				}
-				now := time.Now()
-				shard.updateL1(k, r, now, now.Add(time.Duration(minTTL)*time.Second), dset)
+				shard.updateL1(k, cachedItem)
 			}
 		}
 	}
@@ -1365,6 +1354,7 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 				expirationTime: msgExpTime,
 				domainSet:      entry.GetDomainSet(),
 			}
+			c.prepareCacheItemForStore(i)
 			c.backend.Store(key(entry.GetKey()), i, cacheExpTime)
 		}
 		return nil
@@ -1413,7 +1403,7 @@ func getMsgKeyBytes(q *dns.Msg, qCtx *query_context.Context, useECS bool) ([]byt
 	bufPtr := keyBufferPool.Get().(*[]byte)
 	buf := (*bufPtr)[:0]
 	if cap(buf) < totalLen {
-		buf = make([]byte, 0, totalLen+32)
+		buf = make([]byte, 0, totalLen+keyBufferExtraCap)
 	}
 
 	b := byte(0)
@@ -1438,6 +1428,21 @@ func getMsgKeyBytes(q *dns.Msg, qCtx *query_context.Context, useECS bool) ([]byt
 
 	*bufPtr = buf
 	return buf, bufPtr
+}
+
+func releaseKeyBuffer(bufPtr *[]byte) {
+	if bufPtr == nil {
+		return
+	}
+	*bufPtr = resetKeyBuffer(*bufPtr)
+	keyBufferPool.Put(bufPtr)
+}
+
+func resetKeyBuffer(buf []byte) []byte {
+	if cap(buf) > maxPooledKeyBufferCap {
+		return make([]byte, 0, defaultKeyBufferCap)
+	}
+	return buf[:0]
 }
 
 func copyNoOpt(m *dns.Msg) *dns.Msg {
@@ -1505,7 +1510,7 @@ func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, b
 
 		// 性能补丁：利用 Pool 进行解包，减少对象分配
 		m := dnsMsgPool.Get().(*dns.Msg)
-		defer dnsMsgPool.Put(m)
+		defer releaseDNSMsg(m)
 
 		if err := m.Unpack(v.resp); err != nil {
 			return nil, false, "", true
@@ -1527,10 +1532,25 @@ func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, b
 	return nil, false, "", false
 }
 
-func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool {
+func releaseDNSMsg(m *dns.Msg) {
+	if m == nil {
+		return
+	}
+	resetDNSMsg(m)
+	dnsMsgPool.Put(m)
+}
+
+func resetDNSMsg(m *dns.Msg) {
+	if m == nil {
+		return
+	}
+	*m = dns.Msg{}
+}
+
+func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*item, bool) {
 	r := qCtx.R()
 	if r == nil || r.Truncated != false {
-		return false
+		return nil, false
 	}
 
 	var msgTtl time.Duration
@@ -1573,7 +1593,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool
 	msgToCache := copyNoOpt(r)
 	packedMsg, err := msgToCache.Pack()
 	if err != nil {
-		return false
+		return nil, false
 	}
 
 	now := time.Now()
@@ -1588,6 +1608,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool
 			v.domainSet = name
 		}
 	}
+	c.prepareCacheItemForStore(v)
 
 	cacheExp := now.Add(cacheTtl)
 	c.backend.Store(key(msgKey), v, cacheExp)
@@ -1601,5 +1622,5 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) bool
 	} else if c.args.WALFile != "" {
 		c.walAppendCounter.Inc()
 	}
-	return true
+	return v, true
 }

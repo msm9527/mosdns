@@ -25,6 +25,9 @@ import (
 
 const (
 	MapShardSize = 64
+
+	mapCompactionMinEntries    = 1024
+	mapCompactionShrinkDivisor = 2
 )
 
 type Hashable interface {
@@ -47,16 +50,23 @@ func NewMap[K Hashable, V any]() *Map[K, V] {
 }
 
 // NewMapCache returns a cache with a maximum size.
-// Note that, because this it has multiple (MapShardSize) shards,
-// the actual maximum size is MapShardSize*(size / MapShardSize).
-// If size <=0, it's equal to NewMap().
+// Because it has multiple (MapShardSize) shards, the actual maximum size is
+// rounded up to MapShardSize * ceil(size / MapShardSize).
+// If size <= 0, it behaves like NewMap().
 func NewMapCache[K Hashable, V any](size int) *Map[K, V] {
-	sizePreShard := size / MapShardSize
+	sizePreShard := cacheShardLimit(size)
 	m := new(Map[K, V])
 	for i := range m.shards {
 		m.shards[i] = newShard[K, V](sizePreShard)
 	}
 	return m
+}
+
+func cacheShardLimit(size int) int {
+	if size <= 0 {
+		return 0
+	}
+	return (size + MapShardSize - 1) / MapShardSize
 }
 
 func (m *Map[K, V]) getShard(key K) *shard[K, V] {
@@ -69,6 +79,10 @@ func (m *Map[K, V]) Get(key K) (V, bool) {
 
 func (m *Map[K, V]) Set(key K, v V) {
 	m.getShard(key).set(key, v)
+}
+
+func (m *Map[K, V]) SetWithEvicted(key K, v V, onEvicted func(key K, v V)) {
+	m.getShard(key).setWithEvicted(key, v, onEvicted)
 }
 
 func (m *Map[K, V]) Del(key K) {
@@ -103,9 +117,10 @@ func (m *Map[K, V]) Flush() {
 }
 
 type shard[K comparable, V any] struct {
-	l   sync.RWMutex
-	max int // Negative or zero max means no limit.
-	m   map[K]V
+	l       sync.RWMutex
+	max     int // Negative or zero max means no limit.
+	peakLen int
+	m       map[K]V
 }
 
 func newShard[K comparable, V any](max int) shard[K, V] {
@@ -123,23 +138,42 @@ func (m *shard[K, V]) get(key K) (V, bool) {
 }
 
 func (m *shard[K, V]) set(key K, v V) {
+	m.setWithEvicted(key, v, nil)
+}
+
+func (m *shard[K, V]) setWithEvicted(key K, v V, onEvicted func(key K, v V)) {
 	m.l.Lock()
 	defer m.l.Unlock()
-	if m.max > 0 && len(m.m)+1 > m.max {
-		for k := range m.m {
-			delete(m.m, k)
-			if len(m.m)+1 <= m.max {
-				break
+	if existing, exists := m.m[key]; exists {
+		if onEvicted != nil {
+			onEvicted(key, existing)
+		}
+		m.m[key] = v
+		m.notePeakLocked()
+		return
+	}
+	if m.max > 0 {
+		if len(m.m)+1 > m.max {
+			for k, existing := range m.m {
+				delete(m.m, k)
+				if onEvicted != nil {
+					onEvicted(k, existing)
+				}
+				if len(m.m)+1 <= m.max {
+					break
+				}
 			}
 		}
 	}
 	m.m[key] = v
+	m.notePeakLocked()
 }
 
 func (m *shard[K, V]) del(key K) {
 	m.l.Lock()
 	defer m.l.Unlock()
 	delete(m.m, key)
+	m.maybeCompactLocked()
 }
 
 func (m *shard[K, V]) testAndSet(key K, f func(v V, ok bool) (newV V, setV, delV bool)) {
@@ -150,8 +184,10 @@ func (m *shard[K, V]) testAndSet(key K, f func(v V, ok bool) (newV V, setV, delV
 	switch {
 	case setV:
 		m.m[key] = newV
+		m.notePeakLocked()
 	case deleteV && ok:
 		delete(m.m, key)
+		m.maybeCompactLocked()
 	}
 }
 
@@ -162,14 +198,16 @@ func (m *shard[K, V]) len() int {
 }
 
 func (m *shard[K, V]) flush() {
-	m.l.RLock()
-	defer m.l.RUnlock()
+	m.l.Lock()
+	defer m.l.Unlock()
 	m.m = make(map[K]V)
+	m.peakLen = 0
 }
 
 func (m *shard[K, V]) rangeDo(f func(k K, v V) (newV V, setV, delV bool, err error)) error {
 	m.l.Lock()
 	defer m.l.Unlock()
+	deleted := false
 	for k, v := range m.m {
 		newV, setV, deleteV, err := f(k, v)
 		if err != nil {
@@ -180,7 +218,38 @@ func (m *shard[K, V]) rangeDo(f func(k K, v V) (newV V, setV, delV bool, err err
 			m.m[k] = newV
 		case deleteV:
 			delete(m.m, k)
+			deleted = true
 		}
 	}
+	if deleted {
+		m.maybeCompactLocked()
+	}
 	return nil
+}
+
+func (m *shard[K, V]) notePeakLocked() {
+	if size := len(m.m); size > m.peakLen {
+		m.peakLen = size
+	}
+}
+
+func (m *shard[K, V]) maybeCompactLocked() {
+	size := len(m.m)
+	switch {
+	case size == 0:
+		m.m = make(map[K]V)
+		m.peakLen = 0
+		return
+	case m.peakLen < mapCompactionMinEntries:
+		return
+	case size*mapCompactionShrinkDivisor > m.peakLen:
+		return
+	}
+
+	compacted := make(map[K]V, size)
+	for k, v := range m.m {
+		compacted[k] = v
+	}
+	m.m = compacted
+	m.peakLen = size
 }

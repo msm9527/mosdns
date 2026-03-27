@@ -1,7 +1,10 @@
 package domain_stats_pool
 
 import (
+	"fmt"
+	"reflect"
 	"testing"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 )
@@ -81,4 +84,83 @@ func TestStatsPoolSaveAndReload(t *testing.T) {
 	if total != 1 || len(items) != 1 || items[0].Domain != "example.com" {
 		t.Fatalf("unexpected reloaded items: total=%d items=%+v", total, items)
 	}
+}
+
+func TestStatsPoolPruneCompactsSparseState(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainStatsPool("top_domains", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainStatsPool: %v", err)
+	}
+
+	expiredDate := time.Now().AddDate(0, 0, -120).Format("2006-01-02")
+	freshDate := time.Now().UTC().Format("2006-01-02")
+
+	pool.mu.Lock()
+	for i := 0; i < stateCompactionMinEntries; i++ {
+		domain := fmt.Sprintf("expired-%d.example", i)
+		pool.stats[domain] = &statEntry{LastDate: expiredDate}
+		pool.trackEntryCreatedLocked(domain)
+	}
+	for i := 0; i < stateCompactionMinEntries/4; i++ {
+		domain := fmt.Sprintf("fresh-%d.example", i)
+		pool.stats[domain] = &statEntry{LastDate: freshDate}
+		pool.trackEntryCreatedLocked(domain)
+	}
+
+	oldStatsPtr := reflect.ValueOf(pool.stats).Pointer()
+	oldVariantsPtr := reflect.ValueOf(pool.domainVariantCount).Pointer()
+	pool.pruneExpiredLocked()
+	newStatsPtr := reflect.ValueOf(pool.stats).Pointer()
+	newVariantsPtr := reflect.ValueOf(pool.domainVariantCount).Pointer()
+	pool.mu.Unlock()
+
+	if len(pool.stats) != stateCompactionMinEntries/4 {
+		t.Fatalf("len(pool.stats) = %d, want %d", len(pool.stats), stateCompactionMinEntries/4)
+	}
+	if pool.domainCount != stateCompactionMinEntries/4 {
+		t.Fatalf("domainCount = %d, want %d", pool.domainCount, stateCompactionMinEntries/4)
+	}
+	if oldStatsPtr == newStatsPtr {
+		t.Fatal("expected stats map to be compacted after prune")
+	}
+	if oldVariantsPtr == newVariantsPtr {
+		t.Fatal("expected domainVariantCount map to be compacted after prune")
+	}
+}
+
+func TestStatsPoolInternsDomainKeys(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainStatsPool("top_domains", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainStatsPool: %v", err)
+	}
+
+	pool.processRecord(&logItem{name: "example.com."})
+
+	pool.mu.Lock()
+	if got := pool.strings.Len(); got != 1 {
+		pool.mu.Unlock()
+		t.Fatalf("strings.Len() = %d, want 1", got)
+	}
+	var storageKey string
+	for key := range pool.stats {
+		storageKey = key
+	}
+	pool.deleteEntryLocked(storageKey)
+	if got := pool.strings.Len(); got != 0 {
+		pool.mu.Unlock()
+		t.Fatalf("strings.Len() after delete = %d, want 0", got)
+	}
+	pool.mu.Unlock()
 }

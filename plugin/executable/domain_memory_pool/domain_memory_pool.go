@@ -12,6 +12,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/stringintern"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"go.uber.org/zap"
 )
@@ -99,8 +100,6 @@ type aggregateEntry struct {
 }
 
 type writeSnapshot struct {
-	items         []outputRankItem
-	rules         []string
 	state         coremain.DomainPoolState
 	promotedCount int
 	dirtyCount    int
@@ -118,8 +117,10 @@ type domainMemoryPool struct {
 
 	stats              map[string]*statEntry
 	domainVariantCount map[string]int
+	strings            *stringintern.Pool
 	domainCount        int
-	rules              []string
+	statsPeak          int
+	domainVariantPeak  int
 	subscribers        []func()
 	hotActiveRules     map[string]struct{}
 
@@ -212,7 +213,7 @@ func newDomainMemoryPoolWithDeps(
 		enableFlags:        policy.trackFlags,
 		stats:              make(map[string]*statEntry),
 		domainVariantCount: make(map[string]int),
-		rules:              make([]string, 0),
+		strings:            stringintern.New(),
 		subscribers:        make([]func(), 0),
 		hotActiveRules:     make(map[string]struct{}),
 		recordChan:         make(chan *logItem, RecordBufferLimit),
@@ -344,9 +345,10 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 			atomic.AddInt64(&d.droppedCount, 1)
 			return
 		}
+		canonicalDomain, canonicalStorageKey := d.acquireStorageKey(bareDomain, item)
 		entry = &statEntry{}
-		d.stats[storageKey] = entry
-		d.trackEntryCreatedLocked(bareDomain)
+		d.stats[canonicalStorageKey] = entry
+		d.trackEntryCreatedLocked(canonicalDomain)
 	}
 	entry.Count++
 	entry.Score++
@@ -413,14 +415,17 @@ func (d *domainMemoryPool) trackEntryCreatedLocked(domain string) {
 		d.domainCount++
 	}
 	d.domainVariantCount[domain]++
+	d.noteStatePeaksLocked()
 }
 
 func (d *domainMemoryPool) deleteEntryLocked(storageKey string) {
 	domain, _ := splitStorageKey(storageKey)
 	delete(d.stats, storageKey)
+	d.releaseStorageKey(storageKey)
 	remaining := d.domainVariantCount[domain] - 1
 	if remaining <= 0 {
 		delete(d.domainVariantCount, domain)
+		d.releaseDomain(domain)
 		if d.domainCount > 0 {
 			d.domainCount--
 		}
@@ -504,10 +509,10 @@ func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 		return nil
 	}
 
-	snapshot := d.buildSnapshot(mode)
 	if d.shouldOnlySyncHotRules(mode) {
-		return d.syncHotRulesOnly(snapshot.rules)
+		return d.syncHotRulesOnly()
 	}
+	snapshot := d.buildSnapshot(mode)
 	return d.persistSnapshot(mode, snapshot)
 }
 
@@ -530,7 +535,8 @@ func (d *domainMemoryPool) shouldWriteOnShutdown() bool {
 	return !d.hasRulesHash || d.dirtyPending.Load() || d.hotNeedsReplace.Load()
 }
 
-func (d *domainMemoryPool) syncHotRulesOnly(rules []string) error {
+func (d *domainMemoryPool) syncHotRulesOnly() error {
+	rules := d.snapshotPromotedRules()
 	if err := d.pushHotRulesReplace(rules); err != nil {
 		return err
 	}
@@ -539,7 +545,7 @@ func (d *domainMemoryPool) syncHotRulesOnly(rules []string) error {
 }
 
 func (d *domainMemoryPool) persistSnapshot(mode WriteMode, snapshot writeSnapshot) error {
-	rulesHash := hashRules(snapshot.rules)
+	rulesHash := hashPromotedDomains(snapshot.state.Domains)
 	rulesChanged := mode == WriteModeFlush || !d.hasRulesHash || d.lastRulesHash != rulesHash
 	needsHotReplace := rulesChanged || d.hotNeedsReplace.Load()
 	if rulesChanged {
@@ -553,15 +559,12 @@ func (d *domainMemoryPool) persistSnapshot(mode WriteMode, snapshot writeSnapsho
 	d.hasRulesHash = true
 	d.dirtyPending.Store(false)
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
-
-	d.mu.Lock()
-	d.rules = append([]string(nil), snapshot.rules...)
-	d.mu.Unlock()
 	if needsHotReplace {
-		if err := d.pushHotRulesReplace(snapshot.rules); err != nil {
+		rules := buildRulesFromStoredDomains(snapshot.state.Domains)
+		if err := d.pushHotRulesReplace(rules); err != nil {
 			return err
 		}
-		atomic.StoreInt64(&d.publishedCount, int64(len(snapshot.rules)))
+		atomic.StoreInt64(&d.publishedCount, int64(len(rules)))
 	}
 
 	if mode != WriteModeShutdown && rulesChanged {
@@ -593,15 +596,13 @@ func (d *domainMemoryPool) buildSnapshot(mode WriteMode) writeSnapshot {
 		variants = append(variants, buildVariantRecord(d.pluginTag, domain, flagsMask, entry))
 	}
 
-	items, rules, promotedCount, dirtyCount, domains := buildAggregatedOutputs(aggregated)
+	promotedCount, dirtyCount, domains := buildAggregatedOutputs(aggregated)
 	state := coremain.DomainPoolState{
-		Meta:     buildPoolMeta(d, len(domains), len(variants), promotedCount, dirtyCount, len(rules)),
+		Meta:     buildPoolMeta(d, len(domains), len(variants), promotedCount, dirtyCount, promotedCount),
 		Domains:  domains,
 		Variants: variants,
 	}
 	return writeSnapshot{
-		items:         items,
-		rules:         rules,
 		state:         state,
 		promotedCount: promotedCount,
 		dirtyCount:    dirtyCount,
@@ -610,6 +611,7 @@ func (d *domainMemoryPool) buildSnapshot(mode WriteMode) writeSnapshot {
 
 func (d *domainMemoryPool) pruneExpiredLocked() {
 	evictBefore := time.Now().AddDate(0, 0, -maxInt(d.policy.decayDays*3, d.policy.decayDays+7))
+	deleted := false
 	for key, entry := range d.stats {
 		if entry.LastDate == "" {
 			continue
@@ -617,22 +619,22 @@ func (d *domainMemoryPool) pruneExpiredLocked() {
 		ts, err := time.Parse("2006-01-02", entry.LastDate)
 		if err == nil && ts.Before(evictBefore) {
 			d.deleteEntryLocked(key)
+			deleted = true
 		}
+	}
+	if deleted {
+		d.maybeCompactStateLocked()
 	}
 }
 
 func (d *domainMemoryPool) resetStateLocked() {
-	d.stats = make(map[string]*statEntry)
-	d.domainVariantCount = make(map[string]int)
+	d.resetStateStorageLocked()
 	d.domainCount = 0
-	d.rules = nil
 	atomic.StoreInt64(&d.totalCount, 0)
 }
 
 func (d *domainMemoryPool) emptySnapshot() writeSnapshot {
 	return writeSnapshot{
-		items: []outputRankItem{},
-		rules: []string{},
 		state: coremain.DomainPoolState{
 			Meta: buildPoolMeta(d, 0, 0, 0, 0, 0),
 		},
@@ -662,9 +664,7 @@ func mergeAggregateEntry(target *aggregateEntry, entry *statEntry, flagsMask uin
 	}
 }
 
-func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) ([]outputRankItem, []string, int, int, []coremain.DomainPoolDomain) {
-	items := make([]outputRankItem, 0, len(aggregated))
-	rules := make([]string, 0, len(aggregated))
+func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) (int, int, []coremain.DomainPoolDomain) {
 	domains := make([]coremain.DomainPoolDomain, 0, len(aggregated))
 	promotedCount := 0
 	dirtyCount := 0
@@ -677,23 +677,7 @@ func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) ([]outputRank
 
 	for _, domain := range keys {
 		entry := aggregated[domain]
-		items = append(items, outputRankItem{
-			Domain:         entry.Domain,
-			Count:          entry.Count,
-			Date:           entry.Date,
-			Score:          entry.Score,
-			QMask:          entry.QMask,
-			Prom:           entry.Promoted,
-			LastSeenAt:     entry.LastSeenAt,
-			LastDirtyAt:    entry.LastDirtyAt,
-			LastVerifiedAt: entry.LastVerifiedAt,
-			DirtyReason:    entry.DirtyReason,
-			RefreshState:   entry.RefreshState,
-			CooldownUntil:  entry.CooldownUntil,
-			ConflictCount:  entry.ConflictCount,
-		})
 		if entry.Promoted {
-			rules = append(rules, "full:"+entry.Domain)
 			promotedCount++
 		}
 		if entry.DirtyVariantCount > 0 {
@@ -718,16 +702,10 @@ func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) ([]outputRank
 			RefreshState:         entry.RefreshState,
 		})
 	}
-	sort.Slice(items, func(i, j int) bool {
-		if items[i].Count == items[j].Count {
-			return items[i].Domain < items[j].Domain
-		}
-		return items[i].Count > items[j].Count
-	})
 	for i := range domains {
 		domains[i].PoolTag = ""
 	}
-	return items, rules, promotedCount, dirtyCount, domains
+	return promotedCount, dirtyCount, domains
 }
 
 func buildPoolMeta(d *domainMemoryPool, domainCount, variantCount, promotedCount, dirtyCount, publishedCount int) coremain.DomainPoolMeta {
@@ -747,6 +725,29 @@ func buildPoolMeta(d *domainMemoryPool, domainCount, variantCount, promotedCount
 		DroppedByCap:         atomic.LoadInt64(&d.droppedByCapCount),
 		LastFlushAtUnixMS:    time.Now().UTC().UnixMilli(),
 	}
+}
+
+func (d *domainMemoryPool) snapshotPromotedRules() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	d.pruneExpiredLocked()
+	promoted := make(map[string]struct{}, d.domainCount)
+	for key, entry := range d.stats {
+		if !entry.Promoted {
+			continue
+		}
+		domain, _ := splitStorageKey(key)
+		if domain == "" {
+			continue
+		}
+		promoted[domain] = struct{}{}
+	}
+	rules := make([]string, 0, len(promoted))
+	for domain := range promoted {
+		rules = append(rules, "full:"+domain)
+	}
+	return normalizePoolHotRules(rules)
 }
 
 func buildVariantRecord(poolTag, domain string, flagsMask uint8, entry *statEntry) coremain.DomainPoolVariant {
@@ -798,10 +799,19 @@ func (d *domainMemoryPool) isStale(lastDate string) bool {
 	return time.Since(ts) > time.Duration(d.policy.decayDays)*24*time.Hour
 }
 
-func hashRules(rules []string) uint64 {
+func hashPromotedDomains(domains []coremain.DomainPoolDomain) uint64 {
 	h := fnv.New64a()
-	for _, rule := range rules {
-		_, _ = h.Write([]byte(rule))
+	names := make([]string, 0, len(domains))
+	for _, domain := range domains {
+		if !domain.Promoted {
+			continue
+		}
+		names = append(names, domain.Domain)
+	}
+	sort.Strings(names)
+	for _, domain := range names {
+		_, _ = h.Write([]byte("full:"))
+		_, _ = h.Write([]byte(domain))
 		_, _ = h.Write([]byte{'\n'})
 	}
 	return h.Sum64()

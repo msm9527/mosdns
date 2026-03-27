@@ -14,7 +14,11 @@ import (
 	"go.uber.org/zap"
 )
 
-const auditChannelCapacity = 16384
+const (
+	auditQueueCapacityFactor = 8
+	auditMinQueueCapacity    = 512
+	auditMaxQueueCapacity    = 4096
+)
 
 type AuditCollector struct {
 	mu            sync.RWMutex
@@ -42,7 +46,7 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 		settings:      settings,
 		configBaseDir: configBaseDir,
 		realtime:      newAuditRealtimeStore(auditRealtimeBucketCount),
-		queue:         make(chan AuditLog, auditChannelCapacity),
+		queue:         make(chan AuditLog, auditQueueCapacity(settings)),
 		workerDone:    make(chan struct{}),
 		maintDone:     make(chan struct{}),
 	}
@@ -247,3 +251,14 @@ func answerDetail(answer dns.RR) AnswerDetail {
 }
 
 var nowTime = time.Now
+
+func auditQueueCapacity(settings AuditSettings) int {
+	size := settings.FlushBatchSize * auditQueueCapacityFactor
+	if size < auditMinQueueCapacity {
+		return auditMinQueueCapacity
+	}
+	if size > auditMaxQueueCapacity {
+		return auditMaxQueueCapacity
+	}
+	return size
+}

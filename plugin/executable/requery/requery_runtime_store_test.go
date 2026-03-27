@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/internal/requeryruntime"
-	"github.com/robfig/cron/v3"
 )
 
 func TestSaveConfigUnlockedSyncsRuntimeJobs(t *testing.T) {
@@ -20,7 +19,6 @@ func TestSaveConfigUnlockedSyncsRuntimeJobs(t *testing.T) {
 		runtimeKey: runtimeKey,
 		dbPath:     dbPath,
 		config:     newDefaultConfig(),
-		scheduler:  cron.New(),
 		status:     Status{TaskState: "idle"},
 	}
 	p.config.Scheduler.Enabled = true
@@ -47,7 +45,6 @@ func TestRequeryAPIListsRunsAndCheckpoints(t *testing.T) {
 		runtimeKey: runtimeKey,
 		dbPath:     dbPath,
 		config:     newDefaultConfig(),
-		scheduler:  cron.New(),
 		status:     Status{TaskState: "idle"},
 	}
 	if err := p.saveConfigUnlocked(); err != nil {
@@ -146,7 +143,6 @@ func TestUpdateSchedulerNormalizesInvalidInterval(t *testing.T) {
 		runtimeKey: runtimeKey,
 		dbPath:     dbPath,
 		config:     newDefaultConfig(),
-		scheduler:  cron.New(),
 		status:     Status{TaskState: "idle"},
 	}
 	if err := p.saveConfigUnlocked(); err != nil {
