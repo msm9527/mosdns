@@ -21,9 +21,11 @@ package mlog
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
+
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
-	"os"
 )
 
 type LogConfig struct {
@@ -64,6 +66,9 @@ func NewLogger(lc LogConfig) (*zap.Logger, error) {
 
 	var out zapcore.WriteSyncer
 	if lf := lc.File; len(lf) > 0 {
+		if err := ensureLogFileDir(lf); err != nil {
+			return nil, fmt.Errorf("prepare log file dir: %w", err)
+		}
 		f, _, err := zap.Open(lf)
 		if err != nil {
 			return nil, fmt.Errorf("open log file: %w", err)
@@ -78,6 +83,14 @@ func NewLogger(lc LogConfig) (*zap.Logger, error) {
 		return zap.New(zapcore.NewCore(zapcore.NewJSONEncoder(zap.NewProductionEncoderConfig()), out, Lvl)), nil
 	}
 	return zap.New(zapcore.NewCore(zapcore.NewConsoleEncoder(zap.NewDevelopmentEncoderConfig()), out, Lvl)), nil
+}
+
+func ensureLogFileDir(path string) error {
+	dir := filepath.Dir(path)
+	if dir == "." || dir == "" {
+		return nil
+	}
+	return os.MkdirAll(dir, 0o755)
 }
 
 // L is a global logger.

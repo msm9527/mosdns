@@ -96,8 +96,8 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 		{11, "sequence_local_divert", "记忆直连走国内链路"},
 		{12, "sequence_fakeip", "记忆代理走 fakeip/代理"},
 		{13, "sequence_local", "订阅直连补充走国内链路"},
-		{14, "sequence_fakeip_addlist", "订阅代理走 fakeip/代理并加入清单"},
 		{15, "sequence_fakeip_addlist", "订阅代理补充走 fakeip/代理并加入清单"},
+		{14, "sequence_fakeip_addlist", "订阅代理走 fakeip/代理并加入清单"},
 		{16, "sequence_local", "订阅直连走国内链路"},
 	} {
 		appendStep("sequence_known_domain", step.Mark, step.Action, step.Reason, marks[step.Mark], marks[step.Mark])

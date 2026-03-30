@@ -35,11 +35,11 @@ policies:
         exec: $sequence_fakeip
       - matches: fast_mark 13
         exec: $sequence_local
+      - matches: fast_mark 15
+        exec: $sequence_fakeip_addlist
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
-        exec: $sequence_fakeip_addlist
-      - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
       - matches: fast_mark 16
         exec: $sequence_local
@@ -96,11 +96,11 @@ policies:
         exec: $sequence_fakeip
       - matches: fast_mark 13
         exec: $sequence_local
+      - matches: fast_mark 15
+        exec: $sequence_fakeip_addlist
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
-        exec: $sequence_fakeip_addlist
-      - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
       - matches: fast_mark 16
         exec: $sequence_local

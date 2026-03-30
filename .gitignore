@@ -43,6 +43,7 @@ demo/
 /config/db/*.db-*
 /config/db/cache/*.dump
 /config/db/cache/*.wal
+/config/logs/*
 /db/
 **/audit_logs/
 /bin/
