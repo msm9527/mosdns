@@ -17,7 +17,7 @@ version: v2
 # - 相对路径会按 config.yaml 所在目录解析
 log:
   level: warn
-  file: logs/mosdns.log
+  file: /tmp/mosdns.log
 # HTTP 管理接口：
 # - UI、control API、运行时操作都走这里
 api:
