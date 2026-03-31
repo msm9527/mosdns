@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
-	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
@@ -114,7 +113,7 @@ func NewMapper(bp *coremain.BP, args any) (any, error) {
 		providers:   make(map[string]data_provider.RuleExporter),
 		subscribed:  make(map[string]bool),
 	}
-	dm.matcher.Store(domain.NewMixMatcher[*compiledMatch]())
+	dm.matcher.Store(newCompiledMatcherSet())
 	dm.hotLookup.Store(make(map[string][]matchSource))
 	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
 
@@ -217,7 +216,7 @@ func (dm *DomainMapper) rebuild() {
 		totalRules += len(rules)
 	}
 
-	newMatcher := domain.NewMixMatcher[*compiledMatch]()
+	newMatcher := newCompiledMatcherSet()
 	compiledRules := 0
 	for ruleStr, directSources := range ruleSources {
 		sources := cloneMatchSources(directSources)

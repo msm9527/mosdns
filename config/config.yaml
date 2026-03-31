@@ -13,8 +13,8 @@
 
 version: v2
 # 日志配置：
-# - 当前仍然输出到 /tmp，便于本机调试
-# - 如果部署到长期运行环境，可改为专用日志目录
+# - 默认写到主配置目录下的 logs/，不依赖 /tmp
+# - 相对路径会按 config.yaml 所在目录解析
 log:
   level: warn
   file: /tmp/mosdns.log

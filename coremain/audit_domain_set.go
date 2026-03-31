@@ -20,8 +20,8 @@ var auditDomainSetPriority = []string{
 	"记忆直连",
 	"记忆代理",
 	"订阅直连补充",
-	"订阅代理",
 	"订阅代理补充",
+	"订阅代理",
 	"订阅直连",
 	unmatchedAuditDomainSet,
 }

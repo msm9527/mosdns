@@ -112,7 +112,7 @@ func (dm *DomainMapper) rebuildHotLookupLocked() {
 
 func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
 	now := time.Now()
-	matcher := dm.matcher.Load().(*domainmatcher.MixMatcher[*compiledMatch])
+	matcher := dm.loadMatcher()
 	mainCompiled, mainOK := matcher.Match(qname)
 	mainResult := dm.resolveCompiledMatch(mainCompiled, qname, now)
 	hotResult, hotOK := dm.matchHot(qname, now)

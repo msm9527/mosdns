@@ -59,7 +59,7 @@ type Mosdns struct {
 // NewMosdns initializes a mosdns instance and its plugins.
 func NewMosdns(cfg *Config) (*Mosdns, error) {
 	// Init logger.
-	baseLogger, err := mlog.NewLogger(cfg.Log)
+	baseLogger, err := mlog.NewLogger(resolveLogConfigForBaseDir(cfg.baseDir, cfg.Log))
 	if err != nil {
 		return nil, fmt.Errorf("failed to init logger: %w", err)
 	}
