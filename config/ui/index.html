@@ -1679,13 +1679,25 @@
                             </path>
                         </svg>存储策略</h3>
                     <div class="control-item">
-                        <strong>原始日志保留:</strong> <span id="audit-raw-retention">查询中...</span>
+                        <strong>原始日志策略保留:</strong> <span id="audit-raw-retention">查询中...</span>
                     </div>
                     <div class="control-item">
                         <strong>聚合保留:</strong> <span id="audit-aggregate-retention">查询中...</span>
                     </div>
                     <div class="control-item">
-                        <strong>当前存储占用:</strong> <span id="audit-disk-usage">查询中...</span>
+                        <strong>当前可查询原始日志:</strong> <span id="audit-log-count">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>当前可查询范围:</strong> <span id="audit-log-range">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>当前活跃占用:</strong> <span id="audit-disk-usage">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>已分配文件:</strong> <span id="audit-disk-allocated">查询中...</span>
+                    </div>
+                    <div class="control-item">
+                        <strong>可回收空间:</strong> <span id="audit-disk-reclaimable">查询中...</span>
                     </div>
                     <div class="control-item">
                         <strong>存储上限:</strong> <span id="audit-storage-limit">查询中...</span>
@@ -1714,7 +1726,7 @@
                                 </path>
                             </svg>
                         </span>
-                        <small class="tip-text">这里的设置会直接写回 config.yaml 的 audit 段并立即热生效；原始日志与聚合统计都会按策略自动清理。</small>
+                        <small class="tip-text">这里的设置会直接写回 config.yaml 的 audit 段并立即热生效；“策略保留”是目标值，真正可查询范围还会受到存储上限影响。</small>
                     </div>
                 </div>
                 <div class="control-module control-module--mini" id="audit-overview-module">

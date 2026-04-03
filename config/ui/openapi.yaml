@@ -2374,6 +2374,24 @@ components:
             current_storage_bytes:
               type: integer
               format: int64
+            allocated_storage_bytes:
+              type: integer
+              format: int64
+            live_storage_bytes:
+              type: integer
+              format: int64
+            reclaimable_storage_bytes:
+              type: integer
+              format: int64
+            raw_log_count:
+              type: integer
+              format: int64
+            oldest_log_time:
+              type: string
+              format: date-time
+            newest_log_time:
+              type: string
+              format: date-time
             queue_depth:
               type: integer
             degraded:

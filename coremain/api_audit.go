@@ -11,18 +11,24 @@ import (
 )
 
 type auditSettingsResponse struct {
-	Enabled                    bool   `json:"enabled"`
-	OverviewWindowSeconds      int    `json:"overview_window_seconds"`
-	RawRetentionDays           int    `json:"raw_retention_days"`
-	AggregateRetentionDays     int    `json:"aggregate_retention_days"`
-	MaxStorageMB               int    `json:"max_storage_mb"`
-	SQLitePath                 string `json:"sqlite_path"`
-	FlushBatchSize             int    `json:"flush_batch_size"`
-	FlushIntervalMs            int    `json:"flush_interval_ms"`
-	MaintenanceIntervalSeconds int    `json:"maintenance_interval_seconds"`
-	CurrentStorageBytes        int64  `json:"current_storage_bytes"`
-	QueueDepth                 int    `json:"queue_depth"`
-	Degraded                   bool   `json:"degraded"`
+	Enabled                    bool       `json:"enabled"`
+	OverviewWindowSeconds      int        `json:"overview_window_seconds"`
+	RawRetentionDays           int        `json:"raw_retention_days"`
+	AggregateRetentionDays     int        `json:"aggregate_retention_days"`
+	MaxStorageMB               int        `json:"max_storage_mb"`
+	SQLitePath                 string     `json:"sqlite_path"`
+	FlushBatchSize             int        `json:"flush_batch_size"`
+	FlushIntervalMs            int        `json:"flush_interval_ms"`
+	MaintenanceIntervalSeconds int        `json:"maintenance_interval_seconds"`
+	CurrentStorageBytes        int64      `json:"current_storage_bytes"`
+	AllocatedStorageBytes      int64      `json:"allocated_storage_bytes"`
+	LiveStorageBytes           int64      `json:"live_storage_bytes"`
+	ReclaimableStorageBytes    int64      `json:"reclaimable_storage_bytes"`
+	RawLogCount                int64      `json:"raw_log_count"`
+	OldestLogTime              *time.Time `json:"oldest_log_time,omitempty"`
+	NewestLogTime              *time.Time `json:"newest_log_time,omitempty"`
+	QueueDepth                 int        `json:"queue_depth"`
+	Degraded                   bool       `json:"degraded"`
 }
 
 func RegisterAuditAPI(router *chi.Mux, mosdns ...*Mosdns) {
@@ -118,6 +124,7 @@ func handleGetAuditSlowLogs(w http.ResponseWriter, r *http.Request) {
 func handleGetAuditSettings(w http.ResponseWriter, r *http.Request) {
 	settings := GlobalAuditCollector.GetSettings()
 	overview := GlobalAuditCollector.GetOverview(settings.OverviewWindowSeconds)
+	storageStats := GlobalAuditCollector.GetStorageStats()
 	writeJSON(w, http.StatusOK, auditSettingsResponse{
 		Enabled:                    settings.Enabled,
 		OverviewWindowSeconds:      settings.OverviewWindowSeconds,
@@ -128,7 +135,13 @@ func handleGetAuditSettings(w http.ResponseWriter, r *http.Request) {
 		FlushBatchSize:             settings.FlushBatchSize,
 		FlushIntervalMs:            settings.FlushIntervalMs,
 		MaintenanceIntervalSeconds: settings.MaintenanceIntervalSeconds,
-		CurrentStorageBytes:        overview.CurrentStorageBytes,
+		CurrentStorageBytes:        storageStats.AllocatedBytes,
+		AllocatedStorageBytes:      storageStats.AllocatedBytes,
+		LiveStorageBytes:           storageStats.LiveBytes,
+		ReclaimableStorageBytes:    storageStats.ReclaimableBytes,
+		RawLogCount:                storageStats.RawLogCount,
+		OldestLogTime:              storageStats.OldestLogTime,
+		NewestLogTime:              storageStats.NewestLogTime,
 		QueueDepth:                 overview.QueueDepth,
 		Degraded:                   overview.Degraded,
 	})

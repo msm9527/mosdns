@@ -107,6 +107,13 @@
     color: var(--color-text-secondary);
 }
 
+.audit-search-results-hint {
+    width: 100%;
+    margin-top: 0.35rem;
+    color: var(--color-text-secondary);
+    font-size: 0.9rem;
+}
+
 @media (max-width: 1024px) {
     .audit-search-toolbar {
         grid-template-columns: 1fr 1fr;

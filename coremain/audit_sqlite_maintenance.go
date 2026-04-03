@@ -29,13 +29,25 @@ func (s *SQLiteAuditStorage) enforceMaxStorageBytes(maxBytes int64) error {
 	if maxBytes <= 0 {
 		return nil
 	}
+	if err := s.checkpointWAL(); err != nil {
+		return err
+	}
 	for {
-		sizeBytes, err := s.DiskUsageBytes()
+		stats, err := s.QueryStorageStats()
 		if err != nil {
 			return err
 		}
-		if sizeBytes <= maxBytes {
+		if stats.AllocatedBytes <= maxBytes {
 			return nil
+		}
+		if stats.LiveBytes <= maxBytes {
+			if err := s.compactDatabase(); err != nil {
+				return err
+			}
+			if err := s.checkpointWAL(); err != nil {
+				return err
+			}
+			continue
 		}
 		rowsAffected, err := s.deleteOldestAuditRows(5000)
 		if err != nil {
@@ -45,7 +57,15 @@ func (s *SQLiteAuditStorage) enforceMaxStorageBytes(maxBytes int64) error {
 			return err
 		}
 		if rowsAffected == 0 {
-			return s.compactDatabase()
+			if stats.ReclaimableBytes == 0 {
+				return nil
+			}
+			if err := s.compactDatabase(); err != nil {
+				return err
+			}
+			if err := s.checkpointWAL(); err != nil {
+				return err
+			}
 		}
 	}
 }

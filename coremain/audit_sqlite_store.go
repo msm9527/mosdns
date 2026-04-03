@@ -3,7 +3,6 @@ package coremain
 import (
 	"database/sql"
 	"fmt"
-	"os"
 	"path/filepath"
 
 	runtimesqlite "github.com/IrineSistiana/mosdns/v5/internal/store/sqlite"
@@ -63,14 +62,11 @@ func fileSetSizeBytes(dbPath string) (int64, error) {
 	paths := []string{dbPath, dbPath + "-wal", dbPath + "-shm"}
 	var total int64
 	for _, path := range paths {
-		info, err := os.Stat(path)
+		size, err := fileSizeBytes(path)
 		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
 			return 0, err
 		}
-		total += info.Size()
+		total += size
 	}
 	return total, nil
 }
