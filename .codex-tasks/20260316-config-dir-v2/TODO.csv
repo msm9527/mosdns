@@ -1,0 +1,6 @@
+id,task,status,acceptance_criteria,validation_command,completed_at,retry_count,notes
+1,固化旧配置功能基线与 parity 清单,IN_PROGRESS,生成 legacy inventory 并形成可复用校验基线,test -f .codex-tasks/20260316-config-dir-v2/raw/legacy_inventory.json,,0,
+2,收口运行态动态文件到 DB 并补齐 V2 audit 配置,TODO,overrides/upstreams/audit 不再依赖旧动态文件,go test ./coremain ./internal/configv2,,0,
+3,生成完整单文件 V2 主配置并改造 config 目录,TODO,config/config.yaml 为纯 V2 且可 validate,go test ./coremain && go run . config validate -c config/config.yaml,,0,
+4,完成阶段性启动验证与提交,TODO,阶段提交完成且启动/基础 API 可用,git rev-parse --short HEAD,,0,
+5,执行真实域名 DNS API UI 全量 E2E 并修复直到通过,TODO,真实域名/API/UI E2E 全通过,go test ./...,,0,
