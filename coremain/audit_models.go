@@ -48,6 +48,15 @@ type AuditSettings struct {
 	MaintenanceIntervalSeconds int    `json:"maintenance_interval_seconds,omitempty" yaml:"maintenance_interval_seconds,omitempty"`
 }
 
+type AuditStorageStats struct {
+	AllocatedBytes   int64      `json:"allocated_storage_bytes"`
+	LiveBytes        int64      `json:"live_storage_bytes"`
+	ReclaimableBytes int64      `json:"reclaimable_storage_bytes"`
+	RawLogCount      int64      `json:"raw_log_count"`
+	OldestLogTime    *time.Time `json:"oldest_log_time,omitempty"`
+	NewestLogTime    *time.Time `json:"newest_log_time,omitempty"`
+}
+
 type AuditOverview struct {
 	Enabled                bool    `json:"enabled"`
 	WindowSeconds          int     `json:"window_seconds"`

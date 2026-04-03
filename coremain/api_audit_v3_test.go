@@ -35,6 +35,19 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	}
 
 	settings := fetchAuditSettings(t, router)
+	if settings.RawLogCount != 3 {
+		t.Fatalf("settings.RawLogCount = %d, want 3", settings.RawLogCount)
+	}
+	if settings.OldestLogTime == nil || settings.NewestLogTime == nil {
+		t.Fatalf("settings log range = (%v, %v), want non-nil", settings.OldestLogTime, settings.NewestLogTime)
+	}
+	if settings.AllocatedStorageBytes < settings.LiveStorageBytes {
+		t.Fatalf("allocated storage = %d, live storage = %d, want allocated >= live", settings.AllocatedStorageBytes, settings.LiveStorageBytes)
+	}
+	if settings.CurrentStorageBytes != settings.AllocatedStorageBytes {
+		t.Fatalf("current storage = %d, allocated storage = %d, want equal", settings.CurrentStorageBytes, settings.AllocatedStorageBytes)
+	}
+
 	settings.Enabled = false
 	settings.OverviewWindowSeconds = 120
 	settings.RawRetentionDays = 14

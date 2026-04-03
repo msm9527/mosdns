@@ -17,6 +17,19 @@ func (c *AuditCollector) GetDiskUsageBytes() int64 {
 	return size
 }
 
+func (c *AuditCollector) GetStorageStats() AuditStorageStats {
+	storage := c.getStorage()
+	if storage == nil {
+		return AuditStorageStats{}
+	}
+	stats, err := storage.QueryStorageStats()
+	if err != nil {
+		mlog.L().Warn("failed to query audit storage stats", zap.Error(err))
+		return AuditStorageStats{}
+	}
+	return stats
+}
+
 func (c *AuditCollector) ClearLogs() error {
 	c.realtime.Reset()
 	storage := c.getStorage()

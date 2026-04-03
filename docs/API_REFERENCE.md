@@ -71,6 +71,8 @@
 - 推荐使用 `POST /api/v3/audit/logs/search` 进行新搜索，对关键词、字段范围、时间范围和高级过滤做统一表达
 - `GET /api/v3/audit/logs` 保留为兼容入口，主要用于简单 query string 查询
 - `PUT /settings` 保存后立即生效，无需重启
+- `GET /api/v3/audit/settings` 额外返回 `allocated_storage_bytes`、`live_storage_bytes`、`reclaimable_storage_bytes`、`raw_log_count`、`oldest_log_time`、`newest_log_time`
+- `current_storage_bytes` 为兼容字段，含义与 `allocated_storage_bytes` 一致，表示当前 SQLite 文件组已分配大小，不等于仍可查询的数据体量
 
 ### 2.1 `POST /api/v3/audit/logs/search`
 

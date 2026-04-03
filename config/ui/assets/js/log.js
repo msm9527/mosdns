@@ -55,7 +55,7 @@ document.addEventListener('DOMContentLoaded', () => {
         auditStatus: document.getElementById('audit-status'), toggleAuditBtn: document.getElementById('toggle-audit-btn'), clearAuditBtn: document.getElementById('clear-audit-btn'),
         auditQueueDepth: document.getElementById('audit-queue-depth'), auditDegradedState: document.getElementById('audit-degraded-state'), auditDroppedEvents: document.getElementById('audit-dropped-events'),
         auditCapacity: document.getElementById('audit-capacity'), auditOverviewScope: document.getElementById('audit-overview-scope'),
-        auditRawRetention: document.getElementById('audit-raw-retention'), auditAggregateRetention: document.getElementById('audit-aggregate-retention'), auditDiskUsage: document.getElementById('audit-disk-usage'), auditStorageLimit: document.getElementById('audit-storage-limit'),
+        auditRawRetention: document.getElementById('audit-raw-retention'), auditAggregateRetention: document.getElementById('audit-aggregate-retention'), auditDiskUsage: document.getElementById('audit-disk-usage'), auditAllocatedStorage: document.getElementById('audit-disk-allocated'), auditReclaimableStorage: document.getElementById('audit-disk-reclaimable'), auditStorageLimit: document.getElementById('audit-storage-limit'), auditLogRange: document.getElementById('audit-log-range'), auditLogCount: document.getElementById('audit-log-count'),
         auditStorageForm: document.getElementById('audit-storage-form'), auditOverviewForm: document.getElementById('audit-overview-form'), auditOverviewWindowInput: document.getElementById('audit-overview-window-input'),
         auditRetentionDaysInput: document.getElementById('audit-retention-days'), auditAggregateRetentionDaysInput: document.getElementById('audit-aggregate-retention-days'), auditMaxDiskSizeInput: document.getElementById('audit-max-disk-size'),
         cacheStatsTbody: document.getElementById('cache-stats-tbody'),
@@ -368,6 +368,41 @@ document.addEventListener('DOMContentLoaded', () => {
             if (seconds % 60 === 0) return `近 ${seconds / 60} 分钟`;
             return `近 ${seconds} 秒`;
         },
+        formatDateTime(value) {
+            if (!value) return '暂无原始日志';
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '查询失败';
+            return date.toLocaleString('zh-CN', {
+                hour12: false,
+                year: 'numeric',
+                month: '2-digit',
+                day: '2-digit',
+                hour: '2-digit',
+                minute: '2-digit',
+                second: '2-digit'
+            }).replace(/\//g, '-');
+        },
+        formatAuditLogRange(settings) {
+            const oldest = settings?.oldest_log_time;
+            const newest = settings?.newest_log_time;
+            if (!oldest || !newest) return '暂无原始日志';
+            return `${this.formatDateTime(oldest)} ~ ${this.formatDateTime(newest)}`;
+        },
+        buildAuditSearchHint(criteria, settings) {
+            if (!settings?.oldest_log_time || !settings?.newest_log_time || !Number.isFinite(Number(settings?.raw_log_count))) {
+                return '';
+            }
+            const notes = [
+                `当前库内原始日志：${Number(settings.raw_log_count).toLocaleString()} 条，${this.formatAuditLogRange(settings)}`
+            ];
+            const normalized = auditSearchHelper?.normalizeCriteria(criteria);
+            const requestedFrom = normalized?.from ? new Date(normalized.from) : null;
+            const oldest = new Date(settings.oldest_log_time);
+            if (requestedFrom && !Number.isNaN(requestedFrom.getTime()) && !Number.isNaN(oldest.getTime()) && requestedFrom < oldest) {
+                notes.push('你选择的开始时间早于当前最早原始日志，旧日志可能已因存储上限提前清理。');
+            }
+            return notes.map(note => `<div class="audit-search-results-hint">${note}</div>`).join('');
+        },
         updateAuditRuntime(overview, settings) {
             const queueDepth = settings?.queue_depth ?? overview?.queue_depth;
             const degraded = settings?.degraded ?? overview?.degraded;
@@ -386,7 +421,11 @@ document.addEventListener('DOMContentLoaded', () => {
         updateAuditStorage(settings) {
             this.setText(elements.auditRawRetention, settings?.raw_retention_days != null ? `${settings.raw_retention_days.toLocaleString()} 天` : '查询失败');
             this.setText(elements.auditAggregateRetention, settings?.aggregate_retention_days != null ? `${settings.aggregate_retention_days.toLocaleString()} 天` : '查询失败');
-            this.setText(elements.auditDiskUsage, this.formatBytes(settings?.current_storage_bytes));
+            this.setText(elements.auditLogCount, Number.isFinite(Number(settings?.raw_log_count)) ? `${Number(settings.raw_log_count).toLocaleString()} 条` : '查询失败');
+            this.setText(elements.auditLogRange, this.formatAuditLogRange(settings));
+            this.setText(elements.auditDiskUsage, this.formatBytes(settings?.live_storage_bytes ?? settings?.current_storage_bytes));
+            this.setText(elements.auditAllocatedStorage, this.formatBytes(settings?.allocated_storage_bytes ?? settings?.current_storage_bytes));
+            this.setText(elements.auditReclaimableStorage, this.formatBytes(settings?.reclaimable_storage_bytes ?? 0));
             this.setText(elements.auditStorageLimit, settings?.max_storage_mb != null ? `${settings.max_storage_mb.toLocaleString()} MB` : '查询失败');
             if (elements.auditRetentionDaysInput && settings?.raw_retention_days != null) {
                 elements.auditRetentionDaysInput.value = settings.raw_retention_days;
@@ -491,7 +530,8 @@ document.addEventListener('DOMContentLoaded', () => {
             const maxDuration = Number(summary.max_duration_ms || 0).toFixed(2);
             const range = auditSearchHelper ? auditSearchHelper.formatRange(criteria) : '';
             const rangeHTML = range ? `<span class="range">范围：${range}</span>` : '';
-            elements.searchResultsInfo.innerHTML = `<div class="audit-search-results-meta">${rangeHTML}<span>匹配 <strong>${matchedCount}</strong> 条</span><span>平均耗时 <strong>${avgDuration} ms</strong></span><span>最慢 <strong>${maxDuration} ms</strong></span></div>`;
+            const hintHTML = this.buildAuditSearchHint(criteria, state.auditSettings);
+            elements.searchResultsInfo.innerHTML = `<div class="audit-search-results-meta">${rangeHTML}<span>匹配 <strong>${matchedCount}</strong> 条</span><span>平均耗时 <strong>${avgDuration} ms</strong></span><span>最慢 <strong>${maxDuration} ms</strong></span></div>${hintHTML}`;
         },
         openLogDetailModal(triggerElement) {
             const logIndex = triggerElement.dataset.logIndex ? parseInt(triggerElement.dataset.logIndex, 10) : null;
