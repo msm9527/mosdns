@@ -1,0 +1,50 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(go test:*)",
+      "Bash(go vet:*)",
+      "Bash(go build:*)",
+      "Bash(gofmt:*)",
+      "Bash(.claude/scripts/*)",
+      "Bash(bash .claude/scripts/*)"
+    ],
+    "deny": [],
+    "ask": []
+  },
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zsh -c 'FILE=\"$CLAUDE_FILE_PATH\"; ROOT=\"$(git rev-parse --show-toplevel)\"; if [[ \"$FILE\" == *.go ]]; then \"$ROOT/.claude/scripts/verify-go-package.sh\" \"$FILE\"; fi'",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zsh -c 'CMD=\"$CLAUDE_BASH_COMMAND\"; ROOT=\"$(git rev-parse --show-toplevel)\"; if echo \"$CMD\" | grep -qE \"git\\s+(commit|push)\"; then \"$ROOT/.claude/scripts/pre-commit-check.sh\"; fi'",
+            "timeout": 30000
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "zsh -c 'ROOT=\"$(git rev-parse --show-toplevel)\"; cd \"$ROOT\"; DIRTY=$(git diff --name-only 2>/dev/null || true); if [[ -n \"$DIRTY\" ]]; then echo \"=== 会话结束检查 ===\"; echo \"$DIRTY\" | head -10; fi'"
+          }
+        ]
+      }
+    ]
+  }
+}

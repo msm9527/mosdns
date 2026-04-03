@@ -50,4 +50,11 @@ demo/
 /adguard/
 /test-results/
 /.codex-tasks/
-/.claude/
+/.claude/*
+!/.claude/rules/
+!/.claude/rules/**
+!/.claude/scripts/
+!/.claude/scripts/**
+!/.claude/settings.local.json
+/.claude/plan/
+/.claude/worktrees/
