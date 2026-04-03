@@ -1,17 +1,5 @@
 本文档只保留这个目录真正需要补充的规则；通用安全、非交互执行和工程规范以系统级规则为准。
-
-提交一定要中文和英文一起说明
-
-## Git
-
-涉及 `git` / `gh` 操作时直接使用 `$git-safe-ops`。
-
-- 不要在 `main` / `master` 直接做重大功能；明确的小 bugfix 除外。
-- 不要对共享分支使用 `git reset` 或 `git push --force`。
-- 撤销已发布提交时使用 `git revert`。
-
 ## Harness
-
 - 这个仓库里的 harness 指的是一整套执行外壳：`AGENTS.md`、`CLAUDE.md`、`.claude/rules/`、`.claude/scripts/`、本地 hooks、测试与 CI；不是单独某个神秘 agent。
 - Claude 可以直接消费 `.claude/settings.local.json` 的 hooks；Codex 不会自动执行这些 hooks，但必须主动读取并复用同一套规则与验证脚本。
 - 如当前终端已启用全局 `rtk` hook，沿用全局 RTK 约定即可，不在仓库内重复定义。
