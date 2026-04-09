@@ -12,6 +12,7 @@ import (
 const (
 	runtimeCachePrecisePurgeMaxDomains = 1000
 	runtimeCachePrecisePurgePercentDiv = 100
+	runtimeCachePurgeLogMinDomains     = 4
 )
 
 type runtimeCacheTarget struct {
@@ -57,7 +58,9 @@ func (p *Requery) invalidateCachesAfterPublish(ctx context.Context, domains []st
 		return true
 	}
 
-	log.Printf("[requery] Step 8: purging %d changed domains from runtime caches...", len(domains))
+	if len(domains) >= runtimeCachePurgeLogMinDomains {
+		log.Printf("[requery] Step 8: purging %d changed domains from runtime caches...", len(domains))
+	}
 	for _, target := range targets {
 		if _, err := target.controller.PurgeDomainsRuntimeCache(ctx, domains, nil); err != nil {
 			p.setFailedState("failed to purge runtime cache %s: %v", target.tag, err)
