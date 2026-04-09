@@ -646,62 +646,36 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		return nil, false
 	}
 
-	for i, u := range usToQuery {
-		if i == 0 {
-			continue
-		}
+	workerCtx, workerCancel := context.WithCancel(ctx)
+	defer workerCancel()
+
+	startWorker := func(currentUpstream *upstreamWrapper) {
 		qc := copyPayload(queryPayload)
-
-		upstreamTimeout := time.Duration(u.cfg.UpstreamQueryTimeout) * time.Millisecond
-		if upstreamTimeout == 0 {
-			upstreamTimeout = queryTimeout
-		}
-
-		go func(uqid uint32, question dns.Question, currentUpstream *upstreamWrapper) {
+		go func() {
 			defer pool.ReleaseBuf(qc)
 
-			upstreamCtx, upstreamCancel := context.WithTimeout(ctx, upstreamTimeout)
-			defer upstreamCancel()
-
-			var r *dns.Msg
-			respPayload, err := currentUpstream.ExchangeContext(upstreamCtx, *qc)
-
-			if err != nil {
-				if !errors.Is(err, context.DeadlineExceeded) && !errors.Is(err, context.Canceled) &&
-					!strings.Contains(err.Error(), "connection refused") &&
-					!strings.Contains(err.Error(), "no such host") {
-					f.logger.Debug("upstream query failed", zap.String("upstream", currentUpstream.cfg.Addr), zap.Error(err))
-				}
-			} else {
-				r = new(dns.Msg)
-				err = r.Unpack(*respPayload)
-				pool.ReleaseBuf(respPayload)
-				if err != nil {
-					r = nil
-					f.logger.Debug("failed to unpack DNS response", zap.String("upstream", currentUpstream.cfg.Addr), zap.Error(err))
-				}
-			}
-
+			r, err := f.exchangeOne(workerCtx, qc, currentUpstream)
 			select {
 			case resChan <- res{r: r, err: err, u: currentUpstream}:
-			case <-upstreamCtx.Done():
+			case <-workerCtx.Done():
 			}
-		}(qCtx.Id(), qCtx.QQuestion(), u)
+		}()
 	}
 
-	firstRes, firstErr := f.exchangeOne(ctx, queryPayload, usToQuery[0])
-	if r, done := processResult(firstRes, firstErr, usToQuery[0]); done {
-		return r, nil
+	for _, u := range usToQuery {
+		startWorker(u)
 	}
 
-	for i := 1; i < len(usToQuery); i++ {
+	for i := 0; i < len(usToQuery); i++ {
 		select {
 		case res := <-resChan:
 			if r, done := processResult(res.r, res.err, res.u); done {
+				workerCancel()
 				return r, nil
 			}
 
 		case <-ctx.Done():
+			workerCancel()
 			if lastSuccessOrNXRes != nil {
 				lastSuccessOrNXResUpstream.recordWinner()
 				coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())

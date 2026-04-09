@@ -14,6 +14,7 @@ type UpstreamHealthSnapshot struct {
 	AverageLatencyMs    float64 `json:"average_latency_ms"`
 	ObservedAverageMs   float64 `json:"observed_average_latency_ms"`
 	QueryTotal          uint64  `json:"query_total"`
+	AttemptTotal        uint64  `json:"attempt_total,omitempty"`
 	ErrorTotal          uint64  `json:"error_total"`
 	WinnerTotal         uint64  `json:"winner_total"`
 	AcceptedRate        float64 `json:"accepted_rate"`

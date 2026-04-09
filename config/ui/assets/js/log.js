@@ -4213,9 +4213,11 @@ renderReplacementsTable() {
         getStats(group, tag, enabled) {
             const key = `${group}|${tag}`;
             const health = this.state.health[key] || null;
-            const attemptedQueryTotal = Number(health?.query_total || 0);
+            const attemptedQueryTotal = Number(health?.attempt_total || health?.query_total || 0);
             const e = Number(health?.error_total || 0);
-            const w = Number(health?.winner_total || 0);
+            const effectiveQueryTotal = health && Object.prototype.hasOwnProperty.call(health, 'attempt_total')
+                ? Number(health?.query_total || 0)
+                : Number(health?.winner_total || health?.query_total || 0);
             const acceptedRate = Number(health?.accepted_rate || 0);
             const observedAvg = Number(health?.observed_average_latency_ms || 0);
             const avgText = observedAvg > 0 ? `${observedAvg.toFixed(2)} ms` : '0 ms';
@@ -4223,7 +4225,7 @@ renderReplacementsTable() {
             const winRate = `${acceptedRate.toFixed(2)}%`;
             const healthText = !enabled ? '已禁用' : (health ? (health.healthy ? (health.consecutive_failures > 0 || health.inflight > 0 ? '降级' : '健康') : '退避中') : '未知');
             const healthColor = !enabled ? 'var(--color-text-secondary)' : (health ? (health.healthy ? ((health.consecutive_failures > 0 || health.inflight > 0) ? 'var(--color-warning)' : 'var(--color-success)') : 'var(--color-danger)') : 'var(--color-text-secondary)');
-            return { avgLat: avgText, query: w, rate: rate, winRate: winRate, healthText, healthColor, inflight: health?.inflight || 0, score: health?.score || 0 };
+            return { avgLat: avgText, query: effectiveQueryTotal, rate: rate, winRate: winRate, healthText, healthColor, inflight: health?.inflight || 0, score: health?.score || 0 };
         },
 
         renderTable() {

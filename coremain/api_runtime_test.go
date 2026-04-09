@@ -25,7 +25,8 @@ func (fakeUpstreamHealthProvider) SnapshotUpstreamHealth() []UpstreamHealthSnaps
 		Score:               123,
 		AverageLatencyMs:    12.3,
 		ObservedAverageMs:   8.8,
-		QueryTotal:          120,
+		QueryTotal:          90,
+		AttemptTotal:        120,
 		ErrorTotal:          6,
 		WinnerTotal:         90,
 		Inflight:            1,
@@ -149,7 +150,7 @@ func TestHandleControlUpstreamHealth(t *testing.T) {
 	if resp.Total != 1 || len(resp.Items) != 1 || resp.Items[0].UpstreamTag != "u1" {
 		t.Fatalf("unexpected upstream health payload: %+v", resp)
 	}
-	if resp.Items[0].QueryTotal != 120 || resp.Items[0].WinnerTotal != 90 || resp.Items[0].ObservedAverageMs != 8.8 {
+	if resp.Items[0].QueryTotal != 90 || resp.Items[0].AttemptTotal != 120 || resp.Items[0].WinnerTotal != 90 || resp.Items[0].ObservedAverageMs != 8.8 {
 		t.Fatalf("unexpected upstream health stats payload: %+v", resp.Items[0])
 	}
 	if resp.Items[0].AcceptedRate != 100 {

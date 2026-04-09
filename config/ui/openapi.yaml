@@ -2799,7 +2799,11 @@ components:
         query_total:
           type: integer
           format: int64
-          description: 累计向该上游发起的查询次数。
+          description: 累计该上游结果被采纳为最终响应的有效请求数。
+        attempt_total:
+          type: integer
+          format: int64
+          description: 累计向该上游实际发起的查询尝试次数。
         error_total:
           type: integer
           format: int64
