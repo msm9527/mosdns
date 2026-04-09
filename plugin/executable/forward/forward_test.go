@@ -183,7 +183,7 @@ func TestSnapshotUpstreamHealthIncludesObservedStats(t *testing.T) {
 		t.Fatalf("expected one item, got %d", len(items))
 	}
 	item := items[0]
-	if item.QueryTotal != 25 || item.ErrorTotal != 4 || item.WinnerTotal != 19 {
+	if item.QueryTotal != 19 || item.AttemptTotal != 25 || item.ErrorTotal != 4 || item.WinnerTotal != 19 {
 		t.Fatalf("unexpected counters: %+v", item)
 	}
 	if item.ObservedAverageMs != 5 {
@@ -214,7 +214,7 @@ func TestForwardPersistentStatsRestoreResetAndFlush(t *testing.T) {
 		t.Fatalf("restorePersistentStats: %v", err)
 	}
 	item := forward.SnapshotUpstreamHealth()[0]
-	if item.QueryTotal != 12 || item.ErrorTotal != 2 || item.WinnerTotal != 9 || item.ObservedAverageMs != 4 {
+	if item.QueryTotal != 9 || item.AttemptTotal != 12 || item.ErrorTotal != 2 || item.WinnerTotal != 9 || item.ObservedAverageMs != 4 {
 		t.Fatalf("unexpected restored stats: %+v", item)
 	}
 

@@ -68,6 +68,7 @@ func addCounter(counter prometheus.Counter, value uint64) {
 }
 
 func (uw *upstreamWrapper) snapshotHealth(pluginTag string, now time.Time) coremain.UpstreamHealthSnapshot {
+	winnerTotal := uw.winnerCount.Load()
 	return coremain.UpstreamHealthSnapshot{
 		PluginTag:           pluginTag,
 		PluginType:          PluginType,
@@ -76,9 +77,10 @@ func (uw *upstreamWrapper) snapshotHealth(pluginTag string, now time.Time) corem
 		Score:               uw.healthScore(now),
 		AverageLatencyMs:    float64(uw.ewmaLatencyUs.Load()) / 1000.0,
 		ObservedAverageMs:   coremain.AverageLatencyMsFromTotals(uw.latencyTotalUs.Load(), uw.latencyCount.Load()),
-		QueryTotal:          uw.queryCount.Load(),
+		QueryTotal:          winnerTotal,
+		AttemptTotal:        uw.queryCount.Load(),
 		ErrorTotal:          uw.errorCount.Load(),
-		WinnerTotal:         uw.winnerCount.Load(),
+		WinnerTotal:         winnerTotal,
 		Inflight:            uw.inflightCount.Load(),
 		ConsecutiveFailures: uw.consecutiveErrs.Load(),
 		Healthy:             !uw.isUnhealthy(now),

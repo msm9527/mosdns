@@ -3,6 +3,7 @@ package aliapi
 import (
 	"context"
 	"errors"
+	"math/rand"
 	"path/filepath"
 	"testing"
 	"time"
@@ -73,6 +74,36 @@ func (r *repeatUpstream) ExchangeContext(ctx context.Context, m []byte) (*[]byte
 }
 
 func (r *repeatUpstream) Close() error { return nil }
+
+type delayedUpstream struct {
+	resp  *dns.Msg
+	err   error
+	delay time.Duration
+	calls int
+}
+
+func (u *delayedUpstream) ExchangeContext(ctx context.Context, m []byte) (*[]byte, error) {
+	u.calls++
+	if u.delay > 0 {
+		timer := time.NewTimer(u.delay)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		}
+	}
+	if u.err != nil {
+		return nil, u.err
+	}
+	packed, err := pool.PackBuffer(u.resp)
+	if err != nil {
+		return nil, err
+	}
+	return packed, nil
+}
+
+func (u *delayedUpstream) Close() error { return nil }
 
 type cancelOnContextUpstream struct {
 	started chan struct{}
@@ -209,6 +240,66 @@ func TestAliAPI_ExchangeSkipsOpenCircuitUpstream(t *testing.T) {
 	}
 }
 
+func TestAliAPI_ExchangeConcurrentPrefersFastestWinner(t *testing.T) {
+	rand.Seed(1)
+	t.Cleanup(func() {
+		rand.Seed(time.Now().UnixNano())
+	})
+
+	query := new(dns.Msg)
+	query.SetQuestion("winner.example.", dns.TypeA)
+	resp := new(dns.Msg)
+	resp.SetReply(query)
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "winner.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   []byte{1, 1, 1, 1},
+	})
+
+	slow := &delayedUpstream{resp: resp, delay: 30 * time.Millisecond}
+	fast := &delayedUpstream{resp: resp, delay: time.Millisecond}
+	slowWrapper := newTestWrapper(slow, "test_slow_winner")
+	fastWrapper := newTestWrapper(fast, "test_fast_winner")
+	slowWrapper.cfg.Tag = "slow"
+	fastWrapper.cfg.Tag = "fast"
+
+	f := &AliAPI{
+		args: &Args{
+			Concurrent:                  2,
+			FailureSuppressTTL:          10,
+			PersistentServfailThreshold: 3,
+			PersistentServfailTTL:       60,
+			UpstreamFailureThreshold:    2,
+			UpstreamCircuitBreakSeconds: 60,
+		},
+		logger:   zap.NewNop(),
+		us:       []*upstreamWrapper{slowWrapper, fastWrapper},
+		failures: make(map[string]failureRecord),
+	}
+
+	for i := 0; i < 4; i++ {
+		q := new(dns.Msg)
+		q.SetQuestion("winner.example.", dns.TypeA)
+		qCtx := testAliAPIContext(q)
+		r, err := f.exchange(context.Background(), qCtx, f.args, f.us)
+		if err != nil {
+			t.Fatalf("exchange #%d: %v", i, err)
+		}
+		if !hasUsableAnswer(r) {
+			t.Fatalf("exchange #%d returned unusable response", i)
+		}
+	}
+
+	if got := slowWrapper.winnerCount.Load(); got != 0 {
+		t.Fatalf("expected slow upstream to lose all concurrent races, got %d wins", got)
+	}
+	if got := fastWrapper.winnerCount.Load(); got != 4 {
+		t.Fatalf("expected fast upstream to win all concurrent races, got %d wins", got)
+	}
+	if slow.calls != 4 || fast.calls != 4 {
+		t.Fatalf("expected both upstreams to be queried every time, got slow=%d fast=%d", slow.calls, fast.calls)
+	}
+}
+
 func TestAliAPI_PersistentServfailExtendsSuppressWindow(t *testing.T) {
 	f := &AliAPI{
 		args: &Args{
@@ -296,7 +387,7 @@ func TestSnapshotUpstreamHealthIncludesObservedStats(t *testing.T) {
 		t.Fatalf("expected one item, got %d", len(items))
 	}
 	item := items[0]
-	if item.QueryTotal != 30 || item.ErrorTotal != 3 || item.WinnerTotal != 20 {
+	if item.QueryTotal != 20 || item.AttemptTotal != 30 || item.ErrorTotal != 3 || item.WinnerTotal != 20 {
 		t.Fatalf("unexpected counters: %+v", item)
 	}
 	if item.ObservedAverageMs != 6 {
@@ -328,7 +419,7 @@ func TestAliAPIPersistentStatsRestoreResetAndFlush(t *testing.T) {
 		t.Fatalf("restorePersistentStats: %v", err)
 	}
 	item := f.SnapshotUpstreamHealth()[0]
-	if item.QueryTotal != 15 || item.ErrorTotal != 1 || item.WinnerTotal != 10 || item.ObservedAverageMs != 5 {
+	if item.QueryTotal != 10 || item.AttemptTotal != 15 || item.ErrorTotal != 1 || item.WinnerTotal != 10 || item.ObservedAverageMs != 5 {
 		t.Fatalf("unexpected restored stats: %+v", item)
 	}
 
