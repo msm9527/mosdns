@@ -20,6 +20,7 @@
 package query_context
 
 import (
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -32,6 +33,9 @@ import (
 const (
 	// KeyDomainSet is the key for storing the matched domain_set name in the context.
 	KeyDomainSet uint32 = iota + 100 // Use a number unlikely to conflict with internal keys.
+	// KeyCacheDependencySet stores cache dependency tags that affect route results
+	// but may not be visible in KeyDomainSet.
+	KeyCacheDependencySet
 )
 
 const (
@@ -275,6 +279,30 @@ func (ctx *Context) DeleteValue(k uint32) {
 		return
 	}
 	delete(ctx.kv, k)
+}
+
+func AppendDependencyTag(ctx *Context, tag string) {
+	if ctx == nil {
+		return
+	}
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return
+	}
+	if existing, ok := ctx.GetValue(KeyCacheDependencySet); ok {
+		if current, ok := existing.(string); ok {
+			for _, part := range strings.Split(current, "|") {
+				if strings.TrimSpace(part) == tag {
+					return
+				}
+			}
+			if strings.TrimSpace(current) != "" {
+				ctx.StoreValue(KeyCacheDependencySet, current+"|"+tag)
+				return
+			}
+		}
+	}
+	ctx.StoreValue(KeyCacheDependencySet, tag)
 }
 
 // SetMark marks this Context with given mark.

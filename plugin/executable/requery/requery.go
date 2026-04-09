@@ -57,6 +57,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 
 	p := &Requery{
 		plugin:       bp.Plugin,
+		snapshotter:  bp.M(),
 		pluginTag:    bp.Tag(),
 		baseDir:      bp.BaseDir(),
 		runtimeKey:   cfg.Key,
@@ -98,6 +99,7 @@ func newRequery(bp *coremain.BP, args any) (any, error) {
 type Requery struct {
 	mu                  sync.RWMutex
 	plugin              func(string) any
+	snapshotter         coremain.PluginSnapshotter
 	pluginTag           string
 	baseDir             string
 	runtimeKey          string
@@ -318,8 +320,9 @@ type taskCandidatePlan struct {
 }
 
 type taskExecutionState struct {
-	plan     taskCandidatePlan
-	recovery *FullRebuildTask
+	plan          taskCandidatePlan
+	recovery      *FullRebuildTask
+	changedDomain []string
 }
 
 type domainCandidate struct {
@@ -500,7 +503,7 @@ func (p *Requery) runTask(ctx context.Context, profile taskProfile, recovery *Fu
 	if !p.executeTaskStages(ctx, profile, &state) {
 		return
 	}
-	if !p.finalizeTaskExecution(ctx, profile) {
+	if !p.finalizeTaskExecution(ctx, profile, &state) {
 		return
 	}
 
@@ -1268,6 +1271,13 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 			p.lastError = fmt.Sprintf("save_rules failed: %d/%d", result.Failed, result.Total)
 			p.mu.Unlock()
 		}
+	}
+	if !p.invalidateCachesAfterPublish(ctx, flattenRefreshJobDomains(jobs)) {
+		p.mu.Lock()
+		if p.lastError == "" {
+			p.lastError = "runtime cache invalidation failed"
+		}
+		p.mu.Unlock()
 	}
 
 	p.mu.Lock()

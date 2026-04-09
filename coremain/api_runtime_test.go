@@ -34,6 +34,25 @@ func (fakeUpstreamHealthProvider) SnapshotUpstreamHealth() []UpstreamHealthSnaps
 	}}
 }
 
+type fakeGroupedUpstreamHealthProvider struct{}
+
+func (fakeGroupedUpstreamHealthProvider) SnapshotUpstreamHealth() []UpstreamHealthSnapshot {
+	return []UpstreamHealthSnapshot{
+		{
+			PluginTag:   "fake",
+			PluginType:  "forward",
+			UpstreamTag: "u1",
+			WinnerTotal: 30,
+		},
+		{
+			PluginTag:   "fake",
+			PluginType:  "forward",
+			UpstreamTag: "u2",
+			WinnerTotal: 90,
+		},
+	}
+}
+
 type fakeUpstreamStatsResetter struct {
 	calledWith []string
 	returned   int
@@ -132,6 +151,35 @@ func TestHandleControlUpstreamHealth(t *testing.T) {
 	}
 	if resp.Items[0].QueryTotal != 120 || resp.Items[0].WinnerTotal != 90 || resp.Items[0].ObservedAverageMs != 8.8 {
 		t.Fatalf("unexpected upstream health stats payload: %+v", resp.Items[0])
+	}
+	if resp.Items[0].AcceptedRate != 100 {
+		t.Fatalf("unexpected accepted rate payload: %+v", resp.Items[0])
+	}
+}
+
+func TestHandleControlUpstreamHealthAcceptedRate(t *testing.T) {
+	router := chi.NewRouter()
+	RegisterRuntimeAPI(router, NewTestMosdnsWithPlugins(map[string]any{"fake": fakeGroupedUpstreamHealthProvider{}}))
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/control/upstreams/health", nil)
+	w := httptest.NewRecorder()
+	router.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	var resp upstreamHealthOverview
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode upstream health: %v", err)
+	}
+	if resp.Total != 2 || len(resp.Items) != 2 {
+		t.Fatalf("unexpected upstream health payload: %+v", resp)
+	}
+	if resp.Items[0].UpstreamTag != "u1" || resp.Items[0].AcceptedRate != 25 {
+		t.Fatalf("unexpected first upstream payload: %+v", resp.Items[0])
+	}
+	if resp.Items[1].UpstreamTag != "u2" || resp.Items[1].AcceptedRate != 75 {
+		t.Fatalf("unexpected second upstream payload: %+v", resp.Items[1])
 	}
 }
 

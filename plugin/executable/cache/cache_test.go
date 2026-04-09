@@ -28,6 +28,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -149,10 +150,10 @@ func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
 }
 
 func Test_shouldBypassForRouteChange(t *testing.T) {
-	if shouldBypassForRouteChange("记忆直连|白名单", "白名单|记忆直连") {
+	if shouldBypassForRouteChange(encodeStoredRouteMetadata("记忆直连|白名单", "记忆直连|白名单", "白名单|记忆直连"), "白名单|记忆直连", nil) {
 		t.Fatal("expected reordered tags to share the same signature")
 	}
-	if !shouldBypassForRouteChange("记忆直连", "未命中") {
+	if !shouldBypassForRouteChange(encodeStoredRouteMetadata("记忆直连", "记忆直连", "记忆直连"), "未命中", nil) {
 		t.Fatal("expected route change to bypass cached entry")
 	}
 }
@@ -202,8 +203,67 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 	if updated == nil {
 		t.Fatal("expected cache entry to be rewritten after bypass")
 	}
-	if updated.domainSet != "未命中" {
-		t.Fatalf("expected cache entry to be rewritten with current route, got %q", updated.domainSet)
+	if storedDomainSet(updated.domainSet) != "未命中" {
+		t.Fatalf("expected cache entry to be rewritten with current route, got %q", storedDomainSet(updated.domainSet))
+	}
+}
+
+func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
+	provider := &testCacheRevisionProvider{revision: "rev1"}
+	c := NewCache(&Args{Size: 64}, Opts{
+		Plugin: func(tag string) any {
+			if tag == "my_realiplist" {
+				return provider
+			}
+			return nil
+		},
+	})
+	defer c.Close()
+
+	seedCtx := testQueryContext(t, "route-revision.example.", net.IPv4(1, 1, 1, 1))
+	query_context.AppendDependencyTag(seedCtx, "my_realiplist")
+
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	msgKey := string(keyBuf)
+	releaseKeyBuffer(bufPtr)
+
+	if _, ok := c.saveRespToCache(msgKey, seedCtx); !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+
+	provider.revision = "rev2"
+
+	qCtx := testQueryContext(t, "route-revision.example.", net.IPv4(2, 2, 2, 2))
+	query_context.AppendDependencyTag(qCtx, "my_realiplist")
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected response after cache exec, got %+v", resp)
+	}
+	gotA, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A response, got %T", resp.Answer[0])
+	}
+	if !gotA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected revision mismatch to bypass cached entry, got %s", gotA.A.String())
+	}
+
+	updated, _, _ := c.backend.Get(key(msgKey))
+	if updated == nil {
+		t.Fatal("expected cache entry to be rewritten after revision mismatch")
+	}
+	if storedDomainSet(updated.domainSet) != "" {
+		t.Fatalf("expected empty display domain set for dependency-only cache, got %q", storedDomainSet(updated.domainSet))
+	}
+	if storedDependencySet(updated.domainSet) != "my_realiplist" {
+		t.Fatalf("unexpected stored dependency set: %q", storedDependencySet(updated.domainSet))
+	}
+	if got := storedRouteSignature(updated.domainSet); !strings.Contains(got, "rev2") {
+		t.Fatalf("expected updated route signature to include new revision, got %q", got)
 	}
 }
 
@@ -590,6 +650,14 @@ func TestCacheCloseDumpsWhenUpdatesPending(t *testing.T) {
 type testingHelper interface {
 	Helper()
 	Fatal(args ...interface{})
+}
+
+type testCacheRevisionProvider struct {
+	revision string
+}
+
+func (p *testCacheRevisionProvider) CacheRevision() string {
+	return p.revision
 }
 
 func counterValue(t *testing.T, counter prometheus.Counter) float64 {

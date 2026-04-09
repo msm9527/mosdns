@@ -100,10 +100,37 @@ func inferFastBypassWarmupSec(entry, listen string) int {
 type UdpServer struct {
 	args *Args
 	c    net.PacketConn
+	fc   *fastCache
 }
 
 func (s *UdpServer) Close() error {
 	return s.c.Close()
+}
+
+func (s *UdpServer) RuntimeCacheKind() string {
+	return "udp_fast"
+}
+
+func (s *UdpServer) FlushRuntimeCache(_ context.Context) error {
+	if s == nil || s.fc == nil {
+		return nil
+	}
+	s.fc.Flush()
+	return nil
+}
+
+func (s *UdpServer) PurgeDomainsRuntimeCache(_ context.Context, domains []string, qtypes []uint16) (int, error) {
+	if s == nil || s.fc == nil {
+		return 0, nil
+	}
+	return s.fc.PurgeDomains(domains, qtypes), nil
+}
+
+func (s *UdpServer) RuntimeCacheEntryCount() int {
+	if s == nil || s.fc == nil {
+		return 0
+	}
+	return s.fc.Len()
 }
 
 type SwitchPlugin interface{ GetValue() string }
@@ -383,6 +410,77 @@ func (fc *fastCache) storeItem(item *fastCacheItem) {
 	}
 }
 
+func (fc *fastCache) Flush() {
+	if fc == nil {
+		return
+	}
+	for i := range fc.m {
+		for j := range fc.m[i].slots {
+			fc.m[i].slots[j].Store(nil)
+		}
+	}
+}
+
+func (fc *fastCache) Len() int {
+	if fc == nil {
+		return 0
+	}
+	count := 0
+	for i := range fc.m {
+		for j := range fc.m[i].slots {
+			if fc.m[i].slots[j].Load() != nil {
+				count++
+			}
+		}
+	}
+	return count
+}
+
+func (fc *fastCache) PurgeDomains(domains []string, qtypes []uint16) int {
+	if fc == nil {
+		return 0
+	}
+	domainSet := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		name := dns.Fqdn(strings.TrimSpace(domain))
+		if name == "" || name == "." {
+			continue
+		}
+		domainSet[name] = struct{}{}
+	}
+	if len(domainSet) == 0 {
+		return 0
+	}
+	qtypeSet := make(map[uint16]struct{}, len(qtypes))
+	for _, qtype := range qtypes {
+		if qtype == 0 {
+			continue
+		}
+		qtypeSet[qtype] = struct{}{}
+	}
+	purged := 0
+	for i := range fc.m {
+		for j := range fc.m[i].slots {
+			slot := &fc.m[i].slots[j]
+			current := slot.Load()
+			if current == nil {
+				continue
+			}
+			if _, ok := domainSet[current.qname]; !ok {
+				continue
+			}
+			if len(qtypeSet) > 0 {
+				if _, ok := qtypeSet[current.qtype]; !ok {
+					continue
+				}
+			}
+			slot.Store(nil)
+			purged++
+		}
+	}
+	return purged
+}
+
 type fastHandler struct {
 	next            server.Handler
 	fc              *fastCache
@@ -559,7 +657,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		})
 		bp.CloseWithErr(err)
 	}()
-	return &UdpServer{args: args, c: c}, nil
+	return &UdpServer{args: args, c: c, fc: fc}, nil
 }
 
 func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {

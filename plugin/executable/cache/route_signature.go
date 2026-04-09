@@ -4,8 +4,11 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 )
+
+const routeMetadataSeparator = "\x1f"
 
 func normalizeDomainSetSignature(raw string) string {
 	raw = strings.TrimSpace(raw)
@@ -34,7 +37,52 @@ func normalizeDomainSetSignature(raw string) string {
 	return strings.Join(tags, "|")
 }
 
-func currentRouteSignature(qCtx *query_context.Context) string {
+func mergeDependencySets(values ...string) string {
+	merged := make([]string, 0, len(values)*2)
+	for _, value := range values {
+		value = normalizeDomainSetSignature(value)
+		if value == "" {
+			continue
+		}
+		merged = append(merged, strings.Split(value, "|")...)
+	}
+	return normalizeDomainSetSignature(strings.Join(merged, "|"))
+}
+
+func resolveRouteSignature(raw string, pluginLookup func(string) any) string {
+	raw = normalizeDomainSetSignature(raw)
+	if raw == "" {
+		return ""
+	}
+
+	parts := strings.Split(raw, "|")
+	resolved := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tag := strings.TrimSpace(part)
+		if tag == "" {
+			continue
+		}
+		if rev := resolveTagRevision(tag, pluginLookup); rev != "" {
+			resolved = append(resolved, tag+"@"+rev)
+			continue
+		}
+		resolved = append(resolved, tag)
+	}
+	return normalizeDomainSetSignature(strings.Join(resolved, "|"))
+}
+
+func resolveTagRevision(tag string, pluginLookup func(string) any) string {
+	if pluginLookup == nil {
+		return ""
+	}
+	provider, ok := pluginLookup(strings.TrimSpace(tag)).(coremain.CacheRevisionProvider)
+	if !ok || provider == nil {
+		return ""
+	}
+	return strings.TrimSpace(provider.CacheRevision())
+}
+
+func currentRouteDomainSet(qCtx *query_context.Context) string {
 	if qCtx == nil {
 		return ""
 	}
@@ -49,6 +97,86 @@ func currentRouteSignature(qCtx *query_context.Context) string {
 	return normalizeDomainSetSignature(domainSet)
 }
 
-func shouldBypassForRouteChange(cachedDomainSet, currentSig string) bool {
-	return normalizeDomainSetSignature(cachedDomainSet) != normalizeDomainSetSignature(currentSig)
+func currentCacheDependencies(qCtx *query_context.Context) string {
+	if qCtx == nil {
+		return ""
+	}
+	value, ok := qCtx.GetValue(query_context.KeyCacheDependencySet)
+	if !ok {
+		return ""
+	}
+	dependencies, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return normalizeDomainSetSignature(dependencies)
+}
+
+func encodeStoredRouteMetadata(domainSet, dependencySet, routeSignature string) string {
+	domainSet = normalizeDomainSetSignature(domainSet)
+	dependencySet = normalizeDomainSetSignature(dependencySet)
+	routeSignature = normalizeDomainSetSignature(routeSignature)
+	if domainSet == "" && dependencySet == "" {
+		return ""
+	}
+	if dependencySet == "" {
+		dependencySet = domainSet
+	}
+	if routeSignature == "" {
+		return domainSet + routeMetadataSeparator + dependencySet
+	}
+	return domainSet + routeMetadataSeparator + dependencySet + routeMetadataSeparator + routeSignature
+}
+
+func decodeStoredRouteMetadata(stored string) (domainSet string, dependencySet string, routeSignature string) {
+	if stored == "" {
+		return "", "", ""
+	}
+	parts := strings.SplitN(stored, routeMetadataSeparator, 3)
+	switch len(parts) {
+	case 1:
+		domainSet = normalizeDomainSetSignature(parts[0])
+		return domainSet, domainSet, ""
+	case 2:
+		domainSet = normalizeDomainSetSignature(parts[0])
+		dependencySet = normalizeDomainSetSignature(parts[1])
+		if dependencySet == "" {
+			dependencySet = domainSet
+		}
+		return domainSet, dependencySet, ""
+	default:
+		domainSet = normalizeDomainSetSignature(parts[0])
+		dependencySet = normalizeDomainSetSignature(parts[1])
+		if dependencySet == "" {
+			dependencySet = domainSet
+		}
+		return domainSet, dependencySet, normalizeDomainSetSignature(parts[2])
+	}
+}
+
+func storedDomainSet(stored string) string {
+	domainSet, _, _ := decodeStoredRouteMetadata(stored)
+	return domainSet
+}
+
+func storedDependencySet(stored string) string {
+	_, dependencySet, _ := decodeStoredRouteMetadata(stored)
+	return dependencySet
+}
+
+func storedRouteSignature(stored string) string {
+	_, _, routeSignature := decodeStoredRouteMetadata(stored)
+	return routeSignature
+}
+
+func shouldBypassForRouteChange(cachedStored, currentDomainSet string, pluginLookup func(string) any) bool {
+	cachedDomainSet, dependencySet, cachedSig := decodeStoredRouteMetadata(cachedStored)
+	if normalizeDomainSetSignature(cachedDomainSet) != normalizeDomainSetSignature(currentDomainSet) {
+		return true
+	}
+	currentSig := resolveRouteSignature(dependencySet, pluginLookup)
+	if cachedSig == "" && currentSig == "" {
+		return false
+	}
+	return normalizeDomainSetSignature(cachedSig) != normalizeDomainSetSignature(currentSig)
 }

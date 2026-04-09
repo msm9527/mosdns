@@ -15,6 +15,21 @@ type FlushablePlugin interface {
 	FlushRuntime(ctx context.Context) error
 }
 
+// CacheRevisionProvider is implemented by rule-producing plugins that can
+// expose a stable revision string for cache route signatures.
+type CacheRevisionProvider interface {
+	CacheRevision() string
+}
+
+// RuntimeCacheController is implemented by runtime caches that support bulk
+// flush and domain purge operations.
+type RuntimeCacheController interface {
+	RuntimeCacheKind() string
+	FlushRuntimeCache(ctx context.Context) error
+	PurgeDomainsRuntimeCache(ctx context.Context, domains []string, qtypes []uint16) (int, error)
+	RuntimeCacheEntryCount() int
+}
+
 // UpstreamStatsResetter is implemented by plugins that can clear in-memory
 // upstream runtime stats.
 type UpstreamStatsResetter interface {

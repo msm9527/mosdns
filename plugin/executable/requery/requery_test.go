@@ -24,6 +24,10 @@ func newTestRequeryStore(dir string) (string, string) {
 	return "state/requery", filepath.Join(dir, "control.db")
 }
 
+func recentObservedDate() string {
+	return time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+}
+
 func TestRequeryAPI_GetConfigAndStatus(t *testing.T) {
 	t.Parallel()
 
@@ -88,7 +92,7 @@ func TestMergeAndFilterDomainsParsesQTypeMask(t *testing.T) {
 
 	dir := t.TempDir()
 	source := filepath.Join(dir, "top.txt")
-	content := "0000000002 2026-03-06 example.com qmask=1 score=2 promoted=1\n"
+	content := fmt.Sprintf("0000000002 %s example.com qmask=1 score=2 promoted=1\n", recentObservedDate())
 	if err := os.WriteFile(source, []byte(content), 0644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
@@ -179,7 +183,7 @@ func TestMergeAndFilterDomainsMergesRuntimeCandidatesForFullMode(t *testing.T) {
 
 	dir := t.TempDir()
 	source := filepath.Join(dir, "top.txt")
-	content := "0000000002 2026-03-06 file.example qmask=1 score=2 promoted=1\n"
+	content := fmt.Sprintf("0000000002 %s file.example qmask=1 score=2 promoted=1\n", recentObservedDate())
 	if err := os.WriteFile(source, []byte(content), 0644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
@@ -218,9 +222,10 @@ func TestBuildTaskCandidatePlanSplitsFullRebuildStages(t *testing.T) {
 
 	dir := t.TempDir()
 	source := filepath.Join(dir, "top.txt")
+	recentDate := recentObservedDate()
 	content := "" +
-		"0000000002 2026-03-06 file-a.example qmask=1 score=2 promoted=1\n" +
-		"0000000001 2026-03-06 file-b.example qmask=1 score=1 promoted=1\n"
+		fmt.Sprintf("0000000002 %s file-a.example qmask=1 score=2 promoted=1\n", recentDate) +
+		fmt.Sprintf("0000000001 %s file-b.example qmask=1 score=1 promoted=1\n", recentDate)
 	if err := os.WriteFile(source, []byte(content), 0644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
@@ -277,7 +282,8 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 	dir := t.TempDir()
 	runtimeKey, dbPath := newTestRequeryStore(dir)
 	source := filepath.Join(dir, "top.txt")
-	if err := os.WriteFile(source, []byte("0000000002 2026-03-06 example.com qmask=1 score=2 promoted=1\n"), 0644); err != nil {
+	content := fmt.Sprintf("0000000002 %s example.com qmask=1 score=2 promoted=1\n", recentObservedDate())
+	if err := os.WriteFile(source, []byte(content), 0644); err != nil {
 		t.Fatalf("write source file: %v", err)
 	}
 
@@ -409,6 +415,59 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 	}
 }
 
+func TestInvalidateCachesAfterPublishPurgesChangedDomains(t *testing.T) {
+	t.Parallel()
+
+	response := &mockRuntimeCacheController{kind: "response", entryCount: 5000}
+	udp := &mockRuntimeCacheController{kind: "udp_fast", entryCount: 8}
+	p := &Requery{
+		snapshotter: mockSnapshotter{plugins: map[string]any{
+			"cache_main": response,
+			"udp_all":    udp,
+		}},
+	}
+
+	if !p.invalidateCachesAfterPublish(context.Background(), []string{"a.example", "b.example"}) {
+		t.Fatal("expected invalidation to succeed")
+	}
+	if response.purgeCalls != 1 || response.flushCalls != 0 {
+		t.Fatalf("unexpected response cache calls: purge=%d flush=%d", response.purgeCalls, response.flushCalls)
+	}
+	if udp.purgeCalls != 1 || udp.flushCalls != 0 {
+		t.Fatalf("unexpected udp cache calls: purge=%d flush=%d", udp.purgeCalls, udp.flushCalls)
+	}
+	if got := strings.Join(response.lastDomains, ","); got != "a.example,b.example" {
+		t.Fatalf("unexpected purged domains: %q", got)
+	}
+}
+
+func TestInvalidateCachesAfterPublishFallsBackToFlush(t *testing.T) {
+	t.Parallel()
+
+	response := &mockRuntimeCacheController{kind: "response", entryCount: 100}
+	udp := &mockRuntimeCacheController{kind: "udp_fast", entryCount: 8}
+	p := &Requery{
+		snapshotter: mockSnapshotter{plugins: map[string]any{
+			"cache_main": response,
+			"udp_all":    udp,
+		}},
+	}
+
+	domains := make([]string, 0, runtimeCachePrecisePurgeMaxDomains+1)
+	for i := 0; i <= runtimeCachePrecisePurgeMaxDomains; i++ {
+		domains = append(domains, fmt.Sprintf("f-%d.example", i))
+	}
+	if !p.invalidateCachesAfterPublish(context.Background(), domains) {
+		t.Fatal("expected invalidation to succeed")
+	}
+	if response.flushCalls != 1 || response.purgeCalls != 0 {
+		t.Fatalf("unexpected response cache calls: purge=%d flush=%d", response.purgeCalls, response.flushCalls)
+	}
+	if udp.flushCalls != 1 || udp.purgeCalls != 0 {
+		t.Fatalf("unexpected udp cache calls: purge=%d flush=%d", udp.purgeCalls, udp.flushCalls)
+	}
+}
+
 func TestResolverAddressesForProfileUsesPool(t *testing.T) {
 	t.Parallel()
 
@@ -429,6 +488,41 @@ func TestResolverAddressesForProfileUsesPool(t *testing.T) {
 	if got[0] != "127.0.0.1:5301" || got[1] != "127.0.0.1:5302" || got[2] != "127.0.0.1:5303" {
 		t.Fatalf("unexpected resolver list: %#v", got)
 	}
+}
+
+type mockSnapshotter struct {
+	plugins map[string]any
+}
+
+func (m mockSnapshotter) SnapshotPlugins() map[string]any {
+	return m.plugins
+}
+
+type mockRuntimeCacheController struct {
+	kind        string
+	entryCount  int
+	flushCalls  int
+	purgeCalls  int
+	lastDomains []string
+}
+
+func (m *mockRuntimeCacheController) RuntimeCacheKind() string {
+	return m.kind
+}
+
+func (m *mockRuntimeCacheController) FlushRuntimeCache(context.Context) error {
+	m.flushCalls++
+	return nil
+}
+
+func (m *mockRuntimeCacheController) PurgeDomainsRuntimeCache(_ context.Context, domains []string, _ []uint16) (int, error) {
+	m.purgeCalls++
+	m.lastDomains = append([]string(nil), domains...)
+	return len(domains), nil
+}
+
+func (m *mockRuntimeCacheController) RuntimeCacheEntryCount() int {
+	return m.entryCount
 }
 
 func TestPrepareRecoveryOnStartupMarksInterruptedFullRebuildRecoverable(t *testing.T) {

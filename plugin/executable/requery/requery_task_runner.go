@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 	"time"
 )
 
@@ -138,8 +139,9 @@ func (p *Requery) prepareTaskExecutionState(ctx context.Context, profile taskPro
 		return taskExecutionState{}, false
 	}
 	return taskExecutionState{
-		plan:     plan,
-		recovery: recovery,
+		plan:          plan,
+		recovery:      recovery,
+		changedDomain: flattenCandidateDomains(plan),
 	}, true
 }
 
@@ -268,8 +270,11 @@ func (p *Requery) runTaskPlan(ctx context.Context, profile taskProfile, plan *ta
 	return true
 }
 
-func (p *Requery) finalizeTaskExecution(ctx context.Context, profile taskProfile) bool {
+func (p *Requery) finalizeTaskExecution(ctx context.Context, profile taskProfile, state *taskExecutionState) bool {
 	if !p.saveRulesAfterRun(ctx, profile) {
+		return false
+	}
+	if !p.invalidateCachesAfterPublish(ctx, state.changedDomain) {
 		return false
 	}
 	p.clearFullRebuildTask()
@@ -342,4 +347,25 @@ func (p *Requery) saveRulesAfterRun(ctx context.Context, profile taskProfile) bo
 		return false
 	}
 	return true
+}
+
+func flattenCandidateDomains(plan taskCandidatePlan) []string {
+	seen := make(map[string]struct{}, len(plan.Primary)+len(plan.Secondary))
+	domains := make([]string, 0, len(plan.Primary)+len(plan.Secondary))
+	appendDomain := func(items []domainCandidate) {
+		for _, item := range items {
+			name := strings.TrimSpace(item.Name)
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			domains = append(domains, name)
+		}
+	}
+	appendDomain(plan.Primary)
+	appendDomain(plan.Secondary)
+	return domains
 }

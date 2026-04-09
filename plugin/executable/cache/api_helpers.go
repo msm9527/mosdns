@@ -54,6 +54,7 @@ func (c *Cache) deleteL1Key(k key) {
 }
 
 func domainSetContainsToken(domainSet, token string) bool {
+	domainSet = storedDomainSet(domainSet)
 	token = strings.TrimSpace(token)
 	if token == "" || strings.TrimSpace(domainSet) == "" {
 		return false

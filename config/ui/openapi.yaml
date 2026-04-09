@@ -1595,6 +1595,56 @@ paths:
           $ref: '#/components/responses/ApiBadRequest'
         '404':
           $ref: '#/components/responses/ApiNotFound'
+  /api/v1/cache/purge_domains:
+    post:
+      tags: [Cache]
+      summary: Purge domains from runtime caches
+      description: |
+        从运行中的响应缓存批量清理一组域名，可按缓存标签定向，也可选择同时包含 UDP fast cache。
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurgeDomainsRequest'
+      responses:
+        '200':
+          description: Purge results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeCacheActionResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '502':
+          $ref: '#/components/responses/ApiBadGateway'
+  /api/v1/cache/flush_all:
+    post:
+      tags: [Cache]
+      summary: Flush runtime caches in batch
+      description: |
+        批量清空运行中的响应缓存，可按缓存标签定向，也可选择同时包含 UDP fast cache。
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlushAllRequest'
+      responses:
+        '200':
+          description: Flush results
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RuntimeCacheActionResponse'
+        '400':
+          $ref: '#/components/responses/ApiBadRequest'
+        '404':
+          $ref: '#/components/responses/ApiNotFound'
+        '502':
+          $ref: '#/components/responses/ApiBadGateway'
   /api/v1/lists/{tag}:
     parameters:
       - $ref: '#/components/parameters/TagPath'
@@ -2758,6 +2808,9 @@ components:
           type: integer
           format: int64
           description: 累计该上游结果被选为最终响应的次数。
+        accepted_rate:
+          type: number
+          description: 按插件组内最终被采纳次数计算的采纳率，取值范围 0-100。
         inflight:
           type: integer
           format: int64
@@ -3679,6 +3732,59 @@ components:
           type: integer
         purged:
           type: integer
+    PurgeDomainsRequest:
+      type: object
+      required: [domains]
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+        domains:
+          type: array
+          items:
+            type: string
+        qtypes:
+          type: array
+          items:
+            type: integer
+        include_udp_fast:
+          type: boolean
+    FlushAllRequest:
+      type: object
+      properties:
+        tags:
+          type: array
+          items:
+            type: string
+        include_udp_fast:
+          type: boolean
+    RuntimeCacheActionItem:
+      type: object
+      properties:
+        tag:
+          type: string
+        kind:
+          type: string
+        ok:
+          type: boolean
+        purged:
+          type: integer
+        error:
+          type: string
+    RuntimeCacheActionResponse:
+      type: object
+      properties:
+        success:
+          type: integer
+        failed:
+          type: integer
+        total:
+          type: integer
+        items:
+          type: array
+          items:
+            $ref: '#/components/schemas/RuntimeCacheActionItem'
     ListEntry:
       type: object
       properties:

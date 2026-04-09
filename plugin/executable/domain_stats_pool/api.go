@@ -4,6 +4,7 @@ import (
 	"container/heap"
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync/atomic"
 
@@ -41,6 +42,15 @@ func (d *domainStatsPool) SnapshotDomainStats() coremain.DomainStatsSnapshot {
 		DroppedByBuffer:     atomic.LoadInt64(&d.droppedBufferCount),
 		DroppedByCap:        atomic.LoadInt64(&d.droppedByCapCount),
 	}
+}
+
+func (d *domainStatsPool) CacheRevision() string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.hasRulesHash {
+		return ""
+	}
+	return strconv.FormatUint(d.lastRulesHash, 16)
 }
 
 func (d *domainStatsPool) snapshotDomainCountersLocked() (int, int) {

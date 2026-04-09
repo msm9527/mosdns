@@ -450,6 +450,33 @@ func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
 	}
 }
 
+func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+
+	fc.Store("purge-fast.example.", dns.TypeA, makeAnswer(t, "purge-fast.example.", dns.TypeA, 0x1111, 30), "direct", false)
+	fc.Store("keep-fast.example.", dns.TypeA, makeAnswer(t, "keep-fast.example.", dns.TypeA, 0x2222, 30), "direct", false)
+
+	if got := fc.Len(); got != 2 {
+		t.Fatalf("Len() = %d, want 2", got)
+	}
+
+	if purged := fc.PurgeDomains([]string{"purge-fast.example"}, nil); purged != 1 {
+		t.Fatalf("PurgeDomains() = %d, want 1", purged)
+	}
+	if got := fc.Len(); got != 1 {
+		t.Fatalf("Len() after purge = %d, want 1", got)
+	}
+
+	fc.Flush()
+	if got := fc.Len(); got != 0 {
+		t.Fatalf("Len() after flush = %d, want 0", got)
+	}
+}
+
 type testSwitchPlugin struct {
 	value string
 }
