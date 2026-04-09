@@ -193,6 +193,7 @@ func newDomainStatsPoolWithDeps(pluginTag string, logger *zap.Logger, dbPath str
 }
 
 func (d *domainStatsPool) Exec(_ context.Context, qCtx *query_context.Context) error {
+	query_context.AppendDependencyTag(qCtx, d.pluginTag)
 	d.enqueueFromContext(qCtx, "live")
 	return nil
 }
@@ -202,6 +203,7 @@ func (d *domainStatsPool) GetFastExec() func(ctx context.Context, qCtx *query_co
 	enableFlags := d.enableFlags
 	trackQType := d.policy.trackQType
 	return func(_ context.Context, qCtx *query_context.Context) error {
+		query_context.AppendDependencyTag(qCtx, d.pluginTag)
 		q := qCtx.Q()
 		if q == nil || len(q.Question) == 0 {
 			return nil

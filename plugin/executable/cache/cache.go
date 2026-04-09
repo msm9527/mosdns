@@ -261,6 +261,7 @@ type Cache struct {
 	args         *Args
 	logger       *zap.Logger
 	metricsTag   string
+	plugin       func(string) any
 	backend      *cache.Cache[key, *item]
 	lazyUpdateSF singleflight.Group
 	closeOnce    sync.Once
@@ -320,12 +321,14 @@ type Cache struct {
 type Opts struct {
 	Logger     *zap.Logger
 	MetricsTag string
+	Plugin     func(string) any
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
 	c := NewCache(args.(*Args), Opts{
 		Logger:     bp.L(),
 		MetricsTag: bp.Tag(),
+		Plugin:     bp.Plugin,
 	})
 
 	if err := c.RegMetricsTo(prometheus.WrapRegistererWithPrefix(PluginType+"_", bp.MetricsRegisterer())); err != nil {
@@ -375,6 +378,7 @@ func NewCache(args *Args, opts Opts) *Cache {
 		args:            args,
 		logger:          logger,
 		metricsTag:      opts.MetricsTag,
+		plugin:          opts.Plugin,
 		backend:         backend,
 		closeNotify:     make(chan struct{}),
 		excludeNets:     excludeNets,
@@ -553,7 +557,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	h := k.Sum()
 	shard := c.shards[h%shardCount]
-	currentSig := currentRouteSignature(qCtx)
+	currentDomainSet := currentRouteDomainSet(qCtx)
 
 	// --- L1 热路径查询 ---
 	var (
@@ -567,7 +571,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	}
 
 	now := time.Now()
-	if ok1 && shouldBypassForRouteChange(v1.domainSet, currentSig) {
+	if ok1 && shouldBypassForRouteChange(v1.domainSet, currentDomainSet, c.plugin) {
 		c.deleteL1Key(k)
 		v1 = nil
 		ok1 = false
@@ -607,7 +611,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	// --- L2 路径查询 ---
 	cachedItem, _, _ := c.backend.Get(kReal)
-	if cachedItem != nil && shouldBypassForRouteChange(cachedItem.domainSet, currentSig) {
+	if cachedItem != nil && shouldBypassForRouteChange(cachedItem.domainSet, currentDomainSet, c.plugin) {
 		c.backend.Delete(kReal)
 		c.deleteL1Key(kReal)
 		cachedItem = nil
@@ -629,7 +633,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		} else {
 			if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 				refreshedItem, _, _ := c.backend.Get(kReal)
-				if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentSig) {
+				if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
 					c.backend.Delete(kReal)
 					c.deleteL1Key(kReal)
 					refreshedItem = nil
@@ -691,7 +695,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 			refreshedItem, _, _ := c.backend.Get(kReal)
-			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentSig) {
+			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
 				c.backend.Delete(kReal)
 				c.deleteL1Key(kReal)
 				refreshedItem = nil
@@ -940,28 +944,69 @@ func (c *Cache) SaveToDisk(_ context.Context) error {
 	return c.dumpCache()
 }
 
-func (c *Cache) FlushRuntime(_ context.Context) error {
+func (c *Cache) FlushRuntime(ctx context.Context) error {
+	return c.FlushRuntimeCache(ctx)
+}
+
+func (c *Cache) RuntimeCacheKind() string {
+	return "response"
+}
+
+func (c *Cache) RuntimeCacheEntryCount() int {
+	if c == nil || c.backend == nil {
+		return 0
+	}
+	return c.backend.Len()
+}
+
+func (c *Cache) FlushRuntimeCache(_ context.Context) error {
 	c.logger.Info("flushing cache via direct action")
 	c.backend.Flush()
 	c.resetL1()
 	c.updatedKey.Store(0)
-	go func() {
-		if err := c.dumpCache(); err != nil {
-			c.logger.Error("failed to dump cache after direct flush", zap.Error(err))
-		}
-	}()
+	if len(c.args.DumpFile) == 0 {
+		return nil
+	}
+	if err := c.dumpCache(); err != nil {
+		c.logger.Error("failed to dump cache after direct flush", zap.Error(err))
+		return err
+	}
 	return nil
 }
 
-func (c *Cache) PurgeDomainRuntime(_ context.Context, qname string, qtype uint16) (int, error) {
-	qname = strings.TrimSpace(qname)
+func (c *Cache) PurgeDomainRuntime(ctx context.Context, qname string, qtype uint16) (int, error) {
 	if qname == "" {
 		return 0, errors.New("qname is required")
 	}
-	qname = dns.Fqdn(qname)
+	qtypes := []uint16(nil)
+	if qtype != 0 {
+		qtypes = []uint16{qtype}
+	}
+	return c.PurgeDomainsRuntimeCache(ctx, []string{qname}, qtypes)
+}
+
+func (c *Cache) PurgeDomainsRuntimeCache(_ context.Context, domains []string, qtypes []uint16) (int, error) {
+	domainSet := make(map[string]struct{}, len(domains))
+	for _, domain := range domains {
+		domain = dns.Fqdn(strings.TrimSpace(domain))
+		if domain == "." || domain == "" {
+			continue
+		}
+		domainSet[domain] = struct{}{}
+	}
+	if len(domainSet) == 0 {
+		return 0, errors.New("at least one domain is required")
+	}
+	qtypeSet := make(map[uint16]struct{}, len(qtypes))
+	for _, qtype := range qtypes {
+		if qtype == 0 {
+			continue
+		}
+		qtypeSet[qtype] = struct{}{}
+	}
 
 	now := time.Now()
-	purgeKeys := make([]key, 0, 8)
+	purgeKeys := make([]key, 0, len(domainSet))
 	if err := c.backend.Range(func(k key, _ *item, cacheExpirationTime time.Time) error {
 		if cacheExpirationTime.Before(now) {
 			return nil
@@ -970,11 +1015,13 @@ func (c *Cache) PurgeDomainRuntime(_ context.Context, qname string, qtype uint16
 		if !ok {
 			return nil
 		}
-		if !strings.EqualFold(meta.QName, qname) {
+		if _, ok := domainSet[meta.QName]; !ok {
 			return nil
 		}
-		if qtype != 0 && meta.QType != qtype {
-			return nil
+		if len(qtypeSet) > 0 {
+			if _, ok := qtypeSet[meta.QType]; !ok {
+				return nil
+			}
 		}
 		purgeKeys = append(purgeKeys, k)
 		return nil
@@ -989,8 +1036,10 @@ func (c *Cache) PurgeDomainRuntime(_ context.Context, qname string, qtype uint16
 
 	if len(purgeKeys) > 0 {
 		c.updatedKey.Add(uint64(len(purgeKeys)))
-		if err := c.dumpCache(); err != nil {
-			return 0, err
+		if len(c.args.DumpFile) > 0 {
+			if err := c.dumpCache(); err != nil {
+				return 0, err
+			}
 		}
 	}
 
@@ -1143,7 +1192,7 @@ func (c *Cache) CacheEntries(query string, offset, limit int) ([]coremain.CacheE
 				if err := reusableMsg.Unpack(v.resp); err != nil {
 					items = append(items, coremain.CacheEntry{
 						Key:         keyStr,
-						DomainSet:   v.domainSet,
+						DomainSet:   storedDomainSet(v.domainSet),
 						StoredTime:  v.storedTime.Format(time.RFC3339),
 						MsgExpire:   v.expirationTime.Format(time.RFC3339),
 						CacheExpire: cacheExpirationTime.Format(time.RFC3339),
@@ -1158,7 +1207,7 @@ func (c *Cache) CacheEntries(query string, offset, limit int) ([]coremain.CacheE
 			}
 			items = append(items, coremain.CacheEntry{
 				Key:         keyStr,
-				DomainSet:   v.domainSet,
+				DomainSet:   storedDomainSet(v.domainSet),
 				StoredTime:  v.storedTime.Format(time.RFC3339),
 				MsgExpire:   v.expirationTime.Format(time.RFC3339),
 				CacheExpire: cacheExpirationTime.Format(time.RFC3339),
@@ -1516,17 +1565,18 @@ func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, b
 			return nil, false, "", true
 		}
 
+		rawDomainSet := storedDomainSet(v.domainSet)
 		if now.Before(v.expirationTime) {
 			// 这里必须 Copy，因为下游会修改 TTL 或 ID
 			r := m.Copy()
 			dnsutils.SubtractTTL(r, uint32(now.Sub(v.storedTime).Seconds()))
-			return r, false, v.domainSet, false
+			return r, false, rawDomainSet, false
 		}
 
 		if lazyCacheEnabled && !domainSetContainsToken(v.domainSet, "DDNS域名") {
 			r := m.Copy()
 			dnsutils.SetTTL(r, uint32(lazyTtl))
-			return r, true, v.domainSet, false
+			return r, true, rawDomainSet, false
 		}
 	}
 	return nil, false, "", false
@@ -1603,10 +1653,10 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 		expirationTime: now.Add(msgTtl),
 	}
 
-	if val, ok := qCtx.GetValue(query_context.KeyDomainSet); ok {
-		if name, isString := val.(string); isString {
-			v.domainSet = name
-		}
+	domainSet := currentRouteDomainSet(qCtx)
+	dependencySet := mergeDependencySets(domainSet, currentCacheDependencies(qCtx))
+	if domainSet != "" || dependencySet != "" {
+		v.domainSet = encodeStoredRouteMetadata(domainSet, dependencySet, resolveRouteSignature(dependencySet, c.plugin))
 	}
 	c.prepareCacheItemForStore(v)
 
