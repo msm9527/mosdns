@@ -2758,6 +2758,9 @@ components:
           type: integer
           format: int64
           description: 累计该上游结果被选为最终响应的次数。
+        accepted_rate:
+          type: number
+          description: 按插件组内最终被采纳次数计算的采纳率，取值范围 0-100。
         inflight:
           type: integer
           format: int64

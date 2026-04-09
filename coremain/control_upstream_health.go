@@ -16,6 +16,7 @@ type UpstreamHealthSnapshot struct {
 	QueryTotal          uint64  `json:"query_total"`
 	ErrorTotal          uint64  `json:"error_total"`
 	WinnerTotal         uint64  `json:"winner_total"`
+	AcceptedRate        float64 `json:"accepted_rate"`
 	Inflight            int64   `json:"inflight"`
 	ConsecutiveFailures uint32  `json:"consecutive_failures"`
 	Healthy             bool    `json:"healthy"`
@@ -55,6 +56,8 @@ func collectUpstreamHealth(m *Mosdns) upstreamHealthOverview {
 		items = append(items, snapshots...)
 	}
 
+	applyAcceptedRates(items)
+
 	sort.Slice(items, func(i, j int) bool {
 		if items[i].Score == items[j].Score {
 			if items[i].PluginTag == items[j].PluginTag {
@@ -80,6 +83,21 @@ func collectUpstreamHealth(m *Mosdns) upstreamHealthOverview {
 		}
 	}
 	return overview
+}
+
+func applyAcceptedRates(items []UpstreamHealthSnapshot) {
+	groupWinnerTotals := make(map[string]uint64, len(items))
+	for _, item := range items {
+		groupWinnerTotals[item.PluginTag] += item.WinnerTotal
+	}
+	for i := range items {
+		total := groupWinnerTotals[items[i].PluginTag]
+		if total == 0 {
+			items[i].AcceptedRate = 0
+			continue
+		}
+		items[i].AcceptedRate = float64(items[i].WinnerTotal) * 100 / float64(total)
+	}
 }
 
 func UnhealthyUntilUnixMilli(unixNano int64) int64 {
