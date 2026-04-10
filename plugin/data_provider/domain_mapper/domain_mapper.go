@@ -19,7 +19,7 @@ const PluginType = "domain_mapper"
 
 var reservedFastMarks = map[uint8]string{
 	39: "指定客户端直连标记 / designated-client bypass flag",
-	48: "UDP 快路径 client_ip 已匹配标记 / UDP fast-path client_ip matched flag",
+	48: "UDP 快路径 client_ip 白/黑名单已检查标记 / UDP fast-path client_ip allow/deny lists checked flag",
 }
 
 func init() {

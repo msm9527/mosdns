@@ -637,11 +637,40 @@ func TestBuildFastBypassRejectClearsHeaderCounts(t *testing.T) {
 	}
 }
 
-func TestBuildFastBypassClientIPFastMarks(t *testing.T) {
+func TestBuildFastBypassClientIPWhitelistFastMarks(t *testing.T) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
-		"udp_fast_path":     testSwitchPlugin{value: "on"},
-		"client_proxy_mode": testSwitchPlugin{value: "whitelist"},
-		"client_ip":         testIPSetPlugin{match: false},
+		"udp_fast_path":       testSwitchPlugin{value: "on"},
+		"client_proxy_mode":   testSwitchPlugin{value: "whitelist"},
+		"client_ip_whitelist": testIPSetPlugin{match: false},
+		"client_ip_blacklist": testIPSetPlugin{match: false},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), &fastStats{}, 0)
+
+	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
+	action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected continue action, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("client_ip fast marks should not request stale refresh")
+	}
+	if (marks & (uint64(1) << 48)) == 0 {
+		t.Fatalf("expected fast mark 48 to indicate client_ip fast-checked, got %064b", marks)
+	}
+	if (marks & (uint64(1) << 39)) == 0 {
+		t.Fatalf("expected fast mark 39 for direct-path branch, got %064b", marks)
+	}
+}
+
+func TestBuildFastBypassClientIPBlacklistFastMarks(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":       testSwitchPlugin{value: "on"},
+		"client_proxy_mode":   testSwitchPlugin{value: "blacklist"},
+		"client_ip_whitelist": testIPSetPlugin{match: false},
+		"client_ip_blacklist": testIPSetPlugin{match: true},
 	})
 	bp := coremain.NewBP("udp_test", m)
 	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{

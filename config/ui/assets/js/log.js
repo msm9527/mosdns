@@ -198,7 +198,8 @@ document.addEventListener('DOMContentLoaded', () => {
         listSaveBtn: document.getElementById('list-save-btn'),
 	listMgmtRealIPHint: document.getElementById('list-mgmt-realip-hint'),
 	listMgmtCnFakeipFilterHint: document.getElementById('list-mgmt-cnfakeipfilter-hint'),
-        listMgmtClientIpHint: document.getElementById('list-mgmt-client-ip-hint'),
+        listMgmtClientIpWhitelistHint: document.getElementById('list-mgmt-client-ip-whitelist-hint'),
+        listMgmtClientIpBlacklistHint: document.getElementById('list-mgmt-client-ip-blacklist-hint'),
         listMgmtDirectIpHint: document.getElementById('list-mgmt-direct-ip-hint'),
         listMgmtRewriteHint: document.getElementById('list-mgmt-rewrite-hint'),
 
@@ -3445,7 +3446,8 @@ const cacheManager = {
             { tag: 'realiplist', name: '!CN fakeip filter' },
             { tag: 'cnfakeipfilter', name: 'CN fakeip filter' },
             { tag: 'ddnslist', name: 'DDNS 域名' },
-            { tag: 'client_ip', name: '客户端 IP' },
+            { tag: 'client_ip_whitelist', name: '客户端白名单' },
+            { tag: 'client_ip_blacklist', name: '客户端黑名单' },
             { tag: 'direct_ip', name: '直连 IP' },
             { tag: 'rewrite', name: '重定向' }
         ],
@@ -3476,7 +3478,12 @@ const cacheManager = {
             elements.listContentTextArea.scrollTop = 0;
             elements.listMgmtNav.querySelectorAll('.list-mgmt-link').forEach(l => l.classList.toggle('active', l.dataset.listTag === tag));
 
-            elements.listMgmtClientIpHint.style.display = (tag === 'client_ip') ? 'block' : 'none';
+            if (elements.listMgmtClientIpWhitelistHint) {
+                elements.listMgmtClientIpWhitelistHint.style.display = (tag === 'client_ip_whitelist') ? 'block' : 'none';
+            }
+            if (elements.listMgmtClientIpBlacklistHint) {
+                elements.listMgmtClientIpBlacklistHint.style.display = (tag === 'client_ip_blacklist') ? 'block' : 'none';
+            }
             if (elements.listMgmtDirectIpHint) {
                 elements.listMgmtDirectIpHint.style.display = (tag === 'direct_ip') ? 'block' : 'none';
             }

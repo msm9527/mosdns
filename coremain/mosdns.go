@@ -126,6 +126,9 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 			zap.Int("udp_fast_internal_ttl", cachePolicies.UDPFastPath.InternalTTL),
 			zap.Int("udp_fast_stale_retry_seconds", cachePolicies.UDPFastPath.StaleRetry))
 	}
+	if err := migrateLegacyClientIPListForBaseDir(env.BaseDir); err != nil {
+		return nil, fmt.Errorf("failed to migrate legacy client ip list: %w", err)
+	}
 	// <<< END OF MODIFICATIONS >>>
 
 	// This must be called after m.httpMux and m.metricsReg been set.

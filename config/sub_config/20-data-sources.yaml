@@ -144,12 +144,17 @@ policies:
       config_file: custom_config/diversion_sources.yaml
       bind_to: geosite_no_cn
 
-  # 客户端 IP 白黑名单。
-  - name: client_ip
+  # 客户端 IP 白名单 / 黑名单。
+  - name: client_ip_whitelist
     type: ip_set
     args:
       files:
-        - rule/client_ip.txt
+        - rule/client_ip_whitelist.txt
+  - name: client_ip_blacklist
+    type: ip_set
+    args:
+      files:
+        - rule/client_ip_blacklist.txt
 
   # 静态规则集。
   - name: whitelist

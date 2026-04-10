@@ -29,6 +29,8 @@
 
 说明：
 
+- `client_proxy_mode=whitelist` 时读取 `config/rule/client_ip_whitelist.txt`
+- `client_proxy_mode=blacklist` 时读取 `config/rule/client_ip_blacklist.txt`
 - `fakeip_cache` 只控制 FakeIP DNS 响应缓存是否复用
 - 它不影响 `my_fakeiplist` 这类运行记忆池
 - `my_fakeiplist` 用来记录哪些域名在运行中走过 FakeIP 路径，供查看、统计和规则候选发布使用，不是另一层 DNS 应答缓存

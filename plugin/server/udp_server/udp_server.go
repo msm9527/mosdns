@@ -664,7 +664,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 	var once sync.Once
 	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache SwitchPlugin
 	var dm DomainMapperPlugin
-	var ipSet IPSetPlugin
+	var clientWhitelist, clientBlacklist IPSetPlugin
 	readyAt := time.Now().Add(warmup)
 
 	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
@@ -688,8 +688,11 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if p := bp.Plugin("unified_matcher1"); p != nil {
 				dm, _ = p.(DomainMapperPlugin)
 			}
-			if p := bp.Plugin("client_ip"); p != nil {
-				ipSet, _ = p.(IPSetPlugin)
+			if p := bp.Plugin("client_ip_whitelist"); p != nil {
+				clientWhitelist, _ = p.(IPSetPlugin)
+			}
+			if p := bp.Plugin("client_ip_blacklist"); p != nil {
+				clientBlacklist, _ = p.(IPSetPlugin)
 			}
 		})
 
@@ -766,9 +769,19 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 
-		ipMatch := false
-		if ipSet != nil {
-			ipMatch = ipSet.Match(remoteAddr.Addr().Unmap())
+		addr := remoteAddr.Addr().Unmap()
+		whitelistMatch := false
+		blacklistMatch := false
+		clientListChecked := false
+		if clientWhitelist != nil {
+			whitelistMatch = clientWhitelist.Match(addr)
+			clientListChecked = true
+		}
+		if clientBlacklist != nil {
+			blacklistMatch = clientBlacklist.Match(addr)
+			clientListChecked = true
+		}
+		if clientListChecked {
 			marks |= (1 << 48)
 		}
 		mode := "all"
@@ -776,9 +789,9 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			mode = clientProxyMode.GetValue()
 		}
 
-		if mode == "whitelist" && !ipMatch {
+		if mode == "whitelist" && !whitelistMatch {
 			marks |= (1 << 39)
-		} else if mode == "blacklist" && ipMatch {
+		} else if mode == "blacklist" && blacklistMatch {
 			marks |= (1 << 39)
 		}
 
