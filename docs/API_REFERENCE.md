@@ -185,7 +185,7 @@
 值约束：
 
 - `on/off`：`block_response`、`branch_cache`、`block_query_type`、`block_ipv6`、`ad_block`、`main_cache`、`udp_fast_path`
-- `all/blacklist/whitelist`：`client_proxy_mode`
+- `all/blacklist/whitelist`：`client_proxy_mode`，分别配合 `client_ip_whitelist.txt` / `client_ip_blacklist.txt`
 - `realip/fakeip`：`cn_answer_mode`
 
 ## 6. Requery
@@ -330,6 +330,13 @@
 | --- | --- | --- | --- | --- |
 | `GET` | `/api/v1/lists/{tag}` | 查询可编辑列表 | `q,offset,limit` | `ListEntriesResponse` |
 | `PUT` | `/api/v1/lists/{tag}` | 全量替换列表内容 | `ListReplaceRequest` | `ListReplaceResponse` |
+
+补充说明：
+
+- `tag=client_ip_whitelist` / `client_ip_blacklist` 时，每行都是一个客户端 IP 或 CIDR
+- `client_ip_whitelist` 配合 `client_proxy_mode=whitelist`
+- `client_ip_blacklist` 配合 `client_proxy_mode=blacklist`
+- 旧的 `client_ip` 单列表 tag 已移除
 
 ### 10.4 Memory
 

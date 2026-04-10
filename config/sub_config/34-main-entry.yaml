@@ -52,12 +52,12 @@ policies:
       - matches:
           - '!fast_mark 48'
           - switch 'client_proxy_mode:whitelist'
-          - '!client_ip $client_ip'
+          - '!client_ip $client_ip_whitelist'
         exec: fast_mark 39
       - matches:
           - '!fast_mark 48'
           - switch 'client_proxy_mode:blacklist'
-          - client_ip $client_ip
+          - client_ip $client_ip_blacklist
         exec: fast_mark 39
       - matches: fast_mark 39
         exec:

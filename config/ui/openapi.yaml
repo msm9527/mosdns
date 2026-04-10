@@ -1654,6 +1654,11 @@ paths:
       description: |
         查询可编辑列表的原始行值。
 
+        当 `tag=client_ip_whitelist` 或 `tag=client_ip_blacklist` 时：
+        - 每个 `item.value` 都是一条客户端 IP 或 CIDR
+        - `client_ip_whitelist` 配合 `client_proxy_mode=whitelist` 使用
+        - `client_ip_blacklist` 配合 `client_proxy_mode=blacklist` 使用
+
         当 `tag=rewrite` 时：
         - 每个 `item.value` 都是一条两列规则：`<匹配规则> <目标IP或目标域名>`
         - 如需为同一匹配规则配置多个目标，请重复写多行
@@ -1678,6 +1683,11 @@ paths:
       summary: Replace editable list values
       description: |
         整体替换某个可编辑列表的内容。
+
+        当 `tag=client_ip_whitelist` 或 `tag=client_ip_blacklist` 时：
+        - 每个数组元素对应一条客户端 IP 或 CIDR
+        - `client_ip_whitelist` 配合 `client_proxy_mode=whitelist` 使用
+        - `client_ip_blacklist` 配合 `client_proxy_mode=blacklist` 使用
 
         当 `tag=rewrite` 时，请按下面格式提交：
         - 每个数组元素对应一条规则

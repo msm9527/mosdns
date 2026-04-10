@@ -75,8 +75,8 @@
     {
       tag: 'client_proxy_mode',
       name: '客户端代理模式',
-      desc: '按 client_ip.txt 控制哪些客户端允许走代理',
-      tip: 'all=全部客户端都允许代理，blacklist=名单内客户端禁止代理，whitelist=只有名单内客户端允许代理。',
+      desc: '按 client_ip_whitelist.txt / client_ip_blacklist.txt 控制哪些客户端允许走代理',
+      tip: 'all=全部客户端都允许代理；blacklist=client_ip_blacklist.txt 内客户端禁止代理；whitelist=只有 client_ip_whitelist.txt 内客户端允许代理。',
       control: 'select',
       modes: {
         all: { name: '全部', icon: 'fa-globe' },

@@ -29,7 +29,7 @@
    - qtype 拦截（SOA/PTR/HTTPS、可选 AAAA）
    - `unified_matcher1` 打 fast_mark
    - 黑名单/无 A/无 AAAA/广告拦截
-   - 指定 client_ip 直连判定
+   - 指定 client_ip 白/黑名单直连判定
    - 注意：`main_cache` 已下沉到真实解析链内部，入口层不再直接缓存 fakeip 应答
 4. 按 qtype 分流到：
    - A: `sequence_ipv4`
@@ -91,7 +91,7 @@
 | 27 | noleak-v4 无 IPv4 | `not_in_list_noleak_v4` |
 | 28 | noleak-v6 无 IPv6 | `not_in_list_noleak_v6` |
 | 39 | 指定客户端直连 | `sequence_common_precheck` / refresh |
-| 48 | 快路径已做 client_ip 判定 | UDP 快路径（代码侧） |
+| 48 | 快路径已做 client_ip 白/黑名单判定 | UDP 快路径（代码侧） |
 
 ## 5. 端口清单（默认）
 
