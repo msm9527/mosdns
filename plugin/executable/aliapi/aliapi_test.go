@@ -300,6 +300,64 @@ func TestAliAPI_ExchangeConcurrentPrefersFastestWinner(t *testing.T) {
 	}
 }
 
+func TestAliAPIExchangeClearsADForFakeIPAnswers(t *testing.T) {
+	query := new(dns.Msg)
+	query.SetQuestion("fake.example.", dns.TypeA)
+	query.AuthenticatedData = true
+
+	resp := new(dns.Msg)
+	resp.SetReply(query)
+	resp.AuthenticatedData = true
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "fake.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 1},
+		A:   []byte{28, 0, 0, 53},
+	})
+
+	f := &AliAPI{
+		args:     &Args{Concurrent: 1},
+		logger:   zap.NewNop(),
+		us:       []*upstreamWrapper{newTestWrapper(&repeatUpstream{resp: resp}, "fakeip_ad")},
+		failures: make(map[string]failureRecord),
+	}
+
+	got, err := f.exchange(context.Background(), testAliAPIContext(query), f.args, f.us)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.AuthenticatedData {
+		t.Fatalf("expected fakeip answer to clear AD bit, got %+v", got.MsgHdr)
+	}
+}
+
+func TestAliAPIExchangePreservesADForNonFakeIPAnswers(t *testing.T) {
+	query := new(dns.Msg)
+	query.SetQuestion("real.example.", dns.TypeA)
+	query.AuthenticatedData = true
+
+	resp := new(dns.Msg)
+	resp.SetReply(query)
+	resp.AuthenticatedData = true
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "real.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   []byte{1, 1, 1, 1},
+	})
+
+	f := &AliAPI{
+		args:     &Args{Concurrent: 1},
+		logger:   zap.NewNop(),
+		us:       []*upstreamWrapper{newTestWrapper(&repeatUpstream{resp: resp}, "real_ad")},
+		failures: make(map[string]failureRecord),
+	}
+
+	got, err := f.exchange(context.Background(), testAliAPIContext(query), f.args, f.us)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AuthenticatedData {
+		t.Fatalf("expected non-fakeip answer to preserve AD bit, got %+v", got.MsgHdr)
+	}
+}
+
 func TestAliAPI_PersistentServfailExtendsSuppressWindow(t *testing.T) {
 	f := &AliAPI{
 		args: &Args{

@@ -18,6 +18,7 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,6 +47,13 @@ const (
 	maxConcurrentQueries = 20
 	queryTimeout         = time.Second * 5
 	defaultAliAPIServer  = "223.5.5.5"
+)
+
+var aliAPIFakeIPPrefixes = mustParseAliAPIFakeIPPrefixes(
+	"28.0.0.0/8",
+	"30.0.0.0/8",
+	"f2b0::/18",
+	"2400::1/64",
 )
 
 // Args defines the configuration for the aliapi plugin.
@@ -590,6 +598,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 		}
 
 		u.recordSuccess()
+		sanitizeFakeIPAuthenticatedData(r)
 		switch {
 		case hasUsableAnswer(r):
 			f.clearFailure(failureKey)
@@ -620,6 +629,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 			return nil, false
 		}
 		u.recordSuccess()
+		sanitizeFakeIPAuthenticatedData(r)
 
 		if hasUsableAnswer(r) {
 			f.clearFailure(failureKey)
@@ -724,6 +734,53 @@ func hasUsableAnswer(r *dns.Msg) bool {
 			return true
 		}
 		if aaaa, ok := ans.(*dns.AAAA); ok && len(aaaa.AAAA) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func mustParseAliAPIFakeIPPrefixes(raw ...string) []netip.Prefix {
+	out := make([]netip.Prefix, 0, len(raw))
+	for _, item := range raw {
+		prefix, err := netip.ParsePrefix(item)
+		if err != nil {
+			panic(err)
+		}
+		out = append(out, prefix)
+	}
+	return out
+}
+
+func sanitizeFakeIPAuthenticatedData(r *dns.Msg) {
+	if r == nil || !r.AuthenticatedData || len(r.Answer) == 0 {
+		return
+	}
+	for _, answer := range r.Answer {
+		switch rr := answer.(type) {
+		case *dns.A:
+			addr, ok := netip.AddrFromSlice(rr.A)
+			if ok && isAliAPIFakeIPAddr(addr) {
+				r.AuthenticatedData = false
+				return
+			}
+		case *dns.AAAA:
+			addr, ok := netip.AddrFromSlice(rr.AAAA)
+			if ok && isAliAPIFakeIPAddr(addr) {
+				r.AuthenticatedData = false
+				return
+			}
+		}
+	}
+}
+
+func isAliAPIFakeIPAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return false
+	}
+	addr = addr.Unmap()
+	for _, prefix := range aliAPIFakeIPPrefixes {
+		if prefix.Contains(addr) {
 			return true
 		}
 	}

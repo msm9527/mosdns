@@ -206,6 +206,7 @@ type Status struct {
 	OnDemandTriggered  int64     `json:"on_demand_triggered"`
 	OnDemandProcessed  int64     `json:"on_demand_processed"`
 	OnDemandSkipped    int64     `json:"on_demand_skipped"`
+	OnDemandQueueFull  int64     `json:"on_demand_queue_full,omitempty"`
 	LastOnDemandAt     time.Time `json:"last_on_demand_at,omitempty"`
 	LastOnDemandDomain string    `json:"last_on_demand_domain,omitempty"`
 }
@@ -1109,21 +1110,25 @@ func (p *Requery) maxQueueSize() int {
 }
 
 func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
+	return p.enqueueRefreshJobResult(job) == coremain.DomainRefreshEnqueueQueued
+}
+
+func (p *Requery) enqueueRefreshJobResult(job refreshJob) coremain.DomainRefreshEnqueueResult {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if !p.allowsOnDemand() {
 		p.status.OnDemandSkipped++
-		return false
+		return coremain.DomainRefreshEnqueueDisabled
 	}
 	if job.Domain == "" {
 		p.status.OnDemandSkipped++
-		return false
+		return coremain.DomainRefreshEnqueueInvalid
 	}
 	job.Domain = strings.TrimSuffix(strings.TrimSpace(job.Domain), ".")
 	if job.Domain == "" {
 		p.status.OnDemandSkipped++
-		return false
+		return coremain.DomainRefreshEnqueueInvalid
 	}
 	if job.QTypeMask == 0 {
 		job.QTypeMask = qtypeMaskA | qtypeMaskAAAA
@@ -1135,11 +1140,12 @@ func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
 	key := job.key()
 	if _, exists := p.queueIndex[key]; exists {
 		p.status.OnDemandSkipped++
-		return false
+		return coremain.DomainRefreshEnqueueDuplicate
 	}
 	if len(p.queue) >= p.maxQueueSize() {
 		p.status.OnDemandSkipped++
-		return false
+		p.status.OnDemandQueueFull++
+		return coremain.DomainRefreshEnqueueQueueFull
 	}
 	heap.Push(&p.queue, job)
 	p.queueIndex[key] = struct{}{}
@@ -1149,11 +1155,15 @@ func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
 	case p.queueKick <- struct{}{}:
 	default:
 	}
-	return true
+	return coremain.DomainRefreshEnqueueQueued
 }
 
-func (p *Requery) EnqueueDomainRefresh(_ context.Context, job coremain.DomainRefreshJob) bool {
-	return p.enqueueRefreshJob(refreshJob{
+func (p *Requery) EnqueueDomainRefresh(ctx context.Context, job coremain.DomainRefreshJob) bool {
+	return p.EnqueueDomainRefreshResult(ctx, job) == coremain.DomainRefreshEnqueueQueued
+}
+
+func (p *Requery) EnqueueDomainRefreshResult(_ context.Context, job coremain.DomainRefreshJob) coremain.DomainRefreshEnqueueResult {
+	return p.enqueueRefreshJobResult(refreshJob{
 		Domain:     job.Domain,
 		MemoryID:   job.MemoryID,
 		QTypeMask:  job.QTypeMask,
@@ -1715,9 +1725,10 @@ func (p *Requery) handleEnqueueRefresh(w http.ResponseWriter, r *http.Request) {
 		p.jsonError(w, "Invalid JSON body", http.StatusBadRequest)
 		return
 	}
-	if ok := p.enqueueRefreshJob(req); !ok {
+	if result := p.enqueueRefreshJobResult(req); result != coremain.DomainRefreshEnqueueQueued {
 		p.jsonResponse(w, map[string]any{
 			"status":  "skipped",
+			"reason":  result,
 			"message": "Refresh request was skipped.",
 		}, http.StatusAccepted)
 		return

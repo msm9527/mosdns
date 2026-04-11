@@ -2,11 +2,14 @@ package domain_memory_pool
 
 import (
 	"context"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"go.uber.org/zap"
 )
+
+const enqueueWarnInterval = 30 * time.Second
 
 func (d *domainMemoryPool) loadFromStore() error {
 	state, ok, err := coremain.LoadDomainPoolStateFromPath(d.dbPath, d.pluginTag)
@@ -69,6 +72,28 @@ func (d *domainMemoryPool) notifyDirty(job coremain.DomainRefreshJob) {
 	if d.policy.requeryTag == "" || d.plugin == nil {
 		return
 	}
+	if enqueuer, ok := d.plugin(d.policy.requeryTag).(coremain.DomainRefreshJobResultEnqueuer); ok && enqueuer != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+
+		switch result := enqueuer.EnqueueDomainRefreshResult(ctx, job); result {
+		case coremain.DomainRefreshEnqueueQueued:
+			return
+		case coremain.DomainRefreshEnqueueQueueFull:
+			if d.logger != nil && d.allowEnqueueWarn(time.Now()) {
+				d.logger.Warn(
+					"domain_memory_pool requery queue full, skipping on-demand refresh",
+					zap.String("plugin", d.pluginTag),
+					zap.String("requery_tag", d.policy.requeryTag),
+					zap.String("domain", job.Domain),
+					zap.String("reason", string(result)),
+				)
+			}
+			return
+		default:
+			return
+		}
+	}
 	enqueuer, ok := d.plugin(d.policy.requeryTag).(coremain.DomainRefreshJobEnqueuer)
 	if !ok || enqueuer == nil {
 		if d.logger != nil {
@@ -83,13 +108,27 @@ func (d *domainMemoryPool) notifyDirty(job coremain.DomainRefreshJob) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	if !enqueuer.EnqueueDomainRefresh(ctx, job) && d.logger != nil {
+	if !enqueuer.EnqueueDomainRefresh(ctx, job) && d.logger != nil && d.allowEnqueueWarn(time.Now()) {
 		d.logger.Warn(
 			"domain_memory_pool requery enqueue skipped",
 			zap.String("plugin", d.pluginTag),
 			zap.String("requery_tag", d.policy.requeryTag),
 			zap.String("domain", job.Domain),
 		)
+	}
+}
+
+func (d *domainMemoryPool) allowEnqueueWarn(now time.Time) bool {
+	nowMS := now.UTC().UnixMilli()
+	intervalMS := enqueueWarnInterval.Milliseconds()
+	for {
+		last := atomic.LoadInt64(&d.lastEnqueueWarnAtMS)
+		if last > 0 && nowMS-last < intervalMS {
+			return false
+		}
+		if atomic.CompareAndSwapInt64(&d.lastEnqueueWarnAtMS, last, nowMS) {
+			return true
+		}
 	}
 }
 

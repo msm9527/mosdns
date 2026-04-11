@@ -60,6 +60,9 @@ func ServeDoQ(l *quic.Listener, h Handler, opts DoQServerOpts) error {
 	for {
 		c, err := l.Accept(listenerCtx)
 		if err != nil {
+			if isListenerCloseErr(err) {
+				return nil
+			}
 			return fmt.Errorf("unexpected listener err: %w", err)
 		}
 

@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"net"
 
 	"go.uber.org/zap"
 )
@@ -14,3 +15,7 @@ var (
 var (
 	nopLogger = zap.NewNop()
 )
+
+func isListenerCloseErr(err error) bool {
+	return errors.Is(err, net.ErrClosed)
+}

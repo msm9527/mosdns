@@ -151,6 +151,7 @@ type domainMemoryPool struct {
 	hotReplaceTotal      int64
 	hotDispatchFailTotal int64
 	lastHotSyncAtUnixMS  int64
+	lastEnqueueWarnAtMS  int64
 }
 
 func init() {

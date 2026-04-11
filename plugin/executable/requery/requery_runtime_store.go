@@ -135,12 +135,13 @@ func (p *Requery) activeRunRecordLocked(runID, state string, endedAt time.Time) 
 	}
 
 	metadata := map[string]any{
-		"last_error":          p.lastError,
-		"pending_queue":       p.status.PendingQueue,
-		"on_demand_triggered": p.status.OnDemandTriggered,
-		"on_demand_processed": p.status.OnDemandProcessed,
-		"on_demand_skipped":   p.status.OnDemandSkipped,
-		"max_queue_size":      p.maxQueueSize(),
+		"last_error":           p.lastError,
+		"pending_queue":        p.status.PendingQueue,
+		"on_demand_triggered":  p.status.OnDemandTriggered,
+		"on_demand_processed":  p.status.OnDemandProcessed,
+		"on_demand_skipped":    p.status.OnDemandSkipped,
+		"on_demand_queue_full": p.status.OnDemandQueueFull,
+		"max_queue_size":       p.maxQueueSize(),
 	}
 	if p.fullTask != nil {
 		metadata["resume_count"] = p.fullTask.ResumeCount

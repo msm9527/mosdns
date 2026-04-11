@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zaptest/observer"
 )
 
 type hotRuleCall struct {
@@ -64,6 +66,18 @@ func assertNoHotRuleCall(t *testing.T, ch <-chan hotRuleCall, wait time.Duration
 		t.Fatalf("unexpected hot rule call: %+v", call)
 	case <-time.After(wait):
 	}
+}
+
+type mockResultEnqueuer struct {
+	result coremain.DomainRefreshEnqueueResult
+}
+
+func (m mockResultEnqueuer) EnqueueDomainRefresh(_ context.Context, _ coremain.DomainRefreshJob) bool {
+	return m.result == coremain.DomainRefreshEnqueueQueued
+}
+
+func (m mockResultEnqueuer) EnqueueDomainRefreshResult(_ context.Context, _ coremain.DomainRefreshJob) coremain.DomainRefreshEnqueueResult {
+	return m.result
 }
 
 func TestMemoryPoolAggregatesEntriesByBareDomain(t *testing.T) {
@@ -239,6 +253,51 @@ func TestMemoryPoolShutdownWriteWhenHotReplacePending(t *testing.T) {
 	pool.hotNeedsReplace.Store(true)
 	if !pool.shouldWrite(WriteModeShutdown) {
 		t.Fatal("expected shutdown write when hot rule replacement is pending")
+	}
+}
+
+func TestNotifyDirtySkipsDuplicateSilently(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	pool := &domainMemoryPool{
+		pluginTag: "my_fakeiplist",
+		plugin: func(string) any {
+			return mockResultEnqueuer{result: coremain.DomainRefreshEnqueueDuplicate}
+		},
+		logger: zap.New(core),
+		policy: writePolicy{requeryTag: "requery"},
+	}
+
+	pool.notifyDirty(coremain.DomainRefreshJob{Domain: "example.com"})
+
+	if logs.Len() != 0 {
+		t.Fatalf("unexpected warning logs: %+v", logs.All())
+	}
+}
+
+func TestNotifyDirtyRateLimitsQueueFullWarnings(t *testing.T) {
+	core, logs := observer.New(zap.WarnLevel)
+	pool := &domainMemoryPool{
+		pluginTag: "my_fakeiplist",
+		plugin: func(string) any {
+			return mockResultEnqueuer{result: coremain.DomainRefreshEnqueueQueueFull}
+		},
+		logger: zap.New(core),
+		policy: writePolicy{requeryTag: "requery"},
+	}
+
+	pool.notifyDirty(coremain.DomainRefreshJob{Domain: "example.com"})
+	pool.notifyDirty(coremain.DomainRefreshJob{Domain: "other.example"})
+
+	if logs.Len() != 1 {
+		t.Fatalf("expected one throttled warning, got %d", logs.Len())
+	}
+	entry := logs.All()[0]
+	if entry.Message != "domain_memory_pool requery queue full, skipping on-demand refresh" {
+		t.Fatalf("unexpected warning message: %s", entry.Message)
+	}
+	fields := entry.ContextMap()
+	if fields["reason"] != string(coremain.DomainRefreshEnqueueQueueFull) {
+		t.Fatalf("unexpected warning fields: %#v", fields)
 	}
 }
 

@@ -89,6 +89,11 @@ func TestParseDomainLineUsesLastDomainToken(t *testing.T) {
 	if _, ok := parseDomainLine("keyword:google"); ok {
 		t.Fatal("keyword rule should not be treated as concrete domain")
 	}
+
+	domain, ok = parseDomainLine("ha-000001.iana.org.")
+	if !ok || domain != "ha-000001.iana.org." {
+		t.Fatalf("unexpected fqdn parse: %q %v", domain, ok)
+	}
 }
 
 func TestSummarizeLatencies(t *testing.T) {

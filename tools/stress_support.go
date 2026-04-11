@@ -272,10 +272,11 @@ func parseDomainLine(line string) (string, bool) {
 	fields := strings.Fields(trimmed)
 	for i := len(fields) - 1; i >= 0; i-- {
 		token := normalizeRuleToken(fields[i])
+		token = strings.TrimSuffix(token, ".")
 		if !looksLikeDomain(token) {
 			continue
 		}
-		return dns.Fqdn(strings.ToLower(strings.TrimSuffix(token, "."))), true
+		return dns.Fqdn(strings.ToLower(token)), true
 	}
 	return "", false
 }

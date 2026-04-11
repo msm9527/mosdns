@@ -80,6 +80,20 @@ type DomainRefreshJob struct {
 	ObservedAt time.Time
 }
 
+type DomainRefreshEnqueueResult string
+
+const (
+	DomainRefreshEnqueueQueued    DomainRefreshEnqueueResult = "queued"
+	DomainRefreshEnqueueDisabled  DomainRefreshEnqueueResult = "disabled"
+	DomainRefreshEnqueueInvalid   DomainRefreshEnqueueResult = "invalid"
+	DomainRefreshEnqueueDuplicate DomainRefreshEnqueueResult = "duplicate"
+	DomainRefreshEnqueueQueueFull DomainRefreshEnqueueResult = "queue_full"
+)
+
 type DomainRefreshJobEnqueuer interface {
 	EnqueueDomainRefresh(ctx context.Context, job DomainRefreshJob) bool
+}
+
+type DomainRefreshJobResultEnqueuer interface {
+	EnqueueDomainRefreshResult(ctx context.Context, job DomainRefreshJob) DomainRefreshEnqueueResult
 }

@@ -66,6 +66,9 @@ func ServeTCP(l net.Listener, h Handler, opts TCPServerOpts) error {
 	for {
 		c, err := l.Accept()
 		if err != nil {
+			if isListenerCloseErr(err) {
+				return nil
+			}
 			return fmt.Errorf("unexpected listener err: %w", err)
 		}
 

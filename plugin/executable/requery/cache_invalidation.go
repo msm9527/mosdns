@@ -11,6 +11,7 @@ import (
 
 const (
 	runtimeCachePrecisePurgeMaxDomains = 1000
+	runtimeCachePrecisePurgeMinDomains = 128
 	runtimeCachePrecisePurgePercentDiv = 100
 	runtimeCachePurgeLogMinDomains     = 4
 )
@@ -38,17 +39,20 @@ func (p *Requery) invalidateCachesAfterPublish(ctx context.Context, domains []st
 		}
 	}
 
-	shouldFlush := len(domains) > runtimeCachePrecisePurgeMaxDomains
-	if !shouldFlush && responseEntries > 0 {
+	flushThreshold := runtimeCachePrecisePurgeMaxDomains
+	if responseEntries > 0 {
 		threshold := responseEntries / runtimeCachePrecisePurgePercentDiv
-		if threshold < 1 {
-			threshold = 1
+		if threshold < runtimeCachePrecisePurgeMinDomains {
+			threshold = runtimeCachePrecisePurgeMinDomains
 		}
-		shouldFlush = len(domains) > threshold
+		if threshold < flushThreshold {
+			flushThreshold = threshold
+		}
 	}
+	shouldFlush := len(domains) > flushThreshold
 
 	if shouldFlush {
-		log.Printf("[requery] Step 8: cache invalidation fallback to full flush, changed_domains=%d response_entries=%d", len(domains), responseEntries)
+		log.Printf("[requery] Step 8: cache invalidation fallback to full flush, changed_domains=%d response_entries=%d threshold=%d", len(domains), responseEntries, flushThreshold)
 		for _, target := range targets {
 			if err := target.controller.FlushRuntimeCache(ctx); err != nil {
 				p.setFailedState("failed to flush runtime cache %s: %v", target.tag, err)

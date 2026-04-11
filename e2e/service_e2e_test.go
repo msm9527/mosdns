@@ -35,6 +35,7 @@ func TestServiceE2E(t *testing.T) {
 	report.RunCase(t, "query type and ipv6 switches", fx.testQueryTypeAndIPv6Switches)
 	report.RunCase(t, "routing mode switches", fx.testRoutingModeSwitches)
 	report.RunCase(t, "rule apis", fx.testRuleAPIs)
+	report.RunCase(t, "requery cache invalidation", fx.testRequeryCacheInvalidation)
 	report.RunCase(t, "cache stats and stability", fx.testCacheAndStability)
 }
 
@@ -151,6 +152,72 @@ func (fx *serviceE2EFixture) testRuleAPIs(t *testing.T, rec *e2eCaseRecorder) {
 	fx.testAdguardRuleAPI(t, rec)
 	fx.testDiversionRuleAPI(t, rec)
 	rec.SetDetail("rule source create/delete APIs updated live DNS behavior and cleaned managed files")
+}
+
+func (fx *serviceE2EFixture) testRequeryCacheInvalidation(t *testing.T, rec *e2eCaseRecorder) {
+	fx.setSwitch(t, "cn_answer_mode", "realip")
+	fx.setSwitch(t, "client_proxy_mode", "all")
+	fx.setSwitch(t, "main_cache", "on")
+	fx.setSwitch(t, "branch_cache", "off")
+	fx.setSwitch(t, "udp_fast_path", "on")
+	t.Cleanup(func() {
+		fx.setSwitch(t, "udp_fast_path", "off")
+	})
+
+	targetDomain := "default.example"
+	keepDomain := "branch.example"
+
+	targetFirst := fx.queryUDP(t, targetDomain, dns.TypeA)
+	targetSecond := fx.queryUDP(t, targetDomain, dns.TypeA)
+	keepFirst := fx.queryUDP(t, keepDomain, dns.TypeA)
+	keepSecond := fx.queryUDP(t, keepDomain, dns.TypeA)
+	requireServiceE2EARecord(t, targetFirst, "8.8.8.8")
+	requireServiceE2EARecord(t, targetSecond, "8.8.8.8")
+	requireServiceE2EARecord(t, keepFirst, "8.8.8.8")
+	requireServiceE2EARecord(t, keepSecond, "8.8.8.8")
+
+	targetEntriesBefore := fx.waitForCacheEntryState(t, "cache_main", targetDomain, true)
+	keepEntriesBefore := fx.waitForCacheEntryState(t, "cache_main", keepDomain, true)
+	if err := waitServiceE2EEventually(5*time.Second, func() bool {
+		_, err := fx.exchange("udp", fx.dnsAddr, targetDomain, dns.TypeA)
+		if err != nil {
+			return false
+		}
+		_, err = fx.exchange("udp", fx.dnsAddr, keepDomain, dns.TypeA)
+		if err != nil {
+			return false
+		}
+		return fx.runtimeCacheEntryCount(t, "udp_all") > 0
+	}, "udp_all fast cache not warmed before requery"); err != nil {
+		t.Fatal(err)
+	}
+	udpFastBefore := fx.runtimeCacheEntryCount(t, "udp_all")
+
+	statusBefore := fx.requeryStatus(t)
+	enqueueResp := fx.enqueueRequery(t, targetDomain, 1)
+	if enqueueResp.Status != "queued" || enqueueResp.Domain != targetDomain {
+		t.Fatalf("unexpected enqueue response: %+v", enqueueResp)
+	}
+	statusAfter := fx.waitForOnDemandProcessed(t, statusBefore.OnDemandProcessed, targetDomain)
+
+	targetEntriesAfter := fx.waitForCacheEntryState(t, "cache_main", targetDomain, false)
+	keepEntriesAfter := fx.waitForCacheEntryState(t, "cache_main", keepDomain, true)
+	udpFastAfter := fx.runtimeCacheEntryCount(t, "udp_all")
+	if udpFastAfter == 0 {
+		t.Fatalf("expected udp_all fast cache to keep unrelated warm entries, before=%d after=%d", udpFastBefore, udpFastAfter)
+	}
+
+	rec.SetDetail("on-demand requery purged only the targeted runtime cache entry and kept unrelated warm caches intact")
+	recordDNSCheck(rec, "requery target first", "udp", fx.dnsAddr, targetDomain, dns.TypeA, targetFirst)
+	recordDNSCheck(rec, "requery target second", "udp", fx.dnsAddr, targetDomain, dns.TypeA, targetSecond)
+	recordDNSCheck(rec, "requery keep first", "udp", fx.dnsAddr, keepDomain, dns.TypeA, keepFirst)
+	recordDNSCheck(rec, "requery keep second", "udp", fx.dnsAddr, keepDomain, dns.TypeA, keepSecond)
+	rec.AddCheck("POST /api/v1/control/requery/enqueue", fmt.Sprintf("status=%s pending_queue=%d domain=%s", enqueueResp.Status, enqueueResp.PendingQueue, enqueueResp.Domain))
+	rec.AddCheck("requery status", fmt.Sprintf("processed=%d pending_queue=%d last_domain=%s", statusAfter.OnDemandProcessed, statusAfter.PendingQueue, statusAfter.LastOnDemandDomain))
+	rec.AddCheck("cache_main target purged", fmt.Sprintf("before=%d after=%d", targetEntriesBefore.Total, targetEntriesAfter.Total))
+	rec.AddCheck("cache_main unrelated retained", fmt.Sprintf("before=%d after=%d", keepEntriesBefore.Total, keepEntriesAfter.Total))
+	rec.AddMetric("udp_fast before", fmt.Sprintf("%d", udpFastBefore), "udp_all fast cache entries before targeted requery")
+	rec.AddMetric("udp_fast after", fmt.Sprintf("%d", udpFastAfter), "udp_all fast cache entries after targeted purge")
 }
 
 func (fx *serviceE2EFixture) testAdguardRuleAPI(t *testing.T, rec *e2eCaseRecorder) {

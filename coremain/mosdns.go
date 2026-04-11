@@ -351,7 +351,7 @@ func (m *Mosdns) initHttpMux() {
 
 	// 外置 UI 模式：不再内置任何前端资源，只挂载配置目录下的 ui 文件。
 	uiBaseDir := filepath.Join(m.BaseDir(), "ui")
-	m.httpMux.Get("/", func(w http.ResponseWriter, r *http.Request) {
+	uiRootHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if info, err := os.Stat(uiBaseDir); err == nil && info.IsDir() {
 			http.Redirect(w, r, "/ui/", http.StatusFound)
 			return
@@ -359,6 +359,8 @@ func (m *Mosdns) initHttpMux() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		_, _ = w.Write([]byte("No built-in UI. Please deploy external UI under <config-dir>/ui.\n"))
 	})
+	m.httpMux.Method(http.MethodGet, "/", uiRootHandler)
+	m.httpMux.Method(http.MethodHead, "/", uiRootHandler)
 
 	// 检查 ui 目录是否存在
 	if info, err := os.Stat(uiBaseDir); err == nil && info.IsDir() {

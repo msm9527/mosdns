@@ -441,6 +441,62 @@ func TestInvalidateCachesAfterPublishPurgesChangedDomains(t *testing.T) {
 	}
 }
 
+func TestEnqueueRefreshJobResultReportsSkipReason(t *testing.T) {
+	t.Parallel()
+
+	p := &Requery{
+		config: &Config{
+			ExecutionSettings: ExecutionSettings{MaxQueueSize: 1},
+			Workflow:          WorkflowSettings{Mode: "hybrid"},
+		},
+		status:     Status{TaskState: "idle"},
+		queue:      make(refreshJobHeap, 0),
+		queueIndex: make(map[string]struct{}),
+		queueKick:  make(chan struct{}, 1),
+	}
+
+	if got := p.enqueueRefreshJobResult(refreshJob{Domain: "example.com", Reason: "observed"}); got != coremain.DomainRefreshEnqueueQueued {
+		t.Fatalf("unexpected enqueue result: %v", got)
+	}
+	if got := p.enqueueRefreshJobResult(refreshJob{Domain: "example.com", Reason: "observed"}); got != coremain.DomainRefreshEnqueueDuplicate {
+		t.Fatalf("unexpected duplicate result: %v", got)
+	}
+	if got := p.enqueueRefreshJobResult(refreshJob{Domain: "other.example", Reason: "observed"}); got != coremain.DomainRefreshEnqueueQueueFull {
+		t.Fatalf("unexpected queue-full result: %v", got)
+	}
+	if got := p.enqueueRefreshJobResult(refreshJob{}); got != coremain.DomainRefreshEnqueueInvalid {
+		t.Fatalf("unexpected invalid result: %v", got)
+	}
+
+	if p.status.OnDemandTriggered != 1 {
+		t.Fatalf("unexpected triggered count: %+v", p.status)
+	}
+	if p.status.OnDemandSkipped != 3 {
+		t.Fatalf("unexpected skipped count: %+v", p.status)
+	}
+	if p.status.OnDemandQueueFull != 1 {
+		t.Fatalf("unexpected queue-full count: %+v", p.status)
+	}
+}
+
+func TestEnqueueRefreshJobResultReportsDisabledMode(t *testing.T) {
+	t.Parallel()
+
+	p := &Requery{
+		config: &Config{
+			Workflow: WorkflowSettings{Mode: "scheduled"},
+		},
+		status:     Status{TaskState: "idle"},
+		queue:      make(refreshJobHeap, 0),
+		queueIndex: make(map[string]struct{}),
+		queueKick:  make(chan struct{}, 1),
+	}
+
+	if got := p.enqueueRefreshJobResult(refreshJob{Domain: "example.com", Reason: "observed"}); got != coremain.DomainRefreshEnqueueDisabled {
+		t.Fatalf("unexpected disabled result: %v", got)
+	}
+}
+
 func TestInvalidateCachesAfterPublishFallsBackToFlush(t *testing.T) {
 	t.Parallel()
 
@@ -464,6 +520,37 @@ func TestInvalidateCachesAfterPublishFallsBackToFlush(t *testing.T) {
 		t.Fatalf("unexpected response cache calls: purge=%d flush=%d", response.purgeCalls, response.flushCalls)
 	}
 	if udp.flushCalls != 1 || udp.purgeCalls != 0 {
+		t.Fatalf("unexpected udp cache calls: purge=%d flush=%d", udp.purgeCalls, udp.flushCalls)
+	}
+}
+
+func TestInvalidateCachesAfterPublishDoesNotFlushSmallWarmCache(t *testing.T) {
+	t.Parallel()
+
+	response := &mockRuntimeCacheController{kind: "response", entryCount: 88}
+	udp := &mockRuntimeCacheController{kind: "udp_fast", entryCount: 8}
+	p := &Requery{
+		snapshotter: mockSnapshotter{plugins: map[string]any{
+			"cache_main": response,
+			"udp_all":    udp,
+		}},
+	}
+
+	domains := []string{
+		"a.example",
+		"b.example",
+		"c.example",
+		"d.example",
+		"e.example",
+		"f.example",
+	}
+	if !p.invalidateCachesAfterPublish(context.Background(), domains) {
+		t.Fatal("expected invalidation to succeed")
+	}
+	if response.flushCalls != 0 || response.purgeCalls != 1 {
+		t.Fatalf("unexpected response cache calls: purge=%d flush=%d", response.purgeCalls, response.flushCalls)
+	}
+	if udp.flushCalls != 0 || udp.purgeCalls != 1 {
 		t.Fatalf("unexpected udp cache calls: purge=%d flush=%d", udp.purgeCalls, udp.flushCalls)
 	}
 }
