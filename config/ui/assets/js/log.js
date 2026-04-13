@@ -1231,7 +1231,56 @@ document.addEventListener('DOMContentLoaded', () => {
 
         confirmCoreModeSwitch(profile, nextValue) {
             const nextModeName = profile?.modes?.[nextValue]?.name || nextValue;
-            return confirm(`确定切换“${profile?.name || '核心运行模式'}”到“${nextModeName}”吗？\n\n切换后会立即生效。\n系统只会清空 UDP 快路径缓存以避免短时间命中旧结果，不会自动执行快速预热。`);
+            return confirm(`确定切换“${profile?.name || '核心运行模式'}”到“${nextModeName}”吗？\n\n切换后会立即生效。\n系统会先清空 UDP 快路径缓存，再在后台自动启动快速预热。`);
+        },
+
+        async triggerCoreModeBackgroundPrewarm() {
+            const currentStatus = state.requery.status;
+            if (currentStatus?.task_state === 'running') {
+                const activeModeLabel = requeryManager.modeLabel(currentStatus.task_mode || currentStatus.last_run_mode);
+                ui.showToast(`模式已切换，UDP 快路径缓存已清空；检测到已有${activeModeLabel}在运行，已跳过自动预热。`, 'info');
+                return;
+            }
+
+            const limit = parseInt(elements.requeryPrewarmLimitInput?.value, 10) || 0;
+            try {
+                const response = await fetch(`/api/v1/control/requery/trigger`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ mode: 'quick_prewarm', limit }),
+                });
+
+                let payload = null;
+                const contentType = response.headers.get('content-type') || '';
+                if (contentType.includes('application/json')) {
+                    payload = await response.json().catch(() => null);
+                } else {
+                    const text = await response.text().catch(() => '');
+                    if (text) {
+                        payload = { message: text };
+                    }
+                }
+
+                if (response.status === 409) {
+                    const runningModeLabel = requeryManager.modeLabel(
+                        state.requery.status?.task_mode || payload?.task_mode || state.requery.status?.last_run_mode,
+                    );
+                    ui.showToast(`模式已切换，UDP 快路径缓存已清空；检测到已有${runningModeLabel}在运行，已跳过自动预热。`, 'info');
+                    void requeryManager.updateStatus();
+                    return;
+                }
+
+                if (!response.ok) {
+                    const errorMessage = payload?.message || payload?.error || `HTTP ${response.status}`;
+                    ui.showToast(`模式已切换，UDP 快路径缓存已清空；后台快速预热启动失败：${errorMessage}`, 'error');
+                    return;
+                }
+
+                ui.showToast('模式已切换，UDP 快路径缓存已清空；已在后台启动快速预热。', 'success');
+                void requeryManager.updateStatus();
+            } catch (error) {
+                ui.showToast('模式已切换，UDP 快路径缓存已清空；后台快速预热启动失败，可稍后手动执行“快速预热”。', 'error');
+            }
         },
 
         async runCoreModeFollowup() {
@@ -1243,7 +1292,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     ui.showToast(`模式已切换，但 UDP 快路径缓存清理有 ${failedCount} 个失败。`, 'error');
                     return;
                 }
-                ui.showToast('模式已切换，UDP 快路径缓存已清空；如需加速冷态恢复，请手动执行“快速预热”。', 'success');
+                await this.triggerCoreModeBackgroundPrewarm();
             } catch (error) {
                 ui.showToast('模式已切换，但 UDP 快路径缓存清理失败；短时间内可能仍命中旧结果。', 'error');
             }
