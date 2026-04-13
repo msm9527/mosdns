@@ -1,6 +1,17 @@
 (function () {
   const profiles = [
     {
+      tag: 'core_mode',
+      name: '核心运行模式',
+      desc: '切换未命中域名走兼容 / 安全补判链',
+      tip: 'compat=兼容模式，未命中走 leak 链；secure=安全模式，未命中走 noleak 链并保留 ECS 首查回退。',
+      control: 'select',
+      modes: {
+        compat: { name: '兼容模式', icon: 'fa-globe-americas' },
+        secure: { name: '安全模式', icon: 'fa-shield-alt' },
+      },
+    },
+    {
       tag: 'block_response',
       name: '结果屏蔽',
       desc: '拦截黑名单和无结果请求',
@@ -97,6 +108,7 @@
   const icons = {
     block_response: 'fa-ban',
     client_proxy_mode: 'fa-user-cog',
+    core_mode: 'fa-globe-americas',
     main_cache: 'fa-database',
     branch_cache: 'fa-history',
     fakeip_cache: 'fa-layer-group',

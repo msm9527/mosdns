@@ -87,6 +87,18 @@ func (d *DomainSet) GetRules() ([]string, error) {
 	return rulesCopy, nil
 }
 
+func (d *DomainSet) GetRulesShared() ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.rules, nil
+}
+
+func (d *DomainSet) HasRuntimeHotRuleValidation() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return strings.TrimSpace(d.generatedFrom) != ""
+}
+
 // Subscribe 实现 RuleExporter 接口
 func (d *DomainSet) Subscribe(cb func()) {
 	d.mu.Lock()

@@ -14,9 +14,20 @@ func (d *DomainSet) loadGeneratedRules(generatedFrom string) (data_provider.Rule
 		return nil, nil, err
 	}
 	if ok {
-		rules, err := exporter.GetRules()
-		if err != nil {
-			return nil, nil, fmt.Errorf("load rules from exporter %s: %w", generatedFrom, err)
+		var (
+			rules []string
+			err   error
+		)
+		if shared, ok := exporter.(interface{ GetRulesShared() ([]string, error) }); ok {
+			rules, err = shared.GetRulesShared()
+			if err != nil {
+				return nil, nil, fmt.Errorf("load shared rules from exporter %s: %w", generatedFrom, err)
+			}
+		} else {
+			rules, err = exporter.GetRules()
+			if err != nil {
+				return nil, nil, fmt.Errorf("load rules from exporter %s: %w", generatedFrom, err)
+			}
 		}
 		for _, rule := range rules {
 			if err := d.mixM.Add(rule, struct{}{}); err != nil {

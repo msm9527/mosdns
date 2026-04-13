@@ -47,6 +47,7 @@ type SdSet struct {
 	configFile string
 	bindTo     string
 	rules      []string
+	syncState  []coremain.RuleSourceVersion
 	httpClient *http.Client
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -145,6 +146,12 @@ func (p *SdSet) GetRules() ([]string, error) {
 	return append([]string(nil), p.rules...), nil
 }
 
+func (p *SdSet) GetRulesShared() ([]string, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.rules, nil
+}
+
 func (p *SdSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
@@ -187,22 +194,51 @@ func (p *SdSet) loadSources() error {
 }
 
 func (p *SdSet) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
-	next := domain.NewDomainMixMatcher()
-	rules := make([]string, 0)
+	type syncPlan struct {
+		source rulesource.Source
+		result *coremain.RuleSourceSyncResult
+	}
+
+	inspectOptions := options
+	inspectOptions.MetadataOnly = true
+	plans := make([]syncPlan, 0)
+	nextSyncState := make([]coremain.RuleSourceVersion, 0)
 	for _, source := range p.sourceSnapshot() {
 		if !source.Enabled {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, inspectOptions)
 		cancel()
 		if err != nil {
-			p.setRules(nil)
+			p.setRules(nil, nil)
 			return err
+		}
+		plans = append(plans, syncPlan{source: source, result: result})
+		nextSyncState = append(nextSyncState, coremain.NewRuleSourceVersion(source.ID, result))
+	}
+	if coremain.RuleSourceVersionsEqual(p.currentSyncState(), nextSyncState) {
+		return nil
+	}
+
+	next := domain.NewDomainMixMatcher()
+	rules := make([]string, 0)
+	for _, plan := range plans {
+		source := plan.source
+		result := plan.result
+		if result.Data == nil {
+			ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+			loaded, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
+			cancel()
+			if err != nil {
+				p.setRules(nil, nil)
+				return err
+			}
+			result = loaded
 		}
 		sourceRules, err := rulesource.ParseDomainBytes(source.Format, result.Data)
 		if err != nil {
-			p.setRules(nil)
+			p.setRules(nil, nil)
 			return err
 		}
 		for _, rule := range sourceRules {
@@ -213,15 +249,16 @@ func (p *SdSet) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
 		rules = append(rules, sourceRules...)
 	}
 	p.matcher.Store(next)
-	p.setRules(rules)
+	p.setRules(rules, nextSyncState)
 	p.notifySubscribers()
 	return nil
 }
 
-func (p *SdSet) setRules(rules []string) {
+func (p *SdSet) setRules(rules []string, syncState []coremain.RuleSourceVersion) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.rules = append([]string(nil), rules...)
+	p.rules = rules
+	p.syncState = append([]coremain.RuleSourceVersion(nil), syncState...)
 }
 
 func (p *SdSet) backgroundSync() {
@@ -252,6 +289,12 @@ func (p *SdSet) currentBinding() (string, string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.configFile, p.bindTo
+}
+
+func (p *SdSet) currentSyncState() []coremain.RuleSourceVersion {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]coremain.RuleSourceVersion(nil), p.syncState...)
 }
 
 func (p *SdSet) sourceSnapshot() []rulesource.Source {

@@ -26,9 +26,9 @@ top_domains:
   kind: stats
   promote_after: 0
   track_qtype: false
-  track_flags: true
-  max_domains: 200000
-  max_variants_per_domain: 8
+  track_flags: false
+  max_domains: 8000
+  max_variants_per_domain: 4
   eviction_policy: lfu
   stale_after_minutes: 0
   refresh_cooldown_minutes: 0
@@ -43,7 +43,7 @@ my_realiplist:
   promote_after: 2
   track_qtype: true
   track_flags: false
-  max_domains: 80000
+  max_domains: 6000
   max_variants_per_domain: 4
   eviction_policy: lru
   stale_after_minutes: 360
@@ -59,7 +59,7 @@ my_fakeiplist:
   promote_after: 2
   track_qtype: true
   track_flags: false
-  max_domains: 80000
+  max_domains: 6000
   max_variants_per_domain: 4
   eviction_policy: lru
   stale_after_minutes: 240
@@ -75,7 +75,7 @@ my_nov6list:
   promote_after: 2
   track_qtype: true
   track_flags: false
-  max_domains: 120000
+  max_domains: 8000
   max_variants_per_domain: 4
   eviction_policy: lru
   stale_after_minutes: 180
@@ -91,7 +91,7 @@ my_nov4list:
   promote_after: 2
   track_qtype: true
   track_flags: false
-  max_domains: 80000
+  max_domains: 6000
   max_variants_per_domain: 4
   eviction_policy: lru
   stale_after_minutes: 180
@@ -107,7 +107,7 @@ my_nodenov6list:
   promote_after: 2
   track_qtype: true
   track_flags: false
-  max_domains: 50000
+  max_domains: 3000
   max_variants_per_domain: 4
   eviction_policy: lru
   stale_after_minutes: 180
@@ -123,7 +123,7 @@ my_nodenov4list:
   promote_after: 2
   track_qtype: true
   track_flags: false
-  max_domains: 50000
+  max_domains: 3000
   max_variants_per_domain: 4
   eviction_policy: lru
   stale_after_minutes: 180

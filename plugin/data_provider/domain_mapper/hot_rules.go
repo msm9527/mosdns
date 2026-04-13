@@ -93,18 +93,25 @@ func snapshotProviderHotRules(provider data_provider.RuleExporter) ([]string, bo
 }
 
 func (dm *DomainMapper) rebuildHotLookupLocked() {
-	providerResults := buildProviderResults(dm.ruleConfigs)
-	lookup := make(map[string][]matchSource)
+	registry := buildProviderRegistry(dm.ruleConfigs, dm.providers)
+	dm.registry.Store(registry)
+	compiledCache := make(map[providerSetCacheKey]*compiledMatch)
+	lookupSources := make(map[string]providerSet)
 	for providerTag, rules := range dm.hotRules {
-		result := providerResults[strings.TrimSpace(providerTag)]
-		if result == nil {
+		providerRef, ok := registry.ref(providerTag)
+		if !ok {
 			continue
 		}
 		for rule := range rules {
-			lookup[rule] = appendUniqueMatchSource(lookup[rule], matchSource{
-				providerTag: providerTag,
-				result:      result,
-			})
+			sources := lookupSources[rule]
+			sources.add(providerRef)
+			lookupSources[rule] = sources
+		}
+	}
+	lookup := make(map[string]*compiledMatch, len(lookupSources))
+	for rule, sources := range lookupSources {
+		if compiled := getOrBuildCompiledMatch(compiledCache, registry, sources); compiled != nil {
+			lookup[rule] = compiled
 		}
 	}
 	dm.hotLookup.Store(lookup)
@@ -121,9 +128,9 @@ func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
 }
 
 func (dm *DomainMapper) matchHot(qname string, now time.Time) (*MatchResult, bool) {
-	lookup := dm.hotLookup.Load().(map[string][]matchSource)
-	sources, ok := lookup[ensureFQDN(qname)]
-	result := dm.resolveSources(sources, qname, now)
+	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
+	compiled, ok := lookup[ensureFQDN(qname)]
+	result := dm.resolveCompiledMatch(compiled, qname, now)
 	return result, ok && result != nil
 }
 

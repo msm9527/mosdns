@@ -18,19 +18,11 @@ func (d *domainMemoryPool) SnapshotHotRules() ([]string, error) {
 }
 
 func (d *domainMemoryPool) snapshotActiveHotRulesLocked() []string {
-	rules := make([]string, 0, len(d.hotActiveRules))
-	for rule := range d.hotActiveRules {
-		rules = append(rules, rule)
-	}
-	slices.Sort(rules)
-	return rules
+	return append([]string(nil), d.hotActiveRules...)
 }
 
 func (d *domainMemoryPool) replaceActiveHotRulesLocked(rules []string) {
-	d.hotActiveRules = make(map[string]struct{}, len(rules))
-	for _, rule := range normalizePoolHotRules(rules) {
-		d.hotActiveRules[rule] = struct{}{}
-	}
+	d.hotActiveRules = append(d.hotActiveRules[:0], normalizePoolHotRules(rules)...)
 }
 
 func (d *domainMemoryPool) addActiveHotRules(rules []string) int {
@@ -39,9 +31,7 @@ func (d *domainMemoryPool) addActiveHotRules(rules []string) int {
 		return d.activeHotRuleCount()
 	}
 	d.mu.Lock()
-	for _, rule := range normalized {
-		d.hotActiveRules[rule] = struct{}{}
-	}
+	d.hotActiveRules = mergeNormalizedHotRules(d.hotActiveRules, normalized)
 	count := len(d.hotActiveRules)
 	d.mu.Unlock()
 	return count
@@ -100,7 +90,7 @@ func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
 
 	d.mu.Lock()
 	for key, entry := range d.stats {
-		bare, _ := splitStorageKey(key)
+		bare := key.domain
 		if bare != domain || !entry.Promoted {
 			continue
 		}
@@ -132,15 +122,11 @@ func (d *domainMemoryPool) allowHotRuleEntryLocked(entry *statEntry, now time.Ti
 	if d.policy.staleAfterMinutes <= 0 {
 		return true
 	}
-	lastStamp := firstNonEmpty(entry.LastVerifiedAt, firstNonEmpty(entry.LastDirtyAt, entry.LastSeenAt))
-	if strings.TrimSpace(lastStamp) == "" {
+	lastUnixMS := latestNonZero(entry.LastVerifiedAtUnixMS, entry.LastDirtyAtUnixMS, entry.LastSeenAtUnixMS)
+	if lastUnixMS <= 0 {
 		return false
 	}
-	ts, err := time.Parse(time.RFC3339, lastStamp)
-	if err != nil {
-		return false
-	}
-	return now.Sub(ts) < time.Duration(d.policy.staleAfterMinutes)*time.Minute
+	return now.Sub(time.UnixMilli(lastUnixMS)) < time.Duration(d.policy.staleAfterMinutes)*time.Minute
 }
 
 func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time) *coremain.DomainRefreshJob {
@@ -148,28 +134,26 @@ func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time
 		return nil
 	}
 
-	nowStamp := now.UTC().Format(time.RFC3339)
+	nowUnixMS := now.UTC().UnixMilli()
 	var (
 		qTypeMask   uint8
 		shouldQueue bool
 	)
 
 	for key, entry := range d.stats {
-		bare, _ := splitStorageKey(key)
+		bare := key.domain
 		if bare != domain || !entry.Promoted {
 			continue
 		}
 		qTypeMask |= entry.QTypeMask
-		if entry.CooldownUntil != "" {
-			if ts, err := time.Parse(time.RFC3339, entry.CooldownUntil); err == nil && now.Before(ts) {
-				continue
-			}
+		if entry.CooldownUntilUnixMS > 0 && now.UnixMilli() < entry.CooldownUntilUnixMS {
+			continue
 		}
 		entry.RefreshState = "dirty"
 		entry.DirtyReason = "stale"
-		entry.LastDirtyAt = nowStamp
+		entry.LastDirtyAtUnixMS = nowUnixMS
 		if d.policy.refreshCooldownMinute > 0 {
-			entry.CooldownUntil = now.Add(time.Duration(d.policy.refreshCooldownMinute) * time.Minute).Format(time.RFC3339)
+			entry.CooldownUntilUnixMS = now.Add(time.Duration(d.policy.refreshCooldownMinute) * time.Minute).UnixMilli()
 		}
 		shouldQueue = true
 	}
@@ -208,4 +192,37 @@ func normalizePoolHotRules(rules []string) []string {
 	}
 	slices.Sort(normalized)
 	return normalized
+}
+
+func mergeNormalizedHotRules(existing, incoming []string) []string {
+	if len(existing) == 0 {
+		return append([]string(nil), incoming...)
+	}
+	if len(incoming) == 0 {
+		return existing
+	}
+
+	merged := make([]string, 0, len(existing)+len(incoming))
+	i, j := 0, 0
+	for i < len(existing) && j < len(incoming) {
+		switch {
+		case existing[i] == incoming[j]:
+			merged = append(merged, existing[i])
+			i++
+			j++
+		case existing[i] < incoming[j]:
+			merged = append(merged, existing[i])
+			i++
+		default:
+			merged = append(merged, incoming[j])
+			j++
+		}
+	}
+	for ; i < len(existing); i++ {
+		merged = append(merged, existing[i])
+	}
+	for ; j < len(incoming); j++ {
+		merged = append(merged, incoming[j])
+	}
+	return merged
 }

@@ -11,3 +11,8 @@ func (dm *DomainMapper) loadMatcher() compiledMatchLookup {
 	}
 	return matcher
 }
+
+func (dm *DomainMapper) loadProviderRegistry() *providerRegistry {
+	registry, _ := dm.registry.Load().(*providerRegistry)
+	return registry
+}

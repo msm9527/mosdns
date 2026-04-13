@@ -43,13 +43,19 @@ type MatchResult struct {
 	JoinedTags string
 }
 
-type matchSource struct {
-	providerTag string
-	result      *MatchResult
+type compiledMatch struct {
+	staticResult     *MatchResult
+	dynamicProviders []*providerRuntime
 }
 
-type compiledMatch struct {
-	sources []matchSource
+type providerRuntime struct {
+	result    *MatchResult
+	validator coremain.HotRuleRuntimeValidator
+}
+
+type providerRegistry struct {
+	byTag     map[string]uint16
+	providers []providerRuntime
 }
 
 type DomainMapper struct {
@@ -59,7 +65,7 @@ type DomainMapper struct {
 	logger      *zap.Logger
 	matcher     atomic.Value
 	hotLookup   atomic.Value
-	validators  atomic.Value
+	registry    atomic.Value
 	updateMu    sync.Mutex
 	hotMu       sync.Mutex
 	updateTimer *time.Timer
@@ -114,8 +120,8 @@ func NewMapper(bp *coremain.BP, args any) (any, error) {
 		subscribed:  make(map[string]bool),
 	}
 	dm.matcher.Store(newCompiledMatcherSet())
-	dm.hotLookup.Store(make(map[string][]matchSource))
-	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
+	dm.hotLookup.Store(make(map[string]*compiledMatch))
+	dm.registry.Store(buildProviderRegistry(nil, nil))
 
 	if err := dm.reloadFromConfig(cfg); err != nil {
 		return nil, err
@@ -184,8 +190,10 @@ func (dm *DomainMapper) rebuild() {
 	dm.logger.Info("rebuilding domain_mapper with logic inheritance...")
 	start := time.Now()
 
-	providerResults := buildProviderResults(dm.ruleConfigs)
-	ruleSources := make(map[string][]matchSource)
+	registry := buildProviderRegistry(dm.ruleConfigs, dm.providers)
+	dm.registry.Store(registry)
+	compiledCache := make(map[providerSetCacheKey]*compiledMatch)
+	ruleSources := make(map[string]providerSet)
 	totalRules := 0
 
 	for _, ruleCfg := range dm.ruleConfigs {
@@ -194,11 +202,11 @@ func (dm *DomainMapper) rebuild() {
 		if !ok {
 			continue
 		}
-		providerResult := providerResults[providerTag]
-		if providerResult == nil {
+		providerRef, ok := registry.ref(providerTag)
+		if !ok {
 			continue
 		}
-		rules, err := provider.GetRules()
+		rules, err := loadExporterRules(provider)
 		if err != nil {
 			continue
 		}
@@ -208,10 +216,9 @@ func (dm *DomainMapper) rebuild() {
 			if ruleKey == "" {
 				continue
 			}
-			ruleSources[ruleKey] = appendUniqueMatchSource(ruleSources[ruleKey], matchSource{
-				providerTag: providerTag,
-				result:      providerResult,
-			})
+			sources := ruleSources[ruleKey]
+			sources.add(providerRef)
+			ruleSources[ruleKey] = sources
 		}
 		totalRules += len(rules)
 	}
@@ -219,7 +226,7 @@ func (dm *DomainMapper) rebuild() {
 	newMatcher := newCompiledMatcherSet()
 	compiledRules := 0
 	for ruleStr, directSources := range ruleSources {
-		sources := cloneMatchSources(directSources)
+		sources := directSources.clone()
 		dotPos := strings.Index(ruleStr, ":")
 		if dotPos == -1 {
 			continue
@@ -227,7 +234,7 @@ func (dm *DomainMapper) rebuild() {
 		dName := ruleStr[dotPos+1:]
 		if strings.HasPrefix(ruleStr, "full:") {
 			directDomainKey := "domain:" + dName
-			sources = appendMatchSources(sources, ruleSources[directDomainKey])
+			sources.merge(ruleSources[directDomainKey])
 		}
 
 		for {
@@ -238,12 +245,16 @@ func (dm *DomainMapper) rebuild() {
 			dName = dName[nextDot+1:]
 			ancestorKey := "domain:" + dName
 
-			sources = appendMatchSources(sources, ruleSources[ancestorKey])
+			sources.merge(ruleSources[ancestorKey])
 		}
-		if len(sources) == 0 {
+		if sources.empty() {
 			continue
 		}
-		if err := newMatcher.Add(ruleStr, &compiledMatch{sources: sources}); err != nil {
+		compiled := getOrBuildCompiledMatch(compiledCache, registry, sources)
+		if compiled == nil {
+			continue
+		}
+		if err := newMatcher.Add(ruleStr, compiled); err != nil {
 			dm.logger.Warn("domain_mapper add rule failed", zap.String("rule", ruleStr), zap.Error(err))
 			continue
 		}
@@ -305,7 +316,7 @@ func (dm *DomainMapper) reloadFromConfig(cfg *Args) error {
 	dm.defaultMark = cfg.DefaultMark
 	dm.defaultTag = cfg.DefaultTag
 	dm.providers = providers
-	dm.validators.Store(buildProviderValidators(providers))
+	dm.registry.Store(buildProviderRegistry(dm.ruleConfigs, providers))
 	if dm.hotRules == nil {
 		dm.hotRules = make(map[string]map[string]struct{})
 	}

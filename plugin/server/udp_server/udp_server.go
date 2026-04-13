@@ -156,10 +156,16 @@ type fastCacheBucket struct {
 	slots [cacheWays]atomic.Pointer[fastCacheItem]
 }
 
+type fastCacheTable struct {
+	buckets []fastCacheBucket
+	mask    uint64
+}
+
 type fastCache struct {
-	m     [cacheSize]fastCacheBucket
-	cfg   fastCacheConfig
-	stats *fastStats
+	table    atomic.Pointer[fastCacheTable]
+	initOnce sync.Once
+	cfg      fastCacheConfig
+	stats    *fastStats
 }
 
 type fastCacheConfig struct {
@@ -244,6 +250,26 @@ func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
 		cfg.staleRetry = defaultStaleRefreshRetrySec * time.Second
 	}
 	return &fastCache{cfg: cfg, stats: stats}
+}
+
+func (fc *fastCache) loadTable() *fastCacheTable {
+	if fc == nil {
+		return nil
+	}
+	return fc.table.Load()
+}
+
+func (fc *fastCache) ensureTable() *fastCacheTable {
+	if fc == nil {
+		return nil
+	}
+	fc.initOnce.Do(func() {
+		fc.table.Store(&fastCacheTable{
+			buckets: make([]fastCacheBucket, cacheSize),
+			mask:    cacheSize - 1,
+		})
+	})
+	return fc.table.Load()
 }
 
 func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
@@ -357,7 +383,11 @@ func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allow
 }
 
 func (fc *fastCache) findItem(hash uint64, qname string, qtype uint16) (*fastCacheItem, bool) {
-	bucket := &fc.m[hash&cacheMask]
+	table := fc.loadTable()
+	if table == nil {
+		return nil, false
+	}
+	bucket := &table.buckets[hash&table.mask]
 	occupied := false
 	for i := range bucket.slots {
 		ptr := bucket.slots[i].Load()
@@ -373,7 +403,11 @@ func (fc *fastCache) findItem(hash uint64, qname string, qtype uint16) (*fastCac
 }
 
 func (fc *fastCache) storeItem(item *fastCacheItem) {
-	bucket := &fc.m[item.hash&cacheMask]
+	table := fc.ensureTable()
+	if table == nil {
+		return
+	}
+	bucket := &table.buckets[item.hash&table.mask]
 	var emptySlot *atomic.Pointer[fastCacheItem]
 	var victimSlot *atomic.Pointer[fastCacheItem]
 	victimExpire := int64(math.MaxInt64)
@@ -414,9 +448,13 @@ func (fc *fastCache) Flush() {
 	if fc == nil {
 		return
 	}
-	for i := range fc.m {
-		for j := range fc.m[i].slots {
-			fc.m[i].slots[j].Store(nil)
+	table := fc.loadTable()
+	if table == nil {
+		return
+	}
+	for i := range table.buckets {
+		for j := range table.buckets[i].slots {
+			table.buckets[i].slots[j].Store(nil)
 		}
 	}
 }
@@ -425,10 +463,14 @@ func (fc *fastCache) Len() int {
 	if fc == nil {
 		return 0
 	}
+	table := fc.loadTable()
+	if table == nil {
+		return 0
+	}
 	count := 0
-	for i := range fc.m {
-		for j := range fc.m[i].slots {
-			if fc.m[i].slots[j].Load() != nil {
+	for i := range table.buckets {
+		for j := range table.buckets[i].slots {
+			if table.buckets[i].slots[j].Load() != nil {
 				count++
 			}
 		}
@@ -438,6 +480,10 @@ func (fc *fastCache) Len() int {
 
 func (fc *fastCache) PurgeDomains(domains []string, qtypes []uint16) int {
 	if fc == nil {
+		return 0
+	}
+	table := fc.loadTable()
+	if table == nil {
 		return 0
 	}
 	domainSet := make(map[string]struct{}, len(domains))
@@ -459,9 +505,9 @@ func (fc *fastCache) PurgeDomains(domains []string, qtypes []uint16) int {
 		qtypeSet[qtype] = struct{}{}
 	}
 	purged := 0
-	for i := range fc.m {
-		for j := range fc.m[i].slots {
-			slot := &fc.m[i].slots[j]
+	for i := range table.buckets {
+		for j := range table.buckets[i].slots {
+			slot := &table.buckets[i].slots[j]
 			current := slot.Load()
 			if current == nil {
 				continue

@@ -1,10 +1,13 @@
 package adguard_rule
 
 import (
+	"context"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
@@ -94,6 +97,65 @@ func TestAdguardMatchSupportsBadfilterAndDenyAllow(t *testing.T) {
 	}
 }
 
+func TestAdguardReloadAllRulesSkipsUnchangedSources(t *testing.T) {
+	dir := t.TempDir()
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
+
+	cfg := rulesource.Config{
+		Sources: []rulesource.Source{{
+			ID:         "block",
+			Name:       "block",
+			Enabled:    true,
+			Behavior:   rulesource.BehaviorAdguard,
+			MatchMode:  rulesource.MatchModeAdguardNative,
+			Format:     rulesource.FormatRules,
+			SourceKind: rulesource.SourceKindLocal,
+			Path:       "adguard/block.rules",
+		}},
+	}
+	if err := coremain.SaveAdguardSourcesToCustomConfig(cfg); err != nil {
+		t.Fatalf("SaveAdguardSourcesToCustomConfig: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "adguard"), 0o755); err != nil {
+		t.Fatalf("MkdirAll(adguard): %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "adguard", "block.rules"), []byte("||example.org^\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(block.rules): %v", err)
+	}
+
+	p := &AdguardRule{
+		baseDir:               dir,
+		configFile:            filepath.Join("custom_config", "adguard_sources.yaml"),
+		importantAllowMatcher: domain.NewDomainMixMatcher(),
+		importantDenyMatcher:  domain.NewDomainMixMatcher(),
+		allowMatcher:          domain.NewDomainMixMatcher(),
+		denyMatcher:           domain.NewDomainMixMatcher(),
+		httpClient:            &http.Client{},
+		ctx:                   context.Background(),
+	}
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+
+	notifyCh := make(chan struct{}, 2)
+	p.Subscribe(func() { notifyCh <- struct{}{} })
+
+	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{}); err != nil {
+		t.Fatalf("first reloadAllRules: %v", err)
+	}
+	waitForAdguardNotify(t, notifyCh)
+
+	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{}); err != nil {
+		t.Fatalf("second reloadAllRules: %v", err)
+	}
+	select {
+	case <-notifyCh:
+		t.Fatal("expected unchanged source reload to be skipped")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
 func buildAdguardRuleForTest(t *testing.T, raw string) *AdguardRule {
 	t.Helper()
 
@@ -118,4 +180,13 @@ func buildAdguardRuleForTest(t *testing.T, raw string) *AdguardRule {
 		t.Fatalf("mergeAdguardResult: %v", err)
 	}
 	return p
+}
+
+func waitForAdguardNotify(t *testing.T, ch <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for adguard reload notification")
+	}
 }

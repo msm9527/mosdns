@@ -126,7 +126,6 @@ type shard[K comparable, V any] struct {
 func newShard[K comparable, V any](max int) shard[K, V] {
 	return shard[K, V]{
 		max: max,
-		m:   make(map[K]V),
 	}
 }
 
@@ -144,6 +143,9 @@ func (m *shard[K, V]) set(key K, v V) {
 func (m *shard[K, V]) setWithEvicted(key K, v V, onEvicted func(key K, v V)) {
 	m.l.Lock()
 	defer m.l.Unlock()
+	if m.m == nil {
+		m.m = make(map[K]V)
+	}
 	if existing, exists := m.m[key]; exists {
 		if onEvicted != nil {
 			onEvicted(key, existing)
@@ -183,6 +185,9 @@ func (m *shard[K, V]) testAndSet(key K, f func(v V, ok bool) (newV V, setV, delV
 	newV, setV, deleteV := f(v, ok)
 	switch {
 	case setV:
+		if m.m == nil {
+			m.m = make(map[K]V)
+		}
 		m.m[key] = newV
 		m.notePeakLocked()
 	case deleteV && ok:
@@ -200,7 +205,7 @@ func (m *shard[K, V]) len() int {
 func (m *shard[K, V]) flush() {
 	m.l.Lock()
 	defer m.l.Unlock()
-	m.m = make(map[K]V)
+	m.m = nil
 	m.peakLen = 0
 }
 
@@ -237,7 +242,7 @@ func (m *shard[K, V]) maybeCompactLocked() {
 	size := len(m.m)
 	switch {
 	case size == 0:
-		m.m = make(map[K]V)
+		m.m = nil
 		m.peakLen = 0
 		return
 	case m.peakLen < mapCompactionMinEntries:

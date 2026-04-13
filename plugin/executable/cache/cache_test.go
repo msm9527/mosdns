@@ -61,8 +61,8 @@ func Test_cachePlugin_Dump(t *testing.T) {
 	hourLater := now.Add(time.Hour)
 	v := &item{
 		resp:           packedResp,
-		storedTime:     now,
-		expirationTime: hourLater,
+		storedUnixNano: now.UnixNano(),
+		expireUnixNano: hourLater.UnixNano(),
 	}
 
 	// Fill the cache
@@ -138,8 +138,8 @@ func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
 	now := time.Now()
 	backend.Store("ddns-key", &item{
 		resp:           packed,
-		storedTime:     now.Add(-10 * time.Minute),
-		expirationTime: now.Add(-1 * time.Minute),
+		storedUnixNano: now.Add(-10 * time.Minute).UnixNano(),
+		expireUnixNano: now.Add(-1 * time.Minute).UnixNano(),
 		domainSet:      "DDNS域名",
 	}, now.Add(time.Hour))
 
@@ -357,13 +357,13 @@ func Test_cachePlugin_ShouldPrefetch(t *testing.T) {
 	defer c.Close()
 
 	now := time.Now()
-	if !c.shouldPrefetch(now, now.Add(-60*time.Second), now.Add(2*time.Second), "未命中") {
+	if !c.shouldPrefetch(now, now.Add(-60*time.Second).UnixNano(), now.Add(2*time.Second).UnixNano(), "未命中") {
 		t.Fatal("expected near-expiration item to trigger prefetch")
 	}
-	if c.shouldPrefetch(now, now.Add(-60*time.Second), now.Add(40*time.Second), "未命中") {
+	if c.shouldPrefetch(now, now.Add(-60*time.Second).UnixNano(), now.Add(40*time.Second).UnixNano(), "未命中") {
 		t.Fatal("did not expect long-remaining item to trigger prefetch")
 	}
-	if !c.shouldPrefetch(now, now.Add(-20*time.Second), now.Add(8*time.Second), "DDNS域名") {
+	if !c.shouldPrefetch(now, now.Add(-20*time.Second).UnixNano(), now.Add(8*time.Second).UnixNano(), "DDNS域名") {
 		t.Fatal("expected ddns item to use more aggressive prefetch window")
 	}
 }
@@ -446,7 +446,7 @@ func Test_cachePlugin_ServfailTTL(t *testing.T) {
 	if stored == nil {
 		t.Fatal("expected cached item")
 	}
-	remaining := stored.expirationTime.Sub(stored.storedTime)
+	remaining := time.Duration(stored.expireUnixNano - stored.storedUnixNano)
 	if remaining < 40*time.Second || remaining > 43*time.Second {
 		t.Fatalf("unexpected servfail ttl %s", remaining)
 	}

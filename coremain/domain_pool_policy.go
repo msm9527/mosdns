@@ -13,13 +13,13 @@ const (
 	domainPoolEvictionLFU     = "lfu"
 	memoryPoolsConfigFilename = "memory_pools.yaml"
 
-	defaultTopDomainsMaxDomains   = 20000
-	defaultRealIPPoolMaxDomains   = 12000
-	defaultFakeIPPoolMaxDomains   = 12000
-	defaultNoV6PoolMaxDomains     = 16000
-	defaultNoV4PoolMaxDomains     = 12000
-	defaultNodeNoV6PoolMaxDomains = 6000
-	defaultNodeNoV4PoolMaxDomains = 6000
+	defaultTopDomainsMaxDomains   = 8000
+	defaultRealIPPoolMaxDomains   = 6000
+	defaultFakeIPPoolMaxDomains   = 6000
+	defaultNoV6PoolMaxDomains     = 8000
+	defaultNoV4PoolMaxDomains     = 6000
+	defaultNodeNoV6PoolMaxDomains = 3000
+	defaultNodeNoV4PoolMaxDomains = 3000
 	defaultGenericPoolMaxDomains  = 8000
 )
 
@@ -149,9 +149,9 @@ func defaultDomainPoolPolicy(tag string) DomainPoolPolicy {
 	case "top":
 		return DomainPoolPolicy{
 			Kind:                 DomainPoolKindStats,
-			TrackFlags:           true,
+			TrackFlags:           false,
 			MaxDomains:           defaultTopDomainsMaxDomains,
-			MaxVariantsPerDomain: 8,
+			MaxVariantsPerDomain: 4,
 			EvictionPolicy:       domainPoolEvictionLFU,
 			FlushIntervalMS:      30000,
 			PublishDebounceMS:    0,

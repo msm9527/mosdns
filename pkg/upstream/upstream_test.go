@@ -24,6 +24,7 @@ import (
 	"crypto/tls"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"sync"
 	"testing"
@@ -32,6 +33,31 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/miekg/dns"
 )
+
+func TestNewDoHHTTPTransportAppliesConnectionCaps(t *testing.T) {
+	transport, err := newDoHHTTPTransport(
+		func(context.Context, string, string) (net.Conn, error) {
+			return nil, io.EOF
+		},
+		&tls.Config{InsecureSkipVerify: true},
+		45*time.Second,
+	)
+	if err != nil {
+		t.Fatalf("newDoHHTTPTransport: %v", err)
+	}
+	if transport.MaxIdleConns != doHMaxIdleConns {
+		t.Fatalf("MaxIdleConns = %d, want %d", transport.MaxIdleConns, doHMaxIdleConns)
+	}
+	if transport.MaxIdleConnsPerHost != doHMaxIdleConnsPerHost {
+		t.Fatalf("MaxIdleConnsPerHost = %d, want %d", transport.MaxIdleConnsPerHost, doHMaxIdleConnsPerHost)
+	}
+	if transport.MaxConnsPerHost != doHMaxConnsPerHost {
+		t.Fatalf("MaxConnsPerHost = %d, want %d", transport.MaxConnsPerHost, doHMaxConnsPerHost)
+	}
+	if transport.IdleConnTimeout != 45*time.Second {
+		t.Fatalf("IdleConnTimeout = %s, want %s", transport.IdleConnTimeout, 45*time.Second)
+	}
+}
 
 func newUDPTestServer(t testing.TB, handler dns.Handler) (addr string, shutdownFunc func()) {
 	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -127,13 +153,13 @@ func Test_fastUpstream(t *testing.T) {
 							bigMsg:  bigMsg,
 						})
 						defer shutdownServer()
-                    u, err := NewUpstream(
-                        scheme+"://"+addr,
-                        Opt{
-                            IdleTimeout: idleTimeout,
-                            TLSConfig:   &tls.Config{InsecureSkipVerify: true},
-                        },
-                    )
+						u, err := NewUpstream(
+							scheme+"://"+addr,
+							Opt{
+								IdleTimeout: idleTimeout,
+								TLSConfig:   &tls.Config{InsecureSkipVerify: true},
+							},
+						)
 						if err != nil {
 							t.Fatal(err)
 						}

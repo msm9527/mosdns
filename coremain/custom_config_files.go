@@ -239,6 +239,7 @@ func saveSwitchesToCustomConfig(values map[string]string) error {
 	buf.WriteString("# 字段说明：\n")
 	buf.WriteString("# - block_response: on/off，是否拦截黑名单和空响应结果。\n")
 	buf.WriteString("# - client_proxy_mode: all/blacklist/whitelist，控制哪些客户端允许走代理链路；whitelist/blacklist 模式分别读取 rule/client_ip_whitelist.txt 和 rule/client_ip_blacklist.txt。\n")
+	buf.WriteString("# - core_mode: compat/secure，控制未命中域名走兼容（leak）还是安全（noleak）补判链。\n")
 	buf.WriteString("# - main_cache: on/off，控制真实解析主缓存总开关。\n")
 	buf.WriteString("# - branch_cache: on/off，控制真实解析分支缓存（国内/国外/ECS）。\n")
 	buf.WriteString("# - fakeip_cache: on/off，控制 FakeIP DNS 响应缓存，不影响系统记录 FakeIP 路径域名的运行记忆列表。\n")

@@ -120,6 +120,9 @@ func NewFullMatcher[T any]() *FullMatcher[T] {
 // Add adds domain s to this matcher, s can be a fqdn or not.
 func (m *FullMatcher[T]) Add(s string, v T) error {
 	s = NormalizeDomain(s)
+	if _, ok := m.m[s]; !ok {
+		s = strings.Clone(s)
+	}
 	m.m[s] = v
 	return nil
 }
@@ -149,6 +152,9 @@ func NewKeywordMatcher[T any]() *KeywordMatcher[T] {
 
 func (m *KeywordMatcher[T]) Add(keyword string, v T) error {
 	keyword = NormalizeDomain(keyword) // fqdn-insensitive and case-insensitive
+	if _, ok := m.kws[keyword]; !ok {
+		keyword = strings.Clone(keyword)
+	}
 	m.kws[keyword] = v
 	return nil
 }
@@ -188,6 +194,7 @@ func NewRegexMatcher[T any]() *RegexMatcher[T] {
 func (m *RegexMatcher[T]) Add(expr string, v T) error {
 	e := m.regs[expr]
 	if e == nil {
+		expr = strings.Clone(expr)
 		reg, err := regexp.Compile(expr)
 		if err != nil {
 			return err

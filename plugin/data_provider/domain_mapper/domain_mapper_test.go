@@ -25,10 +25,7 @@ func newTestMapper(defaultMark uint8, defaultTag string, result *MatchResult, na
 	if result != nil {
 		for _, name := range names {
 			if err := m.Add("domain:"+name, &compiledMatch{
-				sources: []matchSource{{
-					providerTag: "test-provider",
-					result:      result,
-				}},
+				staticResult: result,
 			}); err != nil {
 				panic(err)
 			}
@@ -37,9 +34,9 @@ func newTestMapper(defaultMark uint8, defaultTag string, result *MatchResult, na
 	dm.matcher = atomic.Value{}
 	dm.matcher.Store(m)
 	dm.hotLookup = atomic.Value{}
-	dm.hotLookup.Store(make(map[string][]matchSource))
-	dm.validators = atomic.Value{}
-	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
+	dm.hotLookup.Store(make(map[string]*compiledMatch))
+	dm.registry = atomic.Value{}
+	dm.registry.Store(buildProviderRegistry(nil, nil))
 	dm.hotRules = make(map[string]map[string]struct{})
 	return dm
 }
@@ -54,6 +51,10 @@ func (m *mockRuleExporter) GetRules() ([]string, error) {
 	return append([]string(nil), m.rules...), nil
 }
 
+func (m *mockRuleExporter) GetRulesShared() ([]string, error) {
+	return m.rules, nil
+}
+
 func (m *mockRuleExporter) Subscribe(func()) {}
 
 func (m *mockRuleExporter) SnapshotHotRules() ([]string, error) {
@@ -65,6 +66,10 @@ func (m *mockRuleExporter) AllowHotRule(domain string, now time.Time) bool {
 		return true
 	}
 	return m.allowHotRule(domain, now)
+}
+
+func (m *mockRuleExporter) HasRuntimeHotRuleValidation() bool {
+	return m.allowHotRule != nil
 }
 
 func newTestQueryContext(name string) *query_context.Context {
@@ -288,6 +293,35 @@ func TestDomainMapperReplaceHotRulesClearsMatch(t *testing.T) {
 	}
 }
 
+func TestDomainMapperReusesCompiledMatchForSameSourceSet(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"whitelist": &mockRuleExporter{rules: []string{
+			"full:a.example",
+			"full:b.example",
+		}},
+	})
+	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
+		Rules: []RuleConfig{{Tag: "whitelist", Mark: 8, OutputTag: "白名单"}},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper: %v", err)
+	}
+	dm := dmAny.(*DomainMapper)
+	matcher := dm.loadMatcher()
+
+	first, ok := matcher.Match("a.example.")
+	if !ok || first == nil {
+		t.Fatal("expected match for a.example")
+	}
+	second, ok := matcher.Match("b.example.")
+	if !ok || second == nil {
+		t.Fatal("expected match for b.example")
+	}
+	if first != second {
+		t.Fatal("expected compiled match to be reused for identical provider source sets")
+	}
+}
+
 func newBenchmarkMapper(ruleCount int) *DomainMapper {
 	dm := &DomainMapper{
 		logger:      zap.NewNop(),
@@ -302,10 +336,7 @@ func newBenchmarkMapper(ruleCount int) *DomainMapper {
 			JoinedTags: "订阅直连",
 		}
 		if err := m.Add(rule, &compiledMatch{
-			sources: []matchSource{{
-				providerTag: "bench-provider",
-				result:      res,
-			}},
+			staticResult: res,
 		}); err != nil {
 			panic(err)
 		}
@@ -313,9 +344,9 @@ func newBenchmarkMapper(ruleCount int) *DomainMapper {
 	dm.matcher = atomic.Value{}
 	dm.matcher.Store(m)
 	dm.hotLookup = atomic.Value{}
-	dm.hotLookup.Store(make(map[string][]matchSource))
-	dm.validators = atomic.Value{}
-	dm.validators.Store(make(map[string]coremain.HotRuleRuntimeValidator))
+	dm.hotLookup.Store(make(map[string]*compiledMatch))
+	dm.registry = atomic.Value{}
+	dm.registry.Store(buildProviderRegistry(nil, nil))
 	dm.hotRules = make(map[string]map[string]struct{})
 	return dm
 }

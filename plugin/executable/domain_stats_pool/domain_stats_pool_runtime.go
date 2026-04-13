@@ -15,23 +15,22 @@ func (d *domainStatsPool) loadFromStore() error {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	for _, variant := range state.Variants {
-		domain, storageKey := d.acquireStorageKeyFromFlags(variant.Domain, variant.FlagsMask)
+		domain, key := d.acquireEntryKeyFromFlags(variant.Domain, variant.FlagsMask)
 		entry := &statEntry{
-			Count:          variant.TotalCount,
-			LastDate:       formatDate(variant.LastSeenAtUnixMS),
-			LastSeenAt:     formatStamp(variant.LastSeenAtUnixMS),
-			LastDirtyAt:    formatStamp(variant.LastDirtyAtUnixMS),
-			LastVerifiedAt: formatStamp(variant.LastVerifiedAtUnixMS),
-			CooldownUntil:  formatStamp(variant.CooldownUntilUnixMS),
-			DirtyReason:    variant.DirtyReason,
-			RefreshState:   variant.RefreshState,
-			QTypeMask:      variant.QTypeMask,
-			Score:          variant.Score,
-			Promoted:       variant.Promoted,
-			ConflictCount:  variant.ConflictCount,
-			LastSource:     variant.LastSource,
+			Count:                variant.TotalCount,
+			LastSeenAtUnixMS:     variant.LastSeenAtUnixMS,
+			LastDirtyAtUnixMS:    variant.LastDirtyAtUnixMS,
+			LastVerifiedAtUnixMS: variant.LastVerifiedAtUnixMS,
+			CooldownUntilUnixMS:  variant.CooldownUntilUnixMS,
+			DirtyReason:          variant.DirtyReason,
+			RefreshState:         variant.RefreshState,
+			QTypeMask:            variant.QTypeMask,
+			Score:                variant.Score,
+			Promoted:             variant.Promoted,
+			ConflictCount:        variant.ConflictCount,
+			LastSource:           variant.LastSource,
 		}
-		d.stats[storageKey] = entry
+		d.stats[key] = entry
 		d.trackEntryCreatedLocked(domain)
 	}
 	d.hasRulesHash = true

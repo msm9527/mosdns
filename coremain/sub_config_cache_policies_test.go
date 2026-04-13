@@ -52,6 +52,34 @@ func TestDefaultCachePolicyConfigUsesConservativeMemoryProfile(t *testing.T) {
 	}
 }
 
+func TestRepoCachePoliciesTemplateUsesConservativeMemoryProfile(t *testing.T) {
+	baseDir := filepath.Join("..", "config")
+	cfg, ok, err := LoadCachePolicyConfigFromSubConfigForBaseDir(baseDir)
+	if err != nil {
+		t.Fatalf("LoadCachePolicyConfigFromSubConfigForBaseDir: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected repo cache policy template to exist")
+	}
+
+	totalSize := 0
+	totalL1Cap := 0
+	for _, policy := range cfg.Response {
+		totalSize += policy.Size
+		totalL1Cap += policy.L1TotalCap
+	}
+
+	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
+		t.Fatalf("template cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
+	}
+	if totalSize > 120000 {
+		t.Fatalf("template cache total size is too large: %d", totalSize)
+	}
+	if totalL1Cap > 3500 {
+		t.Fatalf("template cache total l1 cap is too large: %d", totalL1Cap)
+	}
+}
+
 func TestLoadCachePolicyConfigFromSubConfigOverride(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()

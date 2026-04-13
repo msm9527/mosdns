@@ -47,6 +47,7 @@ type SiSet struct {
 	sources    []rulesource.Source
 	configFile string
 	bindTo     string
+	syncState  []coremain.RuleSourceVersion
 	httpClient *http.Client
 	ctx        context.Context
 	cancel     context.CancelFunc
@@ -171,27 +172,60 @@ func (p *SiSet) loadSources() error {
 }
 
 func (p *SiSet) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
-	list := netlist.NewList()
+	type syncPlan struct {
+		source rulesource.Source
+		result *coremain.RuleSourceSyncResult
+	}
+
+	inspectOptions := options
+	inspectOptions.MetadataOnly = true
+	plans := make([]syncPlan, 0)
+	nextSyncState := make([]coremain.RuleSourceVersion, 0)
 	for _, source := range p.sourceSnapshot() {
 		if !source.Enabled {
 			continue
 		}
 		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, inspectOptions)
 		cancel()
 		if err != nil {
 			p.matcher.Store(netlist.NewList())
+			p.setSyncState(nil)
 			return err
+		}
+		plans = append(plans, syncPlan{source: source, result: result})
+		nextSyncState = append(nextSyncState, coremain.NewRuleSourceVersion(source.ID, result))
+	}
+	if coremain.RuleSourceVersionsEqual(p.currentSyncState(), nextSyncState) {
+		return nil
+	}
+
+	list := netlist.NewList()
+	for _, plan := range plans {
+		source := plan.source
+		result := plan.result
+		if result.Data == nil {
+			ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+			loaded, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
+			cancel()
+			if err != nil {
+				p.matcher.Store(netlist.NewList())
+				p.setSyncState(nil)
+				return err
+			}
+			result = loaded
 		}
 		prefixes, err := rulesource.ParseIPCIDRBytes(source.Format, result.Data)
 		if err != nil {
 			p.matcher.Store(netlist.NewList())
+			p.setSyncState(nil)
 			return err
 		}
 		list.Append(prefixes...)
 	}
 	list.Sort()
 	p.matcher.Store(list)
+	p.setSyncState(nextSyncState)
 	return nil
 }
 
@@ -214,6 +248,18 @@ func (p *SiSet) currentBinding() (string, string) {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.configFile, p.bindTo
+}
+
+func (p *SiSet) currentSyncState() []coremain.RuleSourceVersion {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]coremain.RuleSourceVersion(nil), p.syncState...)
+}
+
+func (p *SiSet) setSyncState(syncState []coremain.RuleSourceVersion) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.syncState = append([]coremain.RuleSourceVersion(nil), syncState...)
 }
 
 func (p *SiSet) sourceSnapshot() []rulesource.Source {

@@ -72,7 +72,9 @@ func TrimDot(s string) string {
 
 // labelNode can store dns labels.
 type labelNode[T any] struct {
-	children map[string]*labelNode[T] // lazy init
+	childKey string
+	child    *labelNode[T]
+	children map[string]*labelNode[T] // lazy init when a node branches
 
 	v    T
 	hasV bool
@@ -92,20 +94,55 @@ func (n *labelNode[T]) hasValue() bool {
 }
 
 func (n *labelNode[T]) newChild(key string) *labelNode[T] {
-	if n.children == nil {
-		n.children = make(map[string]*labelNode[T])
+	// Clone the label before storing it in the trie so short labels do not
+	// retain the whole temporary rule string backing array.
+	key = strings.Clone(key)
+
+	if n.children != nil {
+		node := new(labelNode[T])
+		n.children[key] = node
+		return node
 	}
+
+	if n.child == nil {
+		node := new(labelNode[T])
+		n.childKey = key
+		n.child = node
+		return node
+	}
+
+	if n.childKey == key {
+		return n.child
+	}
+
+	existingKey := n.childKey
+	existingChild := n.child
+	n.children = map[string]*labelNode[T]{
+		existingKey: existingChild,
+	}
+	n.childKey = ""
+	n.child = nil
+
 	node := new(labelNode[T])
 	n.children[key] = node
 	return node
 }
 
 func (n *labelNode[T]) getChild(key string) *labelNode[T] {
+	if n.child != nil && n.childKey == key {
+		return n.child
+	}
 	return n.children[key]
 }
 
 func (n *labelNode[T]) len() int {
 	l := 0
+	if n.child != nil {
+		l += n.child.len()
+		if n.child.hasValue() {
+			l++
+		}
+	}
 	for _, node := range n.children {
 		l += node.len()
 		if node.hasValue() {

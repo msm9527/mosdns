@@ -17,11 +17,45 @@ type RuleSourceSyncResult struct {
 	LocalPath   string
 	RuleCount   int
 	LastUpdated time.Time
+	FileSize    int64
+	FileModTime time.Time
 }
 
 type RuleSourceSyncOptions struct {
-	ForceRemote bool
-	PreferCache bool
+	ForceRemote  bool
+	PreferCache  bool
+	MetadataOnly bool
+}
+
+type RuleSourceVersion struct {
+	SourceID          string
+	LocalPath         string
+	FileSize          int64
+	FileModTimeUnixNS int64
+}
+
+func NewRuleSourceVersion(sourceID string, result *RuleSourceSyncResult) RuleSourceVersion {
+	if result == nil {
+		return RuleSourceVersion{SourceID: sourceID}
+	}
+	return RuleSourceVersion{
+		SourceID:          sourceID,
+		LocalPath:         result.LocalPath,
+		FileSize:          result.FileSize,
+		FileModTimeUnixNS: result.FileModTime.UnixNano(),
+	}
+}
+
+func RuleSourceVersionsEqual(a, b []RuleSourceVersion) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func SyncRuleSource(
@@ -39,11 +73,17 @@ func SyncRuleSource(
 	}
 	if source.SourceKind == rulesource.SourceKindRemote {
 		if options.PreferCache && !options.ForceRemote && localRuleSourceExists(localPath) {
+			if options.MetadataOnly {
+				return inspectExistingRuleSource(dbPath, scope, source, localPath)
+			}
 			return loadExistingRuleSource(dbPath, scope, source, localPath)
 		}
 		if shouldDownloadRuleSource(dbPath, scope, source, localPath, options) {
 			return downloadRuleSource(ctx, client, dbPath, scope, source, localPath)
 		}
+	}
+	if options.MetadataOnly {
+		return inspectExistingRuleSource(dbPath, scope, source, localPath)
 	}
 	return loadExistingRuleSource(dbPath, scope, source, localPath)
 }
@@ -118,6 +158,12 @@ func downloadRuleSource(
 		LocalPath:   localPath,
 		RuleCount:   count,
 		LastUpdated: time.Now(),
+		FileSize:    int64(len(data)),
+	}
+	if info, err := os.Stat(localPath); err == nil {
+		result.FileModTime = info.ModTime()
+	} else {
+		result.FileModTime = result.LastUpdated
 	}
 	saveRuleSourceSuccess(dbPath, scope, source.ID, result.RuleCount, result.LastUpdated)
 	return result, nil
@@ -136,6 +182,34 @@ func loadExistingRuleSource(
 	}
 	saveRuleSourceSuccess(dbPath, scope, source.ID, result.RuleCount, result.LastUpdated)
 	return result, nil
+}
+
+func inspectExistingRuleSource(
+	dbPath string,
+	scope rulesource.Scope,
+	source rulesource.Source,
+	localPath string,
+) (*RuleSourceSyncResult, error) {
+	info, err := os.Stat(localPath)
+	if err != nil {
+		return nil, err
+	}
+	statuses, _ := ListRuleSourceStatusByScope(dbPath, scope)
+	lastUpdated := info.ModTime()
+	ruleCount := 0
+	if status, ok := statuses[source.ID]; ok {
+		ruleCount = status.RuleCount
+		if !status.LastUpdated.IsZero() {
+			lastUpdated = status.LastUpdated
+		}
+	}
+	return &RuleSourceSyncResult{
+		LocalPath:   localPath,
+		RuleCount:   ruleCount,
+		LastUpdated: lastUpdated,
+		FileSize:    info.Size(),
+		FileModTime: info.ModTime(),
+	}, nil
 }
 
 func fallbackToExistingRuleSource(
@@ -196,6 +270,8 @@ func readExistingRuleSource(
 		LocalPath:   localPath,
 		RuleCount:   count,
 		LastUpdated: lastUpdated,
+		FileSize:    info.Size(),
+		FileModTime: info.ModTime(),
 	}, nil
 }
 

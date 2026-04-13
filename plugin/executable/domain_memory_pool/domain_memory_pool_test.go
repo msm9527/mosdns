@@ -170,18 +170,18 @@ func TestMemoryPoolPruneCompactsSparseState(t *testing.T) {
 		t.Fatalf("newDomainMemoryPool: %v", err)
 	}
 
-	expiredDate := time.Now().AddDate(0, 0, -120).Format("2006-01-02")
-	freshDate := time.Now().UTC().Format("2006-01-02")
+	expiredAtUnixMS := time.Now().AddDate(0, 0, -120).UnixMilli()
+	freshAtUnixMS := time.Now().UTC().UnixMilli()
 
 	pool.mu.Lock()
 	for i := 0; i < stateCompactionMinEntries; i++ {
 		domain := fmt.Sprintf("expired-%d.example", i)
-		pool.stats[domain] = &statEntry{LastDate: expiredDate}
+		pool.stats[entryKey{domain: domain}] = &statEntry{LastSeenAtUnixMS: expiredAtUnixMS}
 		pool.trackEntryCreatedLocked(domain)
 	}
 	for i := 0; i < stateCompactionMinEntries/4; i++ {
 		domain := fmt.Sprintf("fresh-%d.example", i)
-		pool.stats[domain] = &statEntry{LastDate: freshDate}
+		pool.stats[entryKey{domain: domain}] = &statEntry{LastSeenAtUnixMS: freshAtUnixMS}
 		pool.trackEntryCreatedLocked(domain)
 	}
 
@@ -225,7 +225,7 @@ func TestMemoryPoolInternsDomainKeys(t *testing.T) {
 		pool.mu.Unlock()
 		t.Fatalf("strings.Len() = %d, want 1", got)
 	}
-	var storageKey string
+	var storageKey entryKey
 	for key := range pool.stats {
 		storageKey = key
 	}

@@ -317,8 +317,8 @@ func writeWALRecord(w io.Writer, record walStoreRecord) error {
 	payload := bytes.NewBuffer(make([]byte, 0, len(record.cacheItem.resp)+len(record.key)+96))
 	payload.WriteByte(walOpSet)
 	writeInt64(payload, record.cacheExp.Unix())
-	writeInt64(payload, record.cacheItem.expirationTime.Unix())
-	writeInt64(payload, record.cacheItem.storedTime.Unix())
+	writeInt64(payload, unixNanoToTime(record.cacheItem.expireUnixNano).Unix())
+	writeInt64(payload, unixNanoToTime(record.cacheItem.storedUnixNano).Unix())
 	writeBytes(payload, []byte(record.key))
 	writeBytes(payload, record.cacheItem.resp)
 	writeString(payload, record.cacheItem.domainSet)
@@ -374,8 +374,8 @@ func readWALRecord(r io.Reader) (walStoreRecord, error) {
 		cacheExp: time.Unix(cacheExpUnix, 0),
 		cacheItem: &item{
 			resp:           msg,
-			storedTime:     time.Unix(storedUnix, 0),
-			expirationTime: time.Unix(msgExpUnix, 0),
+			storedUnixNano: time.Unix(storedUnix, 0).UnixNano(),
+			expireUnixNano: time.Unix(msgExpUnix, 0).UnixNano(),
 			domainSet:      domainSet,
 		},
 	}, nil

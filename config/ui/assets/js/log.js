@@ -1180,6 +1180,27 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         },
 
+        async runCoreModeFollowup() {
+            ui.showToast('附加操作：正在清空核心缓存...', 'info');
+            const flushResults = await Promise.allSettled([
+                api.fetch('/api/v1/cache/cache_main/flush', { method: 'POST' }),
+                api.fetch('/api/v1/cache/cache_branch_domestic/flush', { method: 'POST' }),
+                api.fetch('/api/v1/cache/cache_branch_foreign/flush', { method: 'POST' }),
+                api.fetch('/api/v1/cache/cache_branch_foreign_ecs/flush', { method: 'POST' }),
+                api.fetch('/api/v1/cache/cache_fakeip_domestic/flush', { method: 'POST' }),
+                api.fetch('/api/v1/cache/cache_fakeip_proxy/flush', { method: 'POST' })
+            ]);
+            const failedFlushCount = flushResults.filter(r => r.status === 'rejected').length;
+            if (failedFlushCount > 0) {
+                ui.showToast(`附加操作：核心缓存清空完成，有 ${failedFlushCount} 个失败。`, 'error');
+            } else {
+                ui.showToast('附加操作：核心缓存已成功清空！', 'success');
+            }
+
+            ui.showToast('附加操作：开始快速预热缓存...', 'info');
+            await requeryManager.handleTrigger(null, 'quick_prewarm', true);
+        },
+
         async handleModeSwitch(button) {
             if (button.classList.contains('active')) return;
             const tag = button.dataset.switchTag;
@@ -1192,6 +1213,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const result = await api.fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已切换为 ${profile.modes[result.value]?.name || result.value}`);
+                if (tag === 'core_mode') {
+                    await this.runCoreModeFollowup();
+                }
                 this.render();
             } catch (error) {
                 ui.showToast(`切换“${profile.name}”失败`, 'error');
@@ -1212,6 +1236,9 @@ document.addEventListener('DOMContentLoaded', () => {
                 const result = await api.fetch(`/api/v1/control/switches/${tag}`, { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ value: valueToPost }) });
                 state.featureSwitches[tag] = result.value;
                 ui.showToast(`“${profile.name}” 已切换为 ${profile.modes[result.value]?.name || result.value}`);
+                if (tag === 'core_mode') {
+                    await this.runCoreModeFollowup();
+                }
             } catch (error) {
                 ui.showToast(`切换“${profile.name}”失败`, 'error');
             } finally {

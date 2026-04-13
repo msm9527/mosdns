@@ -150,6 +150,58 @@ func TestSyncRuleSource_PreferCacheSkipsRemoteOnStartup(t *testing.T) {
 	}
 }
 
+func TestSyncRuleSource_MetadataOnlyUsesCachedFileMetadata(t *testing.T) {
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, "runtime.db")
+	source := rulesource.Source{
+		ID:                  "cached-meta",
+		Name:                "cached-meta",
+		Behavior:            rulesource.BehaviorAdguard,
+		MatchMode:           rulesource.MatchModeAdguardNative,
+		Format:              rulesource.FormatRules,
+		SourceKind:          rulesource.SourceKindRemote,
+		Path:                "adguard/cached-meta.rules",
+		URL:                 "https://example.invalid/rules.txt",
+		AutoUpdate:          true,
+		UpdateIntervalHours: 24,
+	}
+	localPath := filepath.Join(baseDir, "adguard", "cached-meta.rules")
+	mustWriteRuleSyncTestFile(t, localPath, "||cached.example^\n")
+	info, err := os.Stat(localPath)
+	if err != nil {
+		t.Fatalf("Stat(%s): %v", localPath, err)
+	}
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, errors.New("should not be called")
+	})}
+	result, err := SyncRuleSource(
+		context.Background(),
+		client,
+		dbPath,
+		baseDir,
+		rulesource.ScopeAdguard,
+		source,
+		RuleSourceSyncOptions{PreferCache: true, MetadataOnly: true},
+	)
+	if err != nil {
+		t.Fatalf("SyncRuleSource: %v", err)
+	}
+	if called {
+		t.Fatal("expected metadata-only path to skip remote download")
+	}
+	if result.Data != nil {
+		t.Fatal("expected metadata-only path to avoid loading file data")
+	}
+	if result.FileSize != info.Size() {
+		t.Fatalf("unexpected file size: got %d want %d", result.FileSize, info.Size())
+	}
+	if !result.FileModTime.Equal(info.ModTime()) {
+		t.Fatalf("unexpected file mod time: got %v want %v", result.FileModTime, info.ModTime())
+	}
+}
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {

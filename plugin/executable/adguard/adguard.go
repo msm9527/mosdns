@@ -39,6 +39,7 @@ type AdguardRule struct {
 	mu                    sync.RWMutex
 	configFile            string
 	sources               []rulesource.Source
+	syncState             []coremain.RuleSourceVersion
 	importantAllowMatcher *domain.MixMatcher[struct{}]
 	importantDenyMatcher  *domain.MixMatcher[struct{}]
 	allowMatcher          *domain.MixMatcher[struct{}]
@@ -127,6 +128,12 @@ func (p *AdguardRule) GetRules() ([]string, error) {
 	return append([]string(nil), p.denyRules...), nil
 }
 
+func (p *AdguardRule) GetRulesShared() ([]string, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.denyRules, nil
+}
+
 func (p *AdguardRule) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {
 	effective := new(Args)
 	if err := coremain.DecodeRawArgsWithGlobalOverrides(p.pluginTag, p.baseArgs, effective, global); err != nil {
@@ -176,22 +183,49 @@ func (p *AdguardRule) loadSources() error {
 }
 
 func (p *AdguardRule) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
-	sources := p.sourceSnapshot()
+	type syncPlan struct {
+		source rulesource.Source
+		result *coremain.RuleSourceSyncResult
+	}
+
+	inspectOptions := options
+	inspectOptions.MetadataOnly = true
+	plans := make([]syncPlan, 0)
+	nextSyncState := make([]coremain.RuleSourceVersion, 0)
+	for _, source := range p.sourceSnapshot() {
+		if !source.Enabled {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, inspectOptions)
+		cancel()
+		if err != nil {
+			return err
+		}
+		plans = append(plans, syncPlan{source: source, result: result})
+		nextSyncState = append(nextSyncState, coremain.NewRuleSourceVersion(source.ID, result))
+	}
+	if coremain.RuleSourceVersionsEqual(p.currentSyncState(), nextSyncState) {
+		return nil
+	}
+
 	importantAllowMatcher := domain.NewDomainMixMatcher()
 	importantDenyMatcher := domain.NewDomainMixMatcher()
 	allowMatcher := domain.NewDomainMixMatcher()
 	denyMatcher := domain.NewDomainMixMatcher()
 	denyRules := make([]string, 0)
 
-	for _, source := range sources {
-		if !source.Enabled {
-			continue
-		}
-		ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
-		result, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
-		cancel()
-		if err != nil {
-			return err
+	for _, plan := range plans {
+		source := plan.source
+		result := plan.result
+		if result.Data == nil {
+			ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
+			loaded, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
+			cancel()
+			if err != nil {
+				return err
+			}
+			result = loaded
 		}
 		if err := mergeSourceRules(
 			source,
@@ -211,7 +245,8 @@ func (p *AdguardRule) reloadAllRules(options coremain.RuleSourceSyncOptions) err
 	p.importantDenyMatcher = importantDenyMatcher
 	p.allowMatcher = allowMatcher
 	p.denyMatcher = denyMatcher
-	p.denyRules = append([]string(nil), denyRules...)
+	p.denyRules = denyRules
+	p.syncState = append([]coremain.RuleSourceVersion(nil), nextSyncState...)
 	p.mu.Unlock()
 	p.notifySubscribers()
 	return nil
@@ -245,6 +280,12 @@ func (p *AdguardRule) currentConfigFile() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.configFile
+}
+
+func (p *AdguardRule) currentSyncState() []coremain.RuleSourceVersion {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return append([]coremain.RuleSourceVersion(nil), p.syncState...)
 }
 
 func (p *AdguardRule) sourceSnapshot() []rulesource.Source {

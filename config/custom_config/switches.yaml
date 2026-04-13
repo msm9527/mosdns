@@ -8,6 +8,7 @@
 # 字段说明：
 # - block_response: on/off，是否拦截黑名单和空响应结果。
 # - client_proxy_mode: all/blacklist/whitelist，控制哪些客户端允许走代理链路；whitelist/blacklist 模式分别读取 rule/client_ip_whitelist.txt 和 rule/client_ip_blacklist.txt。
+# - core_mode: compat/secure，控制未命中域名走兼容（leak）还是安全（noleak）补判链。
 # - main_cache: on/off，控制真实解析主缓存总开关。
 # - branch_cache: on/off，控制真实解析分支缓存（国内/国外/ECS）。
 # - fakeip_cache: on/off，控制 FakeIP DNS 响应缓存，不影响系统记录 FakeIP 路径域名的运行记忆列表。
@@ -21,6 +22,8 @@
 block_response: "on"
 
 client_proxy_mode: "all"
+
+core_mode: "compat"
 
 main_cache: "on"
 

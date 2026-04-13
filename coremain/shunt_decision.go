@@ -27,6 +27,10 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 	blockQueryType := switches["block_query_type"] != "off"
 	blockIPv6 := switches["block_ipv6"] == "on"
 	adBlock := switches["ad_block"] == "on"
+	coreMode := switches["core_mode"]
+	if coreMode != "compat" {
+		coreMode = "secure"
+	}
 	outputTagByMark := make(map[uint8]string)
 	tagByMark := make(map[uint8]string)
 	for _, rule := range rules {
@@ -105,17 +109,23 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 			return shuntDecision{Stage: "sequence_known_domain", Action: step.Action, Reason: step.Reason, Matched: step.Mark}, path
 		}
 	}
+	fallbackAction := "not_in_list_noleak_" + strings.ToLower(qtype)
+	fallbackReason := "未命中 known-domain 优先级，进入当前无泄漏列表外解析逻辑"
+	if coreMode == "compat" {
+		fallbackAction = "not_in_list_leak_" + strings.ToLower(qtype)
+		fallbackReason = "未命中 known-domain 优先级，进入当前兼容列表外解析逻辑"
+	}
 	path = append(path, shuntDecisionStep{
 		Order:       len(path) + 1,
 		Stage:       "sequence_fallback",
-		Action:      "not_in_list_noleak_" + strings.ToLower(qtype),
-		Reason:      "未命中 known-domain 优先级，进入当前无泄漏列表外解析逻辑",
+		Action:      fallbackAction,
+		Reason:      fallbackReason,
 		Matched:     true,
 		DecisionHit: true,
 	})
 	return shuntDecision{
 		Stage:  "sequence_fallback",
-		Action: "not_in_list_noleak_" + strings.ToLower(qtype),
-		Reason: "未命中 known-domain 优先级，进入当前无泄漏列表外解析逻辑",
+		Action: fallbackAction,
+		Reason: fallbackReason,
 	}, path
 }

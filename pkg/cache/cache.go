@@ -61,8 +61,8 @@ func (opts *Opts) init() {
 }
 
 type elem[V Value] struct {
-	v              V
-	expirationTime time.Time
+	v                  V
+	expirationUnixNano int64
 }
 
 // New initializes a Cache.
@@ -94,11 +94,11 @@ func (c *Cache[K, V]) SetOnEvicted(f func(key K, v V)) {
 
 func (c *Cache[K, V]) Get(key K) (v V, expirationTime time.Time, ok bool) {
 	if e, hasEntry := c.m.Get(key); hasEntry {
-		if e.expirationTime.Before(time.Now()) {
+		if e.expirationUnixNano < time.Now().UnixNano() {
 			c.Delete(key)
 			return
 		}
-		return e.v, e.expirationTime, true
+		return e.v, time.Unix(0, e.expirationUnixNano), true
 	}
 	return
 }
@@ -107,7 +107,7 @@ func (c *Cache[K, V]) Get(key K) (v V, expirationTime time.Time, ok bool) {
 // by Range.
 func (c *Cache[K, V]) Range(f func(key K, v V, expirationTime time.Time) error) error {
 	cf := func(key K, v *elem[V]) (newV *elem[V], setV bool, delV bool, err error) {
-		return nil, false, false, f(key, v.v, v.expirationTime)
+		return nil, false, false, f(key, v.v, time.Unix(0, v.expirationUnixNano))
 	}
 	return c.m.RangeDo(cf)
 }
@@ -121,8 +121,8 @@ func (c *Cache[K, V]) Store(key K, v V, expirationTime time.Time) {
 	}
 
 	e := &elem[V]{
-		v:              v,
-		expirationTime: expirationTime,
+		v:                  v,
+		expirationUnixNano: expirationTime.UnixNano(),
 	}
 	c.m.SetWithEvicted(key, e, func(key K, v *elem[V]) {
 		if c.onEvicted != nil {
@@ -168,7 +168,7 @@ func (c *Cache[K, V]) gc(now time.Time) {
 	}
 	evicted := make([]evictedItem, 0)
 	f := func(key K, v *elem[V]) (newV *elem[V], setV, delV bool, err error) {
-		if now.After(v.expirationTime) {
+		if now.UnixNano() > v.expirationUnixNano {
 			evicted = append(evicted, evictedItem{key: key, elem: v})
 			return nil, false, true, nil
 		}

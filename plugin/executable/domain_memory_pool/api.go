@@ -31,8 +31,8 @@ func (d *domainMemoryPool) SnapshotDomainStats() coremain.DomainStatsSnapshot {
 	d.mu.Lock()
 	totalEntries := d.domainCount
 	dirtyEntries, promotedEntries := d.snapshotDomainCountersLocked()
-	hotRules := int64(len(d.hotActiveRules))
 	d.mu.Unlock()
+	hotRules := atomic.LoadInt64(&d.publishedCount)
 	return coremain.DomainStatsSnapshot{
 		MemoryID:             d.memoryID,
 		Kind:                 d.policy.kind,
@@ -66,7 +66,7 @@ func (d *domainMemoryPool) snapshotDomainCountersLocked() (int, int) {
 	dirty := make(map[string]struct{}, len(d.domainVariantCount))
 	promoted := make(map[string]struct{}, len(d.domainVariantCount))
 	for key, entry := range d.stats {
-		bare, _ := splitStorageKey(key)
+		bare := key.domain
 		if bare == "" {
 			continue
 		}
@@ -87,7 +87,7 @@ func (d *domainMemoryPool) SnapshotRefreshCandidates(req coremain.DomainRefreshC
 	now := time.Now().UTC()
 	aggregated := make(map[string]coremain.DomainRefreshCandidate, d.domainCount)
 	for key, entry := range d.stats {
-		domain, _ := splitStorageKey(key)
+		domain := key.domain
 		if domain == "" {
 			continue
 		}
@@ -98,10 +98,10 @@ func (d *domainMemoryPool) SnapshotRefreshCandidates(req coremain.DomainRefreshC
 		item.Weight += entry.Score*100 + entry.Count
 		item.MemoryID = d.memoryID
 		item.Promoted = item.Promoted || entry.Promoted
-		item.LastSeenAt = maxStringByValue(item.LastSeenAt, entry.LastSeenAt)
-		item.LastDirtyAt = maxStringByValue(item.LastDirtyAt, entry.LastDirtyAt)
-		item.LastVerifiedAt = maxStringByValue(item.LastVerifiedAt, entry.LastVerifiedAt)
-		item.CooldownUntil = maxStringByValue(item.CooldownUntil, entry.CooldownUntil)
+		item.LastSeenAt = formatLatestStamp(item.LastSeenAt, entry.LastSeenAtUnixMS)
+		item.LastDirtyAt = formatLatestStamp(item.LastDirtyAt, entry.LastDirtyAtUnixMS)
+		item.LastVerifiedAt = formatLatestStamp(item.LastVerifiedAt, entry.LastVerifiedAtUnixMS)
+		item.CooldownUntil = formatLatestStamp(item.CooldownUntil, entry.CooldownUntilUnixMS)
 		if priorityForReason(reason) >= priorityForReason(item.Reason) {
 			item.Reason = reason
 			item.RefreshState = state
@@ -168,9 +168,8 @@ func (d *domainMemoryPool) classifyRefreshCandidate(entry *statEntry, now time.T
 		}
 		return reason, state
 	}
-	if d.policy.staleAfterMinutes > 0 && entry.LastDirtyAt != "" {
-		ts, err := time.Parse(time.RFC3339, entry.LastDirtyAt)
-		if err == nil && now.Sub(ts) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
+	if d.policy.staleAfterMinutes > 0 && entry.LastDirtyAtUnixMS > 0 {
+		if now.Sub(time.UnixMilli(entry.LastDirtyAtUnixMS)) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
 			return "stale", "stale"
 		}
 	}
@@ -191,15 +190,11 @@ func (d *domainMemoryPool) isVerificationDue(entry *statEntry, now time.Time) bo
 			threshold = candidate
 		}
 	}
-	lastStamp := firstNonEmpty(entry.LastVerifiedAt, firstNonEmpty(entry.LastDirtyAt, entry.LastSeenAt))
-	if lastStamp == "" {
+	lastUnixMS := latestNonZero(entry.LastVerifiedAtUnixMS, entry.LastDirtyAtUnixMS, entry.LastSeenAtUnixMS)
+	if lastUnixMS <= 0 {
 		return entry.Promoted
 	}
-	ts, err := time.Parse(time.RFC3339, lastStamp)
-	if err != nil {
-		return false
-	}
-	return now.Sub(ts) >= threshold
+	return now.Sub(time.UnixMilli(lastUnixMS)) >= threshold
 }
 
 func (d *domainMemoryPool) SaveToDisk(_ context.Context) error {
@@ -215,22 +210,23 @@ func (d *domainMemoryPool) MarkDomainVerified(_ context.Context, domain, verifie
 	if domain == "" {
 		return 0, fmt.Errorf("domain is empty")
 	}
-	if verifiedAt == "" {
-		verifiedAt = time.Now().UTC().Format(time.RFC3339)
+	verifiedAtUnixMS := parseStampUnixMS(verifiedAt)
+	if verifiedAtUnixMS <= 0 {
+		verifiedAtUnixMS = time.Now().UTC().UnixMilli()
 	}
 
 	d.mu.Lock()
 	updated := 0
 	for key, entry := range d.stats {
-		bare, _ := splitStorageKey(key)
+		bare := key.domain
 		if bare != domain {
 			continue
 		}
-		entry.LastVerifiedAt = verifiedAt
+		entry.LastVerifiedAtUnixMS = verifiedAtUnixMS
 		entry.RefreshState = "clean"
 		entry.DirtyReason = ""
-		entry.CooldownUntil = ""
-		entry.LastDirtyAt = verifiedAt
+		entry.CooldownUntilUnixMS = 0
+		entry.LastDirtyAtUnixMS = verifiedAtUnixMS
 		updated++
 	}
 	d.mu.Unlock()
@@ -250,7 +246,7 @@ func (d *domainMemoryPool) MemoryEntries(query string, offset, limit int) ([]cor
 	d.mu.Lock()
 	aggregated := make(map[string]outputRankItem, d.domainCount)
 	for key, entry := range d.stats {
-		domain, _ := splitStorageKey(key)
+		domain := key.domain
 		if query != "" && !strings.Contains(strings.ToLower(domain), query) {
 			continue
 		}
@@ -260,7 +256,7 @@ func (d *domainMemoryPool) MemoryEntries(query string, offset, limit int) ([]cor
 		item.Score += entry.Score
 		item.QMask |= entry.QTypeMask
 		item.Prom = item.Prom || entry.Promoted
-		item.Date = maxStringByValue(item.Date, entry.LastDate)
+		item.DateUnixMS = maxInt64(item.DateUnixMS, entry.LastSeenAtUnixMS)
 		aggregated[domain] = item
 	}
 	d.mu.Unlock()
@@ -289,7 +285,7 @@ func (d *domainMemoryPool) MemoryEntries(query string, offset, limit int) ([]cor
 		items = append(items, coremain.MemoryEntry{
 			Domain:    item.Domain,
 			Count:     item.Count,
-			Date:      item.Date,
+			Date:      formatDate(item.DateUnixMS),
 			QTypeMask: item.QMask,
 			Score:     item.Score,
 			Promoted:  item.Prom,
@@ -315,9 +311,34 @@ func max(a, b int) int {
 	return b
 }
 
-func firstNonEmpty(first, fallback string) string {
-	if strings.TrimSpace(first) != "" {
-		return first
+func formatLatestStamp(current string, unixMS int64) string {
+	if unixMS <= 0 {
+		return current
 	}
-	return fallback
+	next := formatStamp(unixMS)
+	if next > current {
+		return next
+	}
+	return current
+}
+
+func latestNonZero(values ...int64) int64 {
+	var latest int64
+	for _, value := range values {
+		if value > latest {
+			latest = value
+		}
+	}
+	return latest
+}
+
+func parseStampUnixMS(value string) int64 {
+	if strings.TrimSpace(value) == "" {
+		return 0
+	}
+	ts, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return 0
+	}
+	return ts.UnixMilli()
 }

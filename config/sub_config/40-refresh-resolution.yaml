@@ -33,6 +33,15 @@ policies:
       - exec: $foreignecs
       - exec: cname_remover
 
+  # 刷新链与主链保持一致：ECS 首查失败时，退回普通国外真实解析。
+  - name: sequence_google_node_refresh_resilient
+    type: fallback
+    args:
+      primary: sequence_google_node_refresh
+      secondary: sequence_google_refresh
+      threshold: 350
+      always_standby: false
+
   - name: sequence_local_fake_refresh
     type: sequence
     args:

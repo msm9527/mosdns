@@ -57,7 +57,7 @@ func (d *domainStatsPool) snapshotDomainCountersLocked() (int, int) {
 	dirty := make(map[string]struct{}, len(d.domainVariantCount))
 	promoted := make(map[string]struct{}, len(d.domainVariantCount))
 	for key, entry := range d.stats {
-		bare, _ := splitStorageKey(key)
+		bare := key.domain
 		if bare == "" {
 			continue
 		}
@@ -102,7 +102,7 @@ func (d *domainStatsPool) MemoryEntries(query string, offset, limit int) ([]core
 	d.mu.Lock()
 	aggregated := make(map[string]outputRankItem, d.domainCount)
 	for key, entry := range d.stats {
-		domain, _ := splitStorageKey(key)
+		domain := key.domain
 		if query != "" && !strings.Contains(strings.ToLower(domain), query) {
 			continue
 		}
@@ -112,7 +112,7 @@ func (d *domainStatsPool) MemoryEntries(query string, offset, limit int) ([]core
 		item.Score += entry.Score
 		item.QMask |= entry.QTypeMask
 		item.Prom = item.Prom || entry.Promoted
-		item.Date = maxStringByValue(item.Date, entry.LastDate)
+		item.DateUnixMS = maxInt64(item.DateUnixMS, entry.LastSeenAtUnixMS)
 		aggregated[domain] = item
 	}
 	d.mu.Unlock()
@@ -141,7 +141,7 @@ func (d *domainStatsPool) MemoryEntries(query string, offset, limit int) ([]core
 		items = append(items, coremain.MemoryEntry{
 			Domain:    item.Domain,
 			Count:     item.Count,
-			Date:      item.Date,
+			Date:      formatDate(item.DateUnixMS),
 			QTypeMask: item.QMask,
 			Score:     item.Score,
 			Promoted:  item.Prom,

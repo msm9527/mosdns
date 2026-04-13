@@ -26,8 +26,8 @@ func (d *domainMemoryPool) maybeCompactStateLocked() {
 }
 
 func (d *domainMemoryPool) resetStateStorageLocked() {
-	d.stats = make(map[string]*statEntry)
-	d.domainVariantCount = make(map[string]int)
+	d.stats = make(map[entryKey]*statEntry)
+	d.domainVariantCount = make(map[string]uint8)
 	d.strings.Reset()
 	d.statsPeak = 0
 	d.domainVariantPeak = 0
@@ -44,22 +44,22 @@ func shouldCompactStateMap(current, peak int) bool {
 	}
 }
 
-func cloneStatEntries(src map[string]*statEntry) map[string]*statEntry {
+func cloneStatEntries(src map[entryKey]*statEntry) map[entryKey]*statEntry {
 	if len(src) == 0 {
-		return make(map[string]*statEntry)
+		return make(map[entryKey]*statEntry)
 	}
-	dst := make(map[string]*statEntry, len(src))
+	dst := make(map[entryKey]*statEntry, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
 	return dst
 }
 
-func cloneDomainVariantCounts(src map[string]int) map[string]int {
+func cloneDomainVariantCounts(src map[string]uint8) map[string]uint8 {
 	if len(src) == 0 {
-		return make(map[string]int)
+		return make(map[string]uint8)
 	}
-	dst := make(map[string]int, len(src))
+	dst := make(map[string]uint8, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}

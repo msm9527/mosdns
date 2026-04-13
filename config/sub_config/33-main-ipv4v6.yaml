@@ -67,7 +67,10 @@ policies:
         exec: fast_mark 19
       - matches: fast_mark 19
         exec: $sequence_ipv4_realip_finalize
-      - exec: $sequence_not_in_list_noleak_v4
+      - matches: switch 'core_mode:compat'
+        exec: $sequence_not_in_list_leak_v4
+      - matches: switch 'core_mode:secure'
+        exec: $sequence_not_in_list_noleak_v4
 
   # IPv6：规则命中的快速分流。
   - name: sequence_ipv6_known_domain
@@ -143,7 +146,10 @@ policies:
           - fast_mark 21
           - '!fast_mark 17'
         exec: $sequence_ipv6_realip_finalize
-      - exec: $sequence_not_in_list_noleak_v6
+      - matches: switch 'core_mode:compat'
+        exec: $sequence_not_in_list_leak_v6
+      - matches: switch 'core_mode:secure'
+        exec: $sequence_not_in_list_noleak_v6
 
   # 节点模式的回退器：
   # - 优先走国外带 ECS 的链路

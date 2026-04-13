@@ -68,6 +68,57 @@ policies:
 	}
 }
 
+func TestShuntAnalyzerExplainRespectsCoreMode(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
+block_response: "on"
+block_query_type: "on"
+block_ipv6: "off"
+ad_block: "off"
+core_mode: "compat"
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules: []
+`)
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("unknown.example", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Action != "not_in_list_leak_a" {
+		t.Fatalf("unexpected compat decision: %+v", result.Decision)
+	}
+
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `
+block_response: "on"
+block_query_type: "on"
+block_ipv6: "off"
+ad_block: "off"
+core_mode: "secure"
+`)
+	analyzer, err = newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer secure: %v", err)
+	}
+	result, err = analyzer.Explain("unknown.example", "A")
+	if err != nil {
+		t.Fatalf("Explain secure: %v", err)
+	}
+	if result.Decision.Action != "not_in_list_noleak_a" {
+		t.Fatalf("unexpected secure decision: %+v", result.Decision)
+	}
+}
+
 func TestShuntAnalyzerConflicts(t *testing.T) {
 	baseDir := t.TempDir()
 	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)

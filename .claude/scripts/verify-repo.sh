@@ -7,6 +7,23 @@ cd "$ROOT"
 
 echo "=== mosdns repo verify ==="
 
+run_and_print_head() {
+  local label="$1"
+  shift
+
+  local tmp
+  tmp="$(mktemp)"
+  if ! "$@" >"$tmp" 2>&1; then
+    sed -n '1,80p' "$tmp"
+    rm -f "$tmp"
+    echo "❌ ${label} failed"
+    exit 1
+  fi
+
+  sed -n '1,80p' "$tmp"
+  rm -f "$tmp"
+}
+
 echo "[1/4] gofmt..."
 CHANGED_GO=()
 while IFS= read -r line; do
@@ -30,21 +47,12 @@ else
 fi
 
 echo "[2/4] go test ./..."
-if ! go test ./... -count=1 2>&1 | head -80; then
-  echo "❌ go test failed"
-  exit 1
-fi
+run_and_print_head "go test" go test ./... -count=1
 
 echo "[3/4] go vet ./..."
-if ! go vet ./... 2>&1 | head -80; then
-  echo "❌ go vet failed"
-  exit 1
-fi
+run_and_print_head "go vet" go vet ./...
 
 echo "[4/4] go build ./..."
-if ! go build ./... 2>&1 | head -80; then
-  echo "❌ go build failed"
-  exit 1
-fi
+run_and_print_head "go build" go build ./...
 
 echo "✅ repo verify passed"

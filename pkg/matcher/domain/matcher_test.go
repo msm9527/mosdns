@@ -96,6 +96,25 @@ func TestDomainMatcher(t *testing.T) {
 	assert("any.domain", true, 9)
 }
 
+func TestDomainMatcherBranchingChildren(t *testing.T) {
+	m := NewSubDomainMatcher[int]()
+	add := func(domain string, v int) {
+		if err := m.Add(domain, v); err != nil {
+			t.Fatalf("Add(%q): %v", domain, err)
+		}
+	}
+
+	add("a.example.com", 1)
+	add("b.example.com", 2)
+	add("c.example.net", 3)
+
+	assert := assertFunc[int](t, m)
+	assert("a.example.com.", true, 1)
+	assert("b.example.com.", true, 2)
+	assert("c.example.net.", true, 3)
+	assert("d.example.com.", false, 0)
+}
+
 func assertInt(t testing.TB, want, got int) {
 	t.Helper()
 	if want != got {

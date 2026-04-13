@@ -14,11 +14,18 @@ func (d *DomainSetLight) loadGeneratedRules(generatedFrom string) (data_provider
 		return nil, nil, err
 	}
 	if ok {
+		if shared, ok := exporter.(interface{ GetRulesShared() ([]string, error) }); ok {
+			rules, err := shared.GetRulesShared()
+			if err != nil {
+				return nil, nil, fmt.Errorf("load shared rules from exporter %s: %w", generatedFrom, err)
+			}
+			return exporter, rules, nil
+		}
 		rules, err := exporter.GetRules()
 		if err != nil {
 			return nil, nil, fmt.Errorf("load rules from exporter %s: %w", generatedFrom, err)
 		}
-		return exporter, append([]string(nil), rules...), nil
+		return exporter, rules, nil
 	}
 	return nil, nil, fmt.Errorf("generated_from source %s is unavailable", generatedFrom)
 }

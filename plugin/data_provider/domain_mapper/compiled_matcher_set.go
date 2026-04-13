@@ -48,30 +48,35 @@ func (m *compiledMatcherSet) Add(rule string, compiled *compiledMatch) error {
 }
 
 func (m *compiledMatcherSet) Match(qname string) (*compiledMatch, bool) {
-	sources := make([]matchSource, 0, 4)
-	matched := false
+	var combined *compiledMatch
 	fullMatch, fullOK := m.full.Match(qname)
-	sources, matched = appendCompiledMatchSources(sources, fullMatch, fullOK, matched)
+	combined = appendCompiledMatch(combined, fullMatch, fullOK)
 	domainMatch, domainOK := m.domain.Match(qname)
-	sources, matched = appendCompiledMatchSources(sources, domainMatch, domainOK, matched)
+	combined = appendCompiledMatch(combined, domainMatch, domainOK)
 	regexMatch, regexOK := m.regex.Match(qname)
-	sources, matched = appendCompiledMatchSources(sources, regexMatch, regexOK, matched)
+	combined = appendCompiledMatch(combined, regexMatch, regexOK)
 	keywordMatch, keywordOK := m.keyword.Match(qname)
-	sources, matched = appendCompiledMatchSources(sources, keywordMatch, keywordOK, matched)
-	if !matched || len(sources) == 0 {
+	combined = appendCompiledMatch(combined, keywordMatch, keywordOK)
+	if combined == nil {
 		return nil, false
 	}
-	return &compiledMatch{sources: sources}, true
+	return combined, true
 }
 
-func appendCompiledMatchSources(
-	dst []matchSource,
-	compiled *compiledMatch,
-	ok bool,
-	matched bool,
-) ([]matchSource, bool) {
+func appendCompiledMatch(dst *compiledMatch, compiled *compiledMatch, ok bool) *compiledMatch {
 	if !ok || compiled == nil {
-		return dst, matched
+		return dst
 	}
-	return appendMatchSources(dst, compiled.sources), true
+	if dst == nil {
+		return compiled
+	}
+	merged := &compiledMatch{
+		staticResult: mergeMatchResult(dst.staticResult, compiled.staticResult),
+	}
+	merged.dynamicProviders = cloneDynamicProviders(dst.dynamicProviders)
+	merged.dynamicProviders = appendDynamicProviders(merged.dynamicProviders, compiled.dynamicProviders)
+	if merged.staticResult == nil && len(merged.dynamicProviders) == 0 {
+		return nil
+	}
+	return merged
 }

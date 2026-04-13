@@ -39,19 +39,18 @@ const (
 )
 
 type statEntry struct {
-	Count          int
-	LastDate       string
-	LastSeenAt     string
-	LastDirtyAt    string
-	LastVerifiedAt string
-	CooldownUntil  string
-	DirtyReason    string
-	RefreshState   string
-	QTypeMask      uint8
-	Score          int
-	Promoted       bool
-	ConflictCount  int
-	LastSource     string
+	Count                int
+	LastSeenAtUnixMS     int64
+	LastDirtyAtUnixMS    int64
+	LastVerifiedAtUnixMS int64
+	CooldownUntilUnixMS  int64
+	DirtyReason          string
+	RefreshState         string
+	QTypeMask            uint8
+	Score                int
+	Promoted             bool
+	ConflictCount        int
+	LastSource           string
 }
 
 type logItem struct {
@@ -64,45 +63,50 @@ type logItem struct {
 }
 
 type outputRankItem struct {
-	Domain         string
-	Count          int
-	Date           string
-	Score          int
-	QMask          uint8
-	Prom           bool
-	LastSeenAt     string
-	LastDirtyAt    string
-	LastVerifiedAt string
-	DirtyReason    string
-	RefreshState   string
-	CooldownUntil  string
-	ConflictCount  int
+	Domain               string
+	Count                int
+	DateUnixMS           int64
+	Score                int
+	QMask                uint8
+	Prom                 bool
+	LastSeenAtUnixMS     int64
+	LastDirtyAtUnixMS    int64
+	LastVerifiedAtUnixMS int64
+	DirtyReason          string
+	RefreshState         string
+	CooldownUntilUnixMS  int64
+	ConflictCount        int
 }
 
 type aggregateEntry struct {
-	Domain            string
-	Count             int
-	Date              string
-	Score             int
-	QMask             uint8
-	FlagsMask         uint8
-	VariantCount      int
-	DirtyVariantCount int
-	Promoted          bool
-	LastSource        string
-	LastSeenAt        string
-	LastDirtyAt       string
-	LastVerifiedAt    string
-	CooldownUntil     string
-	DirtyReason       string
-	RefreshState      string
-	ConflictCount     int
+	Domain               string
+	Count                int
+	DateUnixMS           int64
+	Score                int
+	QMask                uint8
+	FlagsMask            uint8
+	VariantCount         int
+	DirtyVariantCount    int
+	Promoted             bool
+	LastSource           string
+	LastSeenAtUnixMS     int64
+	LastDirtyAtUnixMS    int64
+	LastVerifiedAtUnixMS int64
+	CooldownUntilUnixMS  int64
+	DirtyReason          string
+	RefreshState         string
+	ConflictCount        int
 }
 
 type writeSnapshot struct {
 	state         coremain.DomainPoolState
 	promotedCount int
 	dirtyCount    int
+}
+
+type entryKey struct {
+	domain string
+	flags  uint8
 }
 
 type domainMemoryPool struct {
@@ -115,14 +119,14 @@ type domainMemoryPool struct {
 	memoryID    string
 	enableFlags bool
 
-	stats              map[string]*statEntry
-	domainVariantCount map[string]int
+	stats              map[entryKey]*statEntry
+	domainVariantCount map[string]uint8
 	strings            *stringintern.Pool
 	domainCount        int
 	statsPeak          int
 	domainVariantPeak  int
 	subscribers        []func()
-	hotActiveRules     map[string]struct{}
+	hotActiveRules     []string
 
 	mu      sync.Mutex
 	writeMu sync.Mutex
@@ -212,11 +216,11 @@ func newDomainMemoryPoolWithDeps(
 		policy:             policy,
 		memoryID:           policy.raw.MemoryID,
 		enableFlags:        policy.trackFlags,
-		stats:              make(map[string]*statEntry),
-		domainVariantCount: make(map[string]int),
+		stats:              make(map[entryKey]*statEntry),
+		domainVariantCount: make(map[string]uint8),
 		strings:            stringintern.New(),
 		subscribers:        make([]func(), 0),
-		hotActiveRules:     make(map[string]struct{}),
+		hotActiveRules:     make([]string, 0),
 		recordChan:         make(chan *logItem, RecordBufferLimit),
 		writeSignalChan:    make(chan struct{}, 1),
 		stopChan:           make(chan struct{}),
@@ -331,16 +335,16 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	if bareDomain == "" {
 		return
 	}
-	storageKey := buildStorageKey(bareDomain, item, d.enableFlags)
+	flagsMask := buildFlagsMask(item, d.enableFlags)
+	lookupKey := buildEntryKey(bareDomain, flagsMask)
 	qmask := qtypeToMask(item.qtype)
 	now := time.Now().UTC()
-	nowDate := now.Format("2006-01-02")
-	nowStamp := now.Format(time.RFC3339)
+	nowUnixMS := now.UnixMilli()
 	var notify *coremain.DomainRefreshJob
 	var hotRules []string
 
 	d.mu.Lock()
-	entry, exists := d.stats[storageKey]
+	entry, exists := d.stats[lookupKey]
 	if !exists {
 		if !d.canCreateEntryLocked(bareDomain) {
 			d.mu.Unlock()
@@ -348,15 +352,14 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 			atomic.AddInt64(&d.droppedCount, 1)
 			return
 		}
-		canonicalDomain, canonicalStorageKey := d.acquireStorageKey(bareDomain, item)
+		canonicalDomain, canonicalKey := d.acquireEntryKey(bareDomain, flagsMask)
 		entry = &statEntry{}
-		d.stats[canonicalStorageKey] = entry
+		d.stats[canonicalKey] = entry
 		d.trackEntryCreatedLocked(canonicalDomain)
 	}
 	entry.Count++
 	entry.Score++
-	entry.LastDate = nowDate
-	entry.LastSeenAt = nowStamp
+	entry.LastSeenAtUnixMS = nowUnixMS
 	entry.LastSource = item.source
 	if qmask != 0 {
 		entry.QTypeMask |= qmask
@@ -371,9 +374,9 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 		if reason != "" {
 			entry.RefreshState = "dirty"
 			entry.DirtyReason = reason
-			entry.LastDirtyAt = nowStamp
+			entry.LastDirtyAtUnixMS = nowUnixMS
 			if d.policy.refreshCooldownMinute > 0 {
-				entry.CooldownUntil = now.Add(time.Duration(d.policy.refreshCooldownMinute) * time.Minute).Format(time.RFC3339)
+				entry.CooldownUntilUnixMS = now.Add(time.Duration(d.policy.refreshCooldownMinute) * time.Minute).UnixMilli()
 			}
 			if d.policy.requeryTag != "" && entry.Promoted {
 				notify = &coremain.DomainRefreshJob{
@@ -400,7 +403,7 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 }
 
 func (d *domainMemoryPool) canCreateEntryLocked(domain string) bool {
-	variants := d.domainVariantCount[domain]
+	variants := int(d.domainVariantCount[domain])
 	if d.policy.maxVariantsPerDomain > 0 && variants >= d.policy.maxVariantsPerDomain {
 		return false
 	}
@@ -421,10 +424,9 @@ func (d *domainMemoryPool) trackEntryCreatedLocked(domain string) {
 	d.noteStatePeaksLocked()
 }
 
-func (d *domainMemoryPool) deleteEntryLocked(storageKey string) {
-	domain, _ := splitStorageKey(storageKey)
-	delete(d.stats, storageKey)
-	d.releaseStorageKey(storageKey)
+func (d *domainMemoryPool) deleteEntryLocked(key entryKey) {
+	domain := key.domain
+	delete(d.stats, key)
 	remaining := d.domainVariantCount[domain] - 1
 	if remaining <= 0 {
 		delete(d.domainVariantCount, domain)
@@ -437,51 +439,25 @@ func (d *domainMemoryPool) deleteEntryLocked(storageKey string) {
 	d.domainVariantCount[domain] = remaining
 }
 
-func buildStorageKey(domain string, item *logItem, enableFlags bool) string {
-	if !enableFlags {
-		return domain
-	}
-	flags := make([]string, 0, 3)
-	if item.ad {
-		flags = append(flags, "AD")
-	}
-	if item.cd {
-		flags = append(flags, "CD")
-	}
-	if item.do {
-		flags = append(flags, "DO")
-	}
-	if len(flags) == 0 {
-		return domain
-	}
-	return domain + "|" + strings.Join(flags, "|")
+func buildEntryKey(domain string, flagsMask uint8) entryKey {
+	return entryKey{domain: domain, flags: flagsMask}
 }
 
-func splitStorageKey(storageKey string) (string, uint8) {
-	parts := strings.Split(storageKey, "|")
-	if len(parts) == 1 {
-		return storageKey, 0
+func buildFlagsMask(item *logItem, enableFlags bool) uint8 {
+	if !enableFlags || item == nil {
+		return 0
 	}
 	var flags uint8
-	for _, part := range parts[1:] {
-		switch strings.TrimSpace(part) {
-		case "AD":
-			flags |= flagMaskAD
-		case "CD":
-			flags |= flagMaskCD
-		case "DO":
-			flags |= flagMaskDO
-		}
+	if item.ad {
+		flags |= flagMaskAD
 	}
-	return parts[0], flags
-}
-
-func buildStorageKeyFromFlags(domain string, flagsMask uint8) string {
-	item := &logItem{name: domain}
-	item.ad = flagsMask&flagMaskAD != 0
-	item.cd = flagsMask&flagMaskCD != 0
-	item.do = flagsMask&flagMaskDO != 0
-	return buildStorageKey(domain, item, flagsMask != 0)
+	if item.cd {
+		flags |= flagMaskCD
+	}
+	if item.do {
+		flags |= flagMaskDO
+	}
+	return flags
 }
 
 func buildVariantKey(flagsMask uint8) string {
@@ -589,10 +565,11 @@ func (d *domainMemoryPool) buildSnapshot(mode WriteMode) writeSnapshot {
 	aggregated := make(map[string]*aggregateEntry, d.domainCount)
 	variants := make([]coremain.DomainPoolVariant, 0, len(d.stats))
 	for key, entry := range d.stats {
-		domain, flagsMask := splitStorageKey(key)
+		domain := key.domain
+		flagsMask := key.flags
 		aggregate := aggregated[domain]
 		if aggregate == nil {
-			aggregate = &aggregateEntry{Domain: domain, Date: entry.LastDate}
+			aggregate = &aggregateEntry{Domain: domain, DateUnixMS: entry.LastSeenAtUnixMS}
 			aggregated[domain] = aggregate
 		}
 		mergeAggregateEntry(aggregate, entry, flagsMask)
@@ -616,11 +593,10 @@ func (d *domainMemoryPool) pruneExpiredLocked() {
 	evictBefore := time.Now().AddDate(0, 0, -maxInt(d.policy.decayDays*3, d.policy.decayDays+7))
 	deleted := false
 	for key, entry := range d.stats {
-		if entry.LastDate == "" {
+		if entry.LastSeenAtUnixMS <= 0 {
 			continue
 		}
-		ts, err := time.Parse("2006-01-02", entry.LastDate)
-		if err == nil && ts.Before(evictBefore) {
+		if time.UnixMilli(entry.LastSeenAtUnixMS).Before(evictBefore) {
 			d.deleteEntryLocked(key)
 			deleted = true
 		}
@@ -653,15 +629,15 @@ func mergeAggregateEntry(target *aggregateEntry, entry *statEntry, flagsMask uin
 	target.ConflictCount += entry.ConflictCount
 	target.Promoted = target.Promoted || entry.Promoted
 	target.LastSource = maxStringByValue(target.LastSource, entry.LastSource)
-	target.LastSeenAt = maxStringByValue(target.LastSeenAt, entry.LastSeenAt)
-	target.LastDirtyAt = maxStringByValue(target.LastDirtyAt, entry.LastDirtyAt)
-	target.LastVerifiedAt = maxStringByValue(target.LastVerifiedAt, entry.LastVerifiedAt)
-	target.CooldownUntil = maxStringByValue(target.CooldownUntil, entry.CooldownUntil)
-	target.Date = maxStringByValue(target.Date, entry.LastDate)
+	target.LastSeenAtUnixMS = maxInt64(target.LastSeenAtUnixMS, entry.LastSeenAtUnixMS)
+	target.LastDirtyAtUnixMS = maxInt64(target.LastDirtyAtUnixMS, entry.LastDirtyAtUnixMS)
+	target.LastVerifiedAtUnixMS = maxInt64(target.LastVerifiedAtUnixMS, entry.LastVerifiedAtUnixMS)
+	target.CooldownUntilUnixMS = maxInt64(target.CooldownUntilUnixMS, entry.CooldownUntilUnixMS)
+	target.DateUnixMS = maxInt64(target.DateUnixMS, entry.LastSeenAtUnixMS)
 	if entry.RefreshState == "dirty" {
 		target.DirtyVariantCount++
 	}
-	if entry.LastDirtyAt >= target.LastDirtyAt {
+	if entry.LastDirtyAtUnixMS >= target.LastDirtyAtUnixMS {
 		target.DirtyReason = entry.DirtyReason
 		target.RefreshState = entry.RefreshState
 	}
@@ -697,10 +673,10 @@ func buildAggregatedOutputs(aggregated map[string]*aggregateEntry) (int, int, []
 			DirtyVariantCount:    entry.DirtyVariantCount,
 			Promoted:             entry.Promoted,
 			LastSource:           entry.LastSource,
-			LastSeenAtUnixMS:     parseUnixMS(entry.LastSeenAt),
-			LastDirtyAtUnixMS:    parseUnixMS(entry.LastDirtyAt),
-			LastVerifiedAtUnixMS: parseUnixMS(entry.LastVerifiedAt),
-			CooldownUntilUnixMS:  parseUnixMS(entry.CooldownUntil),
+			LastSeenAtUnixMS:     entry.LastSeenAtUnixMS,
+			LastDirtyAtUnixMS:    entry.LastDirtyAtUnixMS,
+			LastVerifiedAtUnixMS: entry.LastVerifiedAtUnixMS,
+			CooldownUntilUnixMS:  entry.CooldownUntilUnixMS,
 			DirtyReason:          entry.DirtyReason,
 			RefreshState:         entry.RefreshState,
 		})
@@ -740,7 +716,7 @@ func (d *domainMemoryPool) snapshotPromotedRules() []string {
 		if !entry.Promoted {
 			continue
 		}
-		domain, _ := splitStorageKey(key)
+		domain := key.domain
 		if domain == "" {
 			continue
 		}
@@ -764,10 +740,10 @@ func buildVariantRecord(poolTag, domain string, flagsMask uint8, entry *statEntr
 		FlagsMask:            flagsMask,
 		Promoted:             entry.Promoted,
 		LastSource:           entry.LastSource,
-		LastSeenAtUnixMS:     parseUnixMS(entry.LastSeenAt),
-		LastDirtyAtUnixMS:    parseUnixMS(entry.LastDirtyAt),
-		LastVerifiedAtUnixMS: parseUnixMS(entry.LastVerifiedAt),
-		CooldownUntilUnixMS:  parseUnixMS(entry.CooldownUntil),
+		LastSeenAtUnixMS:     entry.LastSeenAtUnixMS,
+		LastDirtyAtUnixMS:    entry.LastDirtyAtUnixMS,
+		LastVerifiedAtUnixMS: entry.LastVerifiedAtUnixMS,
+		CooldownUntilUnixMS:  entry.CooldownUntilUnixMS,
 		DirtyReason:          entry.DirtyReason,
 		RefreshState:         entry.RefreshState,
 		ConflictCount:        entry.ConflictCount,
@@ -778,7 +754,7 @@ func (d *domainMemoryPool) shouldPromote(entry *statEntry) bool {
 	if entry.Count < d.policy.promoteAfter {
 		return false
 	}
-	if d.isStale(entry.LastDate) {
+	if d.isStale(entry.LastSeenAtUnixMS) {
 		return false
 	}
 	switch d.policy.kind {
@@ -791,15 +767,11 @@ func (d *domainMemoryPool) shouldPromote(entry *statEntry) bool {
 	}
 }
 
-func (d *domainMemoryPool) isStale(lastDate string) bool {
-	if d.policy.decayDays <= 0 || lastDate == "" {
+func (d *domainMemoryPool) isStale(lastSeenAtUnixMS int64) bool {
+	if d.policy.decayDays <= 0 || lastSeenAtUnixMS <= 0 {
 		return false
 	}
-	ts, err := time.Parse("2006-01-02", lastDate)
-	if err != nil {
-		return false
-	}
-	return time.Since(ts) > time.Duration(d.policy.decayDays)*24*time.Hour
+	return time.Since(time.UnixMilli(lastSeenAtUnixMS)) > time.Duration(d.policy.decayDays)*24*time.Hour
 }
 
 func hashPromotedDomains(domains []coremain.DomainPoolDomain) uint64 {
@@ -824,20 +796,17 @@ func (d *domainMemoryPool) nextDirtyReason(entry *statEntry, now time.Time) stri
 	if !entry.Promoted || d.policy.requeryTag == "" {
 		return ""
 	}
-	if entry.CooldownUntil != "" {
-		if ts, err := time.Parse(time.RFC3339, entry.CooldownUntil); err == nil && now.Before(ts) {
-			if entry.RefreshState == "" {
-				entry.RefreshState = "cooldown"
-			}
-			return ""
+	if entry.CooldownUntilUnixMS > 0 && now.UnixMilli() < entry.CooldownUntilUnixMS {
+		if entry.RefreshState == "" {
+			entry.RefreshState = "cooldown"
 		}
+		return ""
 	}
-	if entry.LastDirtyAt == "" {
+	if entry.LastDirtyAtUnixMS <= 0 {
 		return "observed"
 	}
 	if d.policy.staleAfterMinutes > 0 {
-		if ts, err := time.Parse(time.RFC3339, entry.LastDirtyAt); err == nil &&
-			now.Sub(ts) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
+		if now.Sub(time.UnixMilli(entry.LastDirtyAtUnixMS)) >= time.Duration(d.policy.staleAfterMinutes)*time.Minute {
 			return "stale"
 		}
 	}
@@ -889,13 +858,9 @@ func maxStringByValue(current, next string) string {
 	return current
 }
 
-func parseUnixMS(value string) int64 {
-	if strings.TrimSpace(value) == "" {
-		return 0
+func maxInt64(current, next int64) int64 {
+	if next > current {
+		return next
 	}
-	ts, err := time.Parse(time.RFC3339, value)
-	if err != nil {
-		return 0
-	}
-	return ts.UnixMilli()
+	return current
 }

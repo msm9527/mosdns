@@ -85,7 +85,7 @@ policies:
   - name: sequence_not_in_list_noleak_v4
     type: sequence
     args:
-      - exec: $sequence_google_node
+      - exec: $sequence_google_node_resilient
       - matches: '!resp_ip 0.0.0.0/0'
         exec: $sequence_google
       - matches: rcode 3
@@ -109,7 +109,7 @@ policies:
   - name: sequence_not_in_list_noleak_v6
     type: sequence
     args:
-      - exec: $sequence_google_node
+      - exec: $sequence_google_node_resilient
       - matches: '!resp_ip 2000::/3'
         exec: $sequence_google
       - matches: rcode 3

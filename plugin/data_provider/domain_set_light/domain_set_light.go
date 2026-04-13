@@ -99,6 +99,18 @@ func (d *DomainSetLight) GetRules() ([]string, error) {
 	return rulesCopy, nil
 }
 
+func (d *DomainSetLight) GetRulesShared() ([]string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return d.rules, nil
+}
+
+func (d *DomainSetLight) HasRuntimeHotRuleValidation() bool {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	return strings.TrimSpace(d.generatedFrom) != ""
+}
+
 // Subscribe 实现 RuleExporter 接口
 func (d *DomainSetLight) Subscribe(cb func()) {
 	d.mu.Lock()

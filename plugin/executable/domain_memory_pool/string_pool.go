@@ -1,19 +1,12 @@
 package domain_memory_pool
 
-func (d *domainMemoryPool) acquireStorageKey(domain string, item *logItem) (string, string) {
+func (d *domainMemoryPool) acquireEntryKey(domain string, flagsMask uint8) (string, entryKey) {
 	canonicalDomain := d.strings.Acquire(domain)
-	storageKey := buildStorageKey(canonicalDomain, item, d.enableFlags)
-	return canonicalDomain, d.strings.Acquire(storageKey)
+	return canonicalDomain, buildEntryKey(canonicalDomain, flagsMask)
 }
 
-func (d *domainMemoryPool) acquireStorageKeyFromFlags(domain string, flagsMask uint8) (string, string) {
-	canonicalDomain := d.strings.Acquire(domain)
-	storageKey := buildStorageKeyFromFlags(canonicalDomain, flagsMask)
-	return canonicalDomain, d.strings.Acquire(storageKey)
-}
-
-func (d *domainMemoryPool) releaseStorageKey(storageKey string) {
-	d.strings.Release(storageKey)
+func (d *domainMemoryPool) acquireEntryKeyFromFlags(domain string, flagsMask uint8) (string, entryKey) {
+	return d.acquireEntryKey(domain, flagsMask)
 }
 
 func (d *domainMemoryPool) releaseDomain(domain string) {

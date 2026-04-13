@@ -49,6 +49,10 @@ import (
 const (
 	tlsHandshakeTimeout = time.Second * 3
 
+	doHMaxIdleConns        = 16
+	doHMaxIdleConnsPerHost = 8
+	doHMaxConnsPerHost     = 8
+
 	// Maximum number of concurrent queries in one pipeline connection.
 	// See RFC 7766 7. Response Reordering.
 	// TODO: Make this configurable?
@@ -445,29 +449,18 @@ func NewUpstream(addr string, opt Opt) (_ Upstream, err error) {
 			if err != nil {
 				return nil, fmt.Errorf("failed to init tcp dialer, %w", err)
 			}
-			t1 := &http.Transport{
-				DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) { // overwrite server addr
+			t1, err := newDoHHTTPTransport(
+				func(ctx context.Context, network, _ string) (net.Conn, error) {
 					c, err := tcpDialer(ctx)
 					c = wrapConn(c, opt.EventObserver)
 					return c, err
 				},
-				TLSClientConfig:     opt.TLSConfig,
-				TLSHandshakeTimeout: tlsHandshakeTimeout,
-				IdleConnTimeout:     idleConnTimeout,
-
-				// Following opts are for http/1 only.
-				// MaxConnsPerHost:     2,
-				// MaxIdleConnsPerHost: 2,
-			}
-
-			t2, err := http2.ConfigureTransports(t1)
+				opt.TLSConfig,
+				idleConnTimeout,
+			)
 			if err != nil {
-				return nil, fmt.Errorf("failed to upgrade http2 support, %w", err)
+				return nil, fmt.Errorf("failed to create doh transport, %w", err)
 			}
-			t2.MaxHeaderListSize = 4 * 1024
-			t2.MaxReadFrameSize = 16 * 1024
-			t2.ReadIdleTimeout = time.Second * 30
-			t2.PingTimeout = time.Second * 5
 			t = t1
 		}
 
@@ -551,6 +544,31 @@ func NewUpstream(addr string, opt Opt) (_ Upstream, err error) {
 	default:
 		return nil, fmt.Errorf("unsupported protocol [%s]", addrURL.Scheme)
 	}
+}
+
+func newDoHHTTPTransport(
+	dialContext func(ctx context.Context, network, addr string) (net.Conn, error),
+	tlsConfig *tls.Config,
+	idleConnTimeout time.Duration,
+) (*http.Transport, error) {
+	t := &http.Transport{
+		DialContext:         dialContext,
+		TLSClientConfig:     tlsConfig,
+		TLSHandshakeTimeout: tlsHandshakeTimeout,
+		IdleConnTimeout:     idleConnTimeout,
+		MaxIdleConns:        doHMaxIdleConns,
+		MaxIdleConnsPerHost: doHMaxIdleConnsPerHost,
+		MaxConnsPerHost:     doHMaxConnsPerHost,
+	}
+	t2, err := http2.ConfigureTransports(t)
+	if err != nil {
+		return nil, err
+	}
+	t2.MaxHeaderListSize = 4 * 1024
+	t2.MaxReadFrameSize = 16 * 1024
+	t2.ReadIdleTimeout = time.Second * 30
+	t2.PingTimeout = time.Second * 5
+	return t, nil
 }
 
 type udpWithFallback struct {

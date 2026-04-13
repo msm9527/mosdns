@@ -29,6 +29,10 @@ var ordered = []Definition{
 		"blacklist": "blacklist",
 		"whitelist": "whitelist",
 	}},
+	{Name: "core_mode", DefaultValue: "secure", aliases: map[string]string{
+		"compat": "compat",
+		"secure": "secure",
+	}},
 	{Name: "main_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "branch_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "fakeip_cache", DefaultValue: "off", aliases: onOffAliases()},

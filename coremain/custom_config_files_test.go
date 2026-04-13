@@ -19,6 +19,7 @@ func TestSwitchesCustomConfigRoundTrip(t *testing.T) {
 	if err := SaveSwitchesToCustomConfig(map[string]string{
 		"branch_cache":      "off",
 		"client_proxy_mode": "whitelist",
+		"core_mode":         "compat",
 	}); err != nil {
 		t.Fatalf("SaveSwitchesToCustomConfig: %v", err)
 	}
@@ -30,7 +31,7 @@ func TestSwitchesCustomConfigRoundTrip(t *testing.T) {
 	if !ok {
 		t.Fatal("expected switches config file to exist")
 	}
-	if values["branch_cache"] != "off" || values["client_proxy_mode"] != "whitelist" {
+	if values["branch_cache"] != "off" || values["client_proxy_mode"] != "whitelist" || values["core_mode"] != "compat" {
 		t.Fatalf("unexpected persisted switch values: %+v", values)
 	}
 	if values["block_response"] != "on" {

@@ -112,18 +112,23 @@ func (k key) Sum() uint64 {
 // item stores the cached response in L2.
 type item struct {
 	resp           []byte
-	storedTime     time.Time
-	expirationTime time.Time
+	storedUnixNano int64
+	expireUnixNano int64
 	domainSet      string
+}
+
+type l1Entry struct {
+	item *item
+	slot int
 }
 
 // l1Shard 带有 FIFO 限制的分段锁桶，保存对 L2 条目的共享引用，避免重复持有响应对象。
 type l1Shard struct {
 	sync.RWMutex
-	items   map[key]*item
+	items   map[key]l1Entry
 	order   []key
+	ref     []bool
 	pos     int
-	ref     map[key]bool
 	maxSize int
 }
 
@@ -392,16 +397,8 @@ func NewCache(args *Args, opts Opts) *Cache {
 	p.persistence = newPersistenceManager(args, logger)
 	p.initMetrics(lb)
 
-	// 初始化桶 (FIFO 淘汰版)
-	capHint := l1ShardCap
-	if capHint < 1 {
-		capHint = 1
-	}
 	for i := 0; i < shardCount; i++ {
 		p.shards[i] = &l1Shard{
-			items:   make(map[key]*item, capHint),
-			order:   make([]key, capHint),
-			ref:     make(map[key]bool, capHint),
 			maxSize: l1ShardCap,
 		}
 	}
@@ -449,11 +446,15 @@ func (s *l1Shard) updateL1(k key, cachedItem *item) {
 	}
 	s.Lock()
 	defer s.Unlock()
+	s.ensureStorageLocked()
 
 	// 命中则更新并标记为最近使用
-	if _, ok := s.items[k]; ok {
-		s.items[k] = cachedItem
-		s.ref[k] = true
+	if entry, ok := s.items[k]; ok {
+		entry.item = cachedItem
+		s.items[k] = entry
+		if entry.slot >= 0 && entry.slot < len(s.ref) {
+			s.ref[entry.slot] = true
+		}
 		return
 	}
 
@@ -467,21 +468,40 @@ func (s *l1Shard) updateL1(k key, cachedItem *item) {
 			break
 		}
 
-		if s.ref[oldKey] {
-			s.ref[oldKey] = false
+		if s.ref[s.pos] {
+			s.ref[s.pos] = false
 			s.pos = (s.pos + 1) % s.maxSize
 			continue
 		}
 
 		delete(s.items, oldKey)
-		delete(s.ref, oldKey)
+		s.order[s.pos] = ""
+		s.ref[s.pos] = false
 		break
 	}
 
-	s.items[k] = cachedItem
+	s.items[k] = l1Entry{
+		item: cachedItem,
+		slot: s.pos,
+	}
 	s.order[s.pos] = k
-	s.ref[k] = true
+	s.ref[s.pos] = true
 	s.pos = (s.pos + 1) % s.maxSize
+}
+
+func (s *l1Shard) ensureStorageLocked() {
+	if s.maxSize <= 0 {
+		return
+	}
+	if s.items == nil {
+		s.items = make(map[key]l1Entry, s.maxSize)
+	}
+	if s.order == nil {
+		s.order = make([]key, s.maxSize)
+	}
+	if s.ref == nil {
+		s.ref = make([]bool, s.maxSize)
+	}
 }
 
 func (c *Cache) containsExcluded(msg *dns.Msg) bool {
@@ -566,17 +586,22 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	)
 	if c.l1Enabled {
 		shard.RLock()
-		v1, ok1 = shard.items[k]
+		entry, ok := shard.items[k]
+		if ok {
+			v1 = entry.item
+			ok1 = entry.item != nil
+		}
 		shard.RUnlock()
 	}
 
 	now := time.Now()
+	nowUnix := now.UnixNano()
 	if ok1 && shouldBypassForRouteChange(v1.domainSet, currentDomainSet, c.plugin) {
 		c.deleteL1Key(k)
 		v1 = nil
 		ok1 = false
 	}
-	if ok1 && now.Before(v1.expirationTime) {
+	if ok1 && nowUnix < v1.expireUnixNano {
 		r, lazy, domainSet, corrupt := respFromCacheItem(v1, false, expiredMsgTtl)
 		if corrupt {
 			c.backend.Delete(k)
@@ -594,7 +619,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			if domainSet != "" {
 				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
 			}
-			c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedTime, v1.expirationTime, v1.domainSet)
+			c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedUnixNano, v1.expireUnixNano, v1.domainSet)
 
 			// 归还 Key 缓冲区
 			releaseKeyBuffer(bufPtr)
@@ -686,12 +711,12 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		// 命中 L2 且未过期：晋升到 L1
 		if c.l1Enabled && !lazyHit && cachedItem != nil {
 			shard.updateL1(kReal, cachedItem)
-			c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedTime, cachedItem.expirationTime, cachedItem.domainSet)
+			c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
 		}
 		return nil
 	}
 
-	if cachedItem != nil && now.After(cachedItem.expirationTime) && domainSetContainsToken(cachedItem.domainSet, "DDNS域名") {
+	if cachedItem != nil && nowUnix >= cachedItem.expireUnixNano && domainSetContainsToken(cachedItem.domainSet, "DDNS域名") {
 		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 			refreshedItem, _, _ := c.backend.Get(kReal)
@@ -759,15 +784,15 @@ func (c *Cache) waitForLazyRefresh(state *lazyRefreshState, wait time.Duration) 
 	}
 }
 
-func (c *Cache) shouldPrefetch(now, storedTime, expirationTime time.Time, domainSet string) bool {
-	if expirationTime.IsZero() || storedTime.IsZero() || !expirationTime.After(now) {
+func (c *Cache) shouldPrefetch(now time.Time, storedUnixNano, expireUnixNano int64, domainSet string) bool {
+	if expireUnixNano <= 0 || storedUnixNano <= 0 || expireUnixNano <= now.UnixNano() {
 		return false
 	}
-	totalTTL := expirationTime.Sub(storedTime)
+	totalTTL := time.Duration(expireUnixNano - storedUnixNano)
 	if totalTTL <= 0 {
 		return false
 	}
-	remaining := expirationTime.Sub(now)
+	remaining := time.Duration(expireUnixNano - now.UnixNano())
 	lead := totalTTL / prefetchLeadDivisor
 	if lead < prefetchMinLead {
 		lead = prefetchMinLead
@@ -781,8 +806,8 @@ func (c *Cache) shouldPrefetch(now, storedTime, expirationTime time.Time, domain
 	return remaining <= lead
 }
 
-func (c *Cache) maybePrefetch(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker, now, storedTime, expirationTime time.Time, domainSet string) {
-	if msgKey == "" || qCtx == nil || !c.shouldPrefetch(now, storedTime, expirationTime, domainSet) {
+func (c *Cache) maybePrefetch(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker, now time.Time, storedUnixNano, expireUnixNano int64, domainSet string) {
+	if msgKey == "" || qCtx == nil || !c.shouldPrefetch(now, storedUnixNano, expireUnixNano, domainSet) {
 		return
 	}
 	c.ensureLazyUpdate(msgKey, qCtx, next)
@@ -1007,8 +1032,9 @@ func (c *Cache) PurgeDomainsRuntimeCache(_ context.Context, domains []string, qt
 
 	now := time.Now()
 	purgeKeys := make([]key, 0, len(domainSet))
+	nowUnix := now.UnixNano()
 	if err := c.backend.Range(func(k key, _ *item, cacheExpirationTime time.Time) error {
-		if cacheExpirationTime.Before(now) {
+		if cacheExpirationTime.UnixNano() < nowUnix {
 			return nil
 		}
 		meta, ok := parseCacheKeyMeta(k)
@@ -1157,8 +1183,9 @@ func (c *Cache) CacheEntries(query string, offset, limit int) ([]coremain.CacheE
 	reusableMsg := new(dns.Msg)
 	items := make([]coremain.CacheEntry, 0, 16)
 
+	nowUnix := now.UnixNano()
 	err := c.backend.Range(func(k key, v *item, cacheExpirationTime time.Time) error {
-		if cacheExpirationTime.Before(now) {
+		if cacheExpirationTime.UnixNano() < nowUnix {
 			return nil
 		}
 
@@ -1193,8 +1220,8 @@ func (c *Cache) CacheEntries(query string, offset, limit int) ([]coremain.CacheE
 					items = append(items, coremain.CacheEntry{
 						Key:         keyStr,
 						DomainSet:   storedDomainSet(v.domainSet),
-						StoredTime:  v.storedTime.Format(time.RFC3339),
-						MsgExpire:   v.expirationTime.Format(time.RFC3339),
+						StoredTime:  unixNanoToTime(v.storedUnixNano).Format(time.RFC3339),
+						MsgExpire:   unixNanoToTime(v.expireUnixNano).Format(time.RFC3339),
 						CacheExpire: cacheExpirationTime.Format(time.RFC3339),
 						DNSMessage:  "<failed to unpack>",
 					})
@@ -1208,8 +1235,8 @@ func (c *Cache) CacheEntries(query string, offset, limit int) ([]coremain.CacheE
 			items = append(items, coremain.CacheEntry{
 				Key:         keyStr,
 				DomainSet:   storedDomainSet(v.domainSet),
-				StoredTime:  v.storedTime.Format(time.RFC3339),
-				MsgExpire:   v.expirationTime.Format(time.RFC3339),
+				StoredTime:  unixNanoToTime(v.storedUnixNano).Format(time.RFC3339),
+				MsgExpire:   unixNanoToTime(v.expireUnixNano).Format(time.RFC3339),
 				CacheExpire: cacheExpirationTime.Format(time.RFC3339),
 				DNSMessage:  dnsMsgToString(reusableMsg),
 			})
@@ -1333,8 +1360,8 @@ func (c *Cache) writeDump(w io.Writer) (int, error) {
 		e := &CachedEntry{
 			Key:                 []byte(k),
 			CacheExpirationTime: cacheExpirationTime.Unix(),
-			MsgExpirationTime:   v.expirationTime.Unix(),
-			MsgStoredTime:       v.storedTime.Unix(),
+			MsgExpirationTime:   unixNanoToTime(v.expireUnixNano).Unix(),
+			MsgStoredTime:       unixNanoToTime(v.storedUnixNano).Unix(),
 			Msg:                 v.resp,
 			DomainSet:           v.domainSet,
 		}
@@ -1399,8 +1426,8 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 
 			i := &item{
 				resp:           entry.GetMsg(),
-				storedTime:     storedTime,
-				expirationTime: msgExpTime,
+				storedUnixNano: storedTime.UnixNano(),
+				expireUnixNano: msgExpTime.UnixNano(),
 				domainSet:      entry.GetDomainSet(),
 			}
 			c.prepareCacheItemForStore(i)
@@ -1555,7 +1582,7 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCache
 
 func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, bool, string, bool) {
 	if v != nil {
-		now := time.Now()
+		nowUnix := time.Now().UnixNano()
 
 		// 性能补丁：利用 Pool 进行解包，减少对象分配
 		m := dnsMsgPool.Get().(*dns.Msg)
@@ -1566,10 +1593,14 @@ func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, b
 		}
 
 		rawDomainSet := storedDomainSet(v.domainSet)
-		if now.Before(v.expirationTime) {
+		if nowUnix < v.expireUnixNano {
 			// 这里必须 Copy，因为下游会修改 TTL 或 ID
 			r := m.Copy()
-			dnsutils.SubtractTTL(r, uint32(now.Sub(v.storedTime).Seconds()))
+			ageSeconds := int64(0)
+			if nowUnix > v.storedUnixNano {
+				ageSeconds = (nowUnix - v.storedUnixNano) / int64(time.Second)
+			}
+			dnsutils.SubtractTTL(r, uint32(ageSeconds))
 			return r, false, rawDomainSet, false
 		}
 
@@ -1649,8 +1680,8 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 	now := time.Now()
 	v := &item{
 		resp:           packedMsg,
-		storedTime:     now,
-		expirationTime: now.Add(msgTtl),
+		storedUnixNano: now.UnixNano(),
+		expireUnixNano: now.Add(msgTtl).UnixNano(),
 	}
 
 	domainSet := currentRouteDomainSet(qCtx)
@@ -1673,4 +1704,11 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 		c.walAppendCounter.Inc()
 	}
 	return v, true
+}
+
+func unixNanoToTime(v int64) time.Time {
+	if v <= 0 {
+		return time.Time{}
+	}
+	return time.Unix(0, v)
 }

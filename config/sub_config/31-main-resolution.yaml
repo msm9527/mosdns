@@ -54,6 +54,17 @@ policies:
         exec: $cache_branch_foreign_ecs
       - exec: $sequence_google_node_raw
 
+  # 未命中 noleak 首查优先保留 ECS 结果；
+  # 如果 foreignecs 卡住或直接失败，则快速退回普通国外真实解析，
+  # 避免冷查询直接把 timeout / SERVFAIL 暴露给主入口。
+  - name: sequence_google_node_resilient
+    type: fallback
+    args:
+      primary: sequence_google_node
+      secondary: sequence_google
+      threshold: 350
+      always_standby: false
+
   # 国内真实解析链。
   - name: sequence_local
     type: sequence

@@ -9,16 +9,12 @@ import (
 )
 
 func (c *Cache) resetL1() {
-	capHint := c.l1ShardCap
-	if capHint < 1 {
-		capHint = 1
-	}
 	for i := 0; i < shardCount; i++ {
 		c.shards[i].Lock()
-		c.shards[i].items = make(map[key]*item, capHint)
-		c.shards[i].order = make([]key, capHint)
+		c.shards[i].items = nil
+		c.shards[i].order = nil
 		c.shards[i].pos = 0
-		c.shards[i].ref = make(map[key]bool, capHint)
+		c.shards[i].ref = nil
 		c.shards[i].maxSize = c.l1ShardCap
 		c.shards[i].Unlock()
 	}
@@ -38,11 +34,13 @@ func (c *Cache) deleteL1Keys(keys []key) {
 	for _, k := range keys {
 		shard := c.shards[k.Sum()%shardCount]
 		shard.Lock()
-		delete(shard.items, k)
-		delete(shard.ref, k)
-		for i, existing := range shard.order {
-			if existing == k {
-				shard.order[i] = ""
+		if entry, ok := shard.items[k]; ok {
+			delete(shard.items, k)
+			if entry.slot >= 0 && entry.slot < len(shard.order) {
+				shard.order[entry.slot] = ""
+			}
+			if entry.slot >= 0 && entry.slot < len(shard.ref) {
+				shard.ref[entry.slot] = false
 			}
 		}
 		shard.Unlock()

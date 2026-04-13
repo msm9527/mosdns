@@ -1,6 +1,8 @@
 package domain_mapper
 
 import (
+	"encoding/binary"
+	"math/bits"
 	"slices"
 	"strings"
 	"time"
@@ -8,6 +10,24 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 )
+
+type sharedRuleExporter interface {
+	GetRulesShared() ([]string, error)
+}
+
+type runtimeValidationAwareExporter interface {
+	HasRuntimeHotRuleValidation() bool
+}
+
+type providerSet struct {
+	inline uint64
+	extra  []uint64
+}
+
+type providerSetCacheKey struct {
+	inline   uint64
+	overflow string
+}
 
 type providerResultBuilder struct {
 	marks []uint8
@@ -73,68 +93,264 @@ func buildProviderValidators(providers map[string]data_provider.RuleExporter) ma
 		if !ok || validator == nil {
 			continue
 		}
+		if aware, ok := provider.(runtimeValidationAwareExporter); ok && !aware.HasRuntimeHotRuleValidation() {
+			continue
+		}
 		validators[tag] = validator
 	}
 	return validators
 }
 
-func appendUniqueMatchSource(dst []matchSource, src matchSource) []matchSource {
-	if src.result == nil {
-		return dst
+func buildProviderRegistry(ruleConfigs []RuleConfig, providers map[string]data_provider.RuleExporter) *providerRegistry {
+	results := buildProviderResults(ruleConfigs)
+	validators := buildProviderValidators(providers)
+	registry := &providerRegistry{
+		byTag:     make(map[string]uint16, len(results)),
+		providers: make([]providerRuntime, 0, len(results)),
 	}
-	src.providerTag = strings.TrimSpace(src.providerTag)
-	if src.providerTag == "" {
+	for _, rule := range ruleConfigs {
+		tag := strings.TrimSpace(rule.Tag)
+		if tag == "" {
+			continue
+		}
+		if _, exists := registry.byTag[tag]; exists {
+			continue
+		}
+		result := results[tag]
+		if result == nil {
+			continue
+		}
+		registry.byTag[tag] = uint16(len(registry.providers))
+		registry.providers = append(registry.providers, providerRuntime{
+			result:    result,
+			validator: validators[tag],
+		})
+	}
+	return registry
+}
+
+func (r *providerRegistry) ref(tag string) (uint16, bool) {
+	if r == nil {
+		return 0, false
+	}
+	ref, ok := r.byTag[strings.TrimSpace(tag)]
+	return ref, ok
+}
+
+func (r *providerRegistry) provider(ref uint16) *providerRuntime {
+	if r == nil || int(ref) >= len(r.providers) {
+		return nil
+	}
+	return &r.providers[ref]
+}
+
+func loadExporterRules(exporter data_provider.RuleExporter) ([]string, error) {
+	if shared, ok := exporter.(sharedRuleExporter); ok {
+		return shared.GetRulesShared()
+	}
+	return exporter.GetRules()
+}
+
+func (s *providerSet) add(ref uint16) bool {
+	if ref < 64 {
+		bit := uint64(1) << ref
+		if s.inline&bit != 0 {
+			return false
+		}
+		s.inline |= bit
+		return true
+	}
+	ref -= 64
+	idx := int(ref / 64)
+	bit := uint64(1) << (ref % 64)
+	if idx >= len(s.extra) {
+		extra := make([]uint64, idx+1)
+		copy(extra, s.extra)
+		s.extra = extra
+	}
+	if s.extra[idx]&bit != 0 {
+		return false
+	}
+	s.extra[idx] |= bit
+	return true
+}
+
+func (s *providerSet) merge(other providerSet) {
+	s.inline |= other.inline
+	if len(other.extra) == 0 {
+		return
+	}
+	if len(s.extra) < len(other.extra) {
+		extra := make([]uint64, len(other.extra))
+		copy(extra, s.extra)
+		s.extra = extra
+	}
+	for i, word := range other.extra {
+		s.extra[i] |= word
+	}
+}
+
+func (s providerSet) clone() providerSet {
+	if len(s.extra) == 0 {
+		return s
+	}
+	return providerSet{
+		inline: s.inline,
+		extra:  append([]uint64(nil), s.extra...),
+	}
+}
+
+func (s providerSet) empty() bool {
+	if s.inline != 0 {
+		return false
+	}
+	for _, word := range s.extra {
+		if word != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func (s providerSet) forEach(fn func(ref uint16)) {
+	word := s.inline
+	for word != 0 {
+		offset := bits.TrailingZeros64(word)
+		fn(uint16(offset))
+		word &= word - 1
+	}
+	for i, extraWord := range s.extra {
+		word = extraWord
+		for word != 0 {
+			offset := bits.TrailingZeros64(word)
+			fn(uint16(64 + i*64 + offset))
+			word &= word - 1
+		}
+	}
+}
+
+func trimTrailingZeroWords(words []uint64) []uint64 {
+	n := len(words)
+	for n > 0 && words[n-1] == 0 {
+		n--
+	}
+	return words[:n]
+}
+
+func (s providerSet) cacheKey() providerSetCacheKey {
+	extra := trimTrailingZeroWords(s.extra)
+	if len(extra) == 0 {
+		return providerSetCacheKey{inline: s.inline}
+	}
+	buf := make([]byte, len(extra)*8)
+	for i, word := range extra {
+		binary.LittleEndian.PutUint64(buf[i*8:], word)
+	}
+	return providerSetCacheKey{
+		inline:   s.inline,
+		overflow: string(buf),
+	}
+}
+
+func appendUniqueDynamicProvider(dst []*providerRuntime, provider *providerRuntime) []*providerRuntime {
+	if provider == nil {
 		return dst
 	}
 	for _, existing := range dst {
-		if existing.providerTag == src.providerTag {
+		if existing == provider {
 			return dst
 		}
 	}
-	return append(dst, src)
+	return append(dst, provider)
 }
 
-func appendMatchSources(dst []matchSource, src []matchSource) []matchSource {
-	for _, source := range src {
-		dst = appendUniqueMatchSource(dst, source)
+func appendDynamicProviders(dst []*providerRuntime, src []*providerRuntime) []*providerRuntime {
+	for _, provider := range src {
+		dst = appendUniqueDynamicProvider(dst, provider)
 	}
 	return dst
 }
 
-func cloneMatchSources(src []matchSource) []matchSource {
+func cloneDynamicProviders(src []*providerRuntime) []*providerRuntime {
 	if len(src) == 0 {
 		return nil
 	}
-	return append([]matchSource(nil), src...)
+	return append([]*providerRuntime(nil), src...)
 }
 
-func (dm *DomainMapper) allowRuleSource(providerTag, qname string, now time.Time) bool {
-	validators, _ := dm.validators.Load().(map[string]coremain.HotRuleRuntimeValidator)
-	validator := validators[strings.TrimSpace(providerTag)]
-	if validator == nil {
+func buildCompiledMatch(registry *providerRegistry, sources providerSet) *compiledMatch {
+	if registry == nil || sources.empty() {
+		return nil
+	}
+	var staticResult *MatchResult
+	var dynamicProviders []*providerRuntime
+	sources.forEach(func(ref uint16) {
+		provider := registry.provider(ref)
+		if provider == nil || provider.result == nil {
+			return
+		}
+		if provider.validator != nil {
+			dynamicProviders = appendUniqueDynamicProvider(dynamicProviders, provider)
+			return
+		}
+		staticResult = mergeMatchResult(staticResult, provider.result)
+	})
+	if staticResult == nil && len(dynamicProviders) == 0 {
+		return nil
+	}
+	return &compiledMatch{
+		staticResult:     staticResult,
+		dynamicProviders: dynamicProviders,
+	}
+}
+
+func getOrBuildCompiledMatch(
+	cache map[providerSetCacheKey]*compiledMatch,
+	registry *providerRegistry,
+	sources providerSet,
+) *compiledMatch {
+	if sources.empty() {
+		return nil
+	}
+	key := sources.cacheKey()
+	if compiled := cache[key]; compiled != nil {
+		return compiled
+	}
+	compiled := buildCompiledMatch(registry, sources)
+	if compiled != nil {
+		cache[key] = compiled
+	}
+	return compiled
+}
+
+func allowProvider(provider *providerRuntime, domain string, now time.Time) bool {
+	if provider == nil || provider.validator == nil {
 		return true
 	}
-	domain := strings.TrimSuffix(ensureFQDN(qname), ".")
 	if domain == "" {
 		return false
 	}
-	return validator.AllowHotRule(domain, now)
+	return provider.validator.AllowHotRule(domain, now)
 }
 
-func (dm *DomainMapper) resolveSources(sources []matchSource, qname string, now time.Time) *MatchResult {
-	var merged *MatchResult
-	for _, source := range sources {
-		if !dm.allowRuleSource(source.providerTag, qname, now) {
-			continue
-		}
-		merged = mergeMatchResult(merged, source.result)
-	}
-	return merged
+func normalizedValidationDomain(qname string) string {
+	return strings.TrimSuffix(ensureFQDN(qname), ".")
 }
 
 func (dm *DomainMapper) resolveCompiledMatch(compiled *compiledMatch, qname string, now time.Time) *MatchResult {
 	if compiled == nil {
 		return nil
 	}
-	return dm.resolveSources(compiled.sources, qname, now)
+	if len(compiled.dynamicProviders) == 0 {
+		return compiled.staticResult
+	}
+	domain := normalizedValidationDomain(qname)
+	merged := cloneMatchResult(compiled.staticResult)
+	for _, provider := range compiled.dynamicProviders {
+		if !allowProvider(provider, domain, now) {
+			continue
+		}
+		merged = mergeMatchResult(merged, provider.result)
+	}
+	return merged
 }

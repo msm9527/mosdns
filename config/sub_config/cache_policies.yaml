@@ -44,78 +44,78 @@
 
 response:
   cache_main:
-    size: 400000
+    size: 40000
     lazy_cache_ttl: 86400
     nxdomain_ttl: 300
     servfail_ttl: 30
     l1_enabled: true
-    l1_total_cap: 8192
+    l1_total_cap: 1024
     persist: true
     dump_file: db/cache/cache_main.dump
     dump_interval: 3600
     wal_sync_interval: 1
 
   cache_branch_domestic:
-    size: 200000
+    size: 20000
     lazy_cache_ttl: 21600
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
-    l1_total_cap: 4096
+    l1_total_cap: 512
     persist: true
     dump_file: db/cache/cache_branch_domestic.dump
     dump_interval: 3600
     wal_sync_interval: 1
 
   cache_branch_foreign:
-    size: 150000
+    size: 20000
     lazy_cache_ttl: 21600
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
-    l1_total_cap: 4096
+    l1_total_cap: 512
     persist: true
     dump_file: db/cache/cache_branch_foreign.dump
     dump_interval: 3600
     wal_sync_interval: 1
 
   cache_branch_foreign_ecs:
-    size: 100000
+    size: 8000
     lazy_cache_ttl: 7200
     nxdomain_ttl: 120
     servfail_ttl: 20
     l1_enabled: true
-    l1_total_cap: 2048
+    l1_total_cap: 256
     persist: true
     dump_file: db/cache/cache_branch_foreign_ecs.dump
     dump_interval: 1800
     wal_sync_interval: 1
 
   cache_fakeip_domestic:
-    size: 100000
+    size: 10000
     lazy_cache_ttl: 0
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
-    l1_total_cap: 2048
+    l1_total_cap: 256
     persist: false
 
   cache_fakeip_proxy:
-    size: 120000
+    size: 12000
     lazy_cache_ttl: 0
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
-    l1_total_cap: 2048
+    l1_total_cap: 256
     persist: false
 
   cache_probe:
-    size: 80000
+    size: 4000
     lazy_cache_ttl: 600
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
-    l1_total_cap: 2048
+    l1_total_cap: 128
     persist: false
 
 udp_fast_path:

@@ -106,7 +106,10 @@ policies:
         exec: fast_mark 19
       - matches: fast_mark 19
         exec: $sequence_ipv4_realip_finalize_refresh
-      - exec: $sequence_not_in_list_noleak_v4_refresh
+      - matches: switch 'core_mode:compat'
+        exec: $sequence_not_in_list_leak_v4_refresh
+      - matches: switch 'core_mode:secure'
+        exec: $sequence_not_in_list_noleak_v4_refresh
 
   - name: sequence_ipv6_refresh
     type: sequence
@@ -137,7 +140,10 @@ policies:
           - fast_mark 21
           - '!fast_mark 17'
         exec: $sequence_ipv6_realip_finalize_refresh
-      - exec: $sequence_not_in_list_noleak_v6_refresh
+      - matches: switch 'core_mode:compat'
+        exec: $sequence_not_in_list_leak_v6_refresh
+      - matches: switch 'core_mode:secure'
+        exec: $sequence_not_in_list_noleak_v6_refresh
 
   # 刷新专用入口。
   - name: sequence_requery_refresh

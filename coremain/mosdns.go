@@ -22,10 +22,12 @@ package coremain
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/pprof"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -58,6 +60,8 @@ type Mosdns struct {
 
 // NewMosdns initializes a mosdns instance and its plugins.
 func NewMosdns(cfg *Config) (*Mosdns, error) {
+	thpDisabled, thpErr := disableProcessTransparentHugePages()
+
 	// Init logger.
 	baseLogger, err := mlog.NewLogger(resolveLogConfigForBaseDir(cfg.baseDir, cfg.Log))
 	if err != nil {
@@ -69,6 +73,11 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 
 	// Create the final logger with our TeeCore.
 	lg := zap.New(teeCore, zap.AddCaller(), zap.AddStacktrace(zap.ErrorLevel))
+	if thpErr != nil {
+		lg.Warn("failed to disable transparent huge pages for process", zap.Error(thpErr))
+	} else if thpDisabled {
+		lg.Info("disabled transparent huge pages for process")
+	}
 
 	// Start the audit log collector's background worker.
 	GlobalAuditCollector.StartWorker()
@@ -201,6 +210,23 @@ func NewMosdns(cfg *Config) (*Mosdns, error) {
 		return nil, err
 	}
 	m.logger.Info("all plugins are loaded")
+	// Rule compilation and cache bootstrap create a large amount of short-lived
+	// heap data. Reclaim it once after startup so the steady-state RSS reflects
+	// the actual retained working set instead of the load spike.
+	debug.FreeOSMemory()
+	if r := applyAutoMemoryLimit(); r.Applied {
+		limitMB := float64(r.Limit) / (1 << 20)
+		heapAllocMB := float64(r.HeapAlloc) / (1 << 20)
+		fields := []zap.Field{
+			zap.Float64("limit_mb", limitMB),
+			zap.Float64("heap_alloc_mb", heapAllocMB),
+		}
+		if r.Previous != math.MaxInt64 {
+			fields = append(fields, zap.Float64("previous_limit_mb", float64(r.Previous)/(1<<20)))
+		}
+		m.logger.Info("applied automatic process memory limit", fields...)
+	}
+	m.startBackgroundHeapReclaimer()
 
 	return m, nil
 }
