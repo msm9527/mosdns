@@ -3,12 +3,20 @@ name: Release mosdns (manual)
 on:
   workflow_dispatch:
     inputs:
+      channel:
+        description: '发布通道：candidate=候选预发布，stable=正式 latest'
+        required: true
+        default: 'stable'
+        type: choice
+        options:
+          - candidate
+          - stable
       ref:
         description: '用于发布的分支或提交，默认 main'
         required: false
         default: 'main'
       tag_name:
-        description: '发布 tag，留空时使用 .version'
+        description: '发布 tag，留空时 stable 使用 .version，candidate 自动生成 .version-rc.*'
         required: false
         default: ''
 
@@ -40,17 +48,37 @@ jobs:
           python-version: '3.13'
           check-latest: true
 
-      - name: Resolve tag name
+      - name: Resolve tag name and release channel
         run: |
+          CHANNEL='${{ inputs.channel }}'
           BASE='${{ inputs.tag_name }}'
           if [ -z "$BASE" ]; then
-            BASE=$(tr -d '\r\n' < .version)
+            FILE_VER=$(tr -d '\r\n' < .version)
+            if [ -z "$FILE_VER" ]; then
+              echo "tag_name and .version are both empty" >&2
+              exit 1
+            fi
+            if [ "$CHANNEL" = "candidate" ]; then
+              BASE="${FILE_VER}-rc.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}"
+            else
+              BASE="$FILE_VER"
+            fi
           fi
           if [ -z "$BASE" ]; then
             echo "tag_name and .version are both empty" >&2
             exit 1
           fi
           echo "VERSION=$BASE" >> $GITHUB_ENV
+          echo "RELEASE_CHANNEL=$CHANNEL" >> $GITHUB_ENV
+          if [ "$CHANNEL" = "candidate" ]; then
+            echo "RELEASE_PRERELEASE=true" >> $GITHUB_ENV
+            echo "RELEASE_MAKE_LATEST=false" >> $GITHUB_ENV
+            echo "RELEASE_TITLE=Candidate" >> $GITHUB_ENV
+          else
+            echo "RELEASE_PRERELEASE=false" >> $GITHUB_ENV
+            echo "RELEASE_MAKE_LATEST=true" >> $GITHUB_ENV
+            echo "RELEASE_TITLE=Release" >> $GITHUB_ENV
+          fi
 
       - name: Read Go version from go.mod
         run: |
@@ -111,12 +139,15 @@ jobs:
         with:
           tag_name: ${{ env.VERSION }}
           target_commitish: ${{ inputs.ref }}
-          name: "Release ${{ env.VERSION }} | ${{ env.RELEASE_NAME_SUFFIX }}"
+          name: "${{ env.RELEASE_TITLE }} ${{ env.VERSION }} | ${{ env.RELEASE_NAME_SUFFIX }}"
           files: './release/mosdns*.zip'
-          prerelease: false
+          prerelease: ${{ env.RELEASE_PRERELEASE }}
+          make_latest: ${{ env.RELEASE_MAKE_LATEST }}
           generate_release_notes: true
           body: |
             ${{ env.RELEASE_SUBTITLE }}
+            Channel: ${{ env.RELEASE_CHANNEL }}
+            Source ref: ${{ inputs.ref }}
             Built with Go ${{ env.GO_VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

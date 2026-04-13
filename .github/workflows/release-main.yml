@@ -1,9 +1,8 @@
-name: Release (main)
+name: Release Prerelease (main)
 
 on:
   push:
     branches: [ "main" ]
-  workflow_dispatch:
 
 env:
   RELEASE_NAME_SUFFIX: "来源: mosdns-v5 + yyysuo/ph-v5"
@@ -67,13 +66,14 @@ jobs:
             echo ".version is empty" >&2
             exit 1
           fi
-          echo "VERSION=$BASE" >> $GITHUB_ENV
+          echo "BASE_VERSION=$BASE" >> $GITHUB_ENV
+          echo "VERSION=${BASE}-pre.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
 
       - name: Build one target
         run: python ./release.py -i ${{ matrix.index }}
         env:
           CGO_ENABLED: '0'
-          VERSION: ${{ env.VERSION }}
+          VERSION: ${{ env.BASE_VERSION }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -88,14 +88,15 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare tag name
+      - name: Prepare prerelease tag
         run: |
           BASE=$(tr -d '\r\n' < .version)
           if [ -z "$BASE" ]; then
             echo ".version is empty" >&2
             exit 1
           fi
-          echo "TAG_NAME=$BASE" >> $GITHUB_ENV
+          echo "BASE_VERSION=$BASE" >> $GITHUB_ENV
+          echo "TAG_NAME=${BASE}-pre.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
 
       - name: Read Go version from go.mod
         run: |
@@ -108,59 +109,21 @@ jobs:
           path: ./artifacts
           merge-multiple: true
 
-      - name: Delete existing release and tag
-        uses: actions/github-script@v8
-        env:
-          TAG_NAME: ${{ env.TAG_NAME }}
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const tag = process.env.TAG_NAME;
-            const { owner, repo } = context.repo;
-
-            try {
-              const release = await github.rest.repos.getReleaseByTag({
-                owner,
-                repo,
-                tag,
-              });
-              await github.rest.repos.deleteRelease({
-                owner,
-                repo,
-                release_id: release.data.id,
-              });
-              core.info(`deleted existing release for tag ${tag}`);
-            } catch (error) {
-              if (error.status !== 404) {
-                throw error;
-              }
-              core.info(`no existing release for tag ${tag}`);
-            }
-
-            try {
-              await github.rest.git.deleteRef({
-                owner,
-                repo,
-                ref: `tags/${tag}`,
-              });
-              core.info(`deleted existing tag ${tag}`);
-            } catch (error) {
-              if (error.status !== 404 && error.status !== 422) {
-                throw error;
-              }
-              core.info(`no existing tag ${tag}`);
-            }
-
-      - name: Publish release
+      - name: Publish prerelease
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
-          name: "Release ${{ env.TAG_NAME }} | ${{ env.RELEASE_NAME_SUFFIX }}"
+          target_commitish: ${{ github.sha }}
+          name: "Prerelease ${{ env.TAG_NAME }} | ${{ env.RELEASE_NAME_SUFFIX }}"
           files: './artifacts/mosdns*.zip'
-          prerelease: false
+          prerelease: true
+          make_latest: false
           generate_release_notes: true
           body: |
             ${{ env.RELEASE_SUBTITLE }}
+            Channel: prerelease
+            Base version: ${{ env.BASE_VERSION }}
+            Source commit: ${{ github.sha }}
             Built with Go ${{ env.GO_VERSION }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
