@@ -91,6 +91,8 @@ paths:
     get:
       tags: [Audit]
       summary: Get realtime audit overview
+      description: |
+        返回当前概览窗口的实时统计，并附带累计、最近 7 天、最近 3 天、24 小时内和 1 小时内的汇总数据。
       parameters:
         - $ref: '#/components/parameters/WindowQuery'
       responses:
@@ -1875,10 +1877,11 @@ components:
     WindowQuery:
       name: window
       in: query
-      description: 概览窗口秒数；默认读取当前审计设置中的 `overview_window_seconds`
+      description: 概览窗口秒数；默认读取当前审计设置中的 `overview_window_seconds`，最大 `3600`
       schema:
         type: integer
         minimum: 1
+        maximum: 3600
     FromQuery:
       name: from
       in: query
@@ -2221,6 +2224,11 @@ components:
           format: int64
         total_average_duration_ms:
           type: number
+        period_summaries:
+          type: array
+          description: 固定返回总计、最近 7 天、最近 3 天、24 小时内、1 小时内 5 个窗口摘要
+          items:
+            $ref: '#/components/schemas/AuditPeriodSummary'
         query_count:
           type: integer
           format: int64
@@ -2253,6 +2261,22 @@ components:
         current_storage_bytes:
           type: integer
           format: int64
+    AuditPeriodSummary:
+      type: object
+      properties:
+        key:
+          type: string
+          description: 固定窗口键；当前为 `total`、`7d`、`3d`、`24h`、`1h`
+        label:
+          type: string
+        window_seconds:
+          type: integer
+          description: 窗口秒数；`total` 不返回该字段
+        query_count:
+          type: integer
+          format: int64
+        average_duration_ms:
+          type: number
     AuditTimeseriesPoint:
       type: object
       properties:
@@ -2412,20 +2436,34 @@ components:
           type: boolean
         overview_window_seconds:
           type: integer
+          minimum: 1
+          maximum: 3600
         raw_retention_days:
           type: integer
+          minimum: 1
+          maximum: 365
         aggregate_retention_days:
           type: integer
+          minimum: 1
+          maximum: 365
         max_storage_mb:
           type: integer
+          minimum: 1
+          maximum: 10240
         sqlite_path:
           type: string
         flush_batch_size:
           type: integer
+          minimum: 1
+          maximum: 4096
         flush_interval_ms:
           type: integer
+          minimum: 1
+          maximum: 5000
         maintenance_interval_seconds:
           type: integer
+          minimum: 1
+          maximum: 3600
     AuditSettingsResponse:
       allOf:
         - $ref: '#/components/schemas/AuditSettingsUpdateRequest'
@@ -2868,6 +2906,7 @@ components:
           description: |
             可用值依赖开关名：
             - `block_response` / `main_cache` / `branch_cache` / `fakeip_cache` / `probe_cache` / `block_query_type` / `block_ipv6` / `ad_block` / `udp_fast_path`: `on` / `off`
+            - `core_mode`: `compat` / `secure`
             - `client_proxy_mode`: `all` / `blacklist` / `whitelist`
             - `cn_answer_mode`: `realip` / `fakeip`
     RequerySourceFile:
@@ -3769,6 +3808,7 @@ components:
             type: integer
         include_udp_fast:
           type: boolean
+          description: 兼容开关；当未显式传 `kinds` 时，设为 `true` 会额外包含 `udp_fast`
     FlushAllRequest:
       type: object
       properties:
@@ -3783,6 +3823,7 @@ components:
             type: string
         include_udp_fast:
           type: boolean
+          description: 兼容开关；当未显式传 `kinds` 时，设为 `true` 会额外包含 `udp_fast`
     RuntimeCacheActionItem:
       type: object
       properties:

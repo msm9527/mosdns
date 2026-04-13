@@ -1795,7 +1795,7 @@
                         </div>
                         <div class="form-group">
                             <label for="audit-aggregate-retention-days">聚合数据保留天数:</label>
-                            <input type="number" id="audit-aggregate-retention-days" required min="1" max="3650" placeholder="输入天数 (1-3650)">
+                            <input type="number" id="audit-aggregate-retention-days" required min="1" max="365" placeholder="输入天数 (1-365)">
                         </div>
                         <div class="form-group">
                             <label for="audit-max-disk-size">存储空间上限 (MB):</label>
@@ -1828,7 +1828,7 @@
                         <strong>首页与趋势:</strong> <span id="audit-overview-scope">查询中...</span>
                     </div>
                     <form id="audit-overview-form">
-                        <input type="number" id="audit-overview-window-input" required min="1" max="86400" placeholder="概览窗口(秒)">
+                        <input type="number" id="audit-overview-window-input" required min="1" max="3600" placeholder="概览窗口(秒，1-3600)">
                         <button type="submit" class="button primary" data-default-text="更新口径"><span>更新口径</span></button>
                     </form>
                     <div class="control-item tip-inline" style="margin-top: -0.25rem;">
@@ -1942,7 +1942,7 @@
                             <span>一键清空全部缓存</span>
                         </button>
                     </div>
-                    <p class="module-desc" style="margin: 0 0 1rem;">支持单个缓存清空，也支持一键清空全部缓存；总清空会同时包含 UDP 快路径缓存。</p>
+                    <p class="module-desc" style="margin: 0 0 1rem;">支持单个缓存清空，也支持一键清空全部缓存；总清空会同时包含响应缓存和 UDP 快路径缓存。核心模式切换则只清 UDP 快路径，并在后台异步启动快速预热。</p>
                     <div class="scrollable-table-container" style="max-height: none; overflow-y: visible;">
                         <table id="cache-stats-table" class="mobile-card-layout">
                             <thead>

@@ -67,6 +67,7 @@
 说明：
 
 - `overview.total_query_count` / `overview.total_average_duration_ms` 表示保留期内累计统计
+- `overview.period_summaries` 固定包含 5 个窗口：`total`、`7d`、`3d`、`24h`、`1h`
 - `logs.next_cursor` 用于顺序翻页，不再走 `page` / `offset`
 - 推荐使用 `POST /api/v3/audit/logs/search` 进行新搜索，对关键词、字段范围、时间范围和高级过滤做统一表达
 - `GET /api/v3/audit/logs` 保留为兼容入口，主要用于简单 query string 查询
@@ -173,8 +174,11 @@
 当前支持的开关名：
 
 - `block_response`
+- `core_mode`
 - `client_proxy_mode`
 - `branch_cache`
+- `fakeip_cache`
+- `probe_cache`
 - `block_query_type`
 - `block_ipv6`
 - `ad_block`
@@ -184,9 +188,15 @@
 
 值约束：
 
-- `on/off`：`block_response`、`branch_cache`、`block_query_type`、`block_ipv6`、`ad_block`、`main_cache`、`udp_fast_path`
+- `on/off`：`block_response`、`main_cache`、`branch_cache`、`fakeip_cache`、`probe_cache`、`block_query_type`、`block_ipv6`、`ad_block`、`udp_fast_path`
+- `compat/secure`：`core_mode`，分别对应兼容补判链和安全补判链
 - `all/blacklist/whitelist`：`client_proxy_mode`，分别配合 `client_ip_whitelist.txt` / `client_ip_blacklist.txt`
 - `realip/fakeip`：`cn_answer_mode`
+
+补充说明：
+
+- 直接调用 `PUT /api/v1/control/switches/core_mode` 只会更新开关值
+- 当前 UI 在切换 `core_mode` 后，会额外执行“清空 UDP 快路径缓存 + 后台异步快速预热”的前端后处理；这是 UI 行为，不是该 API 自带副作用
 
 ## 6. Requery
 
@@ -222,6 +232,7 @@
 | `PUT` | `/api/v1/upstream/config` | 全量替换配置 | `UpstreamConfigReplaceRequest` | `{ "message": "..." }` |
 | `POST` | `/api/v1/upstream/config` | 设置单个 plugin_tag 的上游列表 | `UpstreamConfigCompatRequest` | `{ "message": "..." }` |
 | `POST` | `/api/v1/upstream/apply` | 重新加载已保存的上游配置 | 空体或 `{ "plugin_tag": "..." }` | `{ "message": "..." }` |
+| `POST` | `/api/v1/upstream/stats/reset` | 清空上游运行时统计 | `{ "plugin_tag": "...", "upstream_tag": "..." }`，均可选；仅传 `upstream_tag` 时必须同时传 `plugin_tag` | `UpstreamStatsResetResponse` |
 | `GET` | `/api/v1/upstream/items` | 查询某个 plugin_tag 的上游项 | `plugin_tag` 必填 | `UpstreamOverrideConfig[]` |
 | `POST` | `/api/v1/upstream/items` | 新增一条上游项 | `UpstreamItemMutationRequest` | `201` + `{ "message": "..." }` |
 | `PUT` | `/api/v1/upstream/items/{upstreamTag}` | 更新一条上游项 | `UpstreamItemMutationRequest` | `{ "message": "..." }` |
@@ -236,6 +247,7 @@
 | `PUT` | `/api/v1/control/upstreams` | `compat` | 等价于 `/api/v1/upstream/config` |
 | `POST` | `/api/v1/control/upstreams` | `compat` | 等价于 `/api/v1/upstream/config` 的单 plugin 写法 |
 | `GET` | `/api/v1/control/upstreams/tags` | `compat` | 等价于 `/api/v1/upstream/tags` |
+| `POST` | `/api/v1/control/upstreams/stats/reset` | `compat` | 等价于 `/api/v1/upstream/stats/reset` |
 
 说明：
 
@@ -316,6 +328,8 @@
 | `POST` | `/api/v1/cache/{tag}/save` | 持久化缓存实例 | 无 | `TagMessageResponse` |
 | `POST` | `/api/v1/cache/{tag}/flush` | 清空缓存实例 | 无 | `{ "message": "..." }` |
 | `POST` | `/api/v1/cache/{tag}/purge_domain` | 按域名清理缓存 | `PurgeDomainRequest` | `PurgeDomainResponse` |
+| `POST` | `/api/v1/cache/purge_domains` | 批量按域名清理运行中缓存 | `PurgeDomainsRequest` | `RuntimeCacheActionResponse` |
+| `POST` | `/api/v1/cache/flush_all` | 批量清空运行中缓存 | `FlushAllRequest` | `RuntimeCacheActionResponse` |
 
 补充说明：
 
@@ -323,6 +337,8 @@
 - `GET /api/v1/cache/stats` 和 `GET /api/v1/cache/{tag}/stats` 返回里的 `config.persist` 表示该缓存是否会做 dump + WAL 持久化
 - `config.persist=false` 表示该缓存只保存在内存中
 - `config.size` 表示最大缓存条目数，不是文件大小；超过后按 LRU 淘汰旧条目
+- `PurgeDomainsRequest.kinds` / `FlushAllRequest.kinds` 当前支持 `response`、`udp_fast`
+- `include_udp_fast=true` 用于在未显式传 `kinds` 时兼容地包含 UDP 快路径缓存
 
 ### 10.3 Lists
 
