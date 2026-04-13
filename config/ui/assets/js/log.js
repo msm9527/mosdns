@@ -59,6 +59,7 @@ document.addEventListener('DOMContentLoaded', () => {
         auditStorageForm: document.getElementById('audit-storage-form'), auditOverviewForm: document.getElementById('audit-overview-form'), auditOverviewWindowInput: document.getElementById('audit-overview-window-input'),
         auditRetentionDaysInput: document.getElementById('audit-retention-days'), auditAggregateRetentionDaysInput: document.getElementById('audit-aggregate-retention-days'), auditMaxDiskSizeInput: document.getElementById('audit-max-disk-size'),
         cacheStatsTbody: document.getElementById('cache-stats-tbody'),
+        clearAllCachesBtn: document.getElementById('clear-all-caches-btn'),
         topDomainsBody: document.getElementById('top-domains-body'), topClientsBody: document.getElementById('top-clients-body'), slowestQueriesBody: document.getElementById('slowest-queries-body'),
         shuntResultsBody: document.getElementById('shunt-results-body'),
         // 覆盖配置元素
@@ -289,6 +290,11 @@ document.addEventListener('DOMContentLoaded', () => {
         getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }),
         getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }),
         clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }),
+        clearAllCaches: (includeUdpFast = true, tags = []) => api.fetch('/api/v1/cache/flush_all', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags, include_udp_fast: includeUdpFast }),
+        }),
         getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }),
     };
 
@@ -3389,6 +3395,24 @@ const cacheManager = {
             }
         },
 
+        async clearAll(button) {
+            if (!button) return;
+            if (!confirm('确定要一键清空全部缓存吗？这会同时清空响应缓存和 UDP 快路径缓存。')) {
+                return;
+            }
+
+            ui.setLoading(button, true);
+            try {
+                await api.clearAllCaches(true);
+                ui.showToast('全部缓存已清空', 'success');
+                await this.updateStats();
+            } catch (error) {
+                ui.showToast('一键清空全部缓存失败', 'error');
+            } finally {
+                ui.setLoading(button, false);
+            }
+        },
+
         renderTable(isError = false) {
             const tbody = elements.cacheStatsTbody;
             if (!tbody) return;
@@ -4967,6 +4991,7 @@ const handleInteractiveClick = (e) => {
             const domainListLink = e.target.closest('a.control-item-link[data-list-type], a.control-item-link[data-list-tag]');
             const cacheListLink = e.target.closest('a.control-item-link[data-cache-tag]');
             const clearCacheBtn = e.target.closest('.clear-cache-btn[data-cache-tag]');
+            const clearAllCachesBtn = e.target.closest('#clear-all-caches-btn');
 
             if (domainListLink) {
                 e.preventDefault();
@@ -4998,6 +5023,9 @@ const handleInteractiveClick = (e) => {
                             // The button is part of a re-rendered table, so no need to setLoading(false)
                         });
                 }
+            } else if (clearAllCachesBtn) {
+                e.preventDefault();
+                cacheManager.clearAll(clearAllCachesBtn);
             }
         });
 

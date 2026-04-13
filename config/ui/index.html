@@ -1849,11 +1849,17 @@
 
                 <!-- Row 2 -->
                 <div class="control-module">
-                    <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
-                            <path
-                                d="M4 3h16c1.1 0 2 .9 2 2v14c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2zm0 2v4h7V5H4zm9 0v4h7V5h-7zm-9 6v4h7v-4H4zm9 0v4h7v-4h-7zm-9 6v2h7v-2H4zm9 0v2h7v-2h-7z">
-                            </path>
-                        </svg>缓存管理</h3>
+                    <div class="module-header">
+                        <h3><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                                <path
+                                    d="M4 3h16c1.1 0 2 .9 2 2v14c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V5c0-1.1.9-2 2-2zm0 2v4h7V5H4zm9 0v4h7V5h-7zm-9 6v4h7v-4H4zm9 0v4h7v-4h-7zm-9 6v2h7v-2H4zm9 0v2h7v-2h-7z">
+                                </path>
+                            </svg>缓存管理</h3>
+                        <button id="clear-all-caches-btn" class="button danger small" type="button">
+                            <span>一键清空全部缓存</span>
+                        </button>
+                    </div>
+                    <p class="module-desc" style="margin: 0 0 1rem;">支持单个缓存清空，也支持一键清空全部缓存；总清空会同时包含 UDP 快路径缓存。</p>
                     <div class="scrollable-table-container" style="max-height: none; overflow-y: visible;">
                         <table id="cache-stats-table" class="mobile-card-layout">
                             <thead>
