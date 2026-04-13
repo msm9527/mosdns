@@ -291,10 +291,10 @@ document.addEventListener('DOMContentLoaded', () => {
         getCacheStats: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/stats`, { signal }),
         getDomainStats: (signal) => api.fetch('/api/v1/data/domain_stats', { signal }),
         clearCache: (cacheTag) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/flush`, { method: 'POST' }),
-        clearAllCaches: (includeUdpFast = true, tags = []) => api.fetch('/api/v1/cache/flush_all', {
+        clearAllCaches: (includeUdpFast = true, tags = [], kinds = []) => api.fetch('/api/v1/cache/flush_all', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ tags, include_udp_fast: includeUdpFast }),
+            body: JSON.stringify({ tags, kinds, include_udp_fast: includeUdpFast }),
         }),
         getCacheContents: (cacheTag, signal) => api.fetch(`/api/v1/cache/${encodeURIComponent(cacheTag)}/entries`, { signal }),
     };
@@ -1229,25 +1229,24 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         },
 
-        async runCoreModeFollowup() {
-            ui.showToast('附加操作：正在清空核心缓存...', 'info');
-            const flushResults = await Promise.allSettled([
-                api.fetch('/api/v1/cache/cache_main/flush', { method: 'POST' }),
-                api.fetch('/api/v1/cache/cache_branch_domestic/flush', { method: 'POST' }),
-                api.fetch('/api/v1/cache/cache_branch_foreign/flush', { method: 'POST' }),
-                api.fetch('/api/v1/cache/cache_branch_foreign_ecs/flush', { method: 'POST' }),
-                api.fetch('/api/v1/cache/cache_fakeip_domestic/flush', { method: 'POST' }),
-                api.fetch('/api/v1/cache/cache_fakeip_proxy/flush', { method: 'POST' })
-            ]);
-            const failedFlushCount = flushResults.filter(r => r.status === 'rejected').length;
-            if (failedFlushCount > 0) {
-                ui.showToast(`附加操作：核心缓存清空完成，有 ${failedFlushCount} 个失败。`, 'error');
-            } else {
-                ui.showToast('附加操作：核心缓存已成功清空！', 'success');
-            }
+        confirmCoreModeSwitch(profile, nextValue) {
+            const nextModeName = profile?.modes?.[nextValue]?.name || nextValue;
+            return confirm(`确定切换“${profile?.name || '核心运行模式'}”到“${nextModeName}”吗？\n\n切换后会立即生效。\n系统只会清空 UDP 快路径缓存以避免短时间命中旧结果，不会自动执行快速预热。`);
+        },
 
-            ui.showToast('附加操作：开始快速预热缓存...', 'info');
-            await requeryManager.handleTrigger(null, 'quick_prewarm', true);
+        async runCoreModeFollowup() {
+            ui.showToast('附加操作：正在清空 UDP 快路径缓存...', 'info');
+            try {
+                const result = await api.clearAllCaches(true, [], ['udp_fast']);
+                const failedCount = Number(result?.failed || 0);
+                if (failedCount > 0) {
+                    ui.showToast(`模式已切换，但 UDP 快路径缓存清理有 ${failedCount} 个失败。`, 'error');
+                    return;
+                }
+                ui.showToast('模式已切换，UDP 快路径缓存已清空；如需加速冷态恢复，请手动执行“快速预热”。', 'success');
+            } catch (error) {
+                ui.showToast('模式已切换，但 UDP 快路径缓存清理失败；短时间内可能仍命中旧结果。', 'error');
+            }
         },
 
         async handleModeSwitch(button) {
@@ -1256,6 +1255,9 @@ document.addEventListener('DOMContentLoaded', () => {
             const valueToPost = button.dataset.switchValue;
             const profile = this.profiles.find(p => p.tag === tag);
             if (!profile) return;
+            if (tag === 'core_mode' && !this.confirmCoreModeSwitch(profile, valueToPost)) {
+                return;
+            }
 
             button.parentElement.querySelectorAll('button').forEach(btn => btn.disabled = true);
             try {
@@ -1279,6 +1281,10 @@ document.addEventListener('DOMContentLoaded', () => {
             const valueToPost = select.value;
             const profile = this.profiles.find(p => p.tag === tag);
             if (!profile) return;
+            if (tag === 'core_mode' && !this.confirmCoreModeSwitch(profile, valueToPost)) {
+                select.value = state.featureSwitches[tag] || profile.defaultValue || '';
+                return;
+            }
 
             select.disabled = true;
             try {

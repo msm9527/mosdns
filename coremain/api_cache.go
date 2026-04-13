@@ -51,6 +51,7 @@ type purgeDomainResponse struct {
 
 type purgeDomainsRequest struct {
 	Tags           []string `json:"tags,omitempty"`
+	Kinds          []string `json:"kinds,omitempty"`
 	Domains        []string `json:"domains"`
 	QTypes         []uint16 `json:"qtypes,omitempty"`
 	IncludeUDPFast bool     `json:"include_udp_fast,omitempty"`
@@ -58,6 +59,7 @@ type purgeDomainsRequest struct {
 
 type flushAllRequest struct {
 	Tags           []string `json:"tags,omitempty"`
+	Kinds          []string `json:"kinds,omitempty"`
 	IncludeUDPFast bool     `json:"include_udp_fast,omitempty"`
 }
 
@@ -193,8 +195,9 @@ type runtimeCacheTarget struct {
 	controller RuntimeCacheController
 }
 
-func runtimeCacheTargets(m *Mosdns, tags []string, includeUDPFast bool) ([]runtimeCacheTarget, error) {
+func runtimeCacheTargets(m *Mosdns, tags []string, kinds []string, includeUDPFast bool) ([]runtimeCacheTarget, error) {
 	targetMap := make(map[string]RuntimeCacheController)
+	allowedKinds := normalizeRuntimeCacheKinds(kinds)
 	if len(tags) > 0 {
 		for _, rawTag := range tags {
 			tag := strings.TrimSpace(rawTag)
@@ -205,6 +208,9 @@ func runtimeCacheTargets(m *Mosdns, tags []string, includeUDPFast bool) ([]runti
 			if !ok || controller == nil {
 				return nil, errors.New("runtime cache plugin not found: " + tag)
 			}
+			if !shouldIncludeRuntimeCache(controller, allowedKinds, includeUDPFast, true) {
+				continue
+			}
 			targetMap[tag] = controller
 		}
 	} else {
@@ -213,10 +219,7 @@ func runtimeCacheTargets(m *Mosdns, tags []string, includeUDPFast bool) ([]runti
 			if !ok || controller == nil {
 				continue
 			}
-			if controller.RuntimeCacheKind() == "udp_fast" && !includeUDPFast {
-				continue
-			}
-			if controller.RuntimeCacheKind() != "response" && controller.RuntimeCacheKind() != "udp_fast" {
+			if !shouldIncludeRuntimeCache(controller, allowedKinds, includeUDPFast, false) {
 				continue
 			}
 			targetMap[tag] = controller
@@ -229,6 +232,40 @@ func runtimeCacheTargets(m *Mosdns, tags []string, includeUDPFast bool) ([]runti
 	}
 	sort.Slice(items, func(i, j int) bool { return items[i].tag < items[j].tag })
 	return items, nil
+}
+
+func normalizeRuntimeCacheKinds(kinds []string) map[string]struct{} {
+	if len(kinds) == 0 {
+		return nil
+	}
+	allowed := make(map[string]struct{}, len(kinds))
+	for _, raw := range kinds {
+		kind := strings.ToLower(strings.TrimSpace(raw))
+		if kind == "" {
+			continue
+		}
+		allowed[kind] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return allowed
+}
+
+func shouldIncludeRuntimeCache(controller RuntimeCacheController, allowedKinds map[string]struct{}, includeUDPFast, explicitTag bool) bool {
+	kind := controller.RuntimeCacheKind()
+	if kind != "response" && kind != "udp_fast" {
+		return false
+	}
+	if len(allowedKinds) > 0 {
+		if _, ok := allowedKinds[kind]; !ok {
+			return false
+		}
+	}
+	if !explicitTag && kind == "udp_fast" && !includeUDPFast {
+		return false
+	}
+	return true
 }
 
 func decodeOptionalJSONBody(r *http.Request, dst any) error {
@@ -250,7 +287,7 @@ func handleCacheFlushAll(m *Mosdns) http.HandlerFunc {
 			return
 		}
 
-		targets, err := runtimeCacheTargets(m, body.Tags, body.IncludeUDPFast)
+		targets, err := runtimeCacheTargets(m, body.Tags, body.Kinds, body.IncludeUDPFast)
 		if err != nil {
 			writeAPIError(w, http.StatusNotFound, "cache_not_found", err.Error())
 			return
@@ -288,7 +325,7 @@ func handleCachePurgeDomains(m *Mosdns) http.HandlerFunc {
 			return
 		}
 
-		targets, err := runtimeCacheTargets(m, body.Tags, body.IncludeUDPFast)
+		targets, err := runtimeCacheTargets(m, body.Tags, body.Kinds, body.IncludeUDPFast)
 		if err != nil {
 			writeAPIError(w, http.StatusNotFound, "cache_not_found", err.Error())
 			return

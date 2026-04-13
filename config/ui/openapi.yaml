@@ -3754,6 +3754,11 @@ components:
           type: array
           items:
             type: string
+        kinds:
+          type: array
+          description: 可选，按运行时缓存类型过滤；当前支持 `response`、`udp_fast`
+          items:
+            type: string
         domains:
           type: array
           items:
@@ -3769,6 +3774,11 @@ components:
       properties:
         tags:
           type: array
+          items:
+            type: string
+        kinds:
+          type: array
+          description: 可选，按运行时缓存类型过滤；当前支持 `response`、`udp_fast`
           items:
             type: string
         include_udp_fast:

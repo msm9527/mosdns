@@ -283,6 +283,30 @@ func TestCacheAPI_FlushAllIncludesUDPFastWhenRequested(t *testing.T) {
 	}
 }
 
+func TestCacheAPI_FlushAllKindsCanTargetUDPFastOnly(t *testing.T) {
+	m := &Mosdns{
+		plugins: map[string]any{
+			"cache_main": &mockCacheController{},
+			"udp_all":    &mockUDPFastCacheController{},
+		},
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/cache/flush_all", strings.NewReader(`{"kinds":["udp_fast"],"include_udp_fast":true}`))
+	rr := httptest.NewRecorder()
+
+	handleCacheFlushAll(m).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("unexpected status code %d: %s", rr.Code, rr.Body.String())
+	}
+	if m.plugins["cache_main"].(*mockCacheController).flushInvoked {
+		t.Fatal("expected response cache to be skipped")
+	}
+	if !m.plugins["udp_all"].(*mockUDPFastCacheController).flushInvoked {
+		t.Fatal("expected udp fast cache to be flushed")
+	}
+}
+
 type mockUDPFastCacheController struct {
 	flushInvoked bool
 	lastDomains  []string

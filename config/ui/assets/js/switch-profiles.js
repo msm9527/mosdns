@@ -4,7 +4,7 @@
       tag: 'core_mode',
       name: '核心运行模式',
       desc: '切换未命中域名走兼容 / 安全补判链',
-      tip: 'compat=兼容模式，未命中走 leak 链；secure=安全模式，未命中走 noleak 链并保留 ECS 首查回退。',
+      tip: 'compat=兼容模式，未命中走 leak 链；secure=安全模式，未命中走 noleak 链并保留 ECS 首查回退。切换后只清 UDP 快路径，不自动触发预热。',
       control: 'select',
       modes: {
         compat: { name: '兼容模式', icon: 'fa-globe-americas' },
