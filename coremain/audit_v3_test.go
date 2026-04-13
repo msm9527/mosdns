@@ -133,6 +133,61 @@ func TestSQLiteAuditStorageWritesLogsQueryAndTimeseries(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditStorageOverviewWindowSummaries(t *testing.T) {
+	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"))
+	if err := storage.Open(); err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	defer func() { _ = storage.Close() }()
+
+	now := time.Date(2026, 4, 13, 12, 0, 0, 0, time.UTC)
+	logs := []AuditLog{
+		testAuditLog("one-hour.example", now.Add(-30*time.Minute), 2, "NOERROR", "domestic", AuditCacheHit),
+		testAuditLog("one-day.example", now.Add(-23*time.Hour), 6, "NOERROR", "domestic", AuditCacheMiss),
+		testAuditLog("three-day.example", now.Add(-48*time.Hour), 8, "SERVFAIL", "foreign", AuditCacheMiss),
+		testAuditLog("seven-day.example", now.Add(-6*24*time.Hour), 10, "NOERROR", "foreign", AuditCacheLazy),
+		testAuditLog("older.example", now.Add(-8*24*time.Hour), 12, "NOERROR", "foreign", AuditCacheMiss),
+	}
+	if err := storage.WriteBatch(logs); err != nil {
+		t.Fatalf("WriteBatch() error = %v", err)
+	}
+
+	totalQueryCount, totalAverageDurationMs, err := storage.QueryOverviewTotals()
+	if err != nil {
+		t.Fatalf("QueryOverviewTotals() error = %v", err)
+	}
+	if totalQueryCount != 5 {
+		t.Fatalf("totalQueryCount = %d, want 5", totalQueryCount)
+	}
+	if totalAverageDurationMs != 7.6 {
+		t.Fatalf("totalAverageDurationMs = %.2f, want 7.60", totalAverageDurationMs)
+	}
+
+	summaries, err := storage.QueryOverviewWindowSummaries(now)
+	if err != nil {
+		t.Fatalf("QueryOverviewWindowSummaries() error = %v", err)
+	}
+	got := make(map[string]AuditPeriodSummary, len(summaries))
+	for _, item := range summaries {
+		got[item.Key] = item
+	}
+
+	assertAuditSummary(t, got["1h"], 1, 2)
+	assertAuditSummary(t, got["24h"], 2, 4)
+	assertAuditSummary(t, got["3d"], 3, 16.0/3.0)
+	assertAuditSummary(t, got["7d"], 4, 6.5)
+}
+
+func assertAuditSummary(t *testing.T, item AuditPeriodSummary, wantCount uint64, wantAvg float64) {
+	t.Helper()
+	if item.QueryCount != wantCount {
+		t.Fatalf("%s query_count = %d, want %d", item.Key, item.QueryCount, wantCount)
+	}
+	if diff := item.AverageDurationMs - wantAvg; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("%s average_duration_ms = %.6f, want %.6f", item.Key, item.AverageDurationMs, wantAvg)
+	}
+}
+
 func testAuditLog(name string, at time.Time, duration float64, rcode, domainSet, cacheStatus string) AuditLog {
 	return AuditLog{
 		QueryTime:     at,

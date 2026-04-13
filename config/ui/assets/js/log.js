@@ -47,6 +47,7 @@ document.addEventListener('DOMContentLoaded', () => {
         overviewChartModeToggle: document.getElementById('overview-chart-mode-toggle'),
         independentChartPanel: document.getElementById('independent-chart-panel'),
         bigSparklineMerged: document.getElementById('big-sparkline-merged'), lastUpdated: document.getElementById('last-updated'),
+        overviewPeriodStats: document.getElementById('overview-period-stats'), resetOverviewStatsBtn: document.getElementById('reset-overview-stats-btn'),
         autoRefreshToggle: document.getElementById('auto-refresh-toggle'), autoRefreshIntervalInput: document.getElementById('auto-refresh-interval'), autoRefreshForm: document.getElementById('auto-refresh-form'),
         totalQueries: document.getElementById('total-queries'), totalAvgDuration: document.getElementById('total-avg-duration'), recentQueries: document.getElementById('recent-queries'), recentAvgDuration: document.getElementById('recent-avg-duration'),
         totalQueriesChange: document.getElementById('total-queries-change'), totalAvgDurationChange: document.getElementById('total-avg-duration-change'), recentQueriesChange: document.getElementById('recent-queries-change'), recentAvgDurationChange: document.getElementById('recent-avg-duration-change'),
@@ -463,6 +464,47 @@ document.addEventListener('DOMContentLoaded', () => {
                 elements.recentAvgLabel.textContent = this.formatOverviewWindowLabel(windowSeconds, '平均处理时间 (ms)');
             }
         },
+        getOverviewPeriodSummaries() {
+            const defaults = [
+                { key: 'total', label: '总计' },
+                { key: '7d', label: '最近 7 天' },
+                { key: '3d', label: '最近 3 天' },
+                { key: '24h', label: '24 小时内' },
+                { key: '1h', label: '1 小时内' }
+            ];
+            const summaries = Array.isArray(state.auditOverview?.period_summaries) ? state.auditOverview.period_summaries : [];
+            if (!summaries.length) return defaults;
+
+            const byKey = new Map(summaries.map(item => [item?.key, item]));
+            return defaults.map(item => ({ ...item, ...(byKey.get(item.key) || {}) }));
+        },
+        formatOverviewCount(value) {
+            return typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString() : '--';
+        },
+        formatOverviewDuration(value) {
+            return typeof value === 'number' && Number.isFinite(value) ? value.toFixed(2) : '--';
+        },
+        renderOverviewPeriodSummaries() {
+            const container = elements.overviewPeriodStats;
+            if (!container) return;
+
+            const summaries = this.getOverviewPeriodSummaries();
+            container.innerHTML = summaries.map(item => `
+                <article class="overview-period-item" data-period-key="${item.key || ''}">
+                    <div class="overview-period-label">${item.label || '统计'}</div>
+                    <div class="overview-period-metrics">
+                        <div class="overview-period-metric">
+                            <span class="overview-period-metric-label">请求数</span>
+                            <strong>${this.formatOverviewCount(item.query_count)}</strong>
+                        </div>
+                        <div class="overview-period-metric">
+                            <span class="overview-period-metric-label">平均处理时间 (ms)</span>
+                            <strong>${this.formatOverviewDuration(item.average_duration_ms)}</strong>
+                        </div>
+                    </div>
+                </article>
+            `).join('');
+        },
         updateOverviewStats() {
             const {
                 totalQueries,
@@ -493,6 +535,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const h = state.isMobile ? 220 : 260;
                 elements.bigSparklineMerged.innerHTML = generateDualSparklineSVG(state.history.totalQueries, state.history.avgDuration, state.history.timestamps, w, h);
             }
+            this.renderOverviewPeriodSummaries();
         },
         renderLogTable(logs, append = false) {
             const tbody = elements.logTableBody;
@@ -4711,6 +4754,20 @@ renderReplacementsTable() {
             return nextSettings;
         };
 
+        const clearAuditData = async (button, successMessage) => {
+            ui.setLoading(button, true);
+            try {
+                await api.audit.clear();
+                ui.showToast(successMessage, 'success');
+                syncLogSearchForm(auditSearchHelper.defaultCriteria());
+                await updatePageData(true);
+            } catch (error) {
+                ui.showToast('重置统计失败', 'error');
+            } finally {
+                ui.setLoading(button, false);
+            }
+        };
+
         const isValidAuditNumber = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
 
         elements.toggleAuditBtn?.addEventListener('click', async (e) => {
@@ -4727,18 +4784,13 @@ renderReplacementsTable() {
 
         elements.clearAuditBtn?.addEventListener('click', async (e) => {
             if (confirm('确定要清空所有审计日志吗？这会同时删除内存窗口和已落盘历史，且不可恢复。')) {
-                const btn = e.currentTarget;
-                ui.setLoading(btn, true);
-                try {
-                    await api.audit.clear();
-                    ui.showToast('日志已清空', 'success');
-                    syncLogSearchForm(auditSearchHelper.defaultCriteria());
-                    await updatePageData(true);
-                } catch (error) {
-                    ui.showToast('清空日志失败', 'error');
-                } finally {
-                    ui.setLoading(btn, false);
-                }
+                await clearAuditData(e.currentTarget, '日志已清空');
+            }
+        });
+
+        elements.resetOverviewStatsBtn?.addEventListener('click', async (e) => {
+            if (confirm('确定要重置所有统计吗？这会同时清空总量、最近 7 天 / 3 天 / 24 小时 / 1 小时统计，以及审计日志和历史聚合，且不可恢复。')) {
+                await clearAuditData(e.currentTarget, '全部统计已重置');
             }
         });
 

@@ -33,6 +33,18 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	if overview.TotalAverageDurationMs != 5 {
 		t.Fatalf("overview.TotalAverageDurationMs = %.2f, want 5", overview.TotalAverageDurationMs)
 	}
+	if len(overview.PeriodSummaries) != 5 {
+		t.Fatalf("len(overview.PeriodSummaries) = %d, want 5", len(overview.PeriodSummaries))
+	}
+	periods := make(map[string]AuditPeriodSummary, len(overview.PeriodSummaries))
+	for _, item := range overview.PeriodSummaries {
+		periods[item.Key] = item
+	}
+	assertAuditSummary(t, periods["total"], 3, 5)
+	assertAuditSummary(t, periods["7d"], 3, 5)
+	assertAuditSummary(t, periods["3d"], 3, 5)
+	assertAuditSummary(t, periods["24h"], 3, 5)
+	assertAuditSummary(t, periods["1h"], 3, 5)
 
 	settings := fetchAuditSettings(t, router)
 	if settings.RawLogCount != 3 {
@@ -86,6 +98,11 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	}
 
 	postAuditNoBody(t, router, http.MethodPost, "/api/v3/audit/clear")
+
+	overview = fetchAuditOverview(t, router, "/api/v3/audit/overview?window=3600")
+	for _, item := range overview.PeriodSummaries {
+		assertAuditSummary(t, item, 0, 0)
+	}
 
 	logs, err := collector.GetLogs(AuditLogsQuery{
 		From:  base.Add(-time.Minute),

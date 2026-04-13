@@ -62,6 +62,73 @@
                 transform: translateY(0);
             }
         }
+
+        .overview-period-summary-card {
+            margin-top: 1.5rem;
+        }
+
+        .overview-period-summary-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 1rem;
+            flex-wrap: wrap;
+        }
+
+        .overview-period-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 1rem;
+        }
+
+        .overview-period-item {
+            border: 1px solid var(--color-border);
+            border-radius: var(--border-radius-md);
+            padding: 1rem 1.1rem;
+            background:
+                linear-gradient(180deg, color-mix(in srgb, var(--color-bg-card) 88%, var(--color-accent-primary) 12%), var(--color-bg-card));
+            box-shadow: var(--shadow-xs);
+        }
+
+        .overview-period-label {
+            font-size: 0.9rem;
+            font-weight: 700;
+            color: var(--color-text-secondary);
+            margin-bottom: 0.9rem;
+        }
+
+        .overview-period-metrics {
+            display: grid;
+            gap: 0.75rem;
+        }
+
+        .overview-period-metric {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 0.75rem;
+        }
+
+        .overview-period-metric-label {
+            font-size: 0.85rem;
+            color: var(--color-text-secondary);
+        }
+
+        .overview-period-metric strong {
+            font-size: 1.15rem;
+            font-variant-numeric: tabular-nums;
+            color: var(--color-text-primary);
+        }
+
+        @media (max-width: 640px) {
+            .overview-period-item {
+                padding: 0.95rem 1rem;
+            }
+
+            .overview-period-metric strong {
+                font-size: 1.05rem;
+            }
+        }
     </style>
 
 
@@ -1170,6 +1237,22 @@
                             <span id="total-avg-duration-change" class="stat-change" style="visibility: hidden;"></span>
                         </div>
                     </div>
+                </div>
+            </div>
+
+            <div class="card overview-period-summary-card" id="overview-period-summary-card">
+                <header class="card-header overview-period-summary-header">
+                    <h2><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                            <path
+                                d="M4 5C4 3.89543 4.89543 3 6 3H18C19.1046 3 20 3.89543 20 5V19C20 20.1046 19.1046 21 18 21H6C4.89543 21 4 20.1046 4 19V5ZM8 7H16V9H8V7ZM8 11H16V13H8V11ZM8 15H12V17H8V15Z">
+                            </path>
+                        </svg>统计汇总</h2>
+                    <button id="reset-overview-stats-btn" class="button danger small" type="button"
+                        data-default-text="重置所有统计"><span>重置所有统计</span></button>
+                </header>
+                <div class="card-body">
+                    <p class="module-desc" style="margin: 0 0 1rem;">这里同时展示累计、最近 7 天、最近 3 天、24 小时内和 1 小时内的请求量与平均处理时间。重置会同步清空审计统计与历史聚合。</p>
+                    <div id="overview-period-stats" class="overview-period-grid"></div>
                 </div>
             </div>
 

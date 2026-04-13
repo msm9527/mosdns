@@ -5,6 +5,7 @@ on:
     branches: [ "main" ]
 
 env:
+  BETA_TAG_NAME: "msm-beta"
   RELEASE_NAME_SUFFIX: "来源: mosdns-v5 + yyysuo/ph-v5"
   RELEASE_SUBTITLE: "副标题：原版来源 mosdns-v5，基于 yyysuo/mosdns 的 ph-v5 进行完善修改。"
 
@@ -58,7 +59,7 @@ jobs:
           python-version: '3.13'
           check-latest: true
 
-      - name: Compute version strings
+      - name: Compute build version
         id: ver
         run: |
           BASE=$(tr -d '\r\n' < .version)
@@ -67,13 +68,13 @@ jobs:
             exit 1
           fi
           echo "BASE_VERSION=$BASE" >> $GITHUB_ENV
-          echo "VERSION=${BASE}-beta.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
+          echo "BUILD_VERSION=${BASE}-beta" >> $GITHUB_ENV
 
       - name: Build one target
         run: python ./release.py -i ${{ matrix.index }}
         env:
           CGO_ENABLED: '0'
-          VERSION: ${{ env.VERSION }}
+          VERSION: ${{ env.BUILD_VERSION }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -88,7 +89,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare beta tag
+      - name: Prepare fixed beta tag
         run: |
           BASE=$(tr -d '\r\n' < .version)
           if [ -z "$BASE" ]; then
@@ -96,7 +97,8 @@ jobs:
             exit 1
           fi
           echo "BASE_VERSION=$BASE" >> $GITHUB_ENV
-          echo "TAG_NAME=${BASE}-beta.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
+          echo "BUILD_VERSION=${BASE}-beta" >> $GITHUB_ENV
+          echo "TAG_NAME=${BETA_TAG_NAME}" >> $GITHUB_ENV
 
       - name: Read Go version from go.mod
         run: |
@@ -109,12 +111,55 @@ jobs:
           path: ./artifacts
           merge-multiple: true
 
+      - name: Delete existing beta release and tag
+        uses: actions/github-script@v8
+        env:
+          TAG_NAME: ${{ env.TAG_NAME }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = process.env.TAG_NAME;
+            const { owner, repo } = context.repo;
+
+            try {
+              const release = await github.rest.repos.getReleaseByTag({
+                owner,
+                repo,
+                tag,
+              });
+              await github.rest.repos.deleteRelease({
+                owner,
+                repo,
+                release_id: release.data.id,
+              });
+              core.info(`deleted existing release for tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404) {
+                throw error;
+              }
+              core.info(`no existing release for tag ${tag}`);
+            }
+
+            try {
+              await github.rest.git.deleteRef({
+                owner,
+                repo,
+                ref: `tags/${tag}`,
+              });
+              core.info(`deleted existing tag ${tag}`);
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) {
+                throw error;
+              }
+              core.info(`no existing tag ${tag}`);
+            }
+
       - name: Publish beta release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
           target_commitish: ${{ github.sha }}
-          name: "Beta ${{ env.TAG_NAME }} | ${{ env.RELEASE_NAME_SUFFIX }}"
+          name: "Beta ${{ env.BUILD_VERSION }} | ${{ env.RELEASE_NAME_SUFFIX }}"
           files: './artifacts/mosdns*.zip'
           prerelease: true
           make_latest: false
@@ -122,7 +167,9 @@ jobs:
           body: |
             ${{ env.RELEASE_SUBTITLE }}
             Channel: beta
+            Release tag: ${{ env.TAG_NAME }}
             Base version: ${{ env.BASE_VERSION }}
+            Build version: ${{ env.BUILD_VERSION }}
             Source commit: ${{ github.sha }}
             Built with Go ${{ env.GO_VERSION }}
         env:
@@ -143,7 +190,7 @@ jobs:
 
       - name: Upload release binaries to custom server
         env:
-          VERSION: ${{ env.TAG_NAME }}
+          VERSION: ${{ env.BUILD_VERSION }}
           ARTIFACT_DIR: ./artifacts
           DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
         run: ./scripts/upload_release_to_server.sh

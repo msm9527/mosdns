@@ -85,6 +85,7 @@ func (c *AuditCollector) fillOverviewTotals(overview *AuditOverview) {
 	if overview == nil {
 		return
 	}
+	overview.PeriodSummaries = defaultAuditPeriodSummaries()
 	storage := c.getStorage()
 	if storage == nil {
 		return
@@ -96,6 +97,24 @@ func (c *AuditCollector) fillOverviewTotals(overview *AuditOverview) {
 	}
 	overview.TotalQueryCount = totalQueryCount
 	overview.TotalAverageDurationMs = totalAverageDurationMs
+	if len(overview.PeriodSummaries) > 0 {
+		overview.PeriodSummaries[0].QueryCount = totalQueryCount
+		overview.PeriodSummaries[0].AverageDurationMs = totalAverageDurationMs
+	}
+
+	windowSummaries, err := storage.QueryOverviewWindowSummaries(nowTime())
+	if err != nil {
+		mlog.L().Warn("failed to query audit overview windows", zap.Error(err))
+		return
+	}
+	for i, item := range windowSummaries {
+		targetIdx := i + 1
+		if targetIdx >= len(overview.PeriodSummaries) {
+			overview.PeriodSummaries = append(overview.PeriodSummaries, item)
+			continue
+		}
+		overview.PeriodSummaries[targetIdx] = item
+	}
 }
 
 func (c *AuditCollector) getStorage() *SQLiteAuditStorage {
