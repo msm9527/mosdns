@@ -1,4 +1,4 @@
-name: Release Prerelease (main)
+name: Release Beta (main)
 
 on:
   push:
@@ -67,13 +67,13 @@ jobs:
             exit 1
           fi
           echo "BASE_VERSION=$BASE" >> $GITHUB_ENV
-          echo "VERSION=${BASE}-pre.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
+          echo "VERSION=${BASE}-beta.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
 
       - name: Build one target
         run: python ./release.py -i ${{ matrix.index }}
         env:
           CGO_ENABLED: '0'
-          VERSION: ${{ env.BASE_VERSION }}
+          VERSION: ${{ env.VERSION }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v7
@@ -88,7 +88,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - name: Prepare prerelease tag
+      - name: Prepare beta tag
         run: |
           BASE=$(tr -d '\r\n' < .version)
           if [ -z "$BASE" ]; then
@@ -96,7 +96,7 @@ jobs:
             exit 1
           fi
           echo "BASE_VERSION=$BASE" >> $GITHUB_ENV
-          echo "TAG_NAME=${BASE}-pre.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
+          echo "TAG_NAME=${BASE}-beta.${GITHUB_RUN_NUMBER}.${GITHUB_RUN_ATTEMPT}" >> $GITHUB_ENV
 
       - name: Read Go version from go.mod
         run: |
@@ -109,19 +109,19 @@ jobs:
           path: ./artifacts
           merge-multiple: true
 
-      - name: Publish prerelease
+      - name: Publish beta release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.TAG_NAME }}
           target_commitish: ${{ github.sha }}
-          name: "Prerelease ${{ env.TAG_NAME }} | ${{ env.RELEASE_NAME_SUFFIX }}"
+          name: "Beta ${{ env.TAG_NAME }} | ${{ env.RELEASE_NAME_SUFFIX }}"
           files: './artifacts/mosdns*.zip'
           prerelease: true
           make_latest: false
           generate_release_notes: true
           body: |
             ${{ env.RELEASE_SUBTITLE }}
-            Channel: prerelease
+            Channel: beta
             Base version: ${{ env.BASE_VERSION }}
             Source commit: ${{ github.sha }}
             Built with Go ${{ env.GO_VERSION }}

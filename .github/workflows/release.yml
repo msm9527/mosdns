@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: '发布通道：candidate=候选预发布，stable=正式 latest'
+        description: '发布通道：candidate=候选 RC 预发布，stable=正式 latest'
         required: true
         default: 'stable'
         type: choice
