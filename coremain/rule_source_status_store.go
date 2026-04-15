@@ -89,21 +89,34 @@ func PruneRuleSourceStatus(dbPath string, scope rulesource.Scope, keepIDs map[st
 	if err != nil {
 		return fmt.Errorf("query stale rule_source_status: %w", err)
 	}
-	defer rows.Close()
 
+	// Collect stale IDs first before closing the cursor.
+	// Deleting inside the loop would deadlock: the open rows cursor holds the
+	// one allowed DB connection (MaxOpenConns=1), and DeleteRuleSourceStatus
+	// would block forever waiting to acquire it.
+	var staleIDs []string
 	for rows.Next() {
 		var sourceID string
 		if err := rows.Scan(&sourceID); err != nil {
+			rows.Close()
 			return err
 		}
-		if _, ok := keepIDs[sourceID]; ok {
-			continue
+		if _, ok := keepIDs[sourceID]; !ok {
+			staleIDs = append(staleIDs, sourceID)
 		}
+	}
+	rowsErr := rows.Err()
+	rows.Close() // release connection before any DELETE calls
+
+	if rowsErr != nil {
+		return rowsErr
+	}
+	for _, sourceID := range staleIDs {
 		if err := DeleteRuleSourceStatus(dbPath, scope, sourceID); err != nil {
 			return err
 		}
 	}
-	return rows.Err()
+	return nil
 }
 
 func scanRuleSourceStatusRow(rows *sql.Rows, scope rulesource.Scope) (RuleSourceStatus, error) {
