@@ -32,6 +32,7 @@ import (
 
 	// matcher
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/matcher/client_ip"
+	_ "github.com/IrineSistiana/mosdns/v5/plugin/matcher/client_map"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/matcher/cname"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/matcher/env"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/matcher/fast_mark"
