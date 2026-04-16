@@ -2,11 +2,14 @@ package client_map
 
 import (
 	"context"
+	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/pkg/neigh"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/miekg/dns"
 )
@@ -39,7 +42,7 @@ func newTestQCtx(clientAddr string) *query_context.Context {
 }
 
 func TestParseArgs(t *testing.T) {
-	args := parseArgs("&/path/to/file1.txt &/path/to/file2.txt tag1 tag2")
+	args := parseArgs([]string{"&/path/to/file1.txt", "&/path/to/file2.txt", "tag1", "tag2"})
 	if len(args.files) != 2 {
 		t.Fatalf("expected 2 files, got %d", len(args.files))
 	}
@@ -243,5 +246,254 @@ func TestQuickSetupErrors(t *testing.T) {
 	path := writeTestFile(t, "existing_tag 192.168.1.1\n")
 	if _, err := QuickSetup(nil, "&"+path+" missing_tag"); err == nil {
 		t.Error("expected error for missing tag")
+	}
+}
+
+// --- 自动模式测试 ---
+
+// mockNeighReader 返回一个模拟邻居表读取函数。
+func mockNeighReader(entries []neigh.Entry, err error) func() ([]neigh.Entry, error) {
+	return func() ([]neigh.Entry, error) {
+		return entries, err
+	}
+}
+
+func TestAutoMatcherBasic(t *testing.T) {
+	// 模拟邻居表：一台设备 mac1 有 v4 和 v6 两个地址
+	entries := []neigh.Entry{
+		{IP: netip.MustParseAddr("192.168.1.100"), MAC: "aa:bb:cc:dd:ee:01"},
+		{IP: netip.MustParseAddr("fd00::100"), MAC: "aa:bb:cc:dd:ee:01"},
+		// 另一台设备
+		{IP: netip.MustParseAddr("192.168.1.200"), MAC: "aa:bb:cc:dd:ee:02"},
+		{IP: netip.MustParseAddr("fd00::200"), MAC: "aa:bb:cc:dd:ee:02"},
+	}
+
+	// 替换全局 neighReader
+	origReader := neighReader
+	neighReader = mockNeighReader(entries, nil)
+	defer func() { neighReader = origReader }()
+
+	// 只给 v4 种子 → 应该自动匹配同 MAC 的 v6
+	m, err := QuickSetup(nil, "auto 192.168.1.100")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"192.168.1.100", true},  // 种子 IP 本身
+		{"fd00::100", true},      // 同 MAC 的 v6（自动发现）
+		{"192.168.1.200", false}, // 其他设备
+		{"fd00::200", false},     // 其他设备 v6
+	}
+	for _, tt := range tests {
+		qCtx := newTestQCtx(tt.addr)
+		got, err := m.Match(context.Background(), qCtx)
+		if err != nil {
+			t.Fatalf("Match(%q) error: %v", tt.addr, err)
+		}
+		if got != tt.want {
+			t.Errorf("Match(%q) = %v, want %v", tt.addr, got, tt.want)
+		}
+	}
+}
+
+func TestAutoMatcherMultipleSeeds(t *testing.T) {
+	entries := []neigh.Entry{
+		{IP: netip.MustParseAddr("192.168.1.100"), MAC: "aa:bb:cc:dd:ee:01"},
+		{IP: netip.MustParseAddr("fd00::100"), MAC: "aa:bb:cc:dd:ee:01"},
+		{IP: netip.MustParseAddr("192.168.1.200"), MAC: "aa:bb:cc:dd:ee:02"},
+		{IP: netip.MustParseAddr("fd00::200"), MAC: "aa:bb:cc:dd:ee:02"},
+		{IP: netip.MustParseAddr("10.0.0.1"), MAC: "aa:bb:cc:dd:ee:03"},
+	}
+
+	origReader := neighReader
+	neighReader = mockNeighReader(entries, nil)
+	defer func() { neighReader = origReader }()
+
+	// 两个种子 IP，两台设备都匹配
+	m, err := QuickSetup(nil, "auto 192.168.1.100 192.168.1.200")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	tests := []struct {
+		addr string
+		want bool
+	}{
+		{"192.168.1.100", true},
+		{"fd00::100", true},
+		{"192.168.1.200", true},
+		{"fd00::200", true},
+		{"10.0.0.1", false}, // 第三台设备不在种子中
+	}
+	for _, tt := range tests {
+		qCtx := newTestQCtx(tt.addr)
+		got, _ := m.Match(context.Background(), qCtx)
+		if got != tt.want {
+			t.Errorf("Match(%q) = %v, want %v", tt.addr, got, tt.want)
+		}
+	}
+}
+
+func TestAutoMatcherSeedFile(t *testing.T) {
+	entries := []neigh.Entry{
+		{IP: netip.MustParseAddr("192.168.1.100"), MAC: "aa:bb:cc:dd:ee:01"},
+		{IP: netip.MustParseAddr("fd00::100"), MAC: "aa:bb:cc:dd:ee:01"},
+	}
+
+	origReader := neighReader
+	neighReader = mockNeighReader(entries, nil)
+	defer func() { neighReader = origReader }()
+
+	// 从种子文件加载
+	seedPath := writeTestFile(t, "# 种子 IP\n192.168.1.100\n")
+	m, err := QuickSetup(nil, "auto &"+seedPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	qCtx := newTestQCtx("fd00::100")
+	got, _ := m.Match(context.Background(), qCtx)
+	if !got {
+		t.Error("expected match for fd00::100 (same MAC as seed 192.168.1.100)")
+	}
+}
+
+func TestAutoMatcherNeighFailFallback(t *testing.T) {
+	// 邻居表读取失败 → 降级到种子 IP 模式
+	origReader := neighReader
+	neighReader = mockNeighReader(nil, fmt.Errorf("mock error"))
+	defer func() { neighReader = origReader }()
+
+	m, err := QuickSetup(nil, "auto 192.168.1.100")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 种子 IP 本身应该可以匹配
+	qCtx := newTestQCtx("192.168.1.100")
+	got, _ := m.Match(context.Background(), qCtx)
+	if !got {
+		t.Error("expected fallback match for seed IP 192.168.1.100")
+	}
+
+	// 非种子 IP 不匹配
+	qCtx = newTestQCtx("fd00::100")
+	got, _ = m.Match(context.Background(), qCtx)
+	if got {
+		t.Error("expected no match for fd00::100 when neighbor table fails")
+	}
+}
+
+func TestAutoMatcherRefresh(t *testing.T) {
+	callCount := 0
+	// 第一次返回少量条目
+	entries1 := []neigh.Entry{
+		{IP: netip.MustParseAddr("192.168.1.100"), MAC: "aa:bb:cc:dd:ee:01"},
+	}
+	// 第二次返回更多条目（新设备上线）
+	entries2 := []neigh.Entry{
+		{IP: netip.MustParseAddr("192.168.1.100"), MAC: "aa:bb:cc:dd:ee:01"},
+		{IP: netip.MustParseAddr("fd00::100"), MAC: "aa:bb:cc:dd:ee:01"},
+	}
+
+	origReader := neighReader
+	neighReader = func() ([]neigh.Entry, error) {
+		callCount++
+		if callCount <= 1 {
+			return entries1, nil
+		}
+		return entries2, nil
+	}
+	defer func() { neighReader = origReader }()
+
+	m, err := QuickSetup(nil, "auto 192.168.1.100")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 刚创建时，fd00::100 不在邻居表中
+	qCtx := newTestQCtx("fd00::100")
+	got, _ := m.Match(context.Background(), qCtx)
+	if got {
+		t.Error("fd00::100 should not match before refresh")
+	}
+
+	// 强制使刷新间隔过期
+	am := m.(*autoClientMapMatcher)
+	am.mu.Lock()
+	am.lastRefresh = time.Time{} // 重置到零值，触发刷新
+	am.mu.Unlock()
+
+	// 再次匹配应触发刷新并发现新的 v6 地址
+	qCtx = newTestQCtx("fd00::100")
+	got, _ = m.Match(context.Background(), qCtx)
+	if !got {
+		t.Error("fd00::100 should match after refresh with new neighbor entries")
+	}
+}
+
+func TestAutoMatcherSeedNotInNeighbor(t *testing.T) {
+	// 种子 IP 不在邻居表中（可能是手动配置的静态 IP）
+	entries := []neigh.Entry{
+		{IP: netip.MustParseAddr("192.168.1.200"), MAC: "aa:bb:cc:dd:ee:02"},
+	}
+
+	origReader := neighReader
+	neighReader = mockNeighReader(entries, nil)
+	defer func() { neighReader = origReader }()
+
+	m, err := QuickSetup(nil, "auto 192.168.1.100")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 种子 IP 本身应该始终匹配（即使不在邻居表中）
+	qCtx := newTestQCtx("192.168.1.100")
+	got, _ := m.Match(context.Background(), qCtx)
+	if !got {
+		t.Error("seed IP 192.168.1.100 should always match even if not in neighbor table")
+	}
+}
+
+func TestAutoMatcherEmptyAddr(t *testing.T) {
+	origReader := neighReader
+	neighReader = mockNeighReader(nil, nil)
+	defer func() { neighReader = origReader }()
+
+	m, err := QuickSetup(nil, "auto 192.168.1.100")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 空 ClientAddr 不应匹配
+	qCtx := newTestQCtx("")
+	got, _ := m.Match(context.Background(), qCtx)
+	if got {
+		t.Error("empty addr should not match")
+	}
+}
+
+func TestAutoMatcherSetupErrors(t *testing.T) {
+	origReader := neighReader
+	neighReader = mockNeighReader(nil, nil)
+	defer func() { neighReader = origReader }()
+
+	// auto 无种子 IP
+	if _, err := QuickSetup(nil, "auto"); err == nil {
+		t.Error("expected error for auto mode without seed IPs")
+	}
+
+	// 空参数
+	if _, err := QuickSetup(nil, ""); err == nil {
+		t.Error("expected error for empty args")
+	}
+
+	// auto 无效种子 IP
+	if _, err := QuickSetup(nil, "auto not_an_ip"); err == nil {
+		t.Error("expected error for invalid seed IP")
 	}
 }
