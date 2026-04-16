@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSwitchesCustomConfigRoundTrip(t *testing.T) {
@@ -137,5 +138,33 @@ func TestWriteTextFileAtomicallySupportsConcurrentWriters(t *testing.T) {
 	}
 	if len(matches) != 0 {
 		t.Fatalf("expected no temp files left, got %v", matches)
+	}
+}
+
+func TestWriteTextFileAtomicallySkipsIdenticalContent(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "switches.yaml")
+	content := []byte("branch_cache: \"on\"\n")
+
+	if err := writeTextFileAtomically(path, content); err != nil {
+		t.Fatalf("initial write failed: %v", err)
+	}
+	infoBefore, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat initial file: %v", err)
+	}
+
+	time.Sleep(20 * time.Millisecond)
+
+	if err := writeTextFileAtomically(path, content); err != nil {
+		t.Fatalf("second write failed: %v", err)
+	}
+	infoAfter, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat second file: %v", err)
+	}
+
+	if !infoAfter.ModTime().Equal(infoBefore.ModTime()) {
+		t.Fatalf("expected identical content write to preserve mod time, before=%v after=%v", infoBefore.ModTime(), infoAfter.ModTime())
 	}
 }

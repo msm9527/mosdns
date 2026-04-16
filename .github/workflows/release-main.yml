@@ -183,14 +183,5 @@ jobs:
           git tag -f last $GITHUB_SHA
           git push origin -f last
 
-      - name: Install sshpass and rsync
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y sshpass rsync
-
-      - name: Upload release binaries to custom server
-        env:
-          VERSION: ${{ env.BUILD_VERSION }}
-          ARTIFACT_DIR: ./artifacts
-          DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
-        run: ./scripts/upload_release_to_server.sh
+      # Beta 构建不上传到中转服务器，避免覆盖正式版二进制文件。
+      # 中转服务器仅由 release.yml（正式发布）上传。

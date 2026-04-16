@@ -149,12 +149,15 @@ func (s *Switch) GetValue() string {
 	return s.def.DefaultValue
 }
 
-func (s *Switch) setValue(value string) error {
-	if err := s.store.Set(s.def, value); err != nil {
-		return err
+func (s *Switch) setValue(value string) (bool, error) {
+	changed, err := s.store.Set(s.def, value)
+	if err != nil {
+		return false, err
 	}
-	s.value.Store(value)
-	return nil
+	if changed {
+		s.value.Store(value)
+	}
+	return changed, nil
 }
 
 func (s *Switch) load() error {
@@ -197,16 +200,22 @@ func (s *stateStore) Ensure(def switchmeta.Definition) (string, error) {
 	return current, nil
 }
 
-func (s *stateStore) Set(def switchmeta.Definition, value string) error {
+func (s *stateStore) Set(def switchmeta.Definition, value string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	values, _, err := s.read()
 	if err != nil {
-		return err
+		return false, err
+	}
+	if values[def.Name] == value {
+		return false, nil
 	}
 	values[def.Name] = value
-	return s.write(values)
+	if err := s.write(values); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func (s *stateStore) read() (map[string]string, bool, error) {
@@ -300,14 +309,17 @@ func handleUpdateSwitch(w http.ResponseWriter, r *http.Request) {
 		writeSwitchErrorJSON(w, http.StatusBadRequest, "INVALID_SWITCH_VALUE", err.Error())
 		return
 	}
-	if err := sw.setValue(value); err != nil {
+	changed, err := sw.setValue(value)
+	if err != nil {
 		writeSwitchErrorJSON(w, http.StatusInternalServerError, "SWITCH_UPDATE_FAILED", "failed to update switch store: "+err.Error())
 		return
 	}
-	_ = coremain.RecordSystemEvent("control.switches", "info", "updated switch value", map[string]any{
-		"name":  def.Name,
-		"value": value,
-	})
+	if changed {
+		_ = coremain.RecordSystemEvent("control.switches", "info", "updated switch value", map[string]any{
+			"name":  def.Name,
+			"value": value,
+		})
+	}
 
 	writeSwitchJSON(w, switchState{
 		Name:  def.Name,

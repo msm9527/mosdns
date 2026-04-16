@@ -447,6 +447,17 @@ func saveUpstreamOverridesToCustomConfigAtPath(path string, cfg GlobalUpstreamOv
 }
 
 func writeTextFileAtomically(path string, content []byte) error {
+	existing, err := os.ReadFile(path)
+	switch {
+	case err == nil:
+		if bytes.Equal(existing, content) {
+			return nil
+		}
+	case os.IsNotExist(err):
+	default:
+		return fmt.Errorf("read existing file %s: %w", path, err)
+	}
+
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return fmt.Errorf("create config dir for %s: %w", path, err)
