@@ -86,9 +86,11 @@ func OpenPersistent(path string, extraMigrations []Migration) (*RuntimeDB, error
 		persistentRuntimeDBs.paths = make(map[string]*RuntimeDB)
 	}
 	if db := persistentRuntimeDBs.paths[path]; db != nil {
-		if err := ensureSchema(db.DB(), append(baseMigrations(), extraMigrations...)); err != nil {
-			return nil, err
-		}
+		// Skip ensureSchema for already-cached DBs: migrations were applied
+		// on the first Open() call. Re-running ensureSchema here would acquire
+		// the single DB connection (MaxOpenConns=1) while holding the global
+		// persistentRuntimeDBs.mu, blocking ALL persistent DB opens if the
+		// connection is momentarily held by another goroutine.
 		return db, nil
 	}
 

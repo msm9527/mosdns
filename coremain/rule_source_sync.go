@@ -9,7 +9,9 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
+	"go.uber.org/zap"
 )
 
 type RuleSourceSyncResult struct {
@@ -232,13 +234,16 @@ func fallbackToExistingRuleSource(
 		saveRuleSourceError(dbPath, scope, source.ID, combinedErr)
 		return nil, combinedErr
 	}
-	_ = SaveRuleSourceStatus(dbPath, RuleSourceStatus{
+	if saveErr := SaveRuleSourceStatus(dbPath, RuleSourceStatus{
 		Scope:       string(scope),
 		SourceID:    source.ID,
 		RuleCount:   result.RuleCount,
 		LastUpdated: result.LastUpdated,
 		LastError:   cause.Error(),
-	})
+	}); saveErr != nil {
+		mlog.L().Warn("failed to save rule source status during fallback",
+			zap.String("source", source.ID), zap.Error(saveErr))
+	}
 	return result, nil
 }
 
@@ -299,11 +304,14 @@ func writeRuleSourceFile(path string, data []byte) error {
 }
 
 func saveRuleSourceError(dbPath string, scope rulesource.Scope, sourceID string, err error) {
-	_ = SaveRuleSourceStatus(dbPath, RuleSourceStatus{
+	if saveErr := SaveRuleSourceStatus(dbPath, RuleSourceStatus{
 		Scope:     string(scope),
 		SourceID:  sourceID,
 		LastError: err.Error(),
-	})
+	}); saveErr != nil {
+		mlog.L().Warn("failed to save rule source error status",
+			zap.String("source", sourceID), zap.Error(saveErr))
+	}
 }
 
 func saveRuleSourceSuccess(
@@ -313,10 +321,13 @@ func saveRuleSourceSuccess(
 	ruleCount int,
 	lastUpdated time.Time,
 ) {
-	_ = SaveRuleSourceStatus(dbPath, RuleSourceStatus{
+	if saveErr := SaveRuleSourceStatus(dbPath, RuleSourceStatus{
 		Scope:       string(scope),
 		SourceID:    sourceID,
 		RuleCount:   ruleCount,
 		LastUpdated: lastUpdated,
-	})
+	}); saveErr != nil {
+		mlog.L().Warn("failed to save rule source success status",
+			zap.String("source", sourceID), zap.Error(saveErr))
+	}
 }

@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/mlog"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
+	"go.uber.org/zap"
 )
 
 func cloneArgs(src *Args) *Args {
@@ -82,7 +84,9 @@ func (f *Forward) ReloadControlConfig(_ *coremain.GlobalOverrides, _ []coremain.
 func closeUpstreamsLater(us []*upstreamWrapper, delay time.Duration) {
 	time.Sleep(delay)
 	for _, u := range us {
-		_ = u.Close()
+		if err := u.Close(); err != nil {
+			mlog.L().Warn("failed to close old upstream", zap.Error(err))
+		}
 	}
 }
 

@@ -135,6 +135,9 @@ func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir str
 	c.storage = storage
 	c.mu.Unlock()
 	if oldStorage != nil {
+		// Grace period: allow in-flight workers that captured oldStorage
+		// before the swap to finish their current operation.
+		time.Sleep(200 * time.Millisecond)
 		_ = oldStorage.Close()
 	}
 	return nil
