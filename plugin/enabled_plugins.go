@@ -26,6 +26,7 @@ import (
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/domain_set"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/domain_set_light"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/ip_set"
+	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/ip_set_auto"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/sd_set"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/sd_set_light"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/si_set"

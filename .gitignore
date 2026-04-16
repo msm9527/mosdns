@@ -58,3 +58,4 @@ demo/
 !/.claude/settings.local.json
 /.claude/plan/
 /.claude/worktrees/
+config/audit.db
