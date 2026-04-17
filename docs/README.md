@@ -11,6 +11,7 @@
 - [Switch1-15 功能对照](./SWITCH_1_15_FUNCTIONS.md)
 - [分流记忆混合模式说明](./SHUNT_MEMORY_HYBRID_MODE.md)
 - [Cache WAL 灰度发布与回滚手册](./CACHE_WAL_ROLLOUT.md)
+- [当前缓存系统设计与 App Store 异常规避说明](./CACHE_SYSTEM_ANALYSIS.md)
 - [mosdns 全链路压测说明](./STRESS_TEST_GUIDE.md)
 - [DNS 失败治理方案](./DNS_FAILURE_GOVERNANCE_PLAN.md)
 - [DNS 失败类型与处理链路说明](./DNS_FAILURE_FLOW_EXPLAINED.md)
