@@ -409,7 +409,7 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 ---
 
-## Part II. 当前方案如何避免 App Store 长时间运行异常
+## Part II. 当前实现如何避免 App Store 长时间运行异常被缓存长期放大
 
 ## 7. 问题本质
 
@@ -424,217 +424,173 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 > 高变更域名与 stale-serve 策略之间的冲突。
 
-## 8. 当前设计里的规避路径
+## 8. 当前实现里已经存在的规避点
 
-当前仓库里，这类问题的规避不是靠单一开关，而是靠一条完整路径。
+当前实现并不是通过“Apple 专项规则”来处理这类问题，而是通过几项通用缓存边界控制，避免 stale 结果或失败结果在缓存层被长时间放大。
 
-## 8.1 第一步：把 Apple/App Store 域名单独分组
+## 8.1 stale 返回时间被硬限制为短窗口
 
-这类问题要规避，前提不是 `DDNS`，而是：
+当前实现即使命中过期缓存，也不会把 `lazy_cache_ttl` 原样返回给客户端。
 
-> 让 Apple/App Store 这批高变更域名不要继续使用“通用域名的一刀切缓存策略”。
+真实行为是：
 
-设计上最合理的做法是：
+1. `lazy_cache_ttl`
+   - 只决定过期条目还能在缓存里保留多久。
+2. stale 响应真正回给客户端的 TTL 固定为 `5s`。
 
-1. 在规则层把 Apple/App Store 域名单独归组。
-2. 在 sequence 层给这组流量挂单独缓存策略。
+这一步的作用是：
 
-接入点通常仍然是：
+- 避免客户端长期持有旧地址。
+- 即便第一次请求撞上 stale，客户端也会很快再次发起请求。
 
-- [config/sub_config/20-data-sources.yaml](../config/sub_config/20-data-sources.yaml)
+对 App Store 这类问题来说，它起到的是“缩短坏结果暴露时间”的作用，而不是“完全不返回 stale”。
 
-但这里的重点不是复用某个既有标签名，而是：
+## 8.2 命中过期缓存时会立即触发后台刷新
 
-- 要有一组单独可识别的 Apple/App Store 域名分类。
-- 这组分类后面要能接到单独的 cache 行为。
+当前实现不是简单地把 stale 回给客户端后就结束，而是会马上启动 lazy refresh：
 
-## 8.2 第二步：给这组域名使用保守缓存策略
+1. 首次过期命中时，返回短 TTL stale。
+2. 同时启动后台刷新。
+3. 后续请求如果赶上刷新完成，就会拿到 fresh 结果。
 
-这是规避 App Store 长时间运行异常最关键的部分。
+相关保护还包括：
 
-普通域名过期后，当前缓存默认仍可能：
+- lazy refresh 有并发去重，避免同一 key 被重复刷新。
+- 后台刷新有超时控制，默认 `5s`。
+- 后续请求会在一个短等待窗口内尝试等 fresh 结果，而不是无限继续吃 stale。
 
-1. 先回 stale。
-2. 再后台刷新。
+对 App Store 这类问题来说，这一步把现象从：
 
-但 Apple/App Store 这类域名不适合继续吃这套默认路径。更保守的方案应当是：
+- “长期持续错误”
 
-1. 给它们单独走一个 response cache。
-2. 这个 cache 设置更短的 stale 窗口，或者直接 `lazy_cache_ttl: 0`。
-3. 必要时进一步缩短 `servfail_ttl`，避免临时故障被放大。
+压缩成更接近：
 
-这一步规避的正是：
+- “第一次可能异常，后续快速恢复”
 
-- 第一次访问命中过期 CDN IP
-- 然后客户端表现成“网络异常”
+## 8.3 prefetch 会在真正过期前提前刷新热点项
 
-## 8.3 第三步：利用 prefetch 和短 TTL 减少真正撞上 stale 的概率
+当前实现对接近过期的热点项会做 prefetch：
 
-当前设计里，本来就存在 prefetch：
+- 条目还没过期时，就提前触发后台刷新。
 
-- 对接近过期的热点项，缓存会提前触发后台刷新。
+这一步的作用是：
 
-如果 Apple/App Store 走了单独的保守 cache，再配合：
+- 降低客户端真正撞上过期项的概率。
+- 对热点域名更有效，因为它们更容易在临近过期时再次被访问。
 
-- 更短的 `lazy_cache_ttl`
-- 更短的真实缓存寿命
+因此，虽然它不是 Apple 专项逻辑，但对 App Store 这类高频访问的热点域名，本身就是一种已有的缓解机制。
 
-就可以进一步减少客户端真正撞上 stale 的概率。
+## 8.4 `SERVFAIL` 不会被长 lazy 窗口放大
 
-## 8.4 第四步：路由变化或依赖变化时，直接绕过旧缓存
+这是当前实现里一个非常关键的保护点。
 
-App Store 异常不一定只来自 TTL 过期，也可能来自：
+`SERVFAIL` 的缓存语义和成功响应不同：
 
-- 分流策略变化
-- 列表 revision 变化
-- 依赖数据更新后，旧缓存不该再被用
+- 它不会使用 `lazy_cache_ttl` 那套长窗口。
+- `msgTtl` 和 `cacheTtl` 都直接取 `servfail_ttl`。
 
-当前设计里，`route_signature` 机制会在这些场景下直接绕过旧缓存。
+这意味着：
 
-这避免的是另一类“明明规则变了，但 DNS 还在吃旧答案”的问题。
+- 上游临时失败不会像成功响应那样被保留数小时甚至更久。
+- 临时故障更容易自行恢复，不会被长时间固化在成功缓存窗口里。
 
-## 8.5 第五步：必要时运行态精确 purge
+对 App Store 这类问题来说，这一步避免的是：
 
-如果发现某一批 Apple 域名已经出现异常，不需要等它自然过期。
+- Apple 某个上游或 CDN 节点短暂异常
+- 然后失败结果被系统长时间放大复用
 
-当前设计支持：
+## 8.5 UDP 快路径不会长时间放大失败结果
+
+`udp_server` 的快路径缓存本身也带有防放大边界：
+
+- 只缓存 `NOERROR` 和 `NXDOMAIN`
+- 不缓存 `SERVFAIL`
+- `internal_ttl` 默认只有 `5s`
+- stale retry 默认 `10s`
+
+这意味着：
+
+- 即便 UDP fast path 参与了 App Store 查询链，它也只会在很短窗口内缓存热点结果。
+- 它不会成为“运行 1 到 3 天后持续异常”的主要放大器。
+
+## 8.6 路由变化和依赖 revision 变化会绕过旧缓存
+
+当前实现里，缓存命中不仅看 key，还会检查：
+
+- 当前 `domainSet`
+- 依赖规则的 revision 签名
+
+只要发现：
+
+- 路由标签变了
+- 依赖的规则/列表版本变了
+
+旧缓存就会被绕过。
+
+这一步缓解的是另一类和 App Store 体验类似的问题：
+
+- 规则明明已经变化
+- 但客户端仍然在吃老路径下的缓存结果
+
+## 8.7 当前实现支持运行态精确清理，不需要只能靠重启恢复
+
+当前实现已经内建：
 
 - 按域名 purge 响应缓存
 - 按域名 purge UDP fast cache
 - 全量 flush
 
-这一步的意义是：
-
-- 出现故障时，不必通过重启进程来绕过旧缓存。
-
-## 8.6 第六步：必要时拆出专用 cache
-
-如果一批域名对 stale 特别敏感，当前设计允许继续收敛为更保守的方案：
-
-1. 给它们单独走一个 sequence 分支。
-2. 挂单独的 `type: cache`。
-3. 这个 cache 设置为：
-   - `lazy_cache_ttl: 0`
-   - 可选 `persist: false`
+以及 `requery` 发布后的 runtime cache invalidation。
 
 这意味着：
 
-- 同一个系统里，大多数域名仍可保留 lazy cache 的收益。
-- Apple/App Store 这一类域名可以使用保守缓存策略。
+- 运行中一旦确认是缓存问题，不一定非要重启进程。
+- 系统本身已经提供了直接删除旧缓存的路径。
 
-## 9. 这套规避方案真正生效的前提
+这虽然属于运维控制面能力，但它也是当前实现里已经存在的“避免问题持续放大”的一部分。
 
-这里有一个必须明确写出来的前提：
+## 9. 当前实现的边界
 
-> 只有当 Apple/App Store 相关域名被单独分组，并绑定到保守缓存策略时，上面那条规避链才会真正生效。
+这里也必须明确：
 
-在当前仓库默认规则下：
+> 当前实现对 App Store 异常的规避，是通用缓存边界控制，不是 Apple 专项识别。
 
-- Apple 相关域名主要在 [whitelist.txt](../config/rule/whitelist.txt)。
-- 它们默认仍然走通用真实解析缓存策略。
+也就是说，当前代码已经做到的是：
 
-这意味着当前默认状态是：
+1. stale TTL 很短。
+2. 命中过期后立即后台刷新。
+3. `SERVFAIL` 不走长 lazy 窗口。
+4. fast path 不长时间缓存失败。
+5. 路由变化会绕过旧缓存。
+6. 运行态可直接 purge/flush。
 
-- 它们会走白名单/直连逻辑。
-- 但不会自动获得“Apple 专用保守缓存策略”。
+但当前默认实现没有做到的是：
 
-所以准确地说：
+- 自动识别“这个域名属于 Apple/App Store，所以绝不直接返 stale”
 
-- 当前设计已经具备规避这类问题的能力。
-- 但要让它落到 Apple/App Store 上，还需要单独分组并绑定对应 cache。
+因此更准确地说：
 
-## 10. 在当前仓库里的推荐落地方式
+- 当前实现已经能避免这类异常在缓存层被长时间放大。
+- 但它属于通用保护，并不是专门为 Apple/App Store 单独硬编码的一条特殊路径。
 
-如果目标是让这套设计真正覆盖 App Store 异常，建议按优先级这样落地。
+## 10. 最终总结
 
-## 10.1 首选：给 Apple/App Store 域名单独分组，并绑定专用保守 cache
+如果只从“目前已经写进代码的实现”来看，当前系统避免 App Store 长时间运行异常在缓存层被长期放大，主要依靠下面几件事：
 
-这是最符合当前设计边界的做法。
+1. stale 结果对客户端只暴露极短时间，不会按 `lazy_cache_ttl` 长时间下发。
+2. 一旦命中过期项，就立即后台刷新，并允许后续请求快速切换到 fresh 结果。
+3. `SERVFAIL` 使用独立短 TTL，不会被长 lazy 窗口放大。
+4. UDP fast path 只做极短时间热点缓存，不长期缓存失败结果。
+5. 路由签名和依赖 revision 变化时，旧缓存会被绕过。
+6. 运行态已经提供 purge/flush，不需要只能依赖重启来摆脱旧缓存。
 
-好处：
+因此，对这个问题最准确的表述应当是：
 
-- 不需要重写缓存内核。
-- 只对 Apple/App Store 这组域名收紧策略。
-- 影响范围可控。
+> 当前实现已经通过一组通用缓存边界控制，避免 App Store 这类高变更域名的异常在缓存层被长期放大；它不是 Apple 专项策略，但它已经在实现层面对这类问题做了规避。
 
-建议先精确收口真实故障域名，例如：
-
-- `apps.apple.com`
-- `itunes.apple.com`
-- `buy.itunes.apple.com`
-- `bag.itunes.apple.com`
-- `ppq.apple.com`
-- `push.apple.com`
-- `push-apple.com.akadns.net`
-- `lcdn-locator.apple.com`
-- `lcdn-registration.apple.com`
-- `cn-ssl.ls.apple.com`
-- `mzstatic.com`
-- `aaplimg.com`
-
-推荐配置方向：
-
-1. Apple 域名单独分支。
-2. 挂单独响应缓存。
-3. 使用更保守策略：
-   - `lazy_cache_ttl: 0`
-   - 更短的 `servfail_ttl`
-   - 可选关闭持久化
-
-## 10.2 次选：整体收紧真实解析缓存
-
-如果不想拆分规则，也可以全局保守化：
-
-- 把 `cache_main/cache_branch_*` 的 `lazy_cache_ttl` 压低
-- 把 `servfail_ttl` 压低
-
-这会降低 stale 风险，但代价是：
-
-- 整体缓存收益下降
-- 上游查询频率会上升
-
-## 11. 可以直接用于故障止血的接口
-
-### 按域名清理
-
-```bash
-curl -X POST http://127.0.0.1:9099/api/v1/cache/purge_domains \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "tags": ["cache_main", "cache_branch_domestic", "cache_branch_foreign", "cache_branch_foreign_ecs"],
-    "domains": ["apps.apple.com", "itunes.apple.com", "push.apple.com"],
-    "qtypes": [1, 28]
-  }'
-```
-
-### 全量清理
-
-```bash
-curl -X POST http://127.0.0.1:9099/api/v1/cache/flush_all \
-  -H 'Content-Type: application/json' \
-  -d '{
-    "include_udp_fast": true
-  }'
-```
-
-## 12. 最终总结
-
-这套缓存设计规避 App Store 长时间运行异常的核心思想，其实很简单：
-
-1. 不把所有域名一视同仁。
-2. 把 Apple/App Store 相关域名单独分组。
-3. 这组域名使用更保守的缓存策略，不继续走默认 stale 路径。
-4. 必要时由 route signature、runtime purge 和专用 cache 继续兜底。
-
-因此，对这个问题最准确的描述是：
-
-> 当前仓库的缓存设计已经有能力规避这类问题；真正要让它落到 Apple/App Store 上，需要把对应域名单独分组，并绑定保守缓存策略。
-
-## 13. 参考文件
+## 11. 参考文件
 
 - [缓存策略真源](../config/sub_config/cache_policies.yaml)
 - [缓存与上游定义](../config/sub_config/21-data-cache-upstreams.yaml)
-- [统一标签映射](../config/sub_config/20-data-sources.yaml)
-- [Apple 当前规则清单](../config/rule/whitelist.txt)
 - [Cache WAL 灰度发布与回滚手册](./CACHE_WAL_ROLLOUT.md)
 - [DNS 失败类型与处理链路说明](./DNS_FAILURE_FLOW_EXPLAINED.md)
