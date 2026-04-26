@@ -75,7 +75,7 @@ type Args struct {
 
 func (a *Args) init() {
 	utils.SetDefaultString(&a.Listen, "127.0.0.1:53")
-	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 5)
+	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 60)
 	utils.SetDefaultUnsignNum(&a.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
 	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(30))
 	utils.SetDefaultUnsignNum(&a.FastMetricsLogInterval, 60)

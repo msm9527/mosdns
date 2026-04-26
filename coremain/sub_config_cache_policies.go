@@ -145,7 +145,7 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			},
 		},
 		UDPFastPath: UDPFastCachePolicy{
-			InternalTTL:      5,
+			InternalTTL:      60,
 			StaleRetry:       10,
 			TTLMin:           1,
 			TTLMax:           5,

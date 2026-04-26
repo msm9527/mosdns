@@ -385,7 +385,7 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 默认策略较短：
 
-- `internal_ttl = 5s`
+- `internal_ttl = 60s`
 - `stale_retry_seconds = 10s`
 - `ttl_min = 1`
 - `ttl_max = 5`
@@ -505,7 +505,7 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 - 只缓存 `NOERROR` 和 `NXDOMAIN`
 - 不缓存 `SERVFAIL`
-- `internal_ttl` 默认只有 `5s`
+- `internal_ttl` 默认 `60s`
 - stale retry 默认 `10s`
 
 这意味着：

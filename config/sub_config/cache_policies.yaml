@@ -136,7 +136,7 @@ response:
     persist: false
 
 udp_fast_path:
-  internal_ttl: 5
+  internal_ttl: 60
   stale_retry_seconds: 10
   ttl_min: 1
   ttl_max: 5
