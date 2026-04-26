@@ -16,6 +16,7 @@
 # - nxdomain_ttl / servfail_ttl: 负面结果缓存秒数，用于收敛重复失败查询。
 # - l1_enabled: 是否启用进程内 L1 热缓存。
 # - l1_total_cap / l1_shard_cap: L1 热缓存容量上限；不设 shard 时按实现自动分配。
+# - bypass_domain_sets: 命中这些域名集时完全绕过该响应缓存，不读 L1/L2，也不写入。
 # - persist: 是否启用 dump + WAL 持久化。
 # - dump_file: 周期性快照文件路径。
 # - dump_interval: 多久写一次快照，单位秒。
@@ -34,6 +35,7 @@
 # 设计默认值：
 # - fakeip 缓存默认不持久化，且不使用 lazy stale。
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
+# - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
 # - UDP 快路径默认只保留极短时间热点结果。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
 #
@@ -41,15 +43,18 @@
 # - internal_ttl: 快路径内部缓存保留秒数；只影响服务端热点缓存寿命。
 # - stale_retry_seconds: 过期条目进入 stale 刷新后，最短多久允许再次强制重试刷新。
 # - ttl_min / ttl_max: 返回给客户端的 TTL 裁剪范围；0 表示不限制该边界。
+# - bypass_domain_sets: 命中这些域名集时完全绕过 UDP 快路径缓存。
 
 response:
   cache_main:
     size: 40000
-    lazy_cache_ttl: 86400
+    lazy_cache_ttl: 21600
     nxdomain_ttl: 300
     servfail_ttl: 30
     l1_enabled: true
     l1_total_cap: 1024
+    bypass_domain_sets:
+      - DDNS域名
     persist: true
     dump_file: db/cache/cache_main.dump
     dump_interval: 3600
@@ -62,6 +67,8 @@ response:
     servfail_ttl: 30
     l1_enabled: true
     l1_total_cap: 512
+    bypass_domain_sets:
+      - DDNS域名
     persist: true
     dump_file: db/cache/cache_branch_domestic.dump
     dump_interval: 3600
@@ -74,6 +81,8 @@ response:
     servfail_ttl: 30
     l1_enabled: true
     l1_total_cap: 512
+    bypass_domain_sets:
+      - DDNS域名
     persist: true
     dump_file: db/cache/cache_branch_foreign.dump
     dump_interval: 3600
@@ -86,6 +95,8 @@ response:
     servfail_ttl: 20
     l1_enabled: true
     l1_total_cap: 256
+    bypass_domain_sets:
+      - DDNS域名
     persist: true
     dump_file: db/cache/cache_branch_foreign_ecs.dump
     dump_interval: 1800
@@ -98,6 +109,8 @@ response:
     servfail_ttl: 15
     l1_enabled: true
     l1_total_cap: 256
+    bypass_domain_sets:
+      - DDNS域名
     persist: false
 
   cache_fakeip_proxy:
@@ -107,6 +120,8 @@ response:
     servfail_ttl: 15
     l1_enabled: true
     l1_total_cap: 256
+    bypass_domain_sets:
+      - DDNS域名
     persist: false
 
   cache_probe:
@@ -116,6 +131,8 @@ response:
     servfail_ttl: 15
     l1_enabled: true
     l1_total_cap: 128
+    bypass_domain_sets:
+      - DDNS域名
     persist: false
 
 udp_fast_path:
@@ -123,3 +140,5 @@ udp_fast_path:
   stale_retry_seconds: 10
   ttl_min: 1
   ttl_max: 5
+  bypass_domain_sets:
+    - DDNS域名

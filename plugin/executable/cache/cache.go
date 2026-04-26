@@ -85,6 +85,8 @@ const (
 
 var _ sequence.RecursiveExecutable = (*Cache)(nil)
 
+var cacheRefreshBypassKey = query_context.RegKey()
+
 // keyBufferPool 用于复用生成 Key 时的字节缓冲区，显著降低内存分配压力
 var keyBufferPool = sync.Pool{
 	New: func() any {
@@ -154,38 +156,40 @@ func (s *lazyRefreshState) getErr() error {
 }
 
 type Args struct {
-	Size            int      `yaml:"size"`
-	LazyCacheTTL    int      `yaml:"lazy_cache_ttl"`
-	NXDomainTTL     int      `yaml:"nxdomain_ttl"`
-	ServfailTTL     int      `yaml:"servfail_ttl"`
-	L1Enabled       *bool    `yaml:"l1_enabled"`
-	L1TotalCap      int      `yaml:"l1_total_cap"`
-	L1ShardCap      int      `yaml:"l1_shard_cap"`
-	EnableECS       bool     `yaml:"enable_ecs"`
-	ExcludeIPs      []string `yaml:"exclude_ip"`
-	DumpFile        string   `yaml:"dump_file"`
-	DumpInterval    int      `yaml:"dump_interval"`
-	WALFile         string   `yaml:"wal_file"`
-	WALSyncInterval int      `yaml:"wal_sync_interval"`
+	Size             int      `yaml:"size"`
+	LazyCacheTTL     int      `yaml:"lazy_cache_ttl"`
+	NXDomainTTL      int      `yaml:"nxdomain_ttl"`
+	ServfailTTL      int      `yaml:"servfail_ttl"`
+	L1Enabled        *bool    `yaml:"l1_enabled"`
+	L1TotalCap       int      `yaml:"l1_total_cap"`
+	L1ShardCap       int      `yaml:"l1_shard_cap"`
+	EnableECS        bool     `yaml:"enable_ecs"`
+	ExcludeIPs       []string `yaml:"exclude_ip"`
+	BypassDomainSets []string `yaml:"bypass_domain_sets"`
+	DumpFile         string   `yaml:"dump_file"`
+	DumpInterval     int      `yaml:"dump_interval"`
+	WALFile          string   `yaml:"wal_file"`
+	WALSyncInterval  int      `yaml:"wal_sync_interval"`
 }
 
 type argsRaw struct {
-	Size            int         `yaml:"size"`
-	LazyCacheTTL    int         `yaml:"lazy_cache_ttl"`
-	NXDomainTTL     int         `yaml:"nxdomain_ttl"`
-	ServfailTTL     int         `yaml:"servfail_ttl"`
-	L1Enabled       *bool       `yaml:"l1_enabled"`
-	L1TotalCap      int         `yaml:"l1_total_cap"`
-	L1ShardCap      int         `yaml:"l1_shard_cap"`
-	EnableECS       bool        `yaml:"enable_ecs"`
-	ExcludeIP       interface{} `yaml:"exclude_ip"`
-	DumpFile        string      `yaml:"dump_file"`
-	DumpInterval    int         `yaml:"dump_interval"`
-	WALFile         string      `yaml:"wal_file"`
-	WALSyncInterval int         `yaml:"wal_sync_interval"`
+	Size             int         `yaml:"size"`
+	LazyCacheTTL     int         `yaml:"lazy_cache_ttl"`
+	NXDomainTTL      int         `yaml:"nxdomain_ttl"`
+	ServfailTTL      int         `yaml:"servfail_ttl"`
+	L1Enabled        *bool       `yaml:"l1_enabled"`
+	L1TotalCap       int         `yaml:"l1_total_cap"`
+	L1ShardCap       int         `yaml:"l1_shard_cap"`
+	EnableECS        bool        `yaml:"enable_ecs"`
+	ExcludeIP        interface{} `yaml:"exclude_ip"`
+	BypassDomainSets interface{} `yaml:"bypass_domain_sets"`
+	DumpFile         string      `yaml:"dump_file"`
+	DumpInterval     int         `yaml:"dump_interval"`
+	WALFile          string      `yaml:"wal_file"`
+	WALSyncInterval  int         `yaml:"wal_sync_interval"`
 }
 
-// UnmarshalYAML supports both scalar (space-separated) and sequence forms for exclude_ip.
+// UnmarshalYAML supports legacy scalar/list forms for cache filter fields.
 func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	var raw argsRaw
 	if err := node.Decode(&raw); err != nil {
@@ -203,6 +207,7 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	a.WALFile = raw.WALFile
 	a.WALSyncInterval = raw.WALSyncInterval
 	a.EnableECS = raw.EnableECS
+	var err error
 
 	switch v := raw.ExcludeIP.(type) {
 	case string:
@@ -220,7 +225,34 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	default:
 		return fmt.Errorf("exclude_ip must be string or list, got %T", v)
 	}
+	a.BypassDomainSets, err = parseDomainSetTokenValue(raw.BypassDomainSets, "bypass_domain_sets")
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+func parseDomainSetTokenValue(raw interface{}, field string) ([]string, error) {
+	switch v := raw.(type) {
+	case string:
+		return normalizeDomainSetTokens([]string{v}), nil
+	case []interface{}:
+		values := make([]string, 0, len(v))
+		for _, x := range v {
+			s, ok := x.(string)
+			if !ok {
+				return nil, fmt.Errorf("%s list contains non-string: %#v", field, x)
+			}
+			values = append(values, s)
+		}
+		return normalizeDomainSetTokens(values), nil
+	case []string:
+		return normalizeDomainSetTokens(v), nil
+	case nil:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("%s must be string or list, got %T", field, v)
+	}
 }
 
 func (a *Args) init() {
@@ -242,6 +274,7 @@ func (a *Args) init() {
 	if a.WALFile == "" {
 		a.WALFile = inferWALFileFromDump(a.DumpFile)
 	}
+	a.BypassDomainSets = normalizeDomainSetTokens(a.BypassDomainSets)
 }
 
 func inferDefaultL1TotalCap(size int) int {
@@ -528,6 +561,20 @@ func (c *Cache) containsExcluded(msg *dns.Msg) bool {
 	return false
 }
 
+func (c *Cache) shouldBypassForCurrentDomainSet(domainSet string) bool {
+	if c == nil || c.args == nil {
+		return false
+	}
+	return domainSetTokensContainAny(domainSet, c.args.BypassDomainSets)
+}
+
+func (c *Cache) shouldBypassForStoredDomainSet(domainSet string) bool {
+	if c == nil || c.args == nil {
+		return false
+	}
+	return domainSetContainsAnyToken(domainSet, c.args.BypassDomainSets)
+}
+
 func (c *Cache) RegMetricsTo(r prometheus.Registerer) error {
 	for _, collector := range [...]prometheus.Collector{
 		c.queryTotal,
@@ -578,13 +625,15 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	h := k.Sum()
 	shard := c.shards[h%shardCount]
 	currentDomainSet := currentRouteDomainSet(qCtx)
+	forceRefresh := shouldBypassCacheForRefresh(qCtx)
+	bypassDomainSet := c.shouldBypassForCurrentDomainSet(currentDomainSet)
 
 	// --- L1 热路径查询 ---
 	var (
 		v1  *item
 		ok1 bool
 	)
-	if c.l1Enabled {
+	if c.l1Enabled && !forceRefresh && !bypassDomainSet {
 		shard.RLock()
 		entry, ok := shard.items[k]
 		if ok {
@@ -604,8 +653,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	if ok1 && nowUnix < v1.expireUnixNano {
 		r, lazy, domainSet, corrupt := respFromCacheItem(v1, false, expiredMsgTtl)
 		if corrupt {
-			c.backend.Delete(k)
-			c.deleteL1Key(k)
+			c.deleteRuntimeCacheKey(k, "corrupt_l1")
 			ok1 = false
 		} else if r != nil && !lazy {
 			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
@@ -634,17 +682,36 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	// 归还 Key 缓冲区
 	releaseKeyBuffer(bufPtr)
 
+	if bypassDomainSet {
+		return next.ExecNext(ctx, qCtx)
+	}
+
+	if forceRefresh {
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
+		err := next.ExecNext(ctx, qCtx)
+		r := qCtx.R()
+
+		if r != nil && !c.containsExcluded(r) {
+			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
+				c.updatedKey.Add(1)
+				if c.l1Enabled {
+					shard.updateL1(kReal, cachedItem)
+				}
+			}
+		}
+
+		return err
+	}
+
 	// --- L2 路径查询 ---
 	cachedItem, _, _ := c.backend.Get(kReal)
 	if cachedItem != nil && shouldBypassForRouteChange(cachedItem.domainSet, currentDomainSet, c.plugin) {
-		c.backend.Delete(kReal)
-		c.deleteL1Key(kReal)
+		c.deleteRuntimeCacheKey(kReal, "route_change")
 		cachedItem = nil
 	}
 	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyCacheTTL > 0, expiredMsgTtl)
 	if corrupt {
-		c.backend.Delete(kReal)
-		c.deleteL1Key(kReal)
+		c.deleteRuntimeCacheKey(kReal, "corrupt_l2")
 		cachedItem = nil
 		cachedResp = nil
 		lazyHit = false
@@ -659,14 +726,12 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 				refreshedItem, _, _ := c.backend.Get(kReal)
 				if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
-					c.backend.Delete(kReal)
-					c.deleteL1Key(kReal)
+					c.deleteRuntimeCacheKey(kReal, "lazy_refresh_route_change")
 					refreshedItem = nil
 				}
 				refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, false, expiredMsgTtl)
 				if refreshedCorrupt {
-					c.backend.Delete(kReal)
-					c.deleteL1Key(kReal)
+					c.deleteRuntimeCacheKey(kReal, "lazy_refresh_corrupt")
 					refreshedResp = nil
 					refreshedLazy = false
 					refreshedDomainSet = ""
@@ -721,14 +786,12 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 			refreshedItem, _, _ := c.backend.Get(kReal)
 			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
-				c.backend.Delete(kReal)
-				c.deleteL1Key(kReal)
+				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_route_change")
 				refreshedItem = nil
 			}
 			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, false, expiredMsgTtl)
 			if refreshedCorrupt {
-				c.backend.Delete(kReal)
-				c.deleteL1Key(kReal)
+				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_corrupt")
 				refreshedResp = nil
 				refreshedLazy = false
 				refreshedDomainSet = ""
@@ -810,7 +873,28 @@ func (c *Cache) maybePrefetch(msgKey string, qCtx *query_context.Context, next s
 	if msgKey == "" || qCtx == nil || !c.shouldPrefetch(now, storedUnixNano, expireUnixNano, domainSet) {
 		return
 	}
+	if c.shouldBypassForStoredDomainSet(domainSet) {
+		return
+	}
 	c.ensureLazyUpdate(msgKey, qCtx, next)
+}
+
+func markCacheRefreshBypass(qCtx *query_context.Context) {
+	if qCtx != nil {
+		qCtx.StoreValue(cacheRefreshBypassKey, true)
+	}
+}
+
+func shouldBypassCacheForRefresh(qCtx *query_context.Context) bool {
+	if qCtx == nil {
+		return false
+	}
+	value, ok := qCtx.GetValue(cacheRefreshBypassKey)
+	if !ok {
+		return false
+	}
+	bypass, _ := value.(bool)
+	return bypass
 }
 
 func (c *Cache) ensureLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) (*lazyRefreshState, bool) {
@@ -854,6 +938,8 @@ func (c *Cache) runLazyUpdate(msgKey string, qCtx *query_context.Context, next s
 	ctx, cancel := context.WithTimeout(context.Background(), defaultLazyUpdateTimeout)
 	defer cancel()
 
+	qCtx.SetResponse(nil)
+	markCacheRefreshBypass(qCtx)
 	err := next.ExecNext(ctx, qCtx)
 	if err != nil && !errors.Is(err, sequence.ErrExit) {
 		c.logger.Warn("failed to update lazy cache", qCtx.InfoField(), zap.Error(err))
@@ -894,12 +980,12 @@ func (c *Cache) shouldDumpOnClose() bool {
 	if c.persistence == nil {
 		return false
 	}
-	if c.updatedKey.Load() > 0 {
-		return true
-	}
 	snapshotPath := c.persistence.snapshotPath
 	if len(snapshotPath) == 0 {
 		return false
+	}
+	if c.updatedKey.Load() > 0 {
+		return true
 	}
 	_, err := os.Stat(snapshotPath)
 	return err != nil
@@ -986,6 +1072,9 @@ func (c *Cache) RuntimeCacheEntryCount() int {
 
 func (c *Cache) FlushRuntimeCache(_ context.Context) error {
 	c.logger.Info("flushing cache via direct action")
+	if err := c.appendRuntimeFlush("runtime_flush"); err != nil {
+		return err
+	}
 	c.backend.Flush()
 	c.resetL1()
 	c.updatedKey.Store(0)
@@ -1055,12 +1144,14 @@ func (c *Cache) PurgeDomainsRuntimeCache(_ context.Context, domains []string, qt
 		return 0, err
 	}
 
-	for _, k := range purgeKeys {
-		c.backend.Delete(k)
-	}
-	c.deleteL1Keys(purgeKeys)
-
 	if len(purgeKeys) > 0 {
+		if err := c.appendRuntimeDeleteBatch(purgeKeys, "runtime_purge"); err != nil {
+			return 0, err
+		}
+		for _, k := range purgeKeys {
+			c.backend.Delete(k)
+		}
+		c.deleteL1Keys(purgeKeys)
 		c.updatedKey.Add(uint64(len(purgeKeys)))
 		if len(c.args.DumpFile) > 0 {
 			if err := c.dumpCache(); err != nil {
@@ -1633,6 +1724,9 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 	if r == nil || r.Truncated != false {
 		return nil, false
 	}
+	if c.shouldBypassForCurrentDomainSet(currentRouteDomainSet(qCtx)) {
+		return nil, false
+	}
 
 	var msgTtl time.Duration
 	var cacheTtl time.Duration
@@ -1698,10 +1792,9 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 		cacheExp:  cacheExp,
 		cacheItem: v,
 	}); err != nil {
-		c.walAppendErrorCounter.Inc()
-		c.logger.Warn("failed to append cache wal", zap.Error(err))
-	} else if c.args.WALFile != "" {
-		c.walAppendCounter.Inc()
+		c.recordWALAppendError("set", "store_response", err)
+	} else {
+		c.recordWALAppendSuccess(1)
 	}
 	return v, true
 }

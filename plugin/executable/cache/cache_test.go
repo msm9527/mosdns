@@ -120,6 +120,165 @@ func Test_cachePlugin_WALReplay(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_WALReplayMultipleStores(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            purgeDomainRuntimeTestCacheSize,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 60,
+	}
+
+	c := NewCache(args, Opts{})
+	qCtxA := testQueryContext(t, "wal-a.example.", net.IPv4(1, 1, 1, 1))
+	qCtxB := testQueryContext(t, "wal-b.example.", net.IPv4(2, 2, 2, 2))
+
+	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false)
+	keyBBuf, ptrB := getMsgKeyBytes(qCtxB.Q(), qCtxB, false)
+	keyA := string(keyABuf)
+	keyB := string(keyBBuf)
+	releaseKeyBuffer(ptrA)
+	releaseKeyBuffer(ptrB)
+
+	if _, ok := c.saveRespToCache(keyA, qCtxA); !ok {
+		t.Fatal("expected first response to be cached")
+	}
+	if _, ok := c.saveRespToCache(keyB, qCtxB); !ok {
+		t.Fatal("expected second response to be cached")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := NewCache(args, Opts{})
+	defer c2.Close()
+	if resp, _, _ := getRespFromCache(keyA, c2.backend, false, expiredMsgTtl); resp == nil {
+		t.Fatal("expected first wal entry to be restored")
+	}
+	if resp, _, _ := getRespFromCache(keyB, c2.backend, false, expiredMsgTtl); resp == nil {
+		t.Fatal("expected second wal entry to be restored")
+	}
+}
+
+func Test_cachePlugin_WALReplayDelete(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            purgeDomainRuntimeTestCacheSize,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 60,
+	}
+
+	c := NewCache(args, Opts{})
+	qCtxPurge := testQueryContext(t, "wal-purge.example.", net.IPv4(3, 3, 3, 3))
+	qCtxKeep := testQueryContext(t, "wal-keep.example.", net.IPv4(4, 4, 4, 4))
+
+	keyPurgeBuf, ptrPurge := getMsgKeyBytes(qCtxPurge.Q(), qCtxPurge, false)
+	keyKeepBuf, ptrKeep := getMsgKeyBytes(qCtxKeep.Q(), qCtxKeep, false)
+	keyPurge := string(keyPurgeBuf)
+	keyKeep := string(keyKeepBuf)
+	releaseKeyBuffer(ptrPurge)
+	releaseKeyBuffer(ptrKeep)
+
+	if _, ok := c.saveRespToCache(keyPurge, qCtxPurge); !ok {
+		t.Fatal("expected purge response to be cached")
+	}
+	if _, ok := c.saveRespToCache(keyKeep, qCtxKeep); !ok {
+		t.Fatal("expected keep response to be cached")
+	}
+
+	purged, err := c.PurgeDomainRuntime(context.Background(), "wal-purge.example", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if purged != 1 {
+		t.Fatalf("expected one purged entry, got %d", purged)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := NewCache(args, Opts{})
+	defer c2.Close()
+	if resp, _, _ := getRespFromCache(keyPurge, c2.backend, false, expiredMsgTtl); resp != nil {
+		t.Fatal("expected deleted wal entry to stay deleted after replay")
+	}
+	if resp, _, _ := getRespFromCache(keyKeep, c2.backend, false, expiredMsgTtl); resp == nil {
+		t.Fatal("expected unrelated wal entry to remain")
+	}
+}
+
+func Test_cachePlugin_WALReplayFlush(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            purgeDomainRuntimeTestCacheSize,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 60,
+	}
+
+	c := NewCache(args, Opts{})
+	qCtxBefore := testQueryContext(t, "wal-before-flush.example.", net.IPv4(5, 5, 5, 5))
+	qCtxAfter := testQueryContext(t, "wal-after-flush.example.", net.IPv4(6, 6, 6, 6))
+
+	keyBeforeBuf, ptrBefore := getMsgKeyBytes(qCtxBefore.Q(), qCtxBefore, false)
+	keyAfterBuf, ptrAfter := getMsgKeyBytes(qCtxAfter.Q(), qCtxAfter, false)
+	keyBefore := string(keyBeforeBuf)
+	keyAfter := string(keyAfterBuf)
+	releaseKeyBuffer(ptrBefore)
+	releaseKeyBuffer(ptrAfter)
+
+	if _, ok := c.saveRespToCache(keyBefore, qCtxBefore); !ok {
+		t.Fatal("expected before-flush response to be cached")
+	}
+	if err := c.FlushRuntimeCache(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := c.saveRespToCache(keyAfter, qCtxAfter); !ok {
+		t.Fatal("expected after-flush response to be cached")
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := NewCache(args, Opts{})
+	defer c2.Close()
+	if resp, _, _ := getRespFromCache(keyBefore, c2.backend, false, expiredMsgTtl); resp != nil {
+		t.Fatal("expected flushed wal entry to stay deleted after replay")
+	}
+	if resp, _, _ := getRespFromCache(keyAfter, c2.backend, false, expiredMsgTtl); resp == nil {
+		t.Fatal("expected post-flush wal entry to remain")
+	}
+}
+
+func Test_cachePlugin_WALOnlyDumpDoesNotResetWAL(t *testing.T) {
+	dir := t.TempDir()
+	args := &Args{
+		Size:            purgeDomainRuntimeTestCacheSize,
+		WALFile:         filepath.Join(dir, "cache.wal"),
+		WALSyncInterval: 60,
+	}
+
+	c := NewCache(args, Opts{})
+	qCtx := testQueryContext(t, "wal-only-dump.example.", net.IPv4(7, 7, 7, 7))
+	keyBuf, ptr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
+	msgKey := string(keyBuf)
+	releaseKeyBuffer(ptr)
+
+	if _, ok := c.saveRespToCache(msgKey, qCtx); !ok {
+		t.Fatal("expected response to be cached")
+	}
+	if err := c.dumpCache(); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	c2 := NewCache(args, Opts{})
+	defer c2.Close()
+	if resp, _, _ := getRespFromCache(msgKey, c2.backend, false, expiredMsgTtl); resp == nil {
+		t.Fatal("expected wal-only dump not to reset wal")
+	}
+}
+
 func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
 	backend := pcache.New[key, *item](pcache.Opts{Size: 64})
 	defer backend.Close()
@@ -264,6 +423,138 @@ func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
 	}
 	if got := storedRouteSignature(updated.domainSet); !strings.Contains(got, "rev2") {
 		t.Fatalf("expected updated route signature to include new revision, got %q", got)
+	}
+}
+
+func Test_cachePlugin_ExecBypassesCachedResponseDuringRefresh(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
+	defer c.Close()
+
+	seedCtx := testQueryContext(t, "refresh-bypass.example.", net.IPv4(1, 1, 1, 1))
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	msgKey := string(keyBuf)
+	releaseKeyBuffer(bufPtr)
+
+	cachedItem, ok := c.saveRespToCache(msgKey, seedCtx)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+
+	now := time.Now()
+	cachedItem.expireUnixNano = now.Add(-time.Second).UnixNano()
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, now.Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	qCtx := testQueryContext(t, "refresh-bypass.example.", net.IPv4(2, 2, 2, 2))
+	markCacheRefreshBypass(qCtx)
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected response after cache refresh, got %+v", resp)
+	}
+	gotA, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A response, got %T", resp.Answer[0])
+	}
+	if !gotA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected refresh bypass to keep fresh response, got %s", gotA.A.String())
+	}
+
+	updated, _, _ := c.backend.Get(k)
+	refreshedResp, lazy, _, corrupt := respFromCacheItem(updated, false, expiredMsgTtl)
+	if corrupt {
+		t.Fatal("expected refreshed cache entry to decode")
+	}
+	if lazy {
+		t.Fatal("expected refreshed cache entry to be fresh")
+	}
+	if refreshedResp == nil || len(refreshedResp.Answer) != 1 {
+		t.Fatalf("expected refreshed cache response, got %+v", refreshedResp)
+	}
+	refreshedA, ok := refreshedResp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected refreshed A response, got %T", refreshedResp.Answer[0])
+	}
+	if !refreshedA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected cache to store refreshed response, got %s", refreshedA.A.String())
+	}
+}
+
+func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
+	c := NewCache(&Args{Size: 64, BypassDomainSets: []string{"高变CDN"}}, Opts{})
+	defer c.Close()
+
+	seedCtx := testQueryContext(t, "domainset-bypass.example.", net.IPv4(1, 1, 1, 1))
+	seedCtx.StoreValue(query_context.KeyDomainSet, "订阅直连|高变CDN")
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	msgKey := string(keyBuf)
+	releaseKeyBuffer(bufPtr)
+
+	msgToCache := copyNoOpt(seedCtx.R())
+	packedMsg, err := msgToCache.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	cachedItem := &item{
+		resp:           packedMsg,
+		storedUnixNano: now.UnixNano(),
+		expireUnixNano: now.Add(time.Minute).UnixNano(),
+		domainSet:      encodeStoredRouteMetadata("订阅直连|高变CDN", "订阅直连|高变CDN", ""),
+	}
+	c.prepareCacheItemForStore(cachedItem)
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, now.Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	qCtx := testQueryContext(t, "domainset-bypass.example.", net.IPv4(2, 2, 2, 2))
+	qCtx.StoreValue(query_context.KeyDomainSet, "订阅直连|高变CDN")
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected response after cache bypass, got %+v", resp)
+	}
+	gotA, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A response, got %T", resp.Answer[0])
+	}
+	if !gotA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected configured domain-set bypass to keep fresh response, got %s", gotA.A.String())
+	}
+
+	stored, _, _ := c.backend.Get(k)
+	storedResp, lazy, _, corrupt := respFromCacheItem(stored, false, expiredMsgTtl)
+	if corrupt || lazy || storedResp == nil || len(storedResp.Answer) != 1 {
+		t.Fatalf("expected old cache entry to remain unread and unchanged, resp=%+v lazy=%v corrupt=%v", storedResp, lazy, corrupt)
+	}
+	storedA, ok := storedResp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected stored A response, got %T", storedResp.Answer[0])
+	}
+	if !storedA.A.Equal(net.IPv4(1, 1, 1, 1)) {
+		t.Fatalf("expected bypass not to overwrite old cache entry, got %s", storedA.A.String())
+	}
+}
+
+func Test_cachePlugin_SaveSkipsConfiguredDomainSet(t *testing.T) {
+	c := NewCache(&Args{Size: 64, BypassDomainSets: []string{"DDNS域名"}}, Opts{})
+	defer c.Close()
+
+	qCtx := testQueryContext(t, "ddns-save-bypass.example.", net.IPv4(4, 4, 4, 4))
+	qCtx.StoreValue(query_context.KeyDomainSet, "DDNS域名")
+	if _, ok := c.saveRespToCache("ddns-save-bypass-key", qCtx); ok {
+		t.Fatal("expected configured domain-set response not to be cached")
+	}
+	if got := c.backend.Len(); got != 0 {
+		t.Fatalf("expected cache to remain empty, got %d entries", got)
 	}
 }
 

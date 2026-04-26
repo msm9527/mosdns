@@ -129,13 +129,14 @@ func (c *Cache) snapshotStats() cacheStatsResponse {
 
 func (c *Cache) snapshotConfig(snapshotPath, walPath string) map[string]interface{} {
 	cfg := map[string]interface{}{
-		"size":           c.args.Size,
-		"lazy_cache_ttl": c.args.LazyCacheTTL,
-		"l1_enabled":     c.l1Enabled,
-		"l1_total_cap":   c.args.L1TotalCap,
-		"l1_shard_cap":   c.l1ShardCap,
-		"enable_ecs":     c.args.EnableECS,
-		"persist":        snapshotPath != "" || walPath != "",
+		"size":               c.args.Size,
+		"lazy_cache_ttl":     c.args.LazyCacheTTL,
+		"l1_enabled":         c.l1Enabled,
+		"l1_total_cap":       c.args.L1TotalCap,
+		"l1_shard_cap":       c.l1ShardCap,
+		"enable_ecs":         c.args.EnableECS,
+		"bypass_domain_sets": append([]string(nil), c.args.BypassDomainSets...),
+		"persist":            snapshotPath != "" || walPath != "",
 	}
 	if snapshotPath == "" && walPath == "" {
 		return cfg

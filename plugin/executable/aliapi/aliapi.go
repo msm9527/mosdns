@@ -44,9 +44,10 @@ func init() {
 }
 
 const (
-	maxConcurrentQueries = 20
-	queryTimeout         = time.Second * 5
-	defaultAliAPIServer  = "223.5.5.5"
+	maxConcurrentQueries        = 20
+	queryTimeout                = time.Second * 5
+	defaultAliAPIServer         = "223.5.5.5"
+	defaultNegativeResponseWait = 250 * time.Millisecond
 )
 
 var aliAPIFakeIPPrefixes = mustParseAliAPIFakeIPPrefixes(
@@ -60,6 +61,7 @@ var aliAPIFakeIPPrefixes = mustParseAliAPIFakeIPPrefixes(
 type Args struct {
 	Upstreams                   []UpstreamConfig `yaml:"upstreams"`
 	Concurrent                  int              `yaml:"concurrent"`
+	NegativeResponseGraceMs     int              `yaml:"negative_response_grace_ms"`
 	FailureSuppressTTL          int              `yaml:"failure_suppress_ttl"`
 	PersistentServfailThreshold int              `yaml:"persistent_servfail_threshold"`
 	PersistentServfailTTL       int              `yaml:"persistent_servfail_ttl"`
@@ -282,6 +284,9 @@ func NewAliAPI(args *Args, opt Opts) (*AliAPI, error) {
 	}
 	if args.UpstreamCircuitBreakSeconds <= 0 {
 		args.UpstreamCircuitBreakSeconds = 60
+	}
+	if args.NegativeResponseGraceMs <= 0 {
+		args.NegativeResponseGraceMs = int(defaultNegativeResponseWait / time.Millisecond)
 	}
 
 	applyGlobal := func(c *UpstreamConfig) {
@@ -573,6 +578,7 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 	var lastOtherRes *dns.Msg
 	var lastOtherResUpstream *upstreamWrapper
 	var lastError error
+	negativeResponseWait := effectiveNegativeResponseWait(runtimeArgs)
 
 	availableUpstreams := filterAvailableUpstreams(us)
 	if len(availableUpstreams) == 0 {
@@ -658,6 +664,28 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 
 	workerCtx, workerCancel := context.WithCancel(ctx)
 	defer workerCancel()
+	var negativeTimer *time.Timer
+	var negativeTimerC <-chan time.Time
+	defer func() {
+		if negativeTimer != nil {
+			negativeTimer.Stop()
+		}
+	}()
+
+	armNegativeTimer := func() {
+		if lastSuccessOrNXRes == nil || negativeTimer != nil {
+			return
+		}
+		negativeTimer = time.NewTimer(negativeResponseWait)
+		negativeTimerC = negativeTimer.C
+	}
+
+	returnStoredSuccessOrNX := func() (*dns.Msg, error) {
+		workerCancel()
+		lastSuccessOrNXResUpstream.recordWinner()
+		coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())
+		return lastSuccessOrNXRes, nil
+	}
 
 	startWorker := func(currentUpstream *upstreamWrapper) {
 		qc := copyPayload(queryPayload)
@@ -683,13 +711,17 @@ func (f *AliAPI) exchange(ctx context.Context, qCtx *query_context.Context, runt
 				workerCancel()
 				return r, nil
 			}
+			armNegativeTimer()
+
+		case <-negativeTimerC:
+			if lastSuccessOrNXRes != nil {
+				return returnStoredSuccessOrNX()
+			}
 
 		case <-ctx.Done():
 			workerCancel()
 			if lastSuccessOrNXRes != nil {
-				lastSuccessOrNXResUpstream.recordWinner()
-				coremain.SetAuditUpstreamTag(qCtx, lastSuccessOrNXResUpstream.name())
-				return lastSuccessOrNXRes, nil
+				return returnStoredSuccessOrNX()
 			}
 			if lastOtherRes != nil {
 				lastOtherResUpstream.recordWinner()
@@ -738,6 +770,13 @@ func hasUsableAnswer(r *dns.Msg) bool {
 		}
 	}
 	return false
+}
+
+func effectiveNegativeResponseWait(args *Args) time.Duration {
+	if args == nil || args.NegativeResponseGraceMs <= 0 {
+		return defaultNegativeResponseWait
+	}
+	return time.Duration(args.NegativeResponseGraceMs) * time.Millisecond
 }
 
 func mustParseAliAPIFakeIPPrefixes(raw ...string) []netip.Prefix {

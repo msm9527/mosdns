@@ -2969,13 +2969,13 @@ components:
       properties:
         queries_per_second:
           type: integer
-          default: 100
+          default: 50
         quick_queries_per_second:
           type: integer
-          default: 200
+          default: 80
         prewarm_queries_per_second:
           type: integer
-          default: 300
+          default: 100
         resolver_address:
           type: string
         refresh_resolver_address:
@@ -3352,13 +3352,13 @@ components:
               type: string
             queries_per_second:
               type: integer
-              default: 100
+              default: 50
             quick_queries_per_second:
               type: integer
-              default: 200
+              default: 80
             prewarm_queries_per_second:
               type: integer
-              default: 300
+              default: 100
             quick_rebuild_limit:
               type: integer
               default: 3500

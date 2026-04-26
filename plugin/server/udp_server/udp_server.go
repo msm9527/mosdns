@@ -27,6 +27,7 @@ import (
 	"math"
 	"net"
 	"net/netip"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -60,15 +61,16 @@ func init() {
 }
 
 type Args struct {
-	Entry                  string `yaml:"entry"`
-	Listen                 string `yaml:"listen"`
-	EnableAudit            bool   `yaml:"enable_audit"`
-	FastCacheInternalTTL   int    `yaml:"fast_cache_internal_ttl"`
-	FastCacheStaleRetrySec int    `yaml:"fast_cache_stale_retry_seconds"`
-	FastCacheTTLMin        uint32 `yaml:"fast_cache_ttl_min"`
-	FastCacheTTLMax        uint32 `yaml:"fast_cache_ttl_max"`
-	FastMetricsLogInterval int    `yaml:"fast_metrics_log_interval"`
-	FastBypassWarmupSec    int    `yaml:"fast_bypass_warmup_seconds"`
+	Entry                     string   `yaml:"entry"`
+	Listen                    string   `yaml:"listen"`
+	EnableAudit               bool     `yaml:"enable_audit"`
+	FastCacheInternalTTL      int      `yaml:"fast_cache_internal_ttl"`
+	FastCacheStaleRetrySec    int      `yaml:"fast_cache_stale_retry_seconds"`
+	FastCacheTTLMin           uint32   `yaml:"fast_cache_ttl_min"`
+	FastCacheTTLMax           uint32   `yaml:"fast_cache_ttl_max"`
+	FastCacheBypassDomainSets []string `yaml:"fast_cache_bypass_domain_sets"`
+	FastMetricsLogInterval    int      `yaml:"fast_metrics_log_interval"`
+	FastBypassWarmupSec       int      `yaml:"fast_bypass_warmup_seconds"`
 }
 
 func (a *Args) init() {
@@ -86,6 +88,7 @@ func (a *Args) init() {
 	if a.FastBypassWarmupSec < 0 {
 		a.FastBypassWarmupSec = 0
 	}
+	a.FastCacheBypassDomainSets = normalizeFastCacheDomainSetTokens(a.FastCacheBypassDomainSets)
 }
 
 func inferFastBypassWarmupSec(entry, listen string) int {
@@ -95,6 +98,54 @@ func inferFastBypassWarmupSec(entry, listen string) int {
 		return defaultFastBypassWarmupRequery
 	}
 	return defaultFastBypassWarmupMain
+}
+
+func normalizeFastCacheDomainSetTokens(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, part := range strings.FieldsFunc(value, func(r rune) bool {
+			return r == '|' || r == ',' || r == '，'
+		}) {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			if _, ok := seen[part]; ok {
+				continue
+			}
+			seen[part] = struct{}{}
+			out = append(out, part)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func fastCacheDomainSetContainsAny(domainSet string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	domainSet = strings.TrimSpace(domainSet)
+	if domainSet == "" {
+		return false
+	}
+	for {
+		part, rest, ok := strings.Cut(domainSet, "|")
+		part = strings.TrimSpace(part)
+		for _, token := range tokens {
+			if part == strings.TrimSpace(token) {
+				return true
+			}
+		}
+		if !ok {
+			return false
+		}
+		domainSet = rest
+	}
 }
 
 type UdpServer struct {
@@ -169,10 +220,11 @@ type fastCache struct {
 }
 
 type fastCacheConfig struct {
-	internalTTL time.Duration
-	staleRetry  time.Duration
-	ttlMin      uint32
-	ttlMax      uint32
+	internalTTL      time.Duration
+	staleRetry       time.Duration
+	ttlMin           uint32
+	ttlMax           uint32
+	bypassDomainSets []string
 }
 
 type fastStats struct {
@@ -249,7 +301,15 @@ func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
 	if cfg.staleRetry <= 0 {
 		cfg.staleRetry = defaultStaleRefreshRetrySec * time.Second
 	}
+	cfg.bypassDomainSets = normalizeFastCacheDomainSetTokens(cfg.bypassDomainSets)
 	return &fastCache{cfg: cfg, stats: stats}
+}
+
+func (fc *fastCache) shouldBypassDomainSet(domainSet string) bool {
+	if fc == nil {
+		return false
+	}
+	return fastCacheDomainSetContainsAny(domainSet, fc.cfg.bypassDomainSets)
 }
 
 func (fc *fastCache) loadTable() *fastCacheTable {
@@ -288,6 +348,9 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 			fc.stats.cacheMiss.Add(1)
 		}
 		return server.FastActionContinue, 0, 0, "", false
+	}
+	if fc.shouldBypassDomainSet(ptr.domainSet) {
+		return server.FastActionContinue, 0, 0, ptr.domainSet, false
 	}
 
 	now := time.Now().Unix()
@@ -335,7 +398,10 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 	return server.FastActionContinue, 0, 0, "", false
 }
 
-func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string, fakeIP bool) {
+func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string, fakeIP bool) bool {
+	if fc.shouldBypassDomainSet(dset) {
+		return false
+	}
 	h := maphash.String(maphashSeed, qname) ^ uint64(qtype)
 
 	bakedResp := make([]byte, len(resp))
@@ -362,6 +428,7 @@ func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string,
 	if fc.stats != nil {
 		fc.stats.cacheStore.Add(1)
 	}
+	return true
 }
 
 func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allowFakeIP bool) *[]byte {
@@ -371,6 +438,9 @@ func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allow
 		return nil
 	}
 	if ptr.fakeIP && !allowFakeIP {
+		return nil
+	}
+	if fc.shouldBypassDomainSet(ptr.domainSet) {
 		return nil
 	}
 	if len(ptr.resp) == 0 {
@@ -551,6 +621,9 @@ func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, me
 	if !h.fastCacheEnabled() || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
 		return nil
 	}
+	if h.fc.shouldBypassDomainSet(meta.PreFastDomainSet) {
+		return nil
+	}
 	question := q.Question[0]
 	stalePayload := h.fc.CopyResponse(q.Id, question.Name, question.Qtype, h.allowFakeIPCache())
 	if stalePayload == nil {
@@ -602,12 +675,14 @@ func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, paylo
 	if dsetName == "" && h.dm != nil {
 		_, dsetName, _ = h.dm.FastMatch(q.Question[0].Name)
 	}
+	if h.fc.shouldBypassDomainSet(dsetName) {
+		return false
+	}
 	fakeIP := isFakeIPResponse(*payload)
 	if fakeIP && !h.allowFakeIPCache() {
 		return false
 	}
-	h.fc.Store(q.Question[0].Name, q.Question[0].Qtype, *payload, dsetName, fakeIP)
-	return true
+	return h.fc.Store(q.Question[0].Name, q.Question[0].Qtype, *payload, dsetName, fakeIP)
 }
 
 func (h *fastHandler) fastCacheEnabled() bool {
@@ -641,10 +716,11 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
-		internalTTL: time.Duration(args.FastCacheInternalTTL) * time.Second,
-		staleRetry:  time.Duration(args.FastCacheStaleRetrySec) * time.Second,
-		ttlMin:      args.FastCacheTTLMin,
-		ttlMax:      args.FastCacheTTLMax,
+		internalTTL:      time.Duration(args.FastCacheInternalTTL) * time.Second,
+		staleRetry:       time.Duration(args.FastCacheStaleRetrySec) * time.Second,
+		ttlMin:           args.FastCacheTTLMin,
+		ttlMax:           args.FastCacheTTLMax,
+		bypassDomainSets: args.FastCacheBypassDomainSets,
 	}, stats)
 	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, sw: sw15, fakeCacheSwitch: swFake}
 	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second)
@@ -841,7 +917,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			marks |= (1 << 39)
 		}
 
-		if (marks & (1 << 39)) == 0 {
+		if (marks&(1<<39)) == 0 && !fc.shouldBypassDomainSet(dset) {
 			hKey := maphash.String(maphashSeed, qname) ^ uint64(qtype)
 			if stats != nil {
 				stats.cacheLookup.Add(1)
