@@ -1236,7 +1236,7 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 
 	qps := p.config.ExecutionSettings.QueriesPerSecond
 	if qps <= 0 {
-		qps = 100
+		qps = defaultFullQPS
 	}
 	timeout := 5*time.Second + (time.Duration(len(jobs))*time.Second)/time.Duration(qps)
 	if timeout < 10*time.Second {
@@ -1502,7 +1502,7 @@ func (p *Requery) defaultFullQPS() int {
 	if p.config.ExecutionSettings.QueriesPerSecond > 0 {
 		return p.config.ExecutionSettings.QueriesPerSecond
 	}
-	return 100
+	return defaultFullQPS
 }
 
 func (p *Requery) defaultQuickQPS() int {
@@ -1510,8 +1510,8 @@ func (p *Requery) defaultQuickQPS() int {
 		return p.config.ExecutionSettings.QuickQueriesPerSecond
 	}
 	qps := p.defaultFullQPS()
-	if qps < 200 {
-		return 200
+	if qps < defaultQuickQPS {
+		return defaultQuickQPS
 	}
 	return qps
 }
@@ -1521,8 +1521,8 @@ func (p *Requery) defaultPrewarmQPS() int {
 		return p.config.ExecutionSettings.PrewarmQueriesPerSecond
 	}
 	qps := p.defaultQuickQPS()
-	if qps < 300 {
-		return 300
+	if qps < defaultPrewarmQPS {
+		return defaultPrewarmQPS
 	}
 	return qps
 }

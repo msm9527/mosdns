@@ -3,9 +3,9 @@ package cache
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"github.com/miekg/dns"
+	"go.uber.org/zap"
 )
 
 func (c *Cache) resetL1() {
@@ -51,18 +51,64 @@ func (c *Cache) deleteL1Key(k key) {
 	c.deleteL1Keys([]key{k})
 }
 
+func (c *Cache) deleteRuntimeCacheKey(k key, reason string) {
+	c.backend.Delete(k)
+	c.deleteL1Key(k)
+	c.appendRuntimeDelete(k, reason)
+}
+
+func (c *Cache) appendRuntimeDelete(k key, reason string) {
+	if c.persistence == nil {
+		return
+	}
+	if err := c.persistence.appendDelete(k); err != nil {
+		c.recordWALAppendError("delete", reason, err)
+		return
+	}
+	c.recordWALAppendSuccess(1)
+}
+
+func (c *Cache) appendRuntimeDeleteBatch(keys []key, reason string) error {
+	if c.persistence == nil || len(keys) == 0 {
+		return nil
+	}
+	if err := c.persistence.appendDeleteBatch(keys); err != nil {
+		c.recordWALAppendError("delete", reason, err)
+		return err
+	}
+	c.recordWALAppendSuccess(len(keys))
+	return nil
+}
+
+func (c *Cache) appendRuntimeFlush(reason string) error {
+	if c.persistence == nil {
+		return nil
+	}
+	if err := c.persistence.appendFlush(); err != nil {
+		c.recordWALAppendError("flush", reason, err)
+		return err
+	}
+	c.recordWALAppendSuccess(1)
+	return nil
+}
+
+func (c *Cache) recordWALAppendSuccess(records int) {
+	if c.args != nil && c.args.WALFile != "" && records > 0 {
+		c.walAppendCounter.Add(float64(records))
+	}
+}
+
+func (c *Cache) recordWALAppendError(op, reason string, err error) {
+	c.walAppendErrorCounter.Inc()
+	c.logger.Warn("failed to append cache wal",
+		zap.String("op", op),
+		zap.String("reason", reason),
+		zap.Error(err),
+	)
+}
+
 func domainSetContainsToken(domainSet, token string) bool {
-	domainSet = storedDomainSet(domainSet)
-	token = strings.TrimSpace(token)
-	if token == "" || strings.TrimSpace(domainSet) == "" {
-		return false
-	}
-	for _, part := range strings.Split(domainSet, "|") {
-		if strings.TrimSpace(part) == token {
-			return true
-		}
-	}
-	return false
+	return domainSetContainsAnyToken(domainSet, []string{token})
 }
 
 type cacheKeyMeta struct {

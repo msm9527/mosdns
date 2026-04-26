@@ -14,9 +14,9 @@ const (
 	defaultURLCallDelayMS           = 50
 	defaultURLCallConcurrency       = 4
 	defaultSchedulerIntervalMinutes = 8 * 60
-	defaultFullQPS                  = 100
-	defaultQuickQPS                 = 200
-	defaultPrewarmQPS               = 300
+	defaultFullQPS                  = 50
+	defaultQuickQPS                 = 80
+	defaultPrewarmQPS               = 100
 	defaultDateRangeDays            = 30
 	defaultMaxQueueSize             = 2048
 	defaultOnDemandBatchSize        = 32

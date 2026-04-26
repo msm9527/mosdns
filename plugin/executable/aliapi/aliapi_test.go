@@ -300,6 +300,94 @@ func TestAliAPI_ExchangeConcurrentPrefersFastestWinner(t *testing.T) {
 	}
 }
 
+func TestAliAPI_ExchangeConcurrentReturnsNegativeAfterGrace(t *testing.T) {
+	query := new(dns.Msg)
+	query.SetQuestion("negative.example.", dns.TypeA)
+
+	nxResp := new(dns.Msg)
+	nxResp.SetRcode(query, dns.RcodeNameError)
+
+	emptyResp := new(dns.Msg)
+	emptyResp.SetReply(query)
+
+	fastNegative := &delayedUpstream{resp: nxResp, delay: time.Millisecond}
+	slowEmpty := &delayedUpstream{resp: emptyResp, delay: 200 * time.Millisecond}
+	fastWrapper := newTestWrapper(fastNegative, "test_fast_negative")
+	slowWrapper := newTestWrapper(slowEmpty, "test_slow_empty")
+
+	f := &AliAPI{
+		args: &Args{
+			Concurrent:              2,
+			NegativeResponseGraceMs: 20,
+		},
+		logger:   zap.NewNop(),
+		us:       []*upstreamWrapper{fastWrapper, slowWrapper},
+		failures: make(map[string]failureRecord),
+	}
+
+	start := time.Now()
+	r, err := f.exchange(context.Background(), testAliAPIContext(query), f.args, f.us)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Rcode != dns.RcodeNameError {
+		t.Fatalf("expected NXDOMAIN response, got rcode %d", r.Rcode)
+	}
+	if elapsed := time.Since(start); elapsed >= 150*time.Millisecond {
+		t.Fatalf("expected negative response to return after grace window, took %s", elapsed)
+	}
+	if got := fastWrapper.winnerCount.Load(); got != 1 {
+		t.Fatalf("expected fast negative upstream to win, got %d wins", got)
+	}
+	if got := slowWrapper.winnerCount.Load(); got != 0 {
+		t.Fatalf("expected slow empty upstream to be canceled before winning, got %d wins", got)
+	}
+}
+
+func TestAliAPI_ExchangeConcurrentUsableAnswerWinsDuringNegativeGrace(t *testing.T) {
+	query := new(dns.Msg)
+	query.SetQuestion("answer-after-negative.example.", dns.TypeA)
+
+	nxResp := new(dns.Msg)
+	nxResp.SetRcode(query, dns.RcodeNameError)
+
+	answerResp := new(dns.Msg)
+	answerResp.SetReply(query)
+	answerResp.Answer = append(answerResp.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "answer-after-negative.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   []byte{1, 1, 1, 1},
+	})
+
+	fastNegative := &delayedUpstream{resp: nxResp, delay: time.Millisecond}
+	usableAnswer := &delayedUpstream{resp: answerResp, delay: 20 * time.Millisecond}
+	negativeWrapper := newTestWrapper(fastNegative, "test_negative_before_answer")
+	answerWrapper := newTestWrapper(usableAnswer, "test_answer_during_grace")
+
+	f := &AliAPI{
+		args: &Args{
+			Concurrent:              2,
+			NegativeResponseGraceMs: 100,
+		},
+		logger:   zap.NewNop(),
+		us:       []*upstreamWrapper{negativeWrapper, answerWrapper},
+		failures: make(map[string]failureRecord),
+	}
+
+	r, err := f.exchange(context.Background(), testAliAPIContext(query), f.args, f.us)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasUsableAnswer(r) {
+		t.Fatalf("expected usable A response to win during grace window, got rcode=%d answers=%d", r.Rcode, len(r.Answer))
+	}
+	if got := negativeWrapper.winnerCount.Load(); got != 0 {
+		t.Fatalf("expected negative response not to win when usable answer arrives in grace window, got %d wins", got)
+	}
+	if got := answerWrapper.winnerCount.Load(); got != 1 {
+		t.Fatalf("expected usable answer upstream to win, got %d wins", got)
+	}
+}
+
 func TestAliAPIExchangeClearsADForFakeIPAnswers(t *testing.T) {
 	query := new(dns.Msg)
 	query.SetQuestion("fake.example.", dns.TypeA)

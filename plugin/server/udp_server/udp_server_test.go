@@ -734,6 +734,47 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	}
 }
 
+func TestBuildFastBypassSkipsCacheForBypassDomainSet(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+	name := "ddns-fast-bypass.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.Store(name, dns.TypeA, resp, "旧名单", false) {
+		t.Fatal("expected old non-bypass entry to be stored")
+	}
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"unified_matcher1": testDomainMapperPlugin{tag: "DDNS域名", match: true},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, marks, dset, matched, staleRefresh := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected bypass domain set to continue, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("bypass domain set should not request stale refresh")
+	}
+	if marks != 0 {
+		t.Fatalf("expected no marks for matched DDNS test plugin, got %064b", marks)
+	}
+	if dset != "DDNS域名" || !matched {
+		t.Fatalf("unexpected mapper result: dset=%q matched=%v", dset, matched)
+	}
+	if stats.cacheLookup.Load() != 0 {
+		t.Fatalf("expected bypass domain set to skip fast cache lookup, got %d", stats.cacheLookup.Load())
+	}
+}
+
 func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{

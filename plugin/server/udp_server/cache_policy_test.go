@@ -98,3 +98,56 @@ func TestFastHandlerSkipsCachingServerFailure(t *testing.T) {
 		t.Fatalf("expected SERVFAIL response to skip fast cache, got action=%d", action)
 	}
 }
+
+func TestFastCacheBypassDomainSetSkipsStoreAndHit(t *testing.T) {
+	name := "ddns-fast.example."
+	qtype := uint16(dns.TypeA)
+	resp := makeAnswer(t, name, qtype, 0x2222, 30)
+
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, &fastStats{})
+	if fc.Store(name, qtype, resp, "DDNS域名", false) {
+		t.Fatal("expected bypass domain set not to be stored")
+	}
+	if got := fc.Len(); got != 0 {
+		t.Fatalf("expected fast cache to remain empty, got %d", got)
+	}
+
+	query := makeQuery(t, name, qtype, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionContinue {
+		t.Fatalf("expected bypassed domain set to miss fast cache, got action=%d", action)
+	}
+}
+
+func TestFastHandlerSkipsCachingBypassDomainSet(t *testing.T) {
+	name := "ddns-handler.example."
+	qtype := uint16(dns.TypeA)
+	resp := makeAnswer(t, name, qtype, 0x2222, 30)
+
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, &fastStats{})
+	handler := &fastHandler{
+		next: staticHandler{payload: resp},
+		fc:   fc,
+		sw:   testSwitchPlugin{value: "on"},
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion(name, qtype)
+	q.Id = 0x9999
+	handler.Handle(context.Background(), q, server.QueryMeta{PreFastDomainSet: "DDNS域名"}, nil)
+
+	if got := fc.Len(); got != 0 {
+		t.Fatalf("expected bypassed response not to be stored, got %d entries", got)
+	}
+}

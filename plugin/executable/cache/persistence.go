@@ -16,8 +16,10 @@ import (
 )
 
 const (
-	walMagic = "mosdns_cache_wal_v1\n"
-	walOpSet = byte(1)
+	walMagic   = "mosdns_cache_wal_v1\n"
+	walOpSet   = byte(1)
+	walOpDel   = byte(2)
+	walOpFlush = byte(3)
 )
 
 type persistenceManager struct {
@@ -36,6 +38,11 @@ type walStoreRecord struct {
 	key       key
 	cacheExp  time.Time
 	cacheItem *item
+}
+
+type walRecord struct {
+	op byte
+	walStoreRecord
 }
 
 func newPersistenceManager(args *Args, logger *zap.Logger) *persistenceManager {
@@ -75,7 +82,7 @@ func (pm *persistenceManager) appendStore(record walStoreRecord) error {
 	if err := pm.ensureWalWriterLocked(false); err != nil {
 		return err
 	}
-	if err := writeWALRecord(pm.walWriter, record); err != nil {
+	if err := writeWALStoreRecord(pm.walWriter, record); err != nil {
 		return err
 	}
 	if time.Since(pm.lastSync) >= pm.syncInterval {
@@ -86,9 +93,59 @@ func (pm *persistenceManager) appendStore(record walStoreRecord) error {
 	return nil
 }
 
+func (pm *persistenceManager) appendDelete(recordKey key) error {
+	if pm.walPath == "" {
+		return nil
+	}
+	return pm.appendDeletes([]key{recordKey}, false)
+}
+
+func (pm *persistenceManager) appendDeleteBatch(recordKeys []key) error {
+	return pm.appendDeletes(recordKeys, true)
+}
+
+func (pm *persistenceManager) appendDeletes(recordKeys []key, syncNow bool) error {
+	if pm.walPath == "" || len(recordKeys) == 0 {
+		return nil
+	}
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if err := pm.ensureWalWriterLocked(false); err != nil {
+		return err
+	}
+	for _, recordKey := range recordKeys {
+		if err := writeWALDeleteRecord(pm.walWriter, recordKey); err != nil {
+			return err
+		}
+	}
+	if syncNow || time.Since(pm.lastSync) >= pm.syncInterval {
+		if err := pm.flushLocked(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (pm *persistenceManager) appendFlush() error {
+	if pm.walPath == "" {
+		return nil
+	}
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+
+	if err := pm.ensureWalWriterLocked(false); err != nil {
+		return err
+	}
+	if err := writeWALFlushRecord(pm.walWriter); err != nil {
+		return err
+	}
+	return pm.flushLocked()
+}
+
 func (pm *persistenceManager) checkpoint(c *Cache) (int, error) {
 	if pm.snapshotPath == "" {
-		return 0, pm.resetWAL()
+		return 0, nil
 	}
 	entries, err := c.writeSnapshotFileAtomic(pm.snapshotPath)
 	if err != nil {
@@ -134,6 +191,21 @@ func (pm *persistenceManager) resetWAL() error {
 func (pm *persistenceManager) ensureWalWriterLocked(truncate bool) error {
 	if pm.walPath == "" {
 		return nil
+	}
+	if !truncate && pm.walFile != nil && pm.walWriter != nil {
+		return nil
+	}
+	if pm.walFile != nil {
+		if pm.walWriter != nil {
+			if err := pm.walWriter.Flush(); err != nil {
+				return err
+			}
+		}
+		if err := pm.walFile.Close(); err != nil {
+			return err
+		}
+		pm.walFile = nil
+		pm.walWriter = nil
 	}
 	if err := os.MkdirAll(filepath.Dir(pm.walPath), 0o755); err != nil {
 		return err
@@ -268,8 +340,22 @@ func (c *Cache) replayWAL() error {
 			c.runtimeState.recordReplay(entries, time.Since(start), err)
 			return err
 		}
-		c.prepareCacheItemForStore(record.cacheItem)
-		c.backend.Store(record.key, record.cacheItem, record.cacheExp)
+		switch record.op {
+		case walOpSet:
+			c.prepareCacheItemForStore(record.cacheItem)
+			c.backend.Store(record.key, record.cacheItem, record.cacheExp)
+		case walOpDel:
+			c.backend.Delete(record.key)
+			c.deleteL1Key(record.key)
+		case walOpFlush:
+			c.backend.Flush()
+			c.resetL1()
+		default:
+			err := fmt.Errorf("unsupported wal op %d", record.op)
+			c.walReplayErrorCounter.Inc()
+			c.runtimeState.recordReplay(entries, time.Since(start), err)
+			return err
+		}
 		entries++
 	}
 	c.runtimeState.recordReplay(entries, time.Since(start), nil)
@@ -313,7 +399,7 @@ func (c *Cache) writeSnapshotFileAtomic(path string) (int, error) {
 	return entries, nil
 }
 
-func writeWALRecord(w io.Writer, record walStoreRecord) error {
+func writeWALStoreRecord(w io.Writer, record walStoreRecord) error {
 	payload := bytes.NewBuffer(make([]byte, 0, len(record.cacheItem.resp)+len(record.key)+96))
 	payload.WriteByte(walOpSet)
 	writeInt64(payload, record.cacheExp.Unix())
@@ -323,60 +409,88 @@ func writeWALRecord(w io.Writer, record walStoreRecord) error {
 	writeBytes(payload, record.cacheItem.resp)
 	writeString(payload, record.cacheItem.domainSet)
 
+	return writeWALPayload(w, payload.Bytes())
+}
+
+func writeWALDeleteRecord(w io.Writer, recordKey key) error {
+	payload := bytes.NewBuffer(make([]byte, 0, len(recordKey)+8))
+	payload.WriteByte(walOpDel)
+	writeBytes(payload, []byte(recordKey))
+	return writeWALPayload(w, payload.Bytes())
+}
+
+func writeWALFlushRecord(w io.Writer) error {
+	return writeWALPayload(w, []byte{walOpFlush})
+}
+
+func writeWALPayload(w io.Writer, payload []byte) error {
 	var size [4]byte
-	binary.BigEndian.PutUint32(size[:], uint32(payload.Len()))
+	binary.BigEndian.PutUint32(size[:], uint32(len(payload)))
 	if _, err := w.Write(size[:]); err != nil {
 		return err
 	}
-	_, err := w.Write(payload.Bytes())
+	_, err := w.Write(payload)
 	return err
 }
 
-func readWALRecord(r io.Reader) (walStoreRecord, error) {
+func readWALRecord(r io.Reader) (walRecord, error) {
 	payload, err := readSizedBytes(r, maxWALRecordPayloadLength, "cache wal record")
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
 	buf := bytes.NewReader(payload)
 	op, err := buf.ReadByte()
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
+	}
+	if op == walOpDel {
+		k, err := readBytes(buf)
+		if err != nil {
+			return walRecord{}, err
+		}
+		return walRecord{op: op, walStoreRecord: walStoreRecord{key: key(k)}}, nil
+	}
+	if op == walOpFlush {
+		return walRecord{op: op}, nil
 	}
 	if op != walOpSet {
-		return walStoreRecord{}, fmt.Errorf("unsupported wal op %d", op)
+		return walRecord{}, fmt.Errorf("unsupported wal op %d", op)
 	}
 	cacheExpUnix, err := readInt64(buf)
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
 	msgExpUnix, err := readInt64(buf)
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
 	storedUnix, err := readInt64(buf)
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
 	k, err := readBytes(buf)
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
 	msg, err := readBytes(buf)
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
 	domainSet, err := readString(buf)
 	if err != nil {
-		return walStoreRecord{}, err
+		return walRecord{}, err
 	}
-	return walStoreRecord{
-		key:      key(k),
-		cacheExp: time.Unix(cacheExpUnix, 0),
-		cacheItem: &item{
-			resp:           msg,
-			storedUnixNano: time.Unix(storedUnix, 0).UnixNano(),
-			expireUnixNano: time.Unix(msgExpUnix, 0).UnixNano(),
-			domainSet:      domainSet,
+	return walRecord{
+		op: walOpSet,
+		walStoreRecord: walStoreRecord{
+			key:      key(k),
+			cacheExp: time.Unix(cacheExpUnix, 0),
+			cacheItem: &item{
+				resp:           msg,
+				storedUnixNano: time.Unix(storedUnix, 0).UnixNano(),
+				expireUnixNano: time.Unix(msgExpUnix, 0).UnixNano(),
+				domainSet:      domainSet,
+			},
 		},
 	}, nil
 }

@@ -37,6 +37,71 @@ func normalizeDomainSetSignature(raw string) string {
 	return strings.Join(tags, "|")
 }
 
+func normalizeDomainSetTokens(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+
+	tags := make([]string, 0, len(values))
+	for _, value := range values {
+		for _, tag := range splitDomainSetTokenList(value) {
+			tags = append(tags, tag)
+		}
+	}
+	normalized := normalizeDomainSetSignature(strings.Join(tags, "|"))
+	if normalized == "" {
+		return nil
+	}
+	return strings.Split(normalized, "|")
+}
+
+func splitDomainSetTokenList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '|' || r == ',' || r == '，'
+	})
+	tags := make([]string, 0, len(parts))
+	for _, part := range parts {
+		tag := strings.TrimSpace(part)
+		if tag != "" {
+			tags = append(tags, tag)
+		}
+	}
+	return tags
+}
+
+func domainSetContainsAnyToken(domainSet string, tokens []string) bool {
+	return domainSetTokensContainAny(storedDomainSet(domainSet), tokens)
+}
+
+func domainSetTokensContainAny(domainSet string, tokens []string) bool {
+	if len(tokens) == 0 {
+		return false
+	}
+	domainSet = strings.TrimSpace(domainSet)
+	if domainSet == "" {
+		return false
+	}
+
+	for {
+		part, rest, ok := strings.Cut(domainSet, "|")
+		part = strings.TrimSpace(part)
+		for _, token := range tokens {
+			if part == strings.TrimSpace(token) {
+				return true
+			}
+		}
+		if !ok {
+			return false
+		}
+		domainSet = rest
+	}
+}
+
 func mergeDependencySets(values ...string) string {
 	merged := make([]string, 0, len(values)*2)
 	for _, value := range values {
