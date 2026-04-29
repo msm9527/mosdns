@@ -23,7 +23,7 @@ policies:
   - name: sequence_local_raw
     type: sequence
     args:
-      - exec: ecs 2408:8888::8
+      - exec: ecs auto
       - exec: $domestic
       - exec: cname_remover
 

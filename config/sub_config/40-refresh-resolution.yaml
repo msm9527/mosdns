@@ -10,14 +10,14 @@ policies:
   - name: sequence_local_refresh
     type: sequence
     args:
-      - exec: ecs 2408:8888::8
+      - exec: ecs auto
       - exec: $domestic
       - exec: cname_remover
 
   - name: sequence_local_exit_refresh
     type: sequence
     args:
-      - exec: ecs 2408:8888::8
+      - exec: ecs auto
       - exec: $domestic
       - exec: cname_remover
       - exec: exit

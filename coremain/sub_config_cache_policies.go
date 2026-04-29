@@ -105,25 +105,25 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: defaultCacheMainSize, LazyCacheTTL: 21600, NXDomainTTL: 300, ServfailTTL: 30,
+				Size: defaultCacheMainSize, LazyCacheTTL: 1800, NXDomainTTL: 300, ServfailTTL: 30,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 21600, NXDomainTTL: 180, ServfailTTL: 30,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 1800, NXDomainTTL: 180, ServfailTTL: 30,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_domestic.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 21600, NXDomainTTL: 180, ServfailTTL: 30,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 1800, NXDomainTTL: 180, ServfailTTL: 30,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_foreign.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 7200, NXDomainTTL: 120, ServfailTTL: 20,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 1800, NXDomainTTL: 120, ServfailTTL: 20,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_foreign_ecs.dump", DumpInterval: 1800, WALSyncInterval: 1,

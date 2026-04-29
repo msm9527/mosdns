@@ -157,7 +157,7 @@ func (e *ECSHandler) addECS(qCtx *query_context.Context) (forwarded bool) {
 
 	if e.args.Send {
 		clientAddr := qCtx.ServerMeta.ClientAddr
-		if clientAddr.IsValid() {
+		if isUsableAutoECSAddr(clientAddr) {
 			clientAddr = clientAddr.Unmap()
 			var ecs *dns.EDNS0_SUBNET
 			if clientAddr.Is4() {
@@ -170,6 +170,17 @@ func (e *ECSHandler) addECS(qCtx *query_context.Context) (forwarded bool) {
 		}
 	}
 	return false
+}
+
+func isUsableAutoECSAddr(addr netip.Addr) bool {
+	if !addr.IsValid() {
+		return false
+	}
+	addr = addr.Unmap()
+	if !addr.IsGlobalUnicast() || addr.IsPrivate() || addr.IsLoopback() || addr.IsLinkLocalUnicast() {
+		return false
+	}
+	return true
 }
 
 func newSubnet(ip net.IP, mask uint8, v6 bool) *dns.EDNS0_SUBNET {
@@ -197,13 +208,21 @@ func newSubnet(ip net.IP, mask uint8, v6 bool) *dns.EDNS0_SUBNET {
 
 // QuickSetup format:
 // old: [ip/mask] [ip/mask]
-// new: [ip]
+// new: [ip] or auto
 // Note: only the first ip will be used as preset address, the second one
-// will be ignored. The mask value will be ignored.
+// will be ignored. The mask value will be ignored. auto uses the query
+// client address when it is a public unicast address.
 func QuickSetupOldECS(bq sequence.BQ, s string) (any, error) {
 	a := Args{}
 	fs := strings.Fields(s)
 	if len(fs) > 0 {
+		if strings.EqualFold(fs[0], "auto") {
+			a.Send = true
+			if len(fs) > 1 {
+				bq.L().Warn("extra ecs auto arguments are ignored")
+			}
+			return NewHandler(a)
+		}
 		var foundMask bool
 		a.Preset, _, foundMask = strings.Cut(fs[0], "/")
 		if foundMask {

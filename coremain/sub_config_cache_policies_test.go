@@ -23,6 +23,9 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].Size <= 0 {
 		t.Fatalf("expected default cache_main policy, got %+v", cfg.Response["cache_main"])
 	}
+	if cfg.Response["cache_main"].LazyCacheTTL != 1800 {
+		t.Fatalf("expected default cache_main lazy ttl 1800, got %+v", cfg.Response["cache_main"])
+	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
 	}
@@ -49,6 +52,9 @@ func TestDefaultCachePolicyConfigUsesConservativeMemoryProfile(t *testing.T) {
 
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
+	}
+	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 1800 {
+		t.Fatalf("cache_branch_foreign lazy ttl = %d, want 1800", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
 	if totalSize > 120000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)

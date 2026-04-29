@@ -259,3 +259,13 @@ func TestBuildEffectiveRuleArgsAppliesECSOverride(t *testing.T) {
 		t.Fatalf("base args should remain unchanged, got %#v", got)
 	}
 }
+
+func TestBuildEffectiveRuleArgsAppliesAutoECSOverride(t *testing.T) {
+	baseArgs := []RuleArgs{
+		{Exec: "ecs 1.1.1.1"},
+	}
+	effective := buildEffectiveRuleArgs("test_sequence", baseArgs, &coremain.GlobalOverrides{ECS: "auto"})
+	if got := effective[0].Exec; got != "ecs auto" {
+		t.Fatalf("unexpected ecs auto override result: %#v", got)
+	}
+}
