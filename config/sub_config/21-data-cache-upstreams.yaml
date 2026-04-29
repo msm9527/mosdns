@@ -24,19 +24,22 @@ policies:
   # - 不再承担 fakeip 结果缓存
   - name: cache_main
     type: cache
-    args: {}
+    args:
+      enable_ecs: true
 
-  # 国内真实解析分支缓存。
+  # 国内真实解析分支缓存。开启 ECS 时缓存 key 会包含 ECS，避免调度结果串用。
   - name: cache_branch_domestic
     type: cache
-    args: {}
+    args:
+      enable_ecs: true
 
-  # 国外真实解析分支缓存。
+  # 国外真实解析分支缓存。foreign_ecs 开启时仍使用同一组国外上游，但缓存 key 会包含 ECS。
   - name: cache_branch_foreign
     type: cache
-    args: {}
+    args:
+      enable_ecs: true
 
-  # 兼容旧配置保留的国外 ECS 分支缓存；默认真实链路不再使用。
+  # 兼容旧配置保留的国外 ECS 分支缓存；新链路不再直接使用。
   - name: cache_branch_foreign_ecs
     type: cache
     args:
@@ -78,7 +81,7 @@ policies:
           socks5: 127.0.0.1:7891
           upstream_query_timeout: 1000
 
-  # 兼容旧配置保留的国外带 ECS 专用上游；默认真实链路不再使用。
+  # 兼容旧配置保留的国外带 ECS 专用上游；新链路不再直接使用。
   - name: foreignecs
     type: aliapi
     args:

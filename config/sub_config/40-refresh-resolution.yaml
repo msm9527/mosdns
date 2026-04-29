@@ -40,7 +40,7 @@ policies:
       - exec: $foreign
       - exec: cname_remover
 
-  # 刷新链与主链保持一致：国外默认不带 ECS，失败时退回普通国外真实解析入口。
+  # 刷新链与主链保持一致：foreign_ecs 只控制是否附带 ECS，上游仍使用普通国外上游。
   - name: sequence_google_node_refresh_resilient
     type: fallback
     args:

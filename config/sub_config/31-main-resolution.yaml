@@ -15,7 +15,7 @@ policies:
       - exec: $foreign
       - exec: cname_remover
 
-  # 兼容旧命名的国外真实解析链；默认国外不再附带 ECS。
+  # 兼容旧命名的国外真实解析链；是否附带 ECS 由 foreign_ecs 开关控制。
   - name: sequence_google_node_raw
     type: sequence
     args:
@@ -38,6 +38,8 @@ policies:
   - name: sequence_google
     type: sequence
     args:
+      - matches: switch 'foreign_ecs:on'
+        exec: ecs __foreign_ecs__
       - matches: switch 'main_cache:on'
         exec: $cache_main
       - matches: switch 'branch_cache:on'
@@ -50,10 +52,12 @@ policies:
     args:
       - exec: $sequence_google
 
-  # 兼容旧命名的国外真实解析链；默认不启用 ECS。
+  # 兼容旧命名的国外真实解析链；是否启用 ECS 由 foreign_ecs 开关控制。
   - name: sequence_google_node
     type: sequence
     args:
+      - matches: switch 'foreign_ecs:on'
+        exec: ecs __foreign_ecs__
       - matches: switch 'main_cache:on'
         exec: $cache_main
       - matches: switch 'branch_cache:on'
@@ -75,6 +79,8 @@ policies:
   - name: sequence_local
     type: sequence
     args:
+      - matches: switch 'domestic_ecs:on'
+        exec: ecs __domestic_ecs__
       - matches: switch 'main_cache:on'
         exec: $cache_main
       - matches: switch 'branch_cache:on'

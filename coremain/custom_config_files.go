@@ -405,7 +405,7 @@ func saveUpstreamOverridesToCustomConfigAtPath(path string, cfg GlobalUpstreamOv
 	buf.WriteString("# 用户自定义上游配置\n")
 	buf.WriteString("#\n")
 	buf.WriteString("# 这个文件是各个 aliapi 上游组的长期配置真源。\n")
-	buf.WriteString("# - key 必须是插件 tag，例如 domestic / foreign / foreignecs / cnfake / nocnfake\n")
+	buf.WriteString("# - key 必须是插件 tag，例如 domestic / foreign / cnfake / nocnfake\n")
 	buf.WriteString("# - value 是该插件实际使用的上游列表\n")
 	buf.WriteString("# - 前端保存会直接改这个文件，并在运行中热重载\n")
 	buf.WriteString("# - 你也可以手工修改这个文件，然后重启 mosdns 生效\n")

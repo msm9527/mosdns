@@ -28,7 +28,7 @@
 # - cache_main: 真实解析主缓存，跨国内/国外真实链共享。
 # - cache_branch_domestic: 国内真实解析分支缓存。
 # - cache_branch_foreign: 国外真实解析分支缓存。
-# - cache_branch_foreign_ecs: 兼容旧配置保留的国外 ECS 分支缓存。
+# - cache_branch_foreign_ecs: 兼容旧配置保留的国外 ECS 分支缓存，新链路不再直接使用。
 # - cache_fakeip_domestic: 国内 fakeip 响应缓存。
 # - cache_fakeip_proxy: 代理 fakeip 响应缓存。
 # - cache_probe: 节点探测专用缓存。
