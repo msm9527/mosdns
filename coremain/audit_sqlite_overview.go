@@ -34,25 +34,45 @@ func defaultAuditPeriodSummaries() []AuditPeriodSummary {
 	return summaries
 }
 
-func (s *SQLiteAuditStorage) QueryOverviewTotals() (uint64, float64, error) {
+type auditOverviewTotals struct {
+	QueryCount                uint64
+	AverageDurationMs         float64
+	ResolvedQueryCount        uint64
+	ResolvedAverageDurationMs float64
+}
+
+func (s *SQLiteAuditStorage) QueryOverviewTotals() (auditOverviewTotals, error) {
 	db := s.DB()
 	if db == nil {
-		return 0, 0, nil
+		return auditOverviewTotals{}, nil
 	}
 
 	var totalQueryCount int64
 	var totalDurationMs float64
+	var resolvedQueryCount int64
+	var resolvedDurationMs float64
 	err := db.QueryRow(`
-		SELECT COALESCE(SUM(query_count), 0), COALESCE(SUM(duration_sum_ms), 0)
+		SELECT
+			COALESCE(SUM(query_count), 0),
+			COALESCE(SUM(duration_sum_ms), 0),
+			COALESCE(SUM(resolved_query_count), 0),
+			COALESCE(SUM(resolved_duration_sum_ms), 0)
 		FROM audit_hour
-	`).Scan(&totalQueryCount, &totalDurationMs)
+	`).Scan(&totalQueryCount, &totalDurationMs, &resolvedQueryCount, &resolvedDurationMs)
 	if err != nil {
-		return 0, 0, fmt.Errorf("query sqlite audit overview totals: %w", err)
+		return auditOverviewTotals{}, fmt.Errorf("query sqlite audit overview totals: %w", err)
 	}
-	if totalQueryCount <= 0 {
-		return 0, 0, nil
+	totals := auditOverviewTotals{
+		QueryCount:         uint64(nonNegativeInt64(totalQueryCount)),
+		ResolvedQueryCount: uint64(nonNegativeInt64(resolvedQueryCount)),
 	}
-	return uint64(totalQueryCount), totalDurationMs / float64(totalQueryCount), nil
+	if totalQueryCount > 0 {
+		totals.AverageDurationMs = totalDurationMs / float64(totalQueryCount)
+	}
+	if resolvedQueryCount > 0 {
+		totals.ResolvedAverageDurationMs = resolvedDurationMs / float64(resolvedQueryCount)
+	}
+	return totals, nil
 }
 
 func (s *SQLiteAuditStorage) QueryOverviewWindowSummaries(at time.Time) ([]AuditPeriodSummary, error) {
@@ -62,25 +82,22 @@ func (s *SQLiteAuditStorage) QueryOverviewWindowSummaries(at time.Time) ([]Audit
 
 	summaries := make([]AuditPeriodSummary, 0, len(auditOverviewPeriodSpecs)-1)
 	for _, spec := range auditOverviewPeriodSpecs[1:] {
-		queryCount, avgDurationMs, err := s.queryOverviewWindowSummary(spec.Window, at)
+		summary, err := s.queryOverviewWindowSummary(spec.Window, at)
 		if err != nil {
 			return nil, err
 		}
-		summaries = append(summaries, AuditPeriodSummary{
-			Key:               spec.Key,
-			Label:             spec.Label,
-			WindowSeconds:     int(spec.Window / time.Second),
-			QueryCount:        queryCount,
-			AverageDurationMs: avgDurationMs,
-		})
+		summary.Key = spec.Key
+		summary.Label = spec.Label
+		summary.WindowSeconds = int(spec.Window / time.Second)
+		summaries = append(summaries, summary)
 	}
 	return summaries, nil
 }
 
-func (s *SQLiteAuditStorage) queryOverviewWindowSummary(window time.Duration, at time.Time) (uint64, float64, error) {
+func (s *SQLiteAuditStorage) queryOverviewWindowSummary(window time.Duration, at time.Time) (AuditPeriodSummary, error) {
 	db := s.DB()
 	if db == nil || window <= 0 {
-		return 0, 0, nil
+		return AuditPeriodSummary{}, nil
 	}
 
 	table := "audit_minute"
@@ -93,16 +110,39 @@ func (s *SQLiteAuditStorage) queryOverviewWindowSummary(window time.Duration, at
 
 	var queryCount int64
 	var durationSumMs float64
+	var resolvedQueryCount int64
+	var resolvedDurationSumMs float64
 	err := db.QueryRow(`
-		SELECT COALESCE(SUM(query_count), 0), COALESCE(SUM(duration_sum_ms), 0)
+		SELECT
+			COALESCE(SUM(query_count), 0),
+			COALESCE(SUM(duration_sum_ms), 0),
+			COALESCE(SUM(resolved_query_count), 0),
+			COALESCE(SUM(resolved_duration_sum_ms), 0)
 		FROM `+table+`
 		WHERE bucket_start_unix BETWEEN ? AND ?
-	`, from, to).Scan(&queryCount, &durationSumMs)
+	`, from, to).Scan(&queryCount, &durationSumMs, &resolvedQueryCount, &resolvedDurationSumMs)
 	if err != nil {
-		return 0, 0, fmt.Errorf("query sqlite audit overview summary for %s: %w", table, err)
+		return AuditPeriodSummary{}, fmt.Errorf("query sqlite audit overview summary for %s: %w", table, err)
 	}
-	if queryCount <= 0 {
-		return 0, 0, nil
+	if queryCount <= 0 && resolvedQueryCount <= 0 {
+		return AuditPeriodSummary{}, nil
 	}
-	return uint64(queryCount), durationSumMs / float64(queryCount), nil
+	summary := AuditPeriodSummary{
+		QueryCount:         uint64(nonNegativeInt64(queryCount)),
+		ResolvedQueryCount: uint64(nonNegativeInt64(resolvedQueryCount)),
+	}
+	if queryCount > 0 {
+		summary.AverageDurationMs = durationSumMs / float64(queryCount)
+	}
+	if resolvedQueryCount > 0 {
+		summary.ResolvedAverageDurationMs = resolvedDurationSumMs / float64(resolvedQueryCount)
+	}
+	return summary, nil
+}
+
+func nonNegativeInt64(v int64) int64 {
+	if v < 0 {
+		return 0
+	}
+	return v
 }

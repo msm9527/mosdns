@@ -34,6 +34,15 @@ func TestAuditRealtimeOverviewSnapshot(t *testing.T) {
 	if overview.MaxDurationMs != 8 {
 		t.Fatalf("MaxDurationMs = %.2f, want 8", overview.MaxDurationMs)
 	}
+	if overview.ResolvedQueryCount != 1 {
+		t.Fatalf("ResolvedQueryCount = %d, want 1", overview.ResolvedQueryCount)
+	}
+	if overview.ResolvedAverageDurationMs != 4 {
+		t.Fatalf("ResolvedAverageDurationMs = %.2f, want 4", overview.ResolvedAverageDurationMs)
+	}
+	if overview.ResolvedMaxDurationMs != 4 {
+		t.Fatalf("ResolvedMaxDurationMs = %.2f, want 4", overview.ResolvedMaxDurationMs)
+	}
 	if overview.ErrorCount != 1 {
 		t.Fatalf("ErrorCount = %d, want 1", overview.ErrorCount)
 	}
@@ -42,6 +51,27 @@ func TestAuditRealtimeOverviewSnapshot(t *testing.T) {
 	}
 	if overview.DroppedEvents != 1 {
 		t.Fatalf("DroppedEvents = %d, want 1", overview.DroppedEvents)
+	}
+}
+
+func TestAuditDurationMsKeepsNanosecondPrecision(t *testing.T) {
+	cases := []struct {
+		name     string
+		duration time.Duration
+		want     float64
+	}{
+		{name: "sub microsecond", duration: 100 * time.Nanosecond, want: 0.0001},
+		{name: "microsecond fraction", duration: 1500 * time.Nanosecond, want: 0.0015},
+		{name: "millisecond", duration: 2*time.Millisecond + 250*time.Microsecond, want: 2.25},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := auditDurationMs(tc.duration)
+			if diff := got - tc.want; diff < -1e-12 || diff > 1e-12 {
+				t.Fatalf("auditDurationMs(%s) = %.9f, want %.9f", tc.duration, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -121,15 +151,21 @@ func TestSQLiteAuditStorageWritesLogsQueryAndTimeseries(t *testing.T) {
 		t.Fatalf("unexpected rank result: %+v", rank)
 	}
 
-	totalQueryCount, totalAverageDurationMs, err := storage.QueryOverviewTotals()
+	totals, err := storage.QueryOverviewTotals()
 	if err != nil {
 		t.Fatalf("QueryOverviewTotals() error = %v", err)
 	}
-	if totalQueryCount != 3 {
-		t.Fatalf("totalQueryCount = %d, want 3", totalQueryCount)
+	if totals.QueryCount != 3 {
+		t.Fatalf("totalQueryCount = %d, want 3", totals.QueryCount)
 	}
-	if totalAverageDurationMs != 5 {
-		t.Fatalf("totalAverageDurationMs = %.2f, want 5", totalAverageDurationMs)
+	if totals.AverageDurationMs != 5 {
+		t.Fatalf("totalAverageDurationMs = %.2f, want 5", totals.AverageDurationMs)
+	}
+	if totals.ResolvedQueryCount != 2 {
+		t.Fatalf("resolvedTotalQueryCount = %d, want 2", totals.ResolvedQueryCount)
+	}
+	if totals.ResolvedAverageDurationMs != 5 {
+		t.Fatalf("resolvedTotalAverageDurationMs = %.2f, want 5", totals.ResolvedAverageDurationMs)
 	}
 }
 
@@ -152,15 +188,21 @@ func TestSQLiteAuditStorageOverviewWindowSummaries(t *testing.T) {
 		t.Fatalf("WriteBatch() error = %v", err)
 	}
 
-	totalQueryCount, totalAverageDurationMs, err := storage.QueryOverviewTotals()
+	totals, err := storage.QueryOverviewTotals()
 	if err != nil {
 		t.Fatalf("QueryOverviewTotals() error = %v", err)
 	}
-	if totalQueryCount != 5 {
-		t.Fatalf("totalQueryCount = %d, want 5", totalQueryCount)
+	if totals.QueryCount != 5 {
+		t.Fatalf("totalQueryCount = %d, want 5", totals.QueryCount)
 	}
-	if totalAverageDurationMs != 7.6 {
-		t.Fatalf("totalAverageDurationMs = %.2f, want 7.60", totalAverageDurationMs)
+	if totals.AverageDurationMs != 7.6 {
+		t.Fatalf("totalAverageDurationMs = %.2f, want 7.60", totals.AverageDurationMs)
+	}
+	if totals.ResolvedQueryCount != 4 {
+		t.Fatalf("resolvedTotalQueryCount = %d, want 4", totals.ResolvedQueryCount)
+	}
+	if totals.ResolvedAverageDurationMs != 7.5 {
+		t.Fatalf("resolvedTotalAverageDurationMs = %.2f, want 7.50", totals.ResolvedAverageDurationMs)
 	}
 
 	summaries, err := storage.QueryOverviewWindowSummaries(now)
@@ -176,6 +218,10 @@ func TestSQLiteAuditStorageOverviewWindowSummaries(t *testing.T) {
 	assertAuditSummary(t, got["24h"], 2, 4)
 	assertAuditSummary(t, got["3d"], 3, 16.0/3.0)
 	assertAuditSummary(t, got["7d"], 4, 6.5)
+	assertAuditResolvedSummary(t, got["1h"], 1, 2)
+	assertAuditResolvedSummary(t, got["24h"], 2, 4)
+	assertAuditResolvedSummary(t, got["3d"], 2, 4)
+	assertAuditResolvedSummary(t, got["7d"], 3, 6)
 }
 
 func assertAuditSummary(t *testing.T, item AuditPeriodSummary, wantCount uint64, wantAvg float64) {
@@ -185,6 +231,16 @@ func assertAuditSummary(t *testing.T, item AuditPeriodSummary, wantCount uint64,
 	}
 	if diff := item.AverageDurationMs - wantAvg; diff < -1e-9 || diff > 1e-9 {
 		t.Fatalf("%s average_duration_ms = %.6f, want %.6f", item.Key, item.AverageDurationMs, wantAvg)
+	}
+}
+
+func assertAuditResolvedSummary(t *testing.T, item AuditPeriodSummary, wantCount uint64, wantAvg float64) {
+	t.Helper()
+	if item.ResolvedQueryCount != wantCount {
+		t.Fatalf("%s resolved_query_count = %d, want %d", item.Key, item.ResolvedQueryCount, wantCount)
+	}
+	if diff := item.ResolvedAverageDurationMs - wantAvg; diff < -1e-9 || diff > 1e-9 {
+		t.Fatalf("%s resolved_average_duration_ms = %.6f, want %.6f", item.Key, item.ResolvedAverageDurationMs, wantAvg)
 	}
 }
 
