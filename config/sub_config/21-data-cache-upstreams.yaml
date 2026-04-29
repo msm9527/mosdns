@@ -67,9 +67,9 @@ policies:
       concurrent: 3
       default_upstream_query_timeout: 800
       negative_response_grace_ms: 50
-      failure_suppress_ttl: 10
+      failure_suppress_ttl: 5
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 60
+      persistent_servfail_ttl: 15
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 60
       upstreams:
@@ -85,9 +85,9 @@ policies:
       concurrent: 2
       default_upstream_query_timeout: 1000
       negative_response_grace_ms: 50
-      failure_suppress_ttl: 10
+      failure_suppress_ttl: 5
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 60
+      persistent_servfail_ttl: 15
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 60
       upstreams:
@@ -105,9 +105,9 @@ policies:
       concurrent: 1
       default_upstream_query_timeout: 1000
       negative_response_grace_ms: 50
-      failure_suppress_ttl: 10
+      failure_suppress_ttl: 5
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 60
+      persistent_servfail_ttl: 15
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 60
       upstreams:
@@ -123,7 +123,7 @@ policies:
       default_upstream_query_timeout: 500
       failure_suppress_ttl: 5
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 30
+      persistent_servfail_ttl: 15
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 30
       upstreams:
@@ -138,7 +138,7 @@ policies:
       default_upstream_query_timeout: 500
       failure_suppress_ttl: 5
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 30
+      persistent_servfail_ttl: 15
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 30
       upstreams:

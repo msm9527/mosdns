@@ -55,7 +55,7 @@ response:
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 300
-    servfail_ttl: 30
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 8192
     bypass_domain_sets:
@@ -70,7 +70,7 @@ response:
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 180
-    servfail_ttl: 30
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 4096
     bypass_domain_sets:
@@ -85,7 +85,7 @@ response:
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 180
-    servfail_ttl: 30
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 4096
     bypass_domain_sets:
@@ -100,7 +100,7 @@ response:
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 120
-    servfail_ttl: 20
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:
@@ -115,7 +115,7 @@ response:
     lazy_cache_ttl: 0
     lazy_stale_ttl: 0
     nxdomain_ttl: 60
-    servfail_ttl: 15
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:
@@ -127,7 +127,7 @@ response:
     lazy_cache_ttl: 0
     lazy_stale_ttl: 0
     nxdomain_ttl: 60
-    servfail_ttl: 15
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:
@@ -139,7 +139,7 @@ response:
     lazy_cache_ttl: 600
     lazy_stale_ttl: 600
     nxdomain_ttl: 60
-    servfail_ttl: 15
+    servfail_ttl: 5
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:
