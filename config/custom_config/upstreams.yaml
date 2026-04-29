@@ -12,7 +12,7 @@
 # - protocol: aliapi / udp / tcp / tls / https 等
 # - addr: 普通 DNS 上游地址，例如 udp://1.1.1.1:53 或 https://dns.google/dns-query
 # - dial_addr: DoH/DoT 可选拨号地址，用来避免额外解析
-# - upstream_query_timeout: 单条上游查询超时毫秒；不填则使用该上游组默认值
+# - upstream_query_timeout: 单条上游查询超时毫秒；建议显式填写，兼容旧核心
 # - socks5: 只给这一条上游单独指定代理；不填则按插件/全局配置处理
 # - ecs_client_ip / ecs_client_mask: 仅 aliapi 私享接口等场景使用
 
