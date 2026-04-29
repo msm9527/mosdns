@@ -61,6 +61,32 @@ func TestAliAPIReloadControlConfigPreservesPerUpstreamAliAPICredentials(t *testi
 	}
 }
 
+func TestAliAPIRuntimeOverridesInheritDefaultUpstreamTimeout(t *testing.T) {
+	base := &Args{
+		DefaultUpstreamQueryTimeout: 800,
+		Upstreams: []UpstreamConfig{
+			{Tag: "base", Addr: "223.5.5.5", UpstreamQueryTimeout: 800},
+		},
+	}
+
+	effective := buildEffectiveArgs("domestic", base, []coremain.UpstreamOverrideConfig{
+		{
+			Tag:      "custom",
+			Enabled:  true,
+			Protocol: "udp",
+			Addr:     "223.6.6.6",
+		},
+	}, zap.NewNop())
+	effective = materializeRuntimeArgs(effective, zap.NewNop())
+
+	if len(effective.Upstreams) != 1 {
+		t.Fatalf("expected one effective upstream, got %d", len(effective.Upstreams))
+	}
+	if effective.Upstreams[0].UpstreamQueryTimeout != 800 {
+		t.Fatalf("expected override to inherit default timeout 800, got %+v", effective.Upstreams[0])
+	}
+}
+
 func TestNewAliAPIExpandsLegacyGlobalAliAPICredentials(t *testing.T) {
 	f, err := NewAliAPI(&Args{
 		AccountID:       "legacy-account",

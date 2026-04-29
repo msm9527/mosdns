@@ -67,6 +67,7 @@ type Args struct {
 	PersistentServfailTTL       int              `yaml:"persistent_servfail_ttl"`
 	UpstreamFailureThreshold    int              `yaml:"upstream_failure_threshold"`
 	UpstreamCircuitBreakSeconds int              `yaml:"upstream_circuit_break_seconds"`
+	DefaultUpstreamQueryTimeout int              `yaml:"default_upstream_query_timeout"`
 
 	// AliDNS API legacy fallback options. New configs should prefer per-upstream
 	// credentials in UpstreamConfig. These globals are only used to expand old

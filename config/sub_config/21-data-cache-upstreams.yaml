@@ -65,18 +65,35 @@ policies:
     type: aliapi
     args:
       concurrent: 3
+      default_upstream_query_timeout: 800
+      negative_response_grace_ms: 50
+      failure_suppress_ttl: 10
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 60
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: 223.5.5.5
+          upstream_query_timeout: 800
         - addr: 223.6.6.6
+          upstream_query_timeout: 800
 
   # 国外解析上游。
   - name: foreign
     type: aliapi
     args:
       concurrent: 2
+      default_upstream_query_timeout: 1000
+      negative_response_grace_ms: 50
+      failure_suppress_ttl: 10
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 60
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: https://1.1.1.1/dns-query
           socks5: 127.0.0.1:7891
+          upstream_query_timeout: 1000
         - addr: https://8.8.8.8/dns-query
           socks5: 127.0.0.1:7891
           upstream_query_timeout: 1000
@@ -86,22 +103,44 @@ policies:
     type: aliapi
     args:
       concurrent: 1
+      default_upstream_query_timeout: 1000
+      negative_response_grace_ms: 50
+      failure_suppress_ttl: 10
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 60
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: https://8.8.8.8/dns-query
           socks5: 127.0.0.1:7891
+          upstream_query_timeout: 1000
 
   # 国外 fakeip 生成器入口。
   - name: nocnfake
     type: aliapi
     args:
       concurrent: 1
+      default_upstream_query_timeout: 500
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 30
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 30
       upstreams:
         - addr: udp://127.0.0.1:6666
+          upstream_query_timeout: 500
 
   # 国内 fakeip 生成器入口。
   - name: cnfake
     type: aliapi
     args:
       concurrent: 1
+      default_upstream_query_timeout: 500
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 30
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 30
       upstreams:
         - addr: udp://127.0.0.1:1053
+          upstream_query_timeout: 500

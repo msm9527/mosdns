@@ -12,6 +12,7 @@
 # - protocol: aliapi / udp / tcp / tls / https 等
 # - addr: 普通 DNS 上游地址，例如 udp://1.1.1.1:53 或 https://dns.google/dns-query
 # - dial_addr: DoH/DoT 可选拨号地址，用来避免额外解析
+# - upstream_query_timeout: 单条上游查询超时毫秒；不填则使用该上游组默认值
 # - socks5: 只给这一条上游单独指定代理；不填则按插件/全局配置处理
 # - ecs_client_ip / ecs_client_mask: 仅 aliapi 私享接口等场景使用
 
@@ -20,25 +21,30 @@ cnfake:
     enabled: false
     protocol: udp
     addr: udp://127.0.0.1:1053
+    upstream_query_timeout: 500
 
 domestic:
   - tag: 阿里UDP
     enabled: true
     protocol: udp
     addr: 223.5.5.5
+    upstream_query_timeout: 800
   - tag: 阿里TCP
     enabled: true
     protocol: tcp
     addr: tcp://223.5.5.5
+    upstream_query_timeout: 800
   - tag: 阿里DOH
     enabled: true
     protocol: https
     addr: https://dns.alidns.com/dns-query
     dial_addr: 223.5.5.5
+    upstream_query_timeout: 800
   - tag: 阿里DOT
     enabled: true
     protocol: tls
     addr: tls://223.5.5.5
+    upstream_query_timeout: 800
 
 foreign:
   - tag: google
@@ -47,15 +53,18 @@ foreign:
     addr: https://dns.google/dns-query
     dial_addr: 8.8.8.8
     socks5: 127.0.0.1:7891
+    upstream_query_timeout: 1000
   - tag: cloudflare
     enabled: true
     protocol: https
     addr: https://1.1.1.1/dns-query
     dial_addr: 1.1.1.1
     socks5: 127.0.0.1:7891
+    upstream_query_timeout: 1000
 
 nocnfake:
   - tag: nocnfake
     enabled: true
     protocol: udp
     addr: udp://127.0.0.1:6666
+    upstream_query_timeout: 500

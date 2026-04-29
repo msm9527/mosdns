@@ -40,8 +40,14 @@ func TestInferFastBypassWarmupSec(t *testing.T) {
 func TestArgsInitSetsDefaultStaleRetry(t *testing.T) {
 	args := &Args{}
 	args.init()
+	if args.FastCacheInternalTTL != 120 {
+		t.Fatalf("internal ttl = %d, want 120", args.FastCacheInternalTTL)
+	}
 	if args.FastCacheStaleRetrySec != defaultStaleRefreshRetrySec {
 		t.Fatalf("stale retry = %d, want %d", args.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
+	}
+	if args.FastCacheStaleMaxSec != 300 {
+		t.Fatalf("stale max = %d, want 300", args.FastCacheStaleMaxSec)
 	}
 }
 
@@ -450,6 +456,33 @@ func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
 	}
 }
 
+func TestFastCacheStopsServingStaleAfterMaxWindow(t *testing.T) {
+	name := "stale-max.example."
+	qtype := uint16(dns.TypeA)
+	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	resp := makeAnswer(t, name, qtype, 0x1111, 30)
+
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		staleRetry:  time.Second,
+		staleMax:    5 * time.Second,
+	}, &fastStats{})
+	fc.Store(name, qtype, resp, "", false)
+	item, _ := fc.findItem(hash, name, qtype)
+	atomic.StoreInt64(&item.expire, time.Now().Add(-10*time.Second).Unix())
+	atomic.StoreUint32(&item.updating, 1)
+
+	buf := make([]byte, len(resp))
+	copy(buf, makeQuery(t, name, qtype, 0x9999))
+	action, _, _, _, staleRefresh := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionContinue {
+		t.Fatalf("expected stale item to fall through after max window, got action=%d", action)
+	}
+	if staleRefresh {
+		t.Fatal("expected stale refresh flag to be disabled after max stale window")
+	}
+}
+
 func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -482,6 +515,7 @@ func TestUdpServerSnapshotCacheStats(t *testing.T) {
 	fc := newFastCache(fastCacheConfig{
 		internalTTL:      5 * time.Second,
 		staleRetry:       10 * time.Second,
+		staleMax:         30 * time.Second,
 		ttlMin:           1,
 		ttlMax:           30,
 		bypassDomainSets: []string{"DDNS域名"},
@@ -518,7 +552,7 @@ func TestUdpServerSnapshotCacheStats(t *testing.T) {
 	if snapshot.Config["runtime_cache_kind"] != "udp_fast" {
 		t.Fatalf("unexpected runtime cache kind: %+v", snapshot.Config)
 	}
-	if snapshot.Config["internal_ttl"] != 5 || snapshot.Config["stale_retry_seconds"] != 10 {
+	if snapshot.Config["internal_ttl"] != 5 || snapshot.Config["stale_retry_seconds"] != 10 || snapshot.Config["stale_max_seconds"] != 30 {
 		t.Fatalf("unexpected ttl config: %+v", snapshot.Config)
 	}
 }

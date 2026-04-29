@@ -406,19 +406,20 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 ### 5.3 过期语义
 
-默认策略较短：
+默认策略面向热点查询：
 
-- `internal_ttl = 5s`
+- `internal_ttl = 120s`
 - `stale_retry_seconds = 10s`
+- `stale_max_seconds = 300s`
 - `ttl_min = 1`
 - `ttl_max = 5`
 
 因此它更像是：
 
-- 极短时热点缓冲
-- 短窗口 stale-refresh 辅助层
+- 服务端短期热点缓冲
+- 有上限的 stale-refresh 辅助层
 
-它不是长时间运行后异常积累的主要来源。
+它不会无上限地返回过期结果。
 
 ## 6. 当前设计的几个关键特征
 
@@ -530,13 +531,14 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 - 只缓存 `NOERROR` 和 `NXDOMAIN`
 - 不缓存 `SERVFAIL`
-- `internal_ttl` 默认只有 `5s`
+- `internal_ttl` 默认 `120s`
 - stale retry 默认 `10s`
+- stale 返回上限默认 `300s`
 
 这意味着：
 
-- 即便 UDP fast path 参与了 App Store 查询链，它也只会在很短窗口内缓存热点结果。
-- 它不会成为“运行 1 到 3 天后持续异常”的主要放大器。
+- 即便 UDP fast path 参与了 App Store 查询链，它也只会在短期热点窗口内缓存结果。
+- 刷新失败时不会无限返回旧结果。
 
 ## 8.6 路由变化和依赖 revision 变化会绕过旧缓存
 

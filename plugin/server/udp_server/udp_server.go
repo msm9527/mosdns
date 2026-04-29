@@ -66,6 +66,7 @@ type Args struct {
 	EnableAudit               bool     `yaml:"enable_audit"`
 	FastCacheInternalTTL      int      `yaml:"fast_cache_internal_ttl"`
 	FastCacheStaleRetrySec    int      `yaml:"fast_cache_stale_retry_seconds"`
+	FastCacheStaleMaxSec      int      `yaml:"fast_cache_stale_max_seconds"`
 	FastCacheTTLMin           uint32   `yaml:"fast_cache_ttl_min"`
 	FastCacheTTLMax           uint32   `yaml:"fast_cache_ttl_max"`
 	FastCacheBypassDomainSets []string `yaml:"fast_cache_bypass_domain_sets"`
@@ -75,8 +76,9 @@ type Args struct {
 
 func (a *Args) init() {
 	utils.SetDefaultString(&a.Listen, "127.0.0.1:53")
-	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 5)
+	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 120)
 	utils.SetDefaultUnsignNum(&a.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
+	utils.SetDefaultUnsignNum(&a.FastCacheStaleMaxSec, 300)
 	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(30))
 	utils.SetDefaultUnsignNum(&a.FastMetricsLogInterval, 60)
 	if a.FastBypassWarmupSec <= 0 {
@@ -209,6 +211,7 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 			"size":                        cacheSize * cacheWays,
 			"internal_ttl":                int(cfg.internalTTL / time.Second),
 			"stale_retry_seconds":         int(cfg.staleRetry / time.Second),
+			"stale_max_seconds":           int(cfg.staleMax / time.Second),
 			"ttl_min":                     cfg.ttlMin,
 			"ttl_max":                     cfg.ttlMax,
 			"bypass_domain_sets":          append([]string(nil), cfg.bypassDomainSets...),
@@ -284,6 +287,7 @@ type fastCache struct {
 type fastCacheConfig struct {
 	internalTTL      time.Duration
 	staleRetry       time.Duration
+	staleMax         time.Duration
 	ttlMin           uint32
 	ttlMax           uint32
 	bypassDomainSets []string
@@ -363,6 +367,9 @@ func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
 	if cfg.staleRetry <= 0 {
 		cfg.staleRetry = defaultStaleRefreshRetrySec * time.Second
 	}
+	if cfg.staleMax <= 0 {
+		cfg.staleMax = 300 * time.Second
+	}
 	cfg.bypassDomainSets = normalizeFastCacheDomainSetTokens(cfg.bypassDomainSets)
 	return &fastCache{cfg: cfg, stats: stats}
 }
@@ -417,9 +424,13 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 
 	now := time.Now().Unix()
 	expire := atomic.LoadInt64(&ptr.expire)
+	staleAllowed := true
 	if now > expire {
 		if fc.stats != nil {
 			fc.stats.cacheExpired.Add(1)
+		}
+		if fc.cfg.staleMax > 0 && now-expire > int64(fc.cfg.staleMax/time.Second) {
+			staleAllowed = false
 		}
 		if atomic.CompareAndSwapUint32(&ptr.updating, 0, 1) {
 			if fc.stats != nil {
@@ -428,7 +439,7 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 					fc.stats.refreshRequested.Add(1)
 				}
 			}
-			return server.FastActionContinue, 0, 0, ptr.domainSet, ptr.resp != nil
+			return server.FastActionContinue, 0, 0, ptr.domainSet, ptr.resp != nil && staleAllowed
 		}
 		retryAfter := int64(fc.cfg.staleRetry / time.Second)
 		if now-expire > retryAfter && atomic.CompareAndSwapUint32(&ptr.updating, 1, 0) {
@@ -439,8 +450,14 @@ func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype 
 						fc.stats.refreshRequested.Add(1)
 					}
 				}
-				return server.FastActionContinue, 0, 0, ptr.domainSet, ptr.resp != nil
+				return server.FastActionContinue, 0, 0, ptr.domainSet, ptr.resp != nil && staleAllowed
 			}
+		}
+		if !staleAllowed {
+			if fc.stats != nil {
+				fc.stats.cacheMiss.Add(1)
+			}
+			return server.FastActionContinue, 0, 0, ptr.domainSet, false
 		}
 	}
 
@@ -780,6 +797,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	fc := newFastCache(fastCacheConfig{
 		internalTTL:      time.Duration(args.FastCacheInternalTTL) * time.Second,
 		staleRetry:       time.Duration(args.FastCacheStaleRetrySec) * time.Second,
+		staleMax:         time.Duration(args.FastCacheStaleMaxSec) * time.Second,
 		ttlMin:           args.FastCacheTTLMin,
 		ttlMax:           args.FastCacheTTLMax,
 		bypassDomainSets: args.FastCacheBypassDomainSets,

@@ -39,24 +39,25 @@
 # - 真实解析缓存保留较长 backend 窗口保证命中率，但只允许较短 lazy stale 返回窗口。
 # - 这样热点域名可通过预刷新维持加速，低频域名过期太久后会强制重新解析。
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
-# - UDP 快路径默认只保留极短时间热点结果。
+# - UDP 快路径默认保留短期热点结果，并设置最大 stale 窗口避免长期返回旧结果。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
 #
 # udp_fast_path 字段说明：
 # - internal_ttl: 快路径内部缓存保留秒数；只影响服务端热点缓存寿命。
 # - stale_retry_seconds: 过期条目进入 stale 刷新后，最短多久允许再次强制重试刷新。
+# - stale_max_seconds: 过期后最多允许返回 stale 结果多久；超过后强制回落完整解析。
 # - ttl_min / ttl_max: 返回给客户端的 TTL 裁剪范围；0 表示不限制该边界。
 # - bypass_domain_sets: 命中这些域名集时完全绕过 UDP 快路径缓存。
 
 response:
   cache_main:
-    size: 40000
+    size: 400000
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 300
     servfail_ttl: 30
     l1_enabled: true
-    l1_total_cap: 1024
+    l1_total_cap: 8192
     bypass_domain_sets:
       - DDNS域名
     persist: true
@@ -65,13 +66,13 @@ response:
     wal_sync_interval: 1
 
   cache_branch_domestic:
-    size: 20000
+    size: 200000
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
-    l1_total_cap: 512
+    l1_total_cap: 4096
     bypass_domain_sets:
       - DDNS域名
     persist: true
@@ -80,13 +81,13 @@ response:
     wal_sync_interval: 1
 
   cache_branch_foreign:
-    size: 20000
+    size: 150000
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
-    l1_total_cap: 512
+    l1_total_cap: 4096
     bypass_domain_sets:
       - DDNS域名
     persist: true
@@ -95,13 +96,13 @@ response:
     wal_sync_interval: 1
 
   cache_branch_foreign_ecs:
-    size: 8000
+    size: 100000
     lazy_cache_ttl: 21600
     lazy_stale_ttl: 1800
     nxdomain_ttl: 120
     servfail_ttl: 20
     l1_enabled: true
-    l1_total_cap: 256
+    l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
     persist: true
@@ -110,44 +111,45 @@ response:
     wal_sync_interval: 1
 
   cache_fakeip_domestic:
-    size: 10000
+    size: 100000
     lazy_cache_ttl: 0
     lazy_stale_ttl: 0
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
-    l1_total_cap: 256
+    l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
     persist: false
 
   cache_fakeip_proxy:
-    size: 12000
+    size: 120000
     lazy_cache_ttl: 0
     lazy_stale_ttl: 0
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
-    l1_total_cap: 256
+    l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
     persist: false
 
   cache_probe:
-    size: 4000
+    size: 80000
     lazy_cache_ttl: 600
     lazy_stale_ttl: 600
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
-    l1_total_cap: 128
+    l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
     persist: false
 
 udp_fast_path:
-  internal_ttl: 5
+  internal_ttl: 120
   stale_retry_seconds: 10
+  stale_max_seconds: 300
   ttl_min: 1
   ttl_max: 5
   bypass_domain_sets:
