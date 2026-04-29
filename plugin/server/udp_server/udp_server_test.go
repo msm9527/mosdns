@@ -1125,6 +1125,100 @@ func TestBuildFastBypassSkipsCacheForBypassDomainSet(t *testing.T) {
 	}
 }
 
+func TestBuildFastBypassCachesRuleMetaForBypassDomainSet(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+	name := "ddns-rule-cache.example."
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{tag: "DDNS域名", match: true},
+			revision:               7,
+			calls:                  &calls,
+		},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := append([]byte(nil), req...)
+	action, _, _, dset, matched, _ := fastBypass(len(req), buf, addr)
+	if action != server.FastActionContinue || dset != "DDNS域名" || !matched {
+		t.Fatalf("first bypass result action=%d dset=%q matched=%v", action, dset, matched)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected first call to run mapper once, got %d", calls.Load())
+	}
+	if stats.cacheLookup.Load() != 1 {
+		t.Fatalf("expected first call to try response cache once before mapper, got %d", stats.cacheLookup.Load())
+	}
+
+	buf = append([]byte(nil), req...)
+	action, _, _, dset, matched, _ = fastBypass(len(req), buf, addr)
+	if action != server.FastActionContinue || dset != "DDNS域名" || !matched {
+		t.Fatalf("second bypass result action=%d dset=%q matched=%v", action, dset, matched)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected rule-meta hit to skip mapper, got %d calls", calls.Load())
+	}
+	if stats.cacheLookup.Load() != 2 {
+		t.Fatalf("expected rule-meta hit to keep response cache miss cheap before skipping mapper, got %d", stats.cacheLookup.Load())
+	}
+}
+
+func TestBuildFastBypassRuleMetaRefreshesWhenMapperRevisionChanges(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "rule-revision-refresh.example."
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+
+	var calls1 atomic.Uint64
+	m1 := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{marks: []uint8{17}, tag: "rev1", match: true},
+			revision:               1,
+			calls:                  &calls1,
+		},
+	})
+	fastBypass1 := buildFastBypass(coremain.NewBP("udp_test_1", m1), fc, stats, 0)
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	action, _, marks, dset, matched, _ := fastBypass1(len(req), append([]byte(nil), req...), addr)
+	if action != server.FastActionContinue || dset != "rev1" || !matched || (marks&(1<<17)) == 0 {
+		t.Fatalf("revision 1 result action=%d marks=%064b dset=%q matched=%v", action, marks, dset, matched)
+	}
+	if calls1.Load() != 1 {
+		t.Fatalf("expected revision 1 mapper call, got %d", calls1.Load())
+	}
+
+	var calls2 atomic.Uint64
+	m2 := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{marks: []uint8{18}, tag: "rev2", match: true},
+			revision:               2,
+			calls:                  &calls2,
+		},
+	})
+	fastBypass2 := buildFastBypass(coremain.NewBP("udp_test_2", m2), fc, stats, 0)
+	action, _, marks, dset, matched, _ = fastBypass2(len(req), append([]byte(nil), req...), addr)
+	if action != server.FastActionContinue || dset != "rev2" || !matched || (marks&(1<<18)) == 0 {
+		t.Fatalf("revision 2 result action=%d marks=%064b dset=%q matched=%v", action, marks, dset, matched)
+	}
+	if calls2.Load() != 1 {
+		t.Fatalf("expected revision 2 mapper refresh, got %d", calls2.Load())
+	}
+}
+
 func TestBuildFastBypassWarmupSkipsFastPath(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -1337,6 +1431,37 @@ func BenchmarkBuildFastBypassCacheHitNumericRevision(b *testing.B) {
 	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
 	addr := netip.MustParseAddrPort("127.0.0.1:5353")
 	buf := make([]byte, len(resp))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(buf, req)
+		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+	}
+}
+
+func BenchmarkBuildFastBypassNoResponseCacheRuleMetaHit(b *testing.B) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+	name := "bench-no-response-cache.example."
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{tag: "DDNS域名", match: true},
+			revision:               7,
+		},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+	buf := make([]byte, len(req))
+	copy(buf, req)
+	_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
 
 	b.ReportAllocs()
 	b.ResetTimer()

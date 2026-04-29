@@ -49,6 +49,8 @@ const (
 	cacheWays  = 4
 	cacheSize  = 65536
 	cacheMask  = cacheSize - 1
+	ruleWays   = 4
+	ruleSize   = 32768
 
 	defaultFastBypassWarmupMain    = 3
 	defaultFastBypassWarmupRequery = 1
@@ -258,6 +260,7 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 			"fakeip_requires_switch_on":   true,
 			"cache_hits_bypass_audit_log": true,
 			"listener_workers":            listenerWorkers,
+			"rule_meta_size":              ruleSize * ruleWays,
 		},
 	}
 }
@@ -415,9 +418,29 @@ type fastCacheTable struct {
 	mask    uint64
 }
 
+type fastRuleCacheItem struct {
+	revision  fastRevisionValue
+	domainSet string
+	hash      uint64
+	ruleFlags uint64
+	qname     string
+	matched   bool
+}
+
+type fastRuleCacheBucket struct {
+	slots [ruleWays]atomic.Pointer[fastRuleCacheItem]
+}
+
+type fastRuleCacheTable struct {
+	buckets []fastRuleCacheBucket
+	mask    uint64
+}
+
 type fastCache struct {
 	table    atomic.Pointer[fastCacheTable]
+	rules    atomic.Pointer[fastRuleCacheTable]
 	initOnce sync.Once
+	ruleOnce sync.Once
 	cfg      fastCacheConfig
 	stats    *fastStats
 }
@@ -537,6 +560,26 @@ func (fc *fastCache) ensureTable() *fastCacheTable {
 		})
 	})
 	return fc.table.Load()
+}
+
+func (fc *fastCache) loadRuleTable() *fastRuleCacheTable {
+	if fc == nil {
+		return nil
+	}
+	return fc.rules.Load()
+}
+
+func (fc *fastCache) ensureRuleTable() *fastRuleCacheTable {
+	if fc == nil {
+		return nil
+	}
+	fc.ruleOnce.Do(func() {
+		fc.rules.Store(&fastRuleCacheTable{
+			buckets: make([]fastRuleCacheBucket, ruleSize),
+			mask:    ruleSize - 1,
+		})
+	})
+	return fc.rules.Load()
 }
 
 func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
@@ -739,6 +782,66 @@ func (fc *fastCache) findItemWire(hash uint64, qnameWire []byte, qtype uint16) (
 	return nil, occupied
 }
 
+func (fc *fastCache) getRuleMetaWire(hash uint64, qnameWire []byte, revision fastRevisionValue) (*fastRuleCacheItem, bool) {
+	if revision.empty() {
+		return nil, false
+	}
+	table := fc.loadRuleTable()
+	if table == nil {
+		return nil, false
+	}
+	bucket := &table.buckets[fastCacheBucketIndex(hash, table.mask)]
+	for i := range bucket.slots {
+		ptr := bucket.slots[i].Load()
+		if ptr == nil {
+			continue
+		}
+		if ptr.hash == hash && ptr.revision.equal(revision) && fastQNameWireEqualString(qnameWire, ptr.qname) {
+			return ptr, true
+		}
+	}
+	return nil, false
+}
+
+func (fc *fastCache) storeRuleMeta(qname string, hash uint64, revision fastRevisionValue, ruleFlags uint64, domainSet string, matched bool) {
+	if revision.empty() {
+		return
+	}
+	table := fc.ensureRuleTable()
+	if table == nil {
+		return
+	}
+	item := &fastRuleCacheItem{
+		revision:  revision,
+		domainSet: domainSet,
+		hash:      hash,
+		ruleFlags: ruleFlags,
+		qname:     qname,
+		matched:   matched,
+	}
+	bucket := &table.buckets[fastCacheBucketIndex(hash, table.mask)]
+	var emptySlot *atomic.Pointer[fastRuleCacheItem]
+	for i := range bucket.slots {
+		slot := &bucket.slots[i]
+		current := slot.Load()
+		if current == nil {
+			if emptySlot == nil {
+				emptySlot = slot
+			}
+			continue
+		}
+		if current.hash == item.hash && current.revision.equal(item.revision) && fastQNameEqualString(current.qname, item.qname) {
+			slot.Store(item)
+			return
+		}
+	}
+	if emptySlot != nil {
+		emptySlot.Store(item)
+		return
+	}
+	bucket.slots[(hash>>16)%ruleWays].Store(item)
+}
+
 func (fc *fastCache) storeItem(item *fastCacheItem) {
 	table := fc.ensureTable()
 	if table == nil {
@@ -907,12 +1010,19 @@ func (fc *fastCache) Flush() {
 		return
 	}
 	table := fc.loadTable()
-	if table == nil {
-		return
+	if table != nil {
+		for i := range table.buckets {
+			for j := range table.buckets[i].slots {
+				table.buckets[i].slots[j].Store(nil)
+			}
+		}
 	}
-	for i := range table.buckets {
-		for j := range table.buckets[i].slots {
-			table.buckets[i].slots[j].Store(nil)
+	rules := fc.loadRuleTable()
+	if rules != nil {
+		for i := range rules.buckets {
+			for j := range rules.buckets[i].slots {
+				rules.buckets[i].slots[j].Store(nil)
+			}
 		}
 	}
 }
@@ -1127,6 +1237,16 @@ func fastRuleReject(reqLen int, buf []byte, qEnd int, qtype uint16, marks uint64
 		return makeReject(reqLen, buf, qEnd, 3), true
 	}
 	return 0, false
+}
+
+func fastMarksFromList(marks []uint8) uint64 {
+	var out uint64
+	for _, v := range marks {
+		if v < 64 {
+			out |= (1 << v)
+		}
+	}
+	return out
 }
 
 func Init(bp *coremain.BP, args any) (any, error) {
@@ -1355,6 +1475,9 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		qnameWire := question.qnameWire(buf)
 		allowFakeIP := fakeipCache != nil && fakeipCache.GetValue() == "on"
 		earlyCacheTried := false
+		var dset string
+		var dsetMatched bool
+		ruleMetaHit := false
 		if !ruleRevision.empty() && (marks&(1<<39)) == 0 {
 			earlyCacheTried = true
 			if stats != nil {
@@ -1378,18 +1501,25 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 
-		var dset string
-		var dsetMatched bool
-		if dm != nil {
+		if dm != nil && !ruleRevision.domainMapper.empty() {
+			if meta, ok := fc.getRuleMetaWire(hKey, qnameWire, ruleRevision.domainMapper); ok {
+				marks |= meta.ruleFlags
+				dset = meta.domainSet
+				dsetMatched = meta.matched
+				ruleMetaHit = true
+			}
+		}
+
+		if dm != nil && !ruleMetaHit {
 			qname := question.qnameString(buf)
 			if mList, dsName, match := dm.FastMatch(qname); match {
-				for _, v := range mList {
-					if v < 64 {
-						marks |= (1 << v)
-					}
-				}
+				ruleFlags := fastMarksFromList(mList)
+				marks |= ruleFlags
 				dset = dsName
 				dsetMatched = true
+				fc.storeRuleMeta(qname, hKey, ruleRevision.domainMapper, ruleFlags, dset, true)
+			} else {
+				fc.storeRuleMeta(qname, hKey, ruleRevision.domainMapper, 0, "", false)
 			}
 		}
 
