@@ -2,7 +2,6 @@ package udp_server
 
 import (
 	"context"
-	"hash/maphash"
 	"testing"
 	"time"
 
@@ -92,7 +91,7 @@ func TestFastHandlerSkipsCachingServerFailure(t *testing.T) {
 	query := makeQuery(t, name, qtype, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, query)
-	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	hash := fastQNameHashString(name, qtype)
 	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
 	if action != server.FastActionContinue {
 		t.Fatalf("expected SERVFAIL response to skip fast cache, got action=%d", action)
@@ -119,7 +118,7 @@ func TestFastCacheBypassDomainSetSkipsStoreAndHit(t *testing.T) {
 	query := makeQuery(t, name, qtype, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, query)
-	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	hash := fastQNameHashString(name, qtype)
 	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
 	if action != server.FastActionContinue {
 		t.Fatalf("expected bypassed domain set to miss fast cache, got action=%d", action)

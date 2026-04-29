@@ -215,3 +215,7 @@ func (r *Rewrite) ReloadControlConfig(global *coremain.GlobalOverrides, _ []core
 func (r *Rewrite) CacheRevision() string {
 	return strconv.FormatUint(r.revision.Load(), 10)
 }
+
+func (r *Rewrite) CacheRevisionUint64() uint64 {
+	return r.revision.Load()
+}

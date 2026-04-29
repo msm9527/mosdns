@@ -277,6 +277,10 @@ func (dm *DomainMapper) CacheRevision() string {
 	return strconv.FormatUint(dm.revision.Load(), 10)
 }
 
+func (dm *DomainMapper) CacheRevisionUint64() uint64 {
+	return dm.revision.Load()
+}
+
 func normalizeRuleKey(rule string) string {
 	rule = strings.TrimSpace(rule)
 	if rule == "" {

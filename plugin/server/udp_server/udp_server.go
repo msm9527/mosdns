@@ -23,11 +23,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"hash/maphash"
 	"math"
 	"net"
 	"net/netip"
+	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -52,9 +53,11 @@ const (
 	defaultFastBypassWarmupMain    = 3
 	defaultFastBypassWarmupRequery = 1
 	defaultStaleRefreshRetrySec    = 10
-)
+	defaultMainListenerWorkers     = 4
 
-var maphashSeed = maphash.MakeSeed()
+	fastQNameHashOffset64 = 1469598103934665603
+	fastQNameHashPrime64  = 1099511628211
+)
 
 func init() {
 	coremain.RegNewPluginFunc(PluginType, Init, func() any { return new(Args) })
@@ -72,6 +75,7 @@ type Args struct {
 	FastCacheBypassDomainSets []string `yaml:"fast_cache_bypass_domain_sets"`
 	FastMetricsLogInterval    int      `yaml:"fast_metrics_log_interval"`
 	FastBypassWarmupSec       int      `yaml:"fast_bypass_warmup_seconds"`
+	FastListenerWorkers       int      `yaml:"fast_listener_workers"`
 }
 
 func (a *Args) init() {
@@ -84,11 +88,20 @@ func (a *Args) init() {
 	if a.FastBypassWarmupSec <= 0 {
 		a.FastBypassWarmupSec = inferFastBypassWarmupSec(a.Entry, a.Listen)
 	}
+	if a.FastListenerWorkers <= 0 {
+		a.FastListenerWorkers = inferFastListenerWorkers(a.Entry, a.Listen)
+	}
 	if a.FastCacheTTLMax > 0 && a.FastCacheTTLMin > a.FastCacheTTLMax {
 		a.FastCacheTTLMin = a.FastCacheTTLMax
 	}
 	if a.FastBypassWarmupSec < 0 {
 		a.FastBypassWarmupSec = 0
+	}
+	if a.FastListenerWorkers < 1 {
+		a.FastListenerWorkers = 1
+	}
+	if a.FastListenerWorkers > defaultMainListenerWorkers {
+		a.FastListenerWorkers = defaultMainListenerWorkers
 	}
 	a.FastCacheBypassDomainSets = normalizeFastCacheDomainSetTokens(a.FastCacheBypassDomainSets)
 }
@@ -100,6 +113,21 @@ func inferFastBypassWarmupSec(entry, listen string) int {
 		return defaultFastBypassWarmupRequery
 	}
 	return defaultFastBypassWarmupMain
+}
+
+func inferFastListenerWorkers(entry, listen string) int {
+	if runtime.GOOS != "linux" {
+		return 1
+	}
+	lentry := strings.ToLower(entry)
+	llisten := strings.ToLower(listen)
+	if strings.Contains(lentry, "requery") || strings.Contains(llisten, ":7766") {
+		return 1
+	}
+	if strings.Contains(lentry, "sequence_6666") || strings.HasSuffix(llisten, ":53") {
+		return min(runtime.GOMAXPROCS(0), defaultMainListenerWorkers)
+	}
+	return 1
 }
 
 func normalizeFastCacheDomainSetTokens(values []string) []string {
@@ -151,9 +179,9 @@ func fastCacheDomainSetContainsAny(domainSet string, tokens []string) bool {
 }
 
 type UdpServer struct {
-	args *Args
-	c    net.PacketConn
-	fc   *fastCache
+	args  *Args
+	conns []net.PacketConn
+	fc    *fastCache
 }
 
 var (
@@ -162,7 +190,16 @@ var (
 )
 
 func (s *UdpServer) Close() error {
-	return s.c.Close()
+	var firstErr error
+	for _, c := range s.conns {
+		if c == nil {
+			continue
+		}
+		if err := c.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 func (s *UdpServer) RuntimeCacheKind() string {
@@ -195,9 +232,11 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 	var cfg fastCacheConfig
 	var snapshot fastStatsSnapshot
 	backendSize := 0
+	listenerWorkers := 0
 	if s != nil && s.fc != nil {
 		cfg = s.fc.cfg
 		backendSize = s.fc.Len()
+		listenerWorkers = len(s.conns)
 		if s.fc.stats != nil {
 			snapshot = s.fc.stats.snapshot()
 		}
@@ -218,6 +257,7 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 			"runtime_cache_kind":          "udp_fast",
 			"fakeip_requires_switch_on":   true,
 			"cache_hits_bypass_audit_log": true,
+			"listener_workers":            listenerWorkers,
 		},
 	}
 }
@@ -256,21 +296,114 @@ type DomainMapperPlugin interface {
 type DomainMapperRevisionPlugin interface {
 	CacheRevision() string
 }
+type NumericCacheRevisionPlugin interface {
+	CacheRevisionUint64() uint64
+}
 type IPSetPlugin interface{ Match(addr netip.Addr) bool }
+
+type fastRevisionValue struct {
+	text    string
+	number  uint64
+	numeric bool
+	set     bool
+}
+
+func (v fastRevisionValue) empty() bool {
+	return !v.set
+}
+
+func (v fastRevisionValue) equal(other fastRevisionValue) bool {
+	if v.set != other.set {
+		return false
+	}
+	if !v.set {
+		return true
+	}
+	if v.numeric != other.numeric {
+		return false
+	}
+	if v.numeric {
+		return v.number == other.number
+	}
+	return v.text == other.text
+}
+
+func (v fastRevisionValue) String() string {
+	if !v.set {
+		return ""
+	}
+	if v.numeric {
+		return strconv.FormatUint(v.number, 10)
+	}
+	return v.text
+}
+
+func fastTextRevisionValue(text string) fastRevisionValue {
+	if text == "" {
+		return fastRevisionValue{}
+	}
+	return fastRevisionValue{text: text, set: true}
+}
+
+func fastNumericRevisionValue(number uint64) fastRevisionValue {
+	return fastRevisionValue{number: number, numeric: true, set: true}
+}
+
+type fastRuleRevision struct {
+	domainMapper fastRevisionValue
+	rewrite      fastRevisionValue
+}
+
+func (r fastRuleRevision) empty() bool {
+	return r.domainMapper.empty() && r.rewrite.empty()
+}
+
+func (r fastRuleRevision) matches(item *fastCacheItem) bool {
+	return item != nil &&
+		item.domainMapperRevision.equal(r.domainMapper) &&
+		item.rewriteRevision.equal(r.rewrite)
+}
+
+func (r fastRuleRevision) String() string {
+	domainMapper := r.domainMapper.String()
+	rewrite := r.rewrite.String()
+	if domainMapper == "" {
+		return rewrite
+	}
+	if rewrite == "" {
+		return domainMapper
+	}
+	return domainMapper + "|" + rewrite
+}
+
+func fastRuleRevisionFromJoined(revision string) fastRuleRevision {
+	if revision == "" {
+		return fastRuleRevision{}
+	}
+	dmRevision, rewriteRevision, ok := strings.Cut(revision, "|")
+	if !ok {
+		return fastRuleRevision{domainMapper: fastTextRevisionValue(revision)}
+	}
+	return fastRuleRevision{
+		domainMapper: fastTextRevisionValue(dmRevision),
+		rewrite:      fastTextRevisionValue(rewriteRevision),
+	}
+}
 
 type fastCacheItem struct {
 	// Keep the atomic field first so 32-bit ARM gets 8-byte alignment.
 	expire int64
 
-	resp         []byte
-	updating     uint32
-	domainSet    string
-	ruleRevision string
-	fakeIP       bool
-	hash         uint64
-	ruleFlags    uint64
-	qname        string
-	qtype        uint16
+	resp                 []byte
+	updating             uint32
+	domainSet            string
+	domainMapperRevision fastRevisionValue
+	rewriteRevision      fastRevisionValue
+	fakeIP               bool
+	hash                 uint64
+	ruleFlags            uint64
+	qname                string
+	qtype                uint16
 }
 
 type fastCacheBucket struct {
@@ -407,11 +540,20 @@ func (fc *fastCache) ensureTable() *fastCacheTable {
 }
 
 func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
-	return fc.getOrUpdating(hash, buf, qname, qtype, allowFakeIP, "")
+	return fc.getOrUpdating(hash, buf, qname, qtype, allowFakeIP, fastRuleRevision{})
 }
 
-func (fc *fastCache) getOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool, expectedRuleRevision string) (int, int, uint64, string, bool) {
+func (fc *fastCache) getOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool) {
 	ptr, occupied := fc.findItem(hash, qname, qtype)
+	return fc.replyFromItem(ptr, occupied, buf, allowFakeIP, expectedRuleRevision)
+}
+
+func (fc *fastCache) getOrUpdatingWire(hash uint64, buf []byte, qnameWire []byte, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool) {
+	ptr, occupied := fc.findItemWire(hash, qnameWire, qtype)
+	return fc.replyFromItem(ptr, occupied, buf, allowFakeIP, expectedRuleRevision)
+}
+
+func (fc *fastCache) replyFromItem(ptr *fastCacheItem, occupied bool, buf []byte, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool) {
 	if ptr == nil {
 		if fc.stats != nil {
 			if occupied {
@@ -421,7 +563,7 @@ func (fc *fastCache) getOrUpdating(hash uint64, buf []byte, qname string, qtype 
 		}
 		return server.FastActionContinue, 0, 0, "", false
 	}
-	if expectedRuleRevision != "" && ptr.ruleRevision != expectedRuleRevision {
+	if !expectedRuleRevision.empty() && !expectedRuleRevision.matches(ptr) {
 		if fc.stats != nil {
 			fc.stats.cacheMiss.Add(1)
 		}
@@ -497,10 +639,14 @@ func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string,
 }
 
 func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, ruleFlags uint64, ruleRevision string) bool {
+	return fc.storeWithRuleRevision(qname, qtype, resp, dset, fakeIP, ruleFlags, fastRuleRevisionFromJoined(ruleRevision))
+}
+
+func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, ruleFlags uint64, ruleRevision fastRuleRevision) bool {
 	if fc.shouldBypassDomainSet(dset) {
 		return false
 	}
-	h := maphash.String(maphashSeed, qname) ^ uint64(qtype)
+	h := fastQNameHashString(qname, qtype)
 
 	bakedResp := make([]byte, len(resp))
 	copy(bakedResp, resp)
@@ -513,16 +659,17 @@ func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset
 	}
 
 	item := &fastCacheItem{
-		resp:         bakedResp,
-		expire:       time.Now().Add(fc.cfg.internalTTL).Unix(),
-		updating:     0,
-		domainSet:    dset,
-		ruleRevision: ruleRevision,
-		fakeIP:       fakeIP,
-		hash:         h,
-		ruleFlags:    ruleFlags,
-		qname:        qname,
-		qtype:        qtype,
+		resp:                 bakedResp,
+		expire:               time.Now().Add(fc.cfg.internalTTL).Unix(),
+		updating:             0,
+		domainSet:            dset,
+		domainMapperRevision: ruleRevision.domainMapper,
+		rewriteRevision:      ruleRevision.rewrite,
+		fakeIP:               fakeIP,
+		hash:                 h,
+		ruleFlags:            ruleFlags,
+		qname:                qname,
+		qtype:                qtype,
 	}
 	fc.storeItem(item)
 	if fc.stats != nil {
@@ -532,7 +679,7 @@ func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset
 }
 
 func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allowFakeIP bool) *[]byte {
-	hash := maphash.String(maphashSeed, qname) ^ uint64(qtype)
+	hash := fastQNameHashString(qname, qtype)
 	ptr, _ := fc.findItem(hash, qname, qtype)
 	if ptr == nil {
 		return nil
@@ -565,7 +712,27 @@ func (fc *fastCache) findItem(hash uint64, qname string, qtype uint16) (*fastCac
 			continue
 		}
 		occupied = true
-		if ptr.hash == hash && ptr.qtype == qtype && ptr.qname == qname {
+		if ptr.hash == hash && ptr.qtype == qtype && fastQNameEqualString(ptr.qname, qname) {
+			return ptr, true
+		}
+	}
+	return nil, occupied
+}
+
+func (fc *fastCache) findItemWire(hash uint64, qnameWire []byte, qtype uint16) (*fastCacheItem, bool) {
+	table := fc.loadTable()
+	if table == nil {
+		return nil, false
+	}
+	bucket := &table.buckets[fastCacheBucketIndex(hash, table.mask)]
+	occupied := false
+	for i := range bucket.slots {
+		ptr := bucket.slots[i].Load()
+		if ptr == nil {
+			continue
+		}
+		occupied = true
+		if ptr.hash == hash && ptr.qtype == qtype && fastQNameWireEqualString(qnameWire, ptr.qname) {
 			return ptr, true
 		}
 	}
@@ -591,7 +758,7 @@ func (fc *fastCache) storeItem(item *fastCacheItem) {
 			}
 			continue
 		}
-		if current.hash == item.hash && current.qtype == item.qtype && current.qname == item.qname {
+		if current.hash == item.hash && current.qtype == item.qtype && fastQNameEqualString(current.qname, item.qname) {
 			slot.Store(item)
 			return
 		}
@@ -619,6 +786,120 @@ func fastCacheBucketIndex(hash uint64, mask uint64) uint64 {
 	hash *= 0xff51afd7ed558ccd
 	hash ^= hash >> 33
 	return hash & mask
+}
+
+func fastQNameHashByte(hash uint64, b byte) uint64 {
+	if b >= 'A' && b <= 'Z' {
+		b += 'a' - 'A'
+	}
+	return fastHashRawByte(hash, b)
+}
+
+func fastHashRawByte(hash uint64, b byte) uint64 {
+	hash ^= uint64(b)
+	hash *= fastQNameHashPrime64
+	return hash
+}
+
+func fastQNameHashFinish(hash uint64, qtype uint16) uint64 {
+	hash = fastHashRawByte(hash, byte(qtype>>8))
+	hash = fastHashRawByte(hash, byte(qtype))
+	return hash
+}
+
+func fastQNameHashString(qname string, qtype uint16) uint64 {
+	hash := uint64(fastQNameHashOffset64)
+	if qname == "" {
+		return fastQNameHashFinish(hash, qtype)
+	}
+	for i := 0; i < len(qname); i++ {
+		hash = fastQNameHashByte(hash, qname[i])
+	}
+	if qname[len(qname)-1] != '.' {
+		hash = fastQNameHashByte(hash, '.')
+	}
+	return fastQNameHashFinish(hash, qtype)
+}
+
+func fastASCIIEqualFold(a, b byte) bool {
+	if a >= 'A' && a <= 'Z' {
+		a += 'a' - 'A'
+	}
+	if b >= 'A' && b <= 'Z' {
+		b += 'a' - 'A'
+	}
+	return a == b
+}
+
+func fastQNameTrimDotLen(name string) int {
+	if len(name) > 1 && name[len(name)-1] == '.' {
+		return len(name) - 1
+	}
+	return len(name)
+}
+
+func fastQNameEqualString(a, b string) bool {
+	if a == b {
+		return true
+	}
+	la := fastQNameTrimDotLen(a)
+	lb := fastQNameTrimDotLen(b)
+	if la != lb {
+		return false
+	}
+	for i := 0; i < la; i++ {
+		if !fastASCIIEqualFold(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func fastQNameWireEqualString(wire []byte, qname string) bool {
+	if len(wire) == 0 {
+		return false
+	}
+	if len(wire) == 1 && wire[0] == 0 {
+		return qname == "."
+	}
+
+	offset := 0
+	nameOffset := 0
+	for offset < len(wire) {
+		labelLen := int(wire[offset])
+		if labelLen == 0 {
+			return nameOffset == len(qname)
+		}
+		if labelLen&0xC0 != 0 {
+			return false
+		}
+		offset++
+		if offset+labelLen > len(wire) || nameOffset+labelLen > len(qname) {
+			return false
+		}
+		for i := 0; i < labelLen; i++ {
+			if !fastASCIIEqualFold(wire[offset+i], qname[nameOffset+i]) {
+				return false
+			}
+		}
+		offset += labelLen
+		nameOffset += labelLen
+
+		if offset < len(wire) && wire[offset] != 0 {
+			if nameOffset >= len(qname) || qname[nameOffset] != '.' {
+				return false
+			}
+			nameOffset++
+			continue
+		}
+		if nameOffset < len(qname) {
+			if qname[nameOffset] != '.' {
+				return false
+			}
+			nameOffset++
+		}
+	}
+	return false
 }
 
 func (fc *fastCache) Flush() {
@@ -790,14 +1071,14 @@ func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, paylo
 	if fakeIP && !h.allowFakeIPCache() {
 		return false
 	}
-	return h.fc.storeWithMeta(
+	return h.fc.storeWithRuleRevision(
 		q.Question[0].Name,
 		q.Question[0].Qtype,
 		*payload,
 		dsetName,
 		fakeIP,
 		meta.PreFastFlags,
-		fastRuntimeRevision(h.dm, h.rewriteRevision),
+		fastRuntimeRevisionParts(h.dm, h.rewriteRevision),
 	)
 }
 
@@ -809,27 +1090,24 @@ func (h *fastHandler) allowFakeIPCache() bool {
 	return h.fakeCacheSwitch != nil && h.fakeCacheSwitch.GetValue() == "on"
 }
 
-func fastCacheRevisionOf(plugin any) string {
+func fastCacheRevisionOf(plugin any) fastRevisionValue {
 	if plugin == nil {
-		return ""
+		return fastRevisionValue{}
+	}
+	if provider, ok := plugin.(NumericCacheRevisionPlugin); ok && provider != nil {
+		return fastNumericRevisionValue(provider.CacheRevisionUint64())
 	}
 	provider, ok := plugin.(DomainMapperRevisionPlugin)
 	if !ok || provider == nil {
-		return ""
+		return fastRevisionValue{}
 	}
-	return provider.CacheRevision()
+	return fastTextRevisionValue(provider.CacheRevision())
 }
 
-func fastRuntimeRevision(dm DomainMapperPlugin, rewriteRevision DomainMapperRevisionPlugin) string {
+func fastRuntimeRevisionParts(dm DomainMapperPlugin, rewriteRevision DomainMapperRevisionPlugin) fastRuleRevision {
 	dmRevision := fastCacheRevisionOf(dm)
 	rewriteRev := fastCacheRevisionOf(rewriteRevision)
-	if dmRevision == "" {
-		return rewriteRev
-	}
-	if rewriteRev == "" {
-		return dmRevision
-	}
-	return dmRevision + "|" + rewriteRev
+	return fastRuleRevision{domainMapper: dmRevision, rewrite: rewriteRev}
 }
 
 func fastRuleReject(reqLen int, buf []byte, qEnd int, qtype uint16, marks uint64, sw1, sw7 SwitchPlugin) (int, bool) {
@@ -893,11 +1171,25 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		SO_RCVBUF:    2 * 1024 * 1024,
 	}
 	lc := net.ListenConfig{Control: server_utils.ListenerControl(socketOpt)}
-	c, err := lc.ListenPacket(context.Background(), "udp", args.Listen)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create socket, %w", err)
+	listenerWorkers := args.FastListenerWorkers
+	if listenerWorkers < 1 {
+		listenerWorkers = 1
 	}
-	bp.L().Info("udp server started with extreme bypass", zap.Stringer("addr", c.LocalAddr()))
+	conns := make([]net.PacketConn, 0, listenerWorkers)
+	for i := 0; i < listenerWorkers; i++ {
+		c, err := lc.ListenPacket(context.Background(), "udp", args.Listen)
+		if err != nil {
+			for _, existing := range conns {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("failed to create socket worker %d/%d, %w", i+1, listenerWorkers, err)
+		}
+		conns = append(conns, c)
+	}
+	bp.L().Info("udp server started with extreme bypass",
+		zap.Stringer("addr", conns[0].LocalAddr()),
+		zap.Int("listener_workers", len(conns)),
+	)
 	if args.FastMetricsLogInterval > 0 {
 		bp.AttachShutdown(func(done func(), closeSignal <-chan struct{}) {
 			defer done()
@@ -934,15 +1226,24 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		})
 	}
 
-	go func() {
-		defer c.Close()
-		err := server.ServeUDP(c.(*net.UDPConn), wrappedHandler, server.UDPServerOpts{
-			Logger:     bp.L(),
-			FastBypass: fastBypass,
-		})
-		bp.CloseWithErr(err)
-	}()
-	return &UdpServer{args: args, c: c, fc: fc}, nil
+	for _, c := range conns {
+		udpConn, ok := c.(*net.UDPConn)
+		if !ok {
+			for _, existing := range conns {
+				_ = existing.Close()
+			}
+			return nil, fmt.Errorf("unexpected packet conn type %T", c)
+		}
+		go func(c *net.UDPConn) {
+			defer c.Close()
+			err := server.ServeUDP(c, wrappedHandler, server.UDPServerOpts{
+				Logger:     bp.L(),
+				FastBypass: fastBypass,
+			})
+			bp.CloseWithErr(err)
+		}(udpConn)
+	}
+	return &UdpServer{args: args, conns: conns, fc: fc}, nil
 }
 
 func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
@@ -951,6 +1252,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 	var dm DomainMapperPlugin
 	var rewriteRevision DomainMapperRevisionPlugin
 	var clientWhitelist, clientBlacklist IPSetPlugin
+	revisionTracked := false
 	readyAt := time.Now().Add(warmup)
 
 	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
@@ -977,6 +1279,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if p := bp.Plugin("rewrite"); p != nil {
 				rewriteRevision, _ = p.(DomainMapperRevisionPlugin)
 			}
+			revisionTracked = dm != nil || rewriteRevision != nil
 			if p := bp.Plugin("client_ip_whitelist"); p != nil {
 				clientWhitelist, _ = p.(IPSetPlugin)
 			}
@@ -988,13 +1291,15 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		if sw15 == nil || sw15.GetValue() != "on" {
 			return server.FastActionContinue, 0, 0, "", false, false
 		}
-		qname, qtype, qEnd, ok := parseFastQuestion(reqLen, buf)
+		question, ok := parseFastQuestionMeta(reqLen, buf)
 		if !ok {
 			if stats != nil {
 				stats.bypassBadPacket.Add(1)
 			}
 			return server.FastActionContinue, 0, 0, "", false, false
 		}
+		qtype := question.qtype
+		qEnd := question.end
 
 		if qtype == 6 || qtype == 12 || qtype == 65 {
 			if sw5 != nil && sw5.GetValue() == "on" {
@@ -1014,17 +1319,19 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		}
 
 		var marks uint64
-		addr := remoteAddr.Addr().Unmap()
 		whitelistMatch := false
 		blacklistMatch := false
 		clientListChecked := false
-		if clientWhitelist != nil {
-			whitelistMatch = clientWhitelist.Match(addr)
-			clientListChecked = true
-		}
-		if clientBlacklist != nil {
-			blacklistMatch = clientBlacklist.Match(addr)
-			clientListChecked = true
+		if clientWhitelist != nil || clientBlacklist != nil {
+			addr := remoteAddr.Addr().Unmap()
+			if clientWhitelist != nil {
+				whitelistMatch = clientWhitelist.Match(addr)
+				clientListChecked = true
+			}
+			if clientBlacklist != nil {
+				blacklistMatch = clientBlacklist.Match(addr)
+				clientListChecked = true
+			}
 		}
 		if clientListChecked {
 			marks |= (1 << 48)
@@ -1040,16 +1347,20 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			marks |= (1 << 39)
 		}
 
-		ruleRevision := fastRuntimeRevision(dm, rewriteRevision)
-		hKey := maphash.String(maphashSeed, qname) ^ uint64(qtype)
+		var ruleRevision fastRuleRevision
+		if revisionTracked {
+			ruleRevision = fastRuntimeRevisionParts(dm, rewriteRevision)
+		}
+		hKey := question.hash
+		qnameWire := question.qnameWire(buf)
 		allowFakeIP := fakeipCache != nil && fakeipCache.GetValue() == "on"
 		earlyCacheTried := false
-		if ruleRevision != "" && (marks&(1<<39)) == 0 {
+		if !ruleRevision.empty() && (marks&(1<<39)) == 0 {
 			earlyCacheTried = true
 			if stats != nil {
 				stats.cacheLookup.Add(1)
 			}
-			action, rLen, ruleFlags, ds, staleRefresh := fc.getOrUpdating(hKey, buf, qname, qtype, allowFakeIP, ruleRevision)
+			action, rLen, ruleFlags, ds, staleRefresh := fc.getOrUpdatingWire(hKey, buf, qnameWire, qtype, allowFakeIP, ruleRevision)
 			if action == server.FastActionReply {
 				if rejectLen, ok := fastRuleReject(reqLen, buf, qEnd, qtype, ruleFlags, sw1, sw7); ok {
 					if stats != nil {
@@ -1070,6 +1381,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		var dset string
 		var dsetMatched bool
 		if dm != nil {
+			qname := question.qnameString(buf)
 			if mList, dsName, match := dm.FastMatch(qname); match {
 				for _, v := range mList {
 					if v < 64 {
@@ -1092,7 +1404,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if stats != nil {
 				stats.cacheLookup.Add(1)
 			}
-			action, rLen, ruleFlags, ds, staleRefresh := fc.getOrUpdating(hKey, buf, qname, qtype, allowFakeIP, ruleRevision)
+			action, rLen, ruleFlags, ds, staleRefresh := fc.getOrUpdatingWire(hKey, buf, qnameWire, qtype, allowFakeIP, ruleRevision)
 			if action == server.FastActionReply {
 				if rejectLen, ok := fastRuleReject(reqLen, buf, qEnd, qtype, ruleFlags, sw1, sw7); ok {
 					if stats != nil {
@@ -1135,23 +1447,49 @@ func makeReject(reqLen int, buf []byte, offset int, rcode byte) int {
 	return offset
 }
 
+type fastQuestion struct {
+	qtype    uint16
+	end      int
+	qnameEnd int
+	hash     uint64
+}
+
+func (q fastQuestion) qnameWire(buf []byte) []byte {
+	if q.qnameEnd <= 12 || q.qnameEnd > len(buf) {
+		return nil
+	}
+	return buf[12:q.qnameEnd]
+}
+
+func (q fastQuestion) qnameString(buf []byte) string {
+	return fastQNameWireString(q.qnameWire(buf))
+}
+
 func parseFastQuestion(reqLen int, buf []byte) (qname string, qtype uint16, end int, ok bool) {
-	if reqLen < 12 {
+	question, ok := parseFastQuestionMeta(reqLen, buf)
+	if !ok {
 		return "", 0, 0, false
+	}
+	return question.qnameString(buf), question.qtype, question.end, true
+}
+
+func parseFastQuestionMeta(reqLen int, buf []byte) (fastQuestion, bool) {
+	if reqLen < 12 {
+		return fastQuestion{}, false
 	}
 	flags0 := buf[2]
 	if flags0&0x80 != 0 {
-		return "", 0, 0, false
+		return fastQuestion{}, false
 	}
 	if ((flags0 >> 3) & 0x0f) != 0 {
-		return "", 0, 0, false
+		return fastQuestion{}, false
 	}
 	if binary.BigEndian.Uint16(buf[4:6]) != 1 {
-		return "", 0, 0, false
+		return fastQuestion{}, false
 	}
 
 	offset := 12
-	var nameBuf [256]byte
+	hash := uint64(fastQNameHashOffset64)
 	nameLen := 0
 	terminated := false
 	for offset < reqLen {
@@ -1159,30 +1497,67 @@ func parseFastQuestion(reqLen int, buf []byte) (qname string, qtype uint16, end 
 		if l == 0 {
 			offset++
 			if nameLen == 0 {
-				nameBuf[0] = '.'
+				hash = fastQNameHashByte(hash, '.')
 				nameLen = 1
 			}
 			terminated = true
 			break
 		}
 		if l&0xC0 != 0 {
-			return "", 0, 0, false
+			return fastQuestion{}, false
 		}
 		offset++
-		if offset+l > reqLen || nameLen+l+1 > len(nameBuf) {
-			return "", 0, 0, false
+		if offset+l > reqLen || nameLen+l+1 > 256 {
+			return fastQuestion{}, false
 		}
-		copy(nameBuf[nameLen:], buf[offset:offset+l])
-		nameLen += l
-		nameBuf[nameLen] = '.'
-		nameLen++
+		for i := 0; i < l; i++ {
+			hash = fastQNameHashByte(hash, buf[offset+i])
+		}
+		hash = fastQNameHashByte(hash, '.')
+		nameLen += l + 1
 		offset += l
 	}
 	if !terminated || offset+4 > reqLen {
-		return "", 0, 0, false
+		return fastQuestion{}, false
 	}
-	qtype = binary.BigEndian.Uint16(buf[offset : offset+2])
-	return string(nameBuf[:nameLen]), qtype, offset + 4, true
+	qtype := binary.BigEndian.Uint16(buf[offset : offset+2])
+	return fastQuestion{
+		qtype:    qtype,
+		end:      offset + 4,
+		qnameEnd: offset,
+		hash:     fastQNameHashFinish(hash, qtype),
+	}, true
+}
+
+func fastQNameWireString(wire []byte) string {
+	if len(wire) == 0 {
+		return ""
+	}
+	var nameBuf [256]byte
+	nameLen := 0
+	offset := 0
+	for offset < len(wire) {
+		labelLen := int(wire[offset])
+		if labelLen == 0 {
+			if nameLen == 0 {
+				return "."
+			}
+			return string(nameBuf[:nameLen])
+		}
+		if labelLen&0xC0 != 0 {
+			return ""
+		}
+		offset++
+		if offset+labelLen > len(wire) || nameLen+labelLen+1 > len(nameBuf) {
+			return ""
+		}
+		copy(nameBuf[nameLen:], wire[offset:offset+labelLen])
+		nameLen += labelLen
+		nameBuf[nameLen] = '.'
+		nameLen++
+		offset += labelLen
+	}
+	return ""
 }
 
 func clampTTL(ttl, ttlMin, ttlMax uint32) uint32 {
