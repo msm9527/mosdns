@@ -181,6 +181,9 @@ policies:
           - $domestic
           - exit
       - matches:
+          - client_ip 127.0.0.0/8 ::1/128
+        exec: fast_mark 48
+      - matches:
           - '!fast_mark 48'
           - switch 'client_proxy_mode:whitelist'
           - '!client_ip $client_ip_whitelist'
