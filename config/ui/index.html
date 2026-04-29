@@ -1607,6 +1607,7 @@
                                     同一域名如需多个目标，请重复写多行；运行时会自动合并并去重。<br>
                                     匹配规则支持普通域名以及 <code>full:</code>、<code>domain:</code> 等写法。<br>
                                     仅对 <code>A</code>/<code>AAAA</code> 查询生效；<code>TXT</code>/<code>MX</code> 等其他类型会继续走原有解析链路。<br>
+                                    目标为 IP 时按查询类型返回；只写 IPv4 时，<code>AAAA</code> 查询会返回空结果并停止后续解析。<br>
                                     当目标写成域名时，会向配置里的 <code>dns</code> 上游查询并直接返回展开后的 <code>A</code>/<code>AAAA</code> 结果，不返回 <code>CNAME</code>。
                                 </p>
                                 <p id="list-mgmt-realip-hint"

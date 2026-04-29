@@ -33,12 +33,18 @@ func TestExecSupportsMultipleStaticTargets(t *testing.T) {
 		t.Fatalf("Exec() A error = %v", err)
 	}
 	assertAnswerIPs(t, aCtx.R(), "example.com.", dns.TypeA, "1.1.1.1", "2.2.2.2")
+	if !aCtx.HasFastFlag(rewriteFastMark) {
+		t.Fatal("expected rewrite fast mark on A response")
+	}
 
 	aaaaCtx := newTestContext("example.com.", dns.TypeAAAA)
 	if err := r.Exec(context.Background(), aaaaCtx, sequence.ChainWalker{}); err != nil {
 		t.Fatalf("Exec() AAAA error = %v", err)
 	}
 	assertAnswerIPs(t, aaaaCtx.R(), "example.com.", dns.TypeAAAA, "2001:db8::1")
+	if !aaaaCtx.HasFastFlag(rewriteFastMark) {
+		t.Fatal("expected rewrite fast mark on AAAA response")
+	}
 }
 
 func TestLoadRulesFromFilesMergesDuplicatePatternsAcrossFiles(t *testing.T) {

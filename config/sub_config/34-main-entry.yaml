@@ -74,6 +74,8 @@ policies:
         exec: exit
       - exec: $top_domains
       - exec: $rewrite
+      - matches: has_resp
+        exec: exit
       - matches: qtype 1
         exec: $sequence_ipv4
       - matches: qtype 28
@@ -89,6 +91,8 @@ policies:
       - matches: has_resp
         exec: exit
       - exec: $rewrite
+      - matches: has_resp
+        exec: exit
       - matches: qtype 1
         exec: $sequence_ipv4
       - matches: qtype 28
@@ -101,6 +105,8 @@ policies:
     type: sequence
     args:
       - exec: try $sequence_6666
+      - matches: fast_mark 29
+        exec: exit
       - matches: resp_ip 30.0.0.0/8 2400::1/64
         exec:
           - $sequence_local
@@ -117,6 +123,8 @@ policies:
     type: sequence
     args:
       - exec: try $sequence_6666
+      - matches: fast_mark 29
+        exec: exit
       - matches: resp_ip 28.0.0.0/8 f2b0::/18
         exec:
           - fast_mark 26
@@ -135,6 +143,8 @@ policies:
     type: sequence
     args:
       - exec: try $sequence_6666
+      - matches: fast_mark 29
+        exec: exit
       - matches: resp_ip 30.0.0.0/8 2400::1/64
         exec:
           - tag_setter sing-box国内

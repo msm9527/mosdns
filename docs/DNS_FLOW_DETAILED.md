@@ -22,7 +22,9 @@
 flowchart TD
     A1["请求进入 sequence_6666"] --> A2["sequence_common_precheck"]
     A2 --> A3["top_domains + rewrite"]
-    A3 --> A4{"qtype"}
+    A3 --> A3B{"has_resp?"}
+    A3B -- yes --> A8["exit"]
+    A3B -- no --> A4{"qtype"}
     A4 -- A --> A5["sequence_ipv4"]
     A4 -- AAAA --> A6["sequence_ipv6"]
     A4 -- other --> A7["sequence_other"]

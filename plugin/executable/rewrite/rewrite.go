@@ -21,6 +21,7 @@ const PluginType = "rewrite"
 const (
 	defaultDNSTimeout = 5 * time.Second
 	fixedTTL          = 5
+	rewriteFastMark   = 29
 )
 
 type targetKind uint8

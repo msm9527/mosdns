@@ -198,6 +198,8 @@ policies:
       - matches: has_resp
         exec: exit
       - exec: $rewrite
+      - matches: has_resp
+        exec: exit
       - matches: qtype 1
         exec: $sequence_ipv4_refresh
       - matches: qtype 28

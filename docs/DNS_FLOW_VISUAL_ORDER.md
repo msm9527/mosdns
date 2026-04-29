@@ -7,7 +7,9 @@ flowchart TB
     A0([DNS 请求进入]) --> A1[sequence_common_precheck]
     A1 --> A2[unified_matcher1 / 屏蔽 / client_ip]
     A2 --> A3[top_domains + rewrite]
-    A3 --> A4{qtype}
+    A3 --> A3B{has_resp?}
+    A3B -- yes --> A8[exit]
+    A3B -- no --> A4{qtype}
     A4 -- A --> B0[[sequence_ipv4]]
     A4 -- AAAA --> C0[[sequence_ipv6]]
     A4 -- other --> D0[[sequence_other]]
