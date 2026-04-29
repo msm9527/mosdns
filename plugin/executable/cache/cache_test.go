@@ -41,6 +41,7 @@ import (
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"gopkg.in/yaml.v3"
 )
 
 func boolPtr(v bool) *bool { return &v }
@@ -113,7 +114,7 @@ func Test_cachePlugin_WALReplay(t *testing.T) {
 
 	c2 := NewCache(args, Opts{})
 	defer c2.Close()
-	resp, lazy, _ := getRespFromCache("wal-key", c2.backend, false, expiredMsgTtl)
+	resp, lazy, _ := getRespFromCache("wal-key", c2.backend, 0, expiredMsgTtl)
 	if resp == nil {
 		t.Fatal("expected wal replay to restore cache entry")
 	}
@@ -153,10 +154,10 @@ func Test_cachePlugin_WALReplayMultipleStores(t *testing.T) {
 
 	c2 := NewCache(args, Opts{})
 	defer c2.Close()
-	if resp, _, _ := getRespFromCache(keyA, c2.backend, false, expiredMsgTtl); resp == nil {
+	if resp, _, _ := getRespFromCache(keyA, c2.backend, 0, expiredMsgTtl); resp == nil {
 		t.Fatal("expected first wal entry to be restored")
 	}
-	if resp, _, _ := getRespFromCache(keyB, c2.backend, false, expiredMsgTtl); resp == nil {
+	if resp, _, _ := getRespFromCache(keyB, c2.backend, 0, expiredMsgTtl); resp == nil {
 		t.Fatal("expected second wal entry to be restored")
 	}
 }
@@ -200,10 +201,10 @@ func Test_cachePlugin_WALReplayDelete(t *testing.T) {
 
 	c2 := NewCache(args, Opts{})
 	defer c2.Close()
-	if resp, _, _ := getRespFromCache(keyPurge, c2.backend, false, expiredMsgTtl); resp != nil {
+	if resp, _, _ := getRespFromCache(keyPurge, c2.backend, 0, expiredMsgTtl); resp != nil {
 		t.Fatal("expected deleted wal entry to stay deleted after replay")
 	}
-	if resp, _, _ := getRespFromCache(keyKeep, c2.backend, false, expiredMsgTtl); resp == nil {
+	if resp, _, _ := getRespFromCache(keyKeep, c2.backend, 0, expiredMsgTtl); resp == nil {
 		t.Fatal("expected unrelated wal entry to remain")
 	}
 }
@@ -242,10 +243,10 @@ func Test_cachePlugin_WALReplayFlush(t *testing.T) {
 
 	c2 := NewCache(args, Opts{})
 	defer c2.Close()
-	if resp, _, _ := getRespFromCache(keyBefore, c2.backend, false, expiredMsgTtl); resp != nil {
+	if resp, _, _ := getRespFromCache(keyBefore, c2.backend, 0, expiredMsgTtl); resp != nil {
 		t.Fatal("expected flushed wal entry to stay deleted after replay")
 	}
-	if resp, _, _ := getRespFromCache(keyAfter, c2.backend, false, expiredMsgTtl); resp == nil {
+	if resp, _, _ := getRespFromCache(keyAfter, c2.backend, 0, expiredMsgTtl); resp == nil {
 		t.Fatal("expected post-flush wal entry to remain")
 	}
 }
@@ -276,7 +277,7 @@ func Test_cachePlugin_WALOnlyDumpDoesNotResetWAL(t *testing.T) {
 
 	c2 := NewCache(args, Opts{})
 	defer c2.Close()
-	if resp, _, _ := getRespFromCache(msgKey, c2.backend, false, expiredMsgTtl); resp == nil {
+	if resp, _, _ := getRespFromCache(msgKey, c2.backend, 0, expiredMsgTtl); resp == nil {
 		t.Fatal("expected wal-only dump not to reset wal")
 	}
 }
@@ -304,9 +305,68 @@ func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
 		domainSet:      "DDNS域名",
 	}, now.Add(time.Hour))
 
-	resp, lazy, domainSet := getRespFromCache("ddns-key", backend, true, expiredMsgTtl)
+	resp, lazy, domainSet := getRespFromCache("ddns-key", backend, 3600, expiredMsgTtl)
 	if resp != nil || lazy || domainSet != "" {
 		t.Fatalf("expected ddns stale cache to be bypassed, got resp=%v lazy=%v domainSet=%q", resp != nil, lazy, domainSet)
+	}
+}
+
+func Test_getRespFromCache_LazyStaleWindow(t *testing.T) {
+	backend := pcache.New[key, *item](pcache.Opts{Size: 64})
+	defer backend.Close()
+
+	msg := new(dns.Msg)
+	msg.SetQuestion("stale-window.example.", dns.TypeA)
+	msg.Answer = append(msg.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "stale-window.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   net.IPv4(1, 2, 3, 4),
+	})
+	packed, err := msg.Pack()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	backend.Store("stale-window-key", &item{
+		resp:           packed,
+		storedUnixNano: now.Add(-10 * time.Minute).UnixNano(),
+		expireUnixNano: now.Add(-1 * time.Minute).UnixNano(),
+	}, now.Add(time.Hour))
+
+	resp, lazy, _ := getRespFromCache("stale-window-key", backend, 1800, expiredMsgTtl)
+	if resp == nil || !lazy {
+		t.Fatalf("expected stale response inside lazy_stale_ttl window, got resp=%v lazy=%v", resp != nil, lazy)
+	}
+	if len(resp.Answer) != 1 || resp.Answer[0].Header().Ttl != expiredMsgTtl {
+		t.Fatalf("expected stale response ttl %d, got %+v", expiredMsgTtl, resp.Answer)
+	}
+
+	resp, lazy, _ = getRespFromCache("stale-window-key", backend, 30, expiredMsgTtl)
+	if resp != nil || lazy {
+		t.Fatalf("expected stale response outside lazy_stale_ttl window to miss, got resp=%v lazy=%v", resp != nil, lazy)
+	}
+	if stored, _, _ := backend.Get("stale-window-key"); stored == nil {
+		t.Fatal("expected backend entry to remain after stale window miss")
+	}
+}
+
+func Test_cacheArgs_LazyStaleTTLCompatibility(t *testing.T) {
+	var legacy Args
+	if err := yaml.Unmarshal([]byte("lazy_cache_ttl: 42\n"), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy.init()
+	if legacy.LazyStaleTTL != 42 {
+		t.Fatalf("expected omitted lazy_stale_ttl to inherit lazy_cache_ttl, got %d", legacy.LazyStaleTTL)
+	}
+
+	var explicitDisabled Args
+	if err := yaml.Unmarshal([]byte("lazy_cache_ttl: 42\nlazy_stale_ttl: 0\n"), &explicitDisabled); err != nil {
+		t.Fatal(err)
+	}
+	explicitDisabled.init()
+	if explicitDisabled.LazyStaleTTL != 0 {
+		t.Fatalf("expected explicit lazy_stale_ttl=0 to stay disabled, got %d", explicitDisabled.LazyStaleTTL)
 	}
 }
 
@@ -468,7 +528,7 @@ func Test_cachePlugin_ExecBypassesCachedResponseDuringRefresh(t *testing.T) {
 	}
 
 	updated, _, _ := c.backend.Get(k)
-	refreshedResp, lazy, _, corrupt := respFromCacheItem(updated, false, expiredMsgTtl)
+	refreshedResp, lazy, _, corrupt := respFromCacheItem(updated, 0, expiredMsgTtl)
 	if corrupt {
 		t.Fatal("expected refreshed cache entry to decode")
 	}
@@ -525,7 +585,7 @@ func Test_cachePlugin_LazyRefreshBypassesNestedCache(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		stored, _, _ := mainCache.backend.Get(key(mainKey))
-		refreshedResp, _, _, _ = respFromCacheItem(stored, false, expiredMsgTtl)
+		refreshedResp, _, _, _ = respFromCacheItem(stored, 0, expiredMsgTtl)
 		if responseHasA(refreshedResp, net.IPv4(2, 2, 2, 2)) {
 			return
 		}
@@ -583,7 +643,7 @@ func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
 	}
 
 	stored, _, _ := c.backend.Get(k)
-	storedResp, lazy, _, corrupt := respFromCacheItem(stored, false, expiredMsgTtl)
+	storedResp, lazy, _, corrupt := respFromCacheItem(stored, 0, expiredMsgTtl)
 	if corrupt || lazy || storedResp == nil || len(storedResp.Answer) != 1 {
 		t.Fatalf("expected old cache entry to remain unread and unchanged, resp=%+v lazy=%v corrupt=%v", storedResp, lazy, corrupt)
 	}
@@ -653,13 +713,13 @@ func Test_cachePlugin_PurgeDomainRuntime(t *testing.T) {
 		t.Fatalf("expected to purge 2 entries, got %d", purged)
 	}
 
-	if resp, _, _ := getRespFromCache(string(keyABuf), c.backend, false, expiredMsgTtl); resp != nil {
+	if resp, _, _ := getRespFromCache(string(keyABuf), c.backend, 0, expiredMsgTtl); resp != nil {
 		t.Fatal("expected A entry to be purged")
 	}
-	if resp, _, _ := getRespFromCache(string(keyAAAABuf), c.backend, false, expiredMsgTtl); resp != nil {
+	if resp, _, _ := getRespFromCache(string(keyAAAABuf), c.backend, 0, expiredMsgTtl); resp != nil {
 		t.Fatal("expected AAAA entry to be purged")
 	}
-	if resp, _, _ := getRespFromCache(string(keyOtherBuf), c.backend, false, expiredMsgTtl); resp == nil {
+	if resp, _, _ := getRespFromCache(string(keyOtherBuf), c.backend, 0, expiredMsgTtl); resp == nil {
 		t.Fatal("expected unrelated entry to remain")
 	}
 }

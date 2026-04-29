@@ -12,7 +12,8 @@
 #
 # response 下每个缓存策略支持：
 # - size: 最大缓存条目数；超出后按 LRU 自动淘汰旧条目，不会整库清空。
-# - lazy_cache_ttl: 真实 TTL 过期后，最多还能返回 stale 结果多久，单位秒；0 表示禁用。
+# - lazy_cache_ttl: 成功响应在后端缓存中最多保留多久，单位秒；0 表示按真实 DNS TTL 保留。
+# - lazy_stale_ttl: 真实 TTL 过期后，最多还能返回 stale 结果多久，单位秒；0 表示禁用。
 # - nxdomain_ttl / servfail_ttl: 负面结果缓存秒数，用于收敛重复失败查询。
 # - l1_enabled: 是否启用进程内 L1 热缓存。
 # - l1_total_cap / l1_shard_cap: L1 热缓存容量上限；不设 shard 时按实现自动分配。
@@ -35,7 +36,8 @@
 # 设计默认值：
 # - fakeip 缓存默认不持久化，且不使用 lazy stale。
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
-# - 真实解析缓存只保留较短 lazy stale 窗口，避免高变化 CDN / 短视频域名被旧记录拖住。
+# - 真实解析缓存保留较长 backend 窗口保证命中率，但只允许较短 lazy stale 返回窗口。
+# - 这样热点域名可通过预刷新维持加速，低频域名过期太久后会强制重新解析。
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
 # - UDP 快路径默认只保留极短时间热点结果。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
@@ -49,7 +51,8 @@
 response:
   cache_main:
     size: 40000
-    lazy_cache_ttl: 1800
+    lazy_cache_ttl: 21600
+    lazy_stale_ttl: 1800
     nxdomain_ttl: 300
     servfail_ttl: 30
     l1_enabled: true
@@ -63,7 +66,8 @@ response:
 
   cache_branch_domestic:
     size: 20000
-    lazy_cache_ttl: 1800
+    lazy_cache_ttl: 21600
+    lazy_stale_ttl: 1800
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
@@ -77,7 +81,8 @@ response:
 
   cache_branch_foreign:
     size: 20000
-    lazy_cache_ttl: 1800
+    lazy_cache_ttl: 21600
+    lazy_stale_ttl: 1800
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
@@ -91,7 +96,8 @@ response:
 
   cache_branch_foreign_ecs:
     size: 8000
-    lazy_cache_ttl: 1800
+    lazy_cache_ttl: 21600
+    lazy_stale_ttl: 1800
     nxdomain_ttl: 120
     servfail_ttl: 20
     l1_enabled: true
@@ -106,6 +112,7 @@ response:
   cache_fakeip_domestic:
     size: 10000
     lazy_cache_ttl: 0
+    lazy_stale_ttl: 0
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
@@ -117,6 +124,7 @@ response:
   cache_fakeip_proxy:
     size: 12000
     lazy_cache_ttl: 0
+    lazy_stale_ttl: 0
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true
@@ -128,6 +136,7 @@ response:
   cache_probe:
     size: 4000
     lazy_cache_ttl: 600
+    lazy_stale_ttl: 600
     nxdomain_ttl: 60
     servfail_ttl: 15
     l1_enabled: true

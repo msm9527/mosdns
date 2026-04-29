@@ -161,6 +161,7 @@
 说明：
 
 - `GlobalOverrides` 里是用户可编辑的全局代理/ECS/替换规则
+- `GlobalOverrides.ecs` 可填 `auto` 表示使用公网客户端地址自动生成 ECS，也可填 IPv4/IPv6 地址
 - 返回体里的 `replacements[].result` 是运行态命中状态，不是持久化字段
 
 ## 5. Switches
@@ -337,6 +338,8 @@
 - `GET /api/v1/cache/stats` 和 `GET /api/v1/cache/{tag}/stats` 返回里的 `config.persist` 表示该缓存是否会做 dump + WAL 持久化
 - `config.persist=false` 表示该缓存只保存在内存中
 - `config.size` 表示最大缓存条目数，不是文件大小；超过后按 LRU 淘汰旧条目
+- `config.lazy_cache_ttl` 表示成功响应在后端缓存中最多保留多久
+- `config.lazy_stale_ttl` 表示真实 TTL 过期后允许直接返回 stale 结果多久
 - `PurgeDomainsRequest.kinds` / `FlushAllRequest.kinds` 当前支持 `response`、`udp_fast`
 - `include_udp_fast=true` 用于在未显式传 `kinds` 时兼容地包含 UDP 快路径缓存
 

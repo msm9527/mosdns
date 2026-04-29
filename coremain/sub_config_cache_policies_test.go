@@ -23,8 +23,11 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].Size <= 0 {
 		t.Fatalf("expected default cache_main policy, got %+v", cfg.Response["cache_main"])
 	}
-	if cfg.Response["cache_main"].LazyCacheTTL != 1800 {
-		t.Fatalf("expected default cache_main lazy ttl 1800, got %+v", cfg.Response["cache_main"])
+	if cfg.Response["cache_main"].LazyCacheTTL != 21600 {
+		t.Fatalf("expected default cache_main lazy cache ttl 21600, got %+v", cfg.Response["cache_main"])
+	}
+	if cfg.Response["cache_main"].LazyStaleTTL != 1800 {
+		t.Fatalf("expected default cache_main lazy stale ttl 1800, got %+v", cfg.Response["cache_main"])
 	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
@@ -53,8 +56,11 @@ func TestDefaultCachePolicyConfigUsesConservativeMemoryProfile(t *testing.T) {
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 1800 {
-		t.Fatalf("cache_branch_foreign lazy ttl = %d, want 1800", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
+	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 21600 {
+		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 21600", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
+	}
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 1800 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 1800", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
 	if totalSize > 120000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)
@@ -109,6 +115,7 @@ response:
   cache_main:
     size: 2048
     lazy_cache_ttl: 120
+    lazy_stale_ttl: 30
     bypass_domain_sets:
       - 高变CDN
       - DDNS域名
@@ -135,6 +142,9 @@ udp_fast_path:
 	}
 	if cfg.Response["cache_main"].Size != 2048 || cfg.Response["cache_main"].Persist {
 		t.Fatalf("unexpected cache_main policy: %+v", cfg.Response["cache_main"])
+	}
+	if cfg.Response["cache_main"].LazyCacheTTL != 120 || cfg.Response["cache_main"].LazyStaleTTL != 30 {
+		t.Fatalf("unexpected cache_main lazy ttl split: %+v", cfg.Response["cache_main"])
 	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变CDN" {
 		t.Fatalf("unexpected cache_main bypass domain sets: %+v", got)
@@ -185,10 +195,43 @@ response:
 	}
 }
 
+func TestLoadCachePolicyConfigFromSubConfigLegacyLazyTTL(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	path := filepath.Join(MainConfigBaseDir, cachePoliciesConfigRelPath)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+
+	const body = `
+response:
+  cache_main:
+    lazy_cache_ttl: 120
+`
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	cfg, ok, err := LoadCachePolicyConfigFromSubConfig()
+	if err != nil {
+		t.Fatalf("LoadCachePolicyConfigFromSubConfig: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected cache policy file to exist")
+	}
+	if cfg.Response["cache_main"].LazyCacheTTL != 120 || cfg.Response["cache_main"].LazyStaleTTL != 120 {
+		t.Fatalf("expected legacy lazy_cache_ttl to also set lazy_stale_ttl, got %+v", cfg.Response["cache_main"])
+	}
+}
+
 func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
-		Size: 123, LazyCacheTTL: 45, NXDomainTTL: 11, ServfailTTL: 12,
+		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, NXDomainTTL: 11, ServfailTTL: 12,
 		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名"}, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
@@ -205,7 +248,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("ApplyRuntimeCachePolicy(cache): %v", err)
 	}
 	args := pc.Args.(map[string]any)
-	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" {
+	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 {
 		t.Fatalf("unexpected cache args: %+v", args)
 	}
 	bypassDomainSets, ok := args["bypass_domain_sets"].([]string)

@@ -113,6 +113,9 @@ L2 里实际保存的是 `item`：
 2. backend 的 `cacheExpirationTime`
    - 表示这条缓存还能在系统里继续保留多久。
    - 开启 `lazy_cache_ttl` 后，它通常会比真实 TTL 更长。
+3. lazy stale 的返回窗口
+   - 由 `lazy_stale_ttl` 控制。
+   - 它只决定过期后还能直接返回旧答案多久，不决定缓存条目在 backend 中保留多久。
 
 ## 4.4 L1 热缓存
 
@@ -200,16 +203,19 @@ L2 基于：
 
 ## 4.8 lazy stale 与 lazy refresh
 
-当前实现里的 lazy stale 有两个层面：
+当前实现里的 lazy stale 有三个层面：
 
 1. 后台保留窗口
    - 由 `lazy_cache_ttl` 决定。
-2. 返回给客户端的 stale TTL
+2. 过期后允许直接返回旧答案的窗口
+   - 由 `lazy_stale_ttl` 决定。
+3. 返回给客户端的 stale TTL
    - 固定为 `5s`
 
 也就是说：
 
-- `lazy_cache_ttl` 决定 stale 记录还能在缓存里活多久。
+- `lazy_cache_ttl` 决定记录还能在缓存里保留多久。
+- `lazy_stale_ttl` 决定真实 TTL 过期后还能返回旧记录多久。
 - 客户端看到的 TTL 很短，目的是促使后续尽快重新请求。
 
 当普通域名首次命中过期缓存时，当前行为通常是：
@@ -430,13 +436,15 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 ## 8.1 stale 返回时间被硬限制为短窗口
 
-当前实现即使命中过期缓存，也不会把 `lazy_cache_ttl` 原样返回给客户端。
+当前实现即使命中过期缓存，也不会把 `lazy_cache_ttl` 或 `lazy_stale_ttl` 原样返回给客户端。
 
 真实行为是：
 
 1. `lazy_cache_ttl`
-   - 只决定过期条目还能在缓存里保留多久。
-2. stale 响应真正回给客户端的 TTL 固定为 `5s`。
+   - 决定成功响应还能在 backend 里保留多久。
+2. `lazy_stale_ttl`
+   - 决定真实 TTL 过期后还能直接返回旧结果多久。
+3. stale 响应真正回给客户端的 TTL 固定为 `5s`。
 
 这一步的作用是：
 
@@ -486,7 +494,7 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 `SERVFAIL` 的缓存语义和成功响应不同：
 
-- 它不会使用 `lazy_cache_ttl` 那套长窗口。
+- 它不会使用 `lazy_cache_ttl` 那套长保留窗口，也不会进入 `lazy_stale_ttl` stale 返回窗口。
 - `msgTtl` 和 `cacheTtl` 都直接取 `servfail_ttl`。
 
 这意味着：
@@ -577,7 +585,7 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 如果只从“目前已经写进代码的实现”来看，当前系统避免 App Store 长时间运行异常在缓存层被长期放大，主要依靠下面几件事：
 
-1. stale 结果对客户端只暴露极短时间，不会按 `lazy_cache_ttl` 长时间下发。
+1. stale 结果对客户端只暴露极短时间，不会按 `lazy_cache_ttl` 或 `lazy_stale_ttl` 长时间下发。
 2. 一旦命中过期项，就立即后台刷新，并允许后续请求快速切换到 fresh 结果。
 3. `SERVFAIL` 使用独立短 TTL，不会被长 lazy 窗口放大。
 4. UDP fast path 只做极短时间热点缓存，不长期缓存失败结果。

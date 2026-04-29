@@ -1475,6 +1475,8 @@ paths:
 
         说明：
         - 缓存策略真源位于 `config/sub_config/cache_policies.yaml`
+        - `config.lazy_cache_ttl` 表示成功响应在后端缓存中最多保留多久
+        - `config.lazy_stale_ttl` 表示真实 TTL 过期后允许直接返回 stale 结果多久
         - `config.persist=true` 表示该缓存会做 dump + WAL 持久化
         - `config.persist=false` 表示该缓存仅保存在内存中
       responses:
@@ -2704,6 +2706,7 @@ components:
           type: string
         ecs:
           type: string
+          description: ECS 覆盖值；填 `auto` 表示使用公网客户端地址自动生成 ECS，也可填 IPv4/IPv6 地址
         replacements:
           type: array
           items:
@@ -2715,6 +2718,7 @@ components:
           type: string
         ecs:
           type: string
+          description: 当前 ECS 覆盖值；可能为 `auto`、IPv4/IPv6 地址或空字符串
         replacements:
           type: array
           items:
@@ -3613,6 +3617,9 @@ components:
           type: integer
           description: 最大缓存条目数；达到上限后按 LRU 淘汰旧条目
         lazy_cache_ttl:
+          type: integer
+          description: 成功响应在后端缓存中最多保留多久，单位秒
+        lazy_stale_ttl:
           type: integer
           description: TTL 过期后允许返回 stale 结果的窗口，单位秒
         l1_enabled:

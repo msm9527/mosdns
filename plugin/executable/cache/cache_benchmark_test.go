@@ -19,7 +19,7 @@ func BenchmarkCacheGetRespFromCache(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		resp, lazy, _ := getRespFromCache("bench-key", c.backend, false, expiredMsgTtl)
+		resp, lazy, _ := getRespFromCache("bench-key", c.backend, 0, expiredMsgTtl)
 		if resp == nil || lazy {
 			b.Fatal("unexpected cache miss")
 		}

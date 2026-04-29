@@ -158,6 +158,7 @@ func (s *lazyRefreshState) getErr() error {
 type Args struct {
 	Size             int      `yaml:"size"`
 	LazyCacheTTL     int      `yaml:"lazy_cache_ttl"`
+	LazyStaleTTL     int      `yaml:"lazy_stale_ttl"`
 	NXDomainTTL      int      `yaml:"nxdomain_ttl"`
 	ServfailTTL      int      `yaml:"servfail_ttl"`
 	L1Enabled        *bool    `yaml:"l1_enabled"`
@@ -170,11 +171,14 @@ type Args struct {
 	DumpInterval     int      `yaml:"dump_interval"`
 	WALFile          string   `yaml:"wal_file"`
 	WALSyncInterval  int      `yaml:"wal_sync_interval"`
+
+	lazyStaleTTLConfigured bool
 }
 
 type argsRaw struct {
 	Size             int         `yaml:"size"`
 	LazyCacheTTL     int         `yaml:"lazy_cache_ttl"`
+	LazyStaleTTL     *int        `yaml:"lazy_stale_ttl"`
 	NXDomainTTL      int         `yaml:"nxdomain_ttl"`
 	ServfailTTL      int         `yaml:"servfail_ttl"`
 	L1Enabled        *bool       `yaml:"l1_enabled"`
@@ -197,6 +201,12 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	}
 	a.Size = raw.Size
 	a.LazyCacheTTL = raw.LazyCacheTTL
+	a.lazyStaleTTLConfigured = raw.LazyStaleTTL != nil
+	if raw.LazyStaleTTL != nil {
+		a.LazyStaleTTL = *raw.LazyStaleTTL
+	} else {
+		a.LazyStaleTTL = raw.LazyCacheTTL
+	}
 	a.NXDomainTTL = raw.NXDomainTTL
 	a.ServfailTTL = raw.ServfailTTL
 	a.L1Enabled = raw.L1Enabled
@@ -256,6 +266,15 @@ func parseDomainSetTokenValue(raw interface{}, field string) ([]string, error) {
 }
 
 func (a *Args) init() {
+	if a.LazyCacheTTL < 0 {
+		a.LazyCacheTTL = 0
+	}
+	if !a.lazyStaleTTLConfigured && a.LazyStaleTTL == 0 && a.LazyCacheTTL > 0 {
+		a.LazyStaleTTL = a.LazyCacheTTL
+	}
+	if a.LazyStaleTTL < 0 {
+		a.LazyStaleTTL = 0
+	}
 	utils.SetDefaultUnsignNum(&a.Size, 1024)
 	utils.SetDefaultUnsignNum(&a.DumpInterval, 600)
 	utils.SetDefaultUnsignNum(&a.WALSyncInterval, 1)
@@ -651,7 +670,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		ok1 = false
 	}
 	if ok1 && nowUnix < v1.expireUnixNano {
-		r, lazy, domainSet, corrupt := respFromCacheItem(v1, false, expiredMsgTtl)
+		r, lazy, domainSet, corrupt := respFromCacheItem(v1, 0, expiredMsgTtl)
 		if corrupt {
 			c.deleteRuntimeCacheKey(k, "corrupt_l1")
 			ok1 = false
@@ -709,7 +728,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		c.deleteRuntimeCacheKey(kReal, "route_change")
 		cachedItem = nil
 	}
-	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyCacheTTL > 0, expiredMsgTtl)
+	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
 	if corrupt {
 		c.deleteRuntimeCacheKey(kReal, "corrupt_l2")
 		cachedItem = nil
@@ -729,7 +748,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 					c.deleteRuntimeCacheKey(kReal, "lazy_refresh_route_change")
 					refreshedItem = nil
 				}
-				refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, false, expiredMsgTtl)
+				refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, 0, expiredMsgTtl)
 				if refreshedCorrupt {
 					c.deleteRuntimeCacheKey(kReal, "lazy_refresh_corrupt")
 					refreshedResp = nil
@@ -789,7 +808,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_route_change")
 				refreshedItem = nil
 			}
-			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, false, expiredMsgTtl)
+			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, 0, expiredMsgTtl)
 			if refreshedCorrupt {
 				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_corrupt")
 				refreshedResp = nil
@@ -1661,9 +1680,9 @@ func min[T constraints.Ordered](a, b T) T {
 	return b
 }
 
-func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, bool, string) {
+func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string) {
 	v, _, _ := backend.Get(key(msgKey))
-	resp, lazy, domainSet, corrupt := respFromCacheItem(v, lazyCacheEnabled, lazyTtl)
+	resp, lazy, domainSet, corrupt := respFromCacheItem(v, lazyStaleTTL, expiredResponseTTL)
 	if corrupt {
 		backend.Delete(key(msgKey))
 		return nil, false, ""
@@ -1671,7 +1690,7 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyCache
 	return resp, lazy, domainSet
 }
 
-func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, bool, string, bool) {
+func respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string, bool) {
 	if v != nil {
 		nowUnix := time.Now().UnixNano()
 
@@ -1695,9 +1714,10 @@ func respFromCacheItem(v *item, lazyCacheEnabled bool, lazyTtl int) (*dns.Msg, b
 			return r, false, rawDomainSet, false
 		}
 
-		if lazyCacheEnabled && !domainSetContainsToken(v.domainSet, "DDNS域名") {
+		staleUntilUnixNano := v.expireUnixNano + int64(lazyStaleTTL)*int64(time.Second)
+		if lazyStaleTTL > 0 && nowUnix < staleUntilUnixNano && !domainSetContainsToken(v.domainSet, "DDNS域名") {
 			r := m.Copy()
-			dnsutils.SetTTL(r, uint32(lazyTtl))
+			dnsutils.SetTTL(r, uint32(expiredResponseTTL))
 			return r, true, rawDomainSet, false
 		}
 	}
