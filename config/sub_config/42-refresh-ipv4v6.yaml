@@ -24,18 +24,18 @@ policies:
         exec: $sequence_local_fake_exit_refresh
       - matches: fast_mark 8
         exec: exit
-      - matches: fast_mark 11
-        exec: $sequence_local_divert_refresh
       - matches: fast_mark 12
         exec: $sequence_fakeip_refresh
-      - matches: fast_mark 13
-        exec: $sequence_local_refresh
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 13
+        exec: $sequence_local_refresh
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
         exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 11
+        exec: $sequence_local_divert_refresh
       - matches: fast_mark 16
         exec: $sequence_local_refresh
 
@@ -67,18 +67,18 @@ policies:
         exec: $sequence_local_fake_exit_refresh
       - matches: fast_mark 8
         exec: exit
-      - matches: fast_mark 11
-        exec: $sequence_local_divert_refresh
       - matches: fast_mark 12
         exec: $sequence_fakeip_refresh
-      - matches: fast_mark 13
-        exec: $sequence_local_refresh
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 13
+        exec: $sequence_local_refresh
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
         exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 11
+        exec: $sequence_local_divert_refresh
       - matches: fast_mark 16
         exec: $sequence_local_refresh
 

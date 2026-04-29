@@ -27,20 +27,20 @@ policies:
         exec: $sequence_local_fake_exit
       - matches: fast_mark 8
         exec: exit
-      - matches: fast_mark 11
-        exec: $sequence_local_divert
-      - matches: fast_mark 11
-        exec: exit
       - matches: fast_mark 12
         exec: $sequence_fakeip
-      - matches: fast_mark 13
-        exec: $sequence_local
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 13
+        exec: $sequence_local
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 11
+        exec: $sequence_local_divert
+      - matches: fast_mark 11
+        exec: exit
       - matches: fast_mark 16
         exec: $sequence_local
 
@@ -91,20 +91,20 @@ policies:
         exec: $sequence_local_fake_exit
       - matches: fast_mark 8
         exec: exit
-      - matches: fast_mark 11
-        exec: $sequence_local_divert
-      - matches: fast_mark 11
-        exec: exit
       - matches: fast_mark 12
         exec: $sequence_fakeip
-      - matches: fast_mark 13
-        exec: $sequence_local
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 13
+        exec: $sequence_local
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 11
+        exec: $sequence_local_divert
+      - matches: fast_mark 11
+        exec: exit
       - matches: fast_mark 16
         exec: $sequence_local
 
