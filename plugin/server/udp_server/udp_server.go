@@ -258,7 +258,7 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 			"bypass_domain_sets":          append([]string(nil), cfg.bypassDomainSets...),
 			"runtime_cache_kind":          "udp_fast",
 			"fakeip_requires_switch_on":   true,
-			"cache_hits_bypass_audit_log": true,
+			"cache_hits_bypass_audit_log": false,
 			"listener_workers":            listenerWorkers,
 			"rule_meta_size":              ruleSize * ruleWays,
 		},
@@ -1102,11 +1102,16 @@ type fastHandler struct {
 	rewriteRevision DomainMapperRevisionPlugin
 	sw              SwitchPlugin
 	fakeCacheSwitch SwitchPlugin
+	enableAudit     bool
 }
 
 func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
+	var auditStart time.Time
+	if h.enableAudit {
+		auditStart = time.Now()
+	}
 	if meta.PreFastStaleRefresh {
-		if payload := h.serveStaleWhileRefresh(ctx, q, meta, pack); payload != nil {
+		if payload := h.serveStaleWhileRefresh(ctx, q, meta, pack, auditStart); payload != nil {
 			return payload
 		}
 	}
@@ -1116,7 +1121,7 @@ func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryM
 	return payload
 }
 
-func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
+func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error), auditStart time.Time) *[]byte {
 	if !h.fastCacheEnabled() || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
 		return nil
 	}
@@ -1135,6 +1140,7 @@ func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, me
 	if h.fc != nil && h.fc.stats != nil {
 		h.fc.stats.bypassStaleReply.Add(1)
 	}
+	collectFastAuditFromMsg(h.enableAudit, auditStart, q, meta, *stalePayload, coremain.AuditCacheLazy)
 	go h.refreshExpiredCache(ctx, q.Copy(), meta, pack)
 	return stalePayload
 }
@@ -1283,8 +1289,8 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		ttlMax:           args.FastCacheTTLMax,
 		bypassDomainSets: args.FastCacheBypassDomainSets,
 	}, stats)
-	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, rewriteRevision: rewriteRevision, sw: sw15, fakeCacheSwitch: swFake}
-	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second)
+	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, rewriteRevision: rewriteRevision, sw: sw15, fakeCacheSwitch: swFake, enableAudit: args.EnableAudit}
+	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second, args.EnableAudit)
 
 	socketOpt := server_utils.ListenerSocketOpts{
 		SO_REUSEPORT: true,
@@ -1366,7 +1372,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	return &UdpServer{args: args, conns: conns, fc: fc}, nil
 }
 
-func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
+func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration, enableAuditOpt ...bool) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
 	var once sync.Once
 	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache SwitchPlugin
 	var dm DomainMapperPlugin
@@ -1374,8 +1380,13 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 	var clientWhitelist, clientBlacklist IPSetPlugin
 	revisionTracked := false
 	readyAt := time.Now().Add(warmup)
+	enableAudit := len(enableAuditOpt) > 0 && enableAuditOpt[0]
 
 	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
+		var auditStart time.Time
+		if enableAudit {
+			auditStart = time.Now()
+		}
 		if stats != nil {
 			stats.bypassRequests.Add(1)
 		}
@@ -1426,7 +1437,9 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false, false
+				respLen := makeReject(reqLen, buf, qEnd, 0)
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, respLen, remoteAddr, "blocked_query_type", coremain.AuditCacheBypass)
+				return server.FastActionReply, respLen, 0, "", false, false
 			}
 		}
 		if qtype == 28 {
@@ -1434,7 +1447,9 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				if stats != nil {
 					stats.bypassRuleReply.Add(1)
 				}
-				return server.FastActionReply, makeReject(reqLen, buf, qEnd, 0), 0, "", false, false
+				respLen := makeReject(reqLen, buf, qEnd, 0)
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, respLen, remoteAddr, "blocked_ipv6", coremain.AuditCacheBypass)
+				return server.FastActionReply, respLen, 0, "", false, false
 			}
 		}
 
@@ -1489,11 +1504,13 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 					if stats != nil {
 						stats.bypassRuleReply.Add(1)
 					}
+					collectFastAuditFromWire(enableAudit, auditStart, question, buf, rejectLen, remoteAddr, ds, coremain.AuditCacheBypass)
 					return server.FastActionReply, rejectLen, 0, "", false, false
 				}
 				if stats != nil {
 					stats.bypassCacheReply.Add(1)
 				}
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, rLen, remoteAddr, ds, coremain.AuditCacheHit)
 				return action, rLen, 0, ds, false, false
 			}
 			if staleRefresh {
@@ -1527,6 +1544,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if stats != nil {
 				stats.bypassRuleReply.Add(1)
 			}
+			collectFastAuditFromWire(enableAudit, auditStart, question, buf, rejectLen, remoteAddr, dset, coremain.AuditCacheBypass)
 			return server.FastActionReply, rejectLen, 0, "", false, false
 		}
 
@@ -1540,11 +1558,13 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 					if stats != nil {
 						stats.bypassRuleReply.Add(1)
 					}
+					collectFastAuditFromWire(enableAudit, auditStart, question, buf, rejectLen, remoteAddr, ds, coremain.AuditCacheBypass)
 					return server.FastActionReply, rejectLen, 0, "", false, false
 				}
 				if stats != nil {
 					stats.bypassCacheReply.Add(1)
 				}
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, rLen, remoteAddr, ds, coremain.AuditCacheHit)
 				return action, rLen, 0, ds, false, false
 			}
 			if staleRefresh {
@@ -1577,8 +1597,237 @@ func makeReject(reqLen int, buf []byte, offset int, rcode byte) int {
 	return offset
 }
 
+func collectFastAuditFromWire(enable bool, start time.Time, question fastQuestion, buf []byte, respLen int, remoteAddr netip.AddrPort, domainSet string, cacheStatus string) {
+	if !shouldCollectFastAudit(enable) {
+		return
+	}
+	log, ok := buildFastAuditLogFromWire(start, question, buf, respLen, remoteAddr, domainSet, cacheStatus)
+	if !ok {
+		return
+	}
+	coremain.GlobalAuditCollector.CollectLog(log)
+}
+
+func collectFastAuditFromMsg(enable bool, start time.Time, q *dns.Msg, meta server.QueryMeta, payload []byte, cacheStatus string) {
+	if !shouldCollectFastAudit(enable) {
+		return
+	}
+	log, ok := buildFastAuditLogFromMsg(start, q, meta, payload, cacheStatus)
+	if !ok {
+		return
+	}
+	coremain.GlobalAuditCollector.CollectLog(log)
+}
+
+func shouldCollectFastAudit(enable bool) bool {
+	return enable && coremain.GlobalAuditCollector != nil && coremain.GlobalAuditCollector.IsCapturing()
+}
+
+func buildFastAuditLogFromWire(start time.Time, question fastQuestion, buf []byte, respLen int, remoteAddr netip.AddrPort, domainSet string, cacheStatus string) (coremain.AuditLog, bool) {
+	if start.IsZero() {
+		start = time.Now()
+	}
+	if respLen < 0 {
+		respLen = 0
+	}
+	if respLen > len(buf) {
+		respLen = len(buf)
+	}
+	queryName := strings.TrimSuffix(question.qnameString(buf), ".")
+	log := coremain.AuditLog{
+		QueryTime:    start,
+		ClientIP:     remoteAddr.Addr().String(),
+		QueryType:    dnsTypeString(question.qtype),
+		QueryName:    queryName,
+		QueryClass:   dnsClassString(question.qclass),
+		DurationMs:   fastAuditDurationMs(start),
+		DomainSetRaw: domainSet,
+		Transport:    "udp",
+		CacheStatus:  cacheStatus,
+	}
+	populateFastAuditResponse(&log, buf[:respLen])
+	return log, true
+}
+
+func buildFastAuditLogFromMsg(start time.Time, q *dns.Msg, meta server.QueryMeta, payload []byte, cacheStatus string) (coremain.AuditLog, bool) {
+	if q == nil || len(q.Question) == 0 {
+		return coremain.AuditLog{}, false
+	}
+	if start.IsZero() {
+		start = time.Now()
+	}
+	question := q.Question[0]
+	clientIP := ""
+	if meta.ClientAddr.IsValid() {
+		clientIP = meta.ClientAddr.String()
+	}
+	log := coremain.AuditLog{
+		QueryTime:    start,
+		ClientIP:     clientIP,
+		QueryType:    dnsTypeString(question.Qtype),
+		QueryName:    strings.TrimSuffix(question.Name, "."),
+		QueryClass:   dnsClassString(question.Qclass),
+		DurationMs:   fastAuditDurationMs(start),
+		DomainSetRaw: meta.PreFastDomainSet,
+		Transport:    "udp",
+		ServerName:   meta.ServerName,
+		URLPath:      meta.UrlPath,
+		CacheStatus:  cacheStatus,
+	}
+	populateFastAuditResponse(&log, payload)
+	return log, true
+}
+
+func fastAuditDurationMs(start time.Time) float64 {
+	if start.IsZero() {
+		return 0
+	}
+	return float64(time.Since(start).Microseconds()) / 1000.0
+}
+
+func populateFastAuditResponse(log *coremain.AuditLog, payload []byte) {
+	if log == nil {
+		return
+	}
+	if len(payload) < 12 {
+		log.ResponseCode = "NO_RESPONSE"
+		return
+	}
+	log.ResponseCode = dnsRcodeString(int(payload[3] & 0x0F))
+	log.ResponseFlags = coremain.ResponseFlags{
+		AA: payload[2]&0x04 != 0,
+		TC: payload[2]&0x02 != 0,
+		RA: payload[3]&0x80 != 0,
+	}
+	answerCount := int(binary.BigEndian.Uint16(payload[6:8]))
+	log.AnswerCount = answerCount
+	if answerCount == 0 {
+		return
+	}
+	log.Answers = fastAuditAnswerDetails(payload, answerCount)
+}
+
+func fastAuditAnswerDetails(msg []byte, answerCount int) []coremain.AnswerDetail {
+	if len(msg) < 12 || answerCount <= 0 {
+		return nil
+	}
+	offset := 12
+	qdcount := int(binary.BigEndian.Uint16(msg[4:6]))
+	for i := 0; i < qdcount; i++ {
+		nextOffset, ok := skipDNSName(msg, offset)
+		if !ok || nextOffset+4 > len(msg) {
+			return nil
+		}
+		offset = nextOffset + 4
+	}
+
+	answers := make([]coremain.AnswerDetail, 0, answerCount)
+	for i := 0; i < answerCount; i++ {
+		nextOffset, ok := skipDNSName(msg, offset)
+		if !ok || nextOffset+10 > len(msg) {
+			break
+		}
+		rrtype := binary.BigEndian.Uint16(msg[nextOffset : nextOffset+2])
+		ttl := binary.BigEndian.Uint32(msg[nextOffset+4 : nextOffset+8])
+		rdlen := int(binary.BigEndian.Uint16(msg[nextOffset+8 : nextOffset+10]))
+		rdataOffset := nextOffset + 10
+		if rdataOffset+rdlen > len(msg) {
+			break
+		}
+		answers = append(answers, coremain.AnswerDetail{
+			Type: dnsTypeString(rrtype),
+			TTL:  ttl,
+			Data: fastAuditRDataString(msg, rrtype, rdataOffset, rdlen),
+		})
+		offset = rdataOffset + rdlen
+	}
+	return answers
+}
+
+func fastAuditRDataString(msg []byte, rrtype uint16, offset int, rdlen int) string {
+	if offset < 0 || rdlen < 0 || offset+rdlen > len(msg) {
+		return ""
+	}
+	rdata := msg[offset : offset+rdlen]
+	switch rrtype {
+	case dns.TypeA:
+		if len(rdata) != 4 {
+			return ""
+		}
+		return netip.AddrFrom4([4]byte{rdata[0], rdata[1], rdata[2], rdata[3]}).String()
+	case dns.TypeAAAA:
+		if len(rdata) != 16 {
+			return ""
+		}
+		return netip.AddrFrom16([16]byte{
+			rdata[0], rdata[1], rdata[2], rdata[3],
+			rdata[4], rdata[5], rdata[6], rdata[7],
+			rdata[8], rdata[9], rdata[10], rdata[11],
+			rdata[12], rdata[13], rdata[14], rdata[15],
+		}).String()
+	case dns.TypeCNAME, dns.TypePTR, dns.TypeNS:
+		name, _, err := dns.UnpackDomainName(msg, offset)
+		if err != nil {
+			return ""
+		}
+		return name
+	case dns.TypeMX:
+		if rdlen < 3 {
+			return ""
+		}
+		name, _, err := dns.UnpackDomainName(msg, offset+2)
+		if err != nil {
+			return ""
+		}
+		return fmt.Sprintf("%d %s", binary.BigEndian.Uint16(rdata[:2]), name)
+	case dns.TypeTXT:
+		return fastAuditTXTString(rdata)
+	default:
+		return ""
+	}
+}
+
+func fastAuditTXTString(rdata []byte) string {
+	if len(rdata) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, 1)
+	for offset := 0; offset < len(rdata); {
+		partLen := int(rdata[offset])
+		offset++
+		if offset+partLen > len(rdata) {
+			return ""
+		}
+		parts = append(parts, string(rdata[offset:offset+partLen]))
+		offset += partLen
+	}
+	return strings.Join(parts, " ")
+}
+
+func dnsTypeString(qtype uint16) string {
+	if value := dns.TypeToString[qtype]; value != "" {
+		return value
+	}
+	return "TYPE" + strconv.Itoa(int(qtype))
+}
+
+func dnsClassString(qclass uint16) string {
+	if value := dns.ClassToString[qclass]; value != "" {
+		return value
+	}
+	return "CLASS" + strconv.Itoa(int(qclass))
+}
+
+func dnsRcodeString(rcode int) string {
+	if value := dns.RcodeToString[rcode]; value != "" {
+		return value
+	}
+	return "RCODE" + strconv.Itoa(rcode)
+}
+
 type fastQuestion struct {
 	qtype    uint16
+	qclass   uint16
 	end      int
 	qnameEnd int
 	hash     uint64
@@ -1651,8 +1900,10 @@ func parseFastQuestionMeta(reqLen int, buf []byte) (fastQuestion, bool) {
 		return fastQuestion{}, false
 	}
 	qtype := binary.BigEndian.Uint16(buf[offset : offset+2])
+	qclass := binary.BigEndian.Uint16(buf[offset+2 : offset+4])
 	return fastQuestion{
 		qtype:    qtype,
+		qclass:   qclass,
 		end:      offset + 4,
 		qnameEnd: offset,
 		hash:     fastQNameHashFinish(hash, qtype),

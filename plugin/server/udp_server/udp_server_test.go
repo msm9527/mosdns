@@ -914,6 +914,87 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	}
 }
 
+func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
+	name := "cached.example."
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	resp := makeAnswerWithIP(t, name, dns.TypeA, 0x9999, 30, "1.2.3.4")
+	question, ok := parseFastQuestionMeta(len(req), req)
+	if !ok {
+		t.Fatal("parse fast question")
+	}
+
+	start := time.Now().Add(-2 * time.Millisecond)
+	log, ok := buildFastAuditLogFromWire(
+		start,
+		question,
+		resp,
+		len(resp),
+		netip.MustParseAddrPort("192.0.2.10:5353"),
+		"缓存命中",
+		coremain.AuditCacheHit,
+	)
+	if !ok {
+		t.Fatal("build fast audit log")
+	}
+	if log.ClientIP != "192.0.2.10" {
+		t.Fatalf("client ip = %q", log.ClientIP)
+	}
+	if log.QueryName != "cached.example" || log.QueryType != "A" || log.QueryClass != "IN" {
+		t.Fatalf("unexpected query metadata: name=%q type=%q class=%q", log.QueryName, log.QueryType, log.QueryClass)
+	}
+	if log.ResponseCode != "NOERROR" || log.AnswerCount != 1 {
+		t.Fatalf("unexpected response metadata: code=%q answers=%d", log.ResponseCode, log.AnswerCount)
+	}
+	if len(log.Answers) != 1 || log.Answers[0].Type != "A" || log.Answers[0].TTL != 30 || log.Answers[0].Data != "1.2.3.4" {
+		t.Fatalf("unexpected answers: %+v", log.Answers)
+	}
+	if log.DomainSetRaw != "缓存命中" || log.CacheStatus != coremain.AuditCacheHit || log.Transport != "udp" {
+		t.Fatalf("unexpected audit tags: domain_set=%q cache=%q transport=%q", log.DomainSetRaw, log.CacheStatus, log.Transport)
+	}
+	if log.DurationMs <= 0 {
+		t.Fatalf("duration should be positive, got %.6f", log.DurationMs)
+	}
+}
+
+func TestCollectFastAuditFromWireRecordsRealtimeOverview(t *testing.T) {
+	oldCollector := coremain.GlobalAuditCollector
+	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, t.TempDir())
+	coremain.GlobalAuditCollector = collector
+	t.Cleanup(func() {
+		coremain.GlobalAuditCollector = oldCollector
+	})
+
+	name := "overview-cache.example."
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	resp := makeAnswer(t, name, dns.TypeA, 0x9999, 30)
+	question, ok := parseFastQuestionMeta(len(req), req)
+	if !ok {
+		t.Fatal("parse fast question")
+	}
+
+	collectFastAuditFromWire(
+		true,
+		time.Now(),
+		question,
+		resp,
+		len(resp),
+		netip.MustParseAddrPort("192.0.2.11:5353"),
+		"缓存命中",
+		coremain.AuditCacheHit,
+	)
+
+	overview := collector.GetOverview(60)
+	if overview.QueryCount != 1 {
+		t.Fatalf("query count = %d, want 1", overview.QueryCount)
+	}
+	if overview.CacheHitCount != 1 {
+		t.Fatalf("cache hit count = %d, want 1", overview.CacheHitCount)
+	}
+	if overview.AverageDurationMs < 0 || overview.AverageDurationMs > 10 {
+		t.Fatalf("average duration looks wrong: %.6f", overview.AverageDurationMs)
+	}
+}
+
 func TestBuildFastBypassCacheHitSkipsMapperWhenRevisionMatches(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{

@@ -4,8 +4,8 @@ import "testing"
 
 func TestAuditQueueCapacityUsesConservativeBound(t *testing.T) {
 	settings := defaultAuditSettings()
-	if got := auditQueueCapacity(settings); got != 2048 {
-		t.Fatalf("auditQueueCapacity(default) = %d, want 2048", got)
+	if got := auditQueueCapacity(settings); got != 8192 {
+		t.Fatalf("auditQueueCapacity(default) = %d, want 8192", got)
 	}
 
 	if got := auditQueueCapacity(AuditSettings{FlushBatchSize: 1}); got != auditMinQueueCapacity {
