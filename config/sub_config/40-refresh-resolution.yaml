@@ -10,12 +10,14 @@ policies:
   - name: sequence_local_refresh
     type: sequence
     args:
+      - exec: ecs 2408:8888::8
       - exec: $domestic
       - exec: cname_remover
 
   - name: sequence_local_exit_refresh
     type: sequence
     args:
+      - exec: ecs 2408:8888::8
       - exec: $domestic
       - exec: cname_remover
       - exec: exit
@@ -29,11 +31,10 @@ policies:
   - name: sequence_google_node_refresh
     type: sequence
     args:
-      - exec: ecs 2408:8888::8
-      - exec: $foreignecs
+      - exec: $foreign
       - exec: cname_remover
 
-  # 刷新链与主链保持一致：ECS 首查失败时，退回普通国外真实解析。
+  # 刷新链与主链保持一致：国外默认不带 ECS，失败时退回普通国外真实解析入口。
   - name: sequence_google_node_refresh_resilient
     type: fallback
     args:

@@ -57,7 +57,7 @@ listeners:
     listen: :7733
     entry: sequence_google_in
 
-  # 国外 ECS 查询入口。
+  # 兼容旧端口名的国外真实解析入口；默认不再附带 ECS。
   - name: udp_google_ecs
     protocol: udp
     listen: :7744

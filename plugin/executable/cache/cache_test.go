@@ -29,9 +29,11 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/IrineSistiana/mosdns/v5/coremain"
 	pcache "github.com/IrineSistiana/mosdns/v5/pkg/cache"
 	"github.com/IrineSistiana/mosdns/v5/pkg/concurrent_map"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
@@ -483,6 +485,56 @@ func Test_cachePlugin_ExecBypassesCachedResponseDuringRefresh(t *testing.T) {
 	if !refreshedA.A.Equal(net.IPv4(2, 2, 2, 2)) {
 		t.Fatalf("expected cache to store refreshed response, got %s", refreshedA.A.String())
 	}
+}
+
+func Test_cachePlugin_LazyRefreshBypassesNestedCache(t *testing.T) {
+	mainCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
+	defer mainCache.Close()
+	branchCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
+	defer branchCache.Close()
+
+	const qname = "nested-refresh-bypass.example."
+	seedStaleCacheEntry(t, mainCache, qname, net.IPv4(1, 1, 1, 1))
+	seedStaleCacheEntry(t, branchCache, qname, net.IPv4(1, 1, 1, 1))
+
+	raw := &testResponseExec{ip: net.IPv4(2, 2, 2, 2)}
+	plugins := map[string]any{
+		"main_cache":   mainCache,
+		"branch_cache": branchCache,
+		"raw":          raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$main_cache"},
+		{Exec: "$branch_cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion(qname, dns.TypeA)
+	qCtx := query_context.NewContext(q)
+	if err := s.Exec(context.Background(), qCtx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	mainKey := cacheKeyForQuery(t, qname)
+	var refreshedResp *dns.Msg
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stored, _, _ := mainCache.backend.Get(key(mainKey))
+		refreshedResp, _, _, _ = respFromCacheItem(stored, false, expiredMsgTtl)
+		if responseHasA(refreshedResp, net.IPv4(2, 2, 2, 2)) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := raw.calls.Load(); got == 0 {
+		t.Fatal("expected nested cache refresh to reach raw executor")
+	}
+	t.Fatalf("expected main cache lazy refresh to store raw response, got %+v", refreshedResp)
 }
 
 func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
@@ -947,8 +999,67 @@ type testCacheRevisionProvider struct {
 	revision string
 }
 
+type testResponseExec struct {
+	ip    net.IP
+	calls atomic.Uint64
+}
+
+func (e *testResponseExec) Exec(_ context.Context, qCtx *query_context.Context) error {
+	e.calls.Add(1)
+	q := qCtx.Q()
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{
+			Name:   q.Question[0].Name,
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		A: e.ip.To4(),
+	})
+	qCtx.SetResponse(resp)
+	return nil
+}
+
 func (p *testCacheRevisionProvider) CacheRevision() string {
 	return p.revision
+}
+
+func cacheKeyForQuery(t testingHelper, name string) string {
+	t.Helper()
+	qCtx := testQueryContext(t, name, net.IPv4(127, 0, 0, 1))
+	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
+	defer releaseKeyBuffer(bufPtr)
+	return string(keyBuf)
+}
+
+func seedStaleCacheEntry(t testingHelper, c *Cache, name string, ip net.IP) {
+	t.Helper()
+	qCtx := testQueryContext(t, name, ip)
+	msgKey := cacheKeyForQuery(t, name)
+	cachedItem, ok := c.saveRespToCache(msgKey, qCtx)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	now := time.Now()
+	cachedItem.expireUnixNano = now.Add(-time.Second).UnixNano()
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, now.Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+}
+
+func responseHasA(resp *dns.Msg, ip net.IP) bool {
+	if resp == nil {
+		return false
+	}
+	for _, answer := range resp.Answer {
+		a, ok := answer.(*dns.A)
+		if ok && a.A.Equal(ip.To4()) {
+			return true
+		}
+	}
+	return false
 }
 
 func counterValue(t *testing.T, counter prometheus.Counter) float64 {

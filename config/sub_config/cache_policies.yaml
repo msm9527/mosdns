@@ -27,7 +27,7 @@
 # - cache_main: 真实解析主缓存，跨国内/国外真实链共享。
 # - cache_branch_domestic: 国内真实解析分支缓存。
 # - cache_branch_foreign: 国外真实解析分支缓存。
-# - cache_branch_foreign_ecs: 国外 ECS 真实解析分支缓存。
+# - cache_branch_foreign_ecs: 兼容旧配置保留的国外 ECS 分支缓存。
 # - cache_fakeip_domestic: 国内 fakeip 响应缓存。
 # - cache_fakeip_proxy: 代理 fakeip 响应缓存。
 # - cache_probe: 节点探测专用缓存。
@@ -35,6 +35,7 @@
 # 设计默认值：
 # - fakeip 缓存默认不持久化，且不使用 lazy stale。
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
+# - 真实解析缓存只保留较短 lazy stale 窗口，避免高变化 CDN / 短视频域名被旧记录拖住。
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
 # - UDP 快路径默认只保留极短时间热点结果。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
@@ -48,7 +49,7 @@
 response:
   cache_main:
     size: 40000
-    lazy_cache_ttl: 21600
+    lazy_cache_ttl: 1800
     nxdomain_ttl: 300
     servfail_ttl: 30
     l1_enabled: true
@@ -62,7 +63,7 @@ response:
 
   cache_branch_domestic:
     size: 20000
-    lazy_cache_ttl: 21600
+    lazy_cache_ttl: 1800
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
@@ -76,7 +77,7 @@ response:
 
   cache_branch_foreign:
     size: 20000
-    lazy_cache_ttl: 21600
+    lazy_cache_ttl: 1800
     nxdomain_ttl: 180
     servfail_ttl: 30
     l1_enabled: true
@@ -90,7 +91,7 @@ response:
 
   cache_branch_foreign_ecs:
     size: 8000
-    lazy_cache_ttl: 7200
+    lazy_cache_ttl: 1800
     nxdomain_ttl: 120
     servfail_ttl: 20
     l1_enabled: true

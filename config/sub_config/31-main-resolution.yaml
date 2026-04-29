@@ -13,16 +13,17 @@ policies:
       - exec: $foreign
       - exec: cname_remover
 
+  # 兼容旧命名的国外真实解析链；默认国外不再附带 ECS。
   - name: sequence_google_node_raw
     type: sequence
     args:
-      - exec: ecs 2408:8888::8
-      - exec: $foreignecs
+      - exec: $foreign
       - exec: cname_remover
 
   - name: sequence_local_raw
     type: sequence
     args:
+      - exec: ecs 2408:8888::8
       - exec: $domestic
       - exec: cname_remover
 
@@ -44,18 +45,18 @@ policies:
     args:
       - exec: $sequence_google
 
-  # 国外 ECS 真实解析链。
+  # 兼容旧命名的国外真实解析链；默认不启用 ECS。
   - name: sequence_google_node
     type: sequence
     args:
       - matches: switch 'main_cache:on'
         exec: $cache_main
       - matches: switch 'branch_cache:on'
-        exec: $cache_branch_foreign_ecs
+        exec: $cache_branch_foreign
       - exec: $sequence_google_node_raw
 
-  # 未命中 noleak 首查优先保留 ECS 结果；
-  # 如果 foreignecs 卡住或直接失败，则快速退回普通国外真实解析，
+  # 未命中 noleak 首查走普通国外真实解析；
+  # 如果该链路卡住或直接失败，则快速退回普通国外真实解析入口，
   # 避免冷查询直接把 timeout / SERVFAIL 暴露给主入口。
   - name: sequence_google_node_resilient
     type: fallback

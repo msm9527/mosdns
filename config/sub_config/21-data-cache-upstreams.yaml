@@ -36,7 +36,7 @@ policies:
     type: cache
     args: {}
 
-  # 国外 ECS 真实解析分支缓存。
+  # 兼容旧配置保留的国外 ECS 分支缓存；默认真实链路不再使用。
   - name: cache_branch_foreign_ecs
     type: cache
     args:
@@ -78,7 +78,7 @@ policies:
           socks5: 127.0.0.1:7891
           upstream_query_timeout: 1000
 
-  # 国外带 ECS 的专用上游。
+  # 兼容旧配置保留的国外带 ECS 专用上游；默认真实链路不再使用。
   - name: foreignecs
     type: aliapi
     args:
