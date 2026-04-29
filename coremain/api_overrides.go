@@ -34,6 +34,8 @@ type ReplacementRuleAPIResponse struct {
 type GlobalOverridesResponse struct {
 	Socks5       string                       `json:"socks5"`
 	ECS          string                       `json:"ecs"`
+	DomesticECS  string                       `json:"domestic_ecs"`
+	ForeignECS   string                       `json:"foreign_ecs"`
 	Replacements []ReplacementRuleAPIResponse `json:"replacements"`
 }
 
@@ -75,6 +77,8 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		if current := m.GetGlobalOverrides(); current != nil {
 			resp.Socks5 = current.Socks5
 			resp.ECS = current.ECS
+			resp.DomesticECS = resolveECSOverrideValue(current.DomesticECS, current.ECS)
+			resp.ForeignECS = resolveECSOverrideValue(current.ForeignECS)
 			populateReplacements(current, true)
 			loadedFromFile = true
 		}
@@ -83,6 +87,8 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 		if fileObj, ok, err := loadGlobalOverridesFromCustomConfigForBaseDir(runtimeBaseDir(m)); err == nil && ok {
 			resp.Socks5 = fileObj.Socks5
 			resp.ECS = fileObj.ECS
+			resp.DomesticECS = resolveECSOverrideValue(fileObj.DomesticECS, fileObj.ECS)
+			resp.ForeignECS = resolveECSOverrideValue(fileObj.ForeignECS)
 			populateReplacements(fileObj, false)
 			loadedFromFile = true
 		} else if err != nil {
@@ -92,6 +98,8 @@ func handleGetOverrides(w http.ResponseWriter, r *http.Request, m *Mosdns) {
 	if !loadedFromFile {
 		resp.Socks5 = discoveredSocks5
 		resp.ECS = discoveredECS
+		resp.DomesticECS = resolveECSOverrideValue(discoveredECS)
+		resp.ForeignECS = defaultECSOverride
 	}
 
 	writeJSON(w, http.StatusOK, resp)
@@ -120,6 +128,8 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	mlog.L().Info("global overrides saved via API",
 		zap.String("socks5", payload.Socks5),
 		zap.String("ecs", payload.ECS),
+		zap.String("domestic_ecs", payload.DomesticECS),
+		zap.String("foreign_ecs", payload.ForeignECS),
 		zap.Int("replacements", len(payload.Replacements)))
 
 	payload.Prepare()
@@ -138,6 +148,8 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 	_ = RecordSystemEvent("control.overrides", "info", "saved global overrides", map[string]any{
 		"socks5":       payload.Socks5,
 		"ecs":          payload.ECS,
+		"domestic_ecs": payload.DomesticECS,
+		"foreign_ecs":  payload.ForeignECS,
 		"replacements": len(payload.Replacements),
 		"path":         globalOverridesConfigPathForBaseDir(baseDir),
 	})

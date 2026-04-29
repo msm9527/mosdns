@@ -25,6 +25,8 @@ const (
 type globalOverridesFile struct {
 	Socks5       string             `yaml:"socks5"`
 	ECS          string             `yaml:"ecs"`
+	DomesticECS  string             `yaml:"domestic_ecs"`
+	ForeignECS   string             `yaml:"foreign_ecs"`
 	Replacements []*ReplacementRule `yaml:"replacements"`
 }
 
@@ -108,6 +110,8 @@ func loadGlobalOverridesFromCustomConfigAtPath(path string) (*GlobalOverrides, b
 	payload := &GlobalOverrides{
 		Socks5:       strings.TrimSpace(fileCfg.Socks5),
 		ECS:          strings.TrimSpace(fileCfg.ECS),
+		DomesticECS:  strings.TrimSpace(fileCfg.DomesticECS),
+		ForeignECS:   strings.TrimSpace(fileCfg.ForeignECS),
 		Replacements: fileCfg.Replacements,
 	}
 	payload.Prepare()
@@ -130,6 +134,8 @@ func saveGlobalOverridesToCustomConfigAtPath(path string, payload *GlobalOverrid
 	fileCfg := globalOverridesFile{
 		Socks5:       strings.TrimSpace(payload.Socks5),
 		ECS:          strings.TrimSpace(payload.ECS),
+		DomesticECS:  strings.TrimSpace(payload.DomesticECS),
+		ForeignECS:   strings.TrimSpace(payload.ForeignECS),
 		Replacements: payload.Replacements,
 	}
 	if fileCfg.Replacements == nil {
@@ -144,14 +150,16 @@ func saveGlobalOverridesToCustomConfigAtPath(path string, payload *GlobalOverrid
 	var buf bytes.Buffer
 	buf.WriteString("# 用户自定义全局覆盖配置\n")
 	buf.WriteString("#\n")
-	buf.WriteString("# 这个文件是 socks5 / ecs / 文本替换规则 的长期配置真源。\n")
+	buf.WriteString("# 这个文件是 socks5 / ECS / 文本替换规则 的长期配置真源。\n")
 	buf.WriteString("# - 前端保存会直接改这个文件，并在运行中热重载。\n")
 	buf.WriteString("# - 你也可以手工修改这个文件，然后重启 mosdns 生效。\n")
 	buf.WriteString("# - 这里不再走 control.db，数据库只负责运行态和生成态数据。\n")
 	buf.WriteString("#\n")
 	buf.WriteString("# 字段说明：\n")
 	buf.WriteString("# - socks5: 给规则下载、更新等非 DNS 上游请求提供统一代理地址，例如 127.0.0.1:7891\n")
-	buf.WriteString("# - ecs: 用于替换配置里的 ECS 指定值；填 auto 表示使用公网客户端地址自动生成 ECS\n")
+	buf.WriteString("# - domestic_ecs: 国内真实解析 ECS 值；填 auto 表示使用公网客户端地址自动生成 ECS\n")
+	buf.WriteString("# - foreign_ecs: 国外真实解析 ECS 值；填 auto 表示使用公网客户端地址自动生成 ECS\n")
+	buf.WriteString("# - ecs: 旧版兼容字段；domestic_ecs 为空时作为国内 ECS 值使用\n")
 	buf.WriteString("# - replacements: 可选的字符串替换表，适合少量精确替换\n\n")
 	buf.Write(body)
 
@@ -239,10 +247,12 @@ func saveSwitchesToCustomConfig(values map[string]string) error {
 	buf.WriteString("# 字段说明：\n")
 	buf.WriteString("# - block_response: on/off，是否拦截黑名单和空响应结果。\n")
 	buf.WriteString("# - client_proxy_mode: all/blacklist/whitelist，控制哪些客户端允许走代理链路；whitelist/blacklist 模式分别读取 rule/client_ip_whitelist.txt 和 rule/client_ip_blacklist.txt。\n")
-	buf.WriteString("# - core_mode: compat/secure，控制未命中域名走兼容（leak）还是安全（noleak）补判链。\n")
+	buf.WriteString("# - core_mode: secure/compat，控制未命中域名走安全（noleak）还是兼容（leak）补判链；默认推荐 secure，避免未知国外域名先泄露给国内上游。\n")
 	buf.WriteString("# - main_cache: on/off，控制真实解析主缓存总开关。\n")
 	buf.WriteString("# - branch_cache: on/off，控制真实解析分支缓存（国内/国外/ECS）。\n")
-	buf.WriteString("# - fakeip_cache: on/off，控制 FakeIP DNS 响应缓存，不影响系统记录 FakeIP 路径域名的运行记忆列表。\n")
+	buf.WriteString("# - domestic_ecs: on/off，控制国内真实解析是否附带 ECS。\n")
+	buf.WriteString("# - foreign_ecs: on/off，控制国外真实解析是否附带 ECS。\n")
+	buf.WriteString("# - fakeip_cache: on/off，控制 FakeIP DNS 响应缓存；开启后 FakeIP 响应才允许进入 UDP 快路径缓存，不影响系统记录 FakeIP 路径域名的运行记忆列表。\n")
 	buf.WriteString("# - probe_cache: on/off，控制节点探测专用缓存。\n")
 	buf.WriteString("# - block_query_type: on/off，控制 SOA/PTR/HTTPS 等类型屏蔽。\n")
 	buf.WriteString("# - block_ipv6: on/off，控制 AAAA 请求屏蔽。\n")
@@ -395,7 +405,7 @@ func saveUpstreamOverridesToCustomConfigAtPath(path string, cfg GlobalUpstreamOv
 	buf.WriteString("# 用户自定义上游配置\n")
 	buf.WriteString("#\n")
 	buf.WriteString("# 这个文件是各个 aliapi 上游组的长期配置真源。\n")
-	buf.WriteString("# - key 必须是插件 tag，例如 domestic / foreign / foreignecs / cnfake / nocnfake\n")
+	buf.WriteString("# - key 必须是插件 tag，例如 domestic / foreign / cnfake / nocnfake\n")
 	buf.WriteString("# - value 是该插件实际使用的上游列表\n")
 	buf.WriteString("# - 前端保存会直接改这个文件，并在运行中热重载\n")
 	buf.WriteString("# - 你也可以手工修改这个文件，然后重启 mosdns 生效\n")

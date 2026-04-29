@@ -4,9 +4,9 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
-	"hash/maphash"
 	"net"
 	"net/netip"
+	"runtime"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -40,8 +40,33 @@ func TestInferFastBypassWarmupSec(t *testing.T) {
 func TestArgsInitSetsDefaultStaleRetry(t *testing.T) {
 	args := &Args{}
 	args.init()
+	if args.FastCacheInternalTTL != 120 {
+		t.Fatalf("internal ttl = %d, want 120", args.FastCacheInternalTTL)
+	}
 	if args.FastCacheStaleRetrySec != defaultStaleRefreshRetrySec {
 		t.Fatalf("stale retry = %d, want %d", args.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
+	}
+	if args.FastCacheStaleMaxSec != 300 {
+		t.Fatalf("stale max = %d, want 300", args.FastCacheStaleMaxSec)
+	}
+	if args.FastListenerWorkers < 1 {
+		t.Fatalf("listener workers = %d, want at least 1", args.FastListenerWorkers)
+	}
+}
+
+func TestInferFastListenerWorkers(t *testing.T) {
+	if got := inferFastListenerWorkers("sequence_requery", ":7766"); got != 1 {
+		t.Fatalf("requery listener workers = %d, want 1", got)
+	}
+	if runtime.GOOS != "linux" {
+		if got := inferFastListenerWorkers("sequence_6666", ":53"); got != 1 {
+			t.Fatalf("non-linux main listener workers = %d, want 1", got)
+		}
+		return
+	}
+	got := inferFastListenerWorkers("sequence_6666", ":53")
+	if got < 1 || got > defaultMainListenerWorkers {
+		t.Fatalf("linux main listener workers = %d, want 1..%d", got, defaultMainListenerWorkers)
 	}
 }
 
@@ -179,13 +204,13 @@ func makeNXDomainWithSOA(t *testing.T, name string, id uint16, ttl uint32) []byt
 
 func findCollisionCandidates(t *testing.T, baseName string, qtype uint16, count int) []string {
 	t.Helper()
-	baseHash := maphash.String(maphashSeed, baseName) ^ uint64(qtype)
-	baseSlot := baseHash & cacheMask
+	baseHash := fastQNameHashString(baseName, qtype)
+	baseSlot := fastCacheBucketIndex(baseHash, cacheMask)
 	candidates := make([]string, 0, count)
 	for i := 0; len(candidates) < count && i < 2_000_000; i++ {
 		name := fmt.Sprintf("c-%d.example.org.", i)
-		hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
-		if hash != baseHash && (hash&cacheMask) == baseSlot {
+		hash := fastQNameHashString(name, qtype)
+		if hash != baseHash && fastCacheBucketIndex(hash, cacheMask) == baseSlot {
 			candidates = append(candidates, name)
 		}
 	}
@@ -227,7 +252,7 @@ func TestFastCacheCollisionProtection(t *testing.T) {
 
 	baseName := "example.org."
 	qtype := uint16(dns.TypeA)
-	baseHash := maphash.String(maphashSeed, baseName) ^ uint64(qtype)
+	baseHash := fastQNameHashString(baseName, qtype)
 	collisionName := findCollisionCandidates(t, baseName, qtype, 1)[0]
 
 	fc.Store(collisionName, qtype, makeAnswer(t, collisionName, qtype, 0x2222, 30), "", false)
@@ -245,7 +270,7 @@ func TestFastCacheCollisionProtection(t *testing.T) {
 	}
 }
 
-func TestFastCacheKeepsTwoCollidingEntries(t *testing.T) {
+func TestFastCacheKeepsConfiguredCollidingEntries(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
 		internalTTL: time.Minute,
@@ -253,25 +278,60 @@ func TestFastCacheKeepsTwoCollidingEntries(t *testing.T) {
 	}, stats)
 
 	qtype := uint16(dns.TypeA)
-	names := append([]string{"base.example.org."}, findCollisionCandidates(t, "base.example.org.", qtype, 2)...)
-	for i, name := range names[:2] {
+	names := append([]string{"base.example.org."}, findCollisionCandidates(t, "base.example.org.", qtype, cacheWays)...)
+	for i, name := range names[:cacheWays] {
 		fc.Store(name, qtype, makeAnswer(t, name, qtype, uint16(0x1000+i), 30), name, false)
 	}
 
-	for _, name := range names[:2] {
+	for _, name := range names[:cacheWays] {
 		query := makeQuery(t, name, qtype, 0x9999)
 		buf := make([]byte, 512)
 		copy(buf, query)
-		hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+		hash := fastQNameHashString(name, qtype)
 		action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
 		if action != server.FastActionReply {
 			t.Fatalf("expected cache hit for %s, got action=%d", name, action)
 		}
 	}
 
-	fc.Store(names[2], qtype, makeAnswer(t, names[2], qtype, 0x3333, 30), names[2], false)
+	fc.Store(names[cacheWays], qtype, makeAnswer(t, names[cacheWays], qtype, 0x3333, 30), names[cacheWays], false)
 	if stats.cacheEviction.Load() == 0 {
-		t.Fatal("expected cache eviction after third colliding store")
+		t.Fatal("expected cache eviction after bucket ways are full")
+	}
+}
+
+func TestFastCacheLargeSequentialDomainSetDoesNotEvict(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+
+	const total = 10_000
+	const suffix = "msmcachetest.localtest."
+	qtype := uint16(dns.TypeA)
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("rr-%06d.%s", i, suffix)
+		resp := makeAnswer(t, name, qtype, uint16(i), 30)
+		fc.Store(name, qtype, resp, "", false)
+	}
+	if got := fc.Len(); got != total {
+		t.Fatalf("cache len = %d, want %d", got, total)
+	}
+	if evictions := stats.cacheEviction.Load(); evictions != 0 {
+		t.Fatalf("unexpected evictions for sequential domain set: %d", evictions)
+	}
+
+	for i := 0; i < total; i++ {
+		name := fmt.Sprintf("rr-%06d.%s", i, suffix)
+		query := makeQuery(t, name, qtype, 0x9999)
+		buf := make([]byte, 512)
+		copy(buf, query)
+		hash := fastQNameHashString(name, qtype)
+		action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+		if action != server.FastActionReply {
+			t.Fatalf("expected cache hit for %s, got action=%d", name, action)
+		}
 	}
 }
 
@@ -292,7 +352,7 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	buf := make([]byte, len(resp))
 	copy(buf, query)
 
-	h := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	h := fastQNameHashString(name, qtype)
 	action, respLen, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache hit, got action=%d", action)
@@ -345,7 +405,7 @@ func TestFastCacheClampsAuthorityTTLForNegativeResponse(t *testing.T) {
 	query := makeQuery(t, name, qtype, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, query)
-	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	hash := fastQNameHashString(name, qtype)
 	action, respLen, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
 	if action != server.FastActionReply {
 		t.Fatalf("expected cache hit, got action=%d", action)
@@ -381,7 +441,7 @@ func TestFastCacheRespectsFakeIPToggle(t *testing.T) {
 	query := makeQuery(t, name, qtype, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, query)
-	h := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	h := fastQNameHashString(name, qtype)
 
 	action, _, _, _, _ := fc.GetOrUpdating(h, buf, name, qtype, false)
 	if action != server.FastActionContinue {
@@ -414,7 +474,7 @@ func TestIsFakeIPResponse(t *testing.T) {
 func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
 	name := "retry.example."
 	qtype := uint16(dns.TypeA)
-	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	hash := fastQNameHashString(name, qtype)
 	resp := makeAnswer(t, name, qtype, 0x1111, 30)
 
 	fcSlow := newFastCache(fastCacheConfig{
@@ -450,6 +510,33 @@ func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
 	}
 }
 
+func TestFastCacheStopsServingStaleAfterMaxWindow(t *testing.T) {
+	name := "stale-max.example."
+	qtype := uint16(dns.TypeA)
+	hash := fastQNameHashString(name, qtype)
+	resp := makeAnswer(t, name, qtype, 0x1111, 30)
+
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		staleRetry:  time.Second,
+		staleMax:    5 * time.Second,
+	}, &fastStats{})
+	fc.Store(name, qtype, resp, "", false)
+	item, _ := fc.findItem(hash, name, qtype)
+	atomic.StoreInt64(&item.expire, time.Now().Add(-10*time.Second).Unix())
+	atomic.StoreUint32(&item.updating, 1)
+
+	buf := make([]byte, len(resp))
+	copy(buf, makeQuery(t, name, qtype, 0x9999))
+	action, _, _, _, staleRefresh := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionContinue {
+		t.Fatalf("expected stale item to fall through after max window, got action=%d", action)
+	}
+	if staleRefresh {
+		t.Fatal("expected stale refresh flag to be disabled after max stale window")
+	}
+}
+
 func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -477,6 +564,53 @@ func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
 	}
 }
 
+func TestUdpServerSnapshotCacheStats(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      5 * time.Second,
+		staleRetry:       10 * time.Second,
+		staleMax:         30 * time.Second,
+		ttlMin:           1,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+
+	name := "stats.example."
+	qtype := uint16(dns.TypeA)
+	resp := makeAnswer(t, name, qtype, 0x1111, 30)
+	fc.Store(name, qtype, resp, "stats", false)
+
+	query := makeQuery(t, name, qtype, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	hash := fastQNameHashString(name, qtype)
+	stats.cacheLookup.Add(1)
+	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionReply {
+		t.Fatalf("expected cache hit before snapshot, got action=%d", action)
+	}
+
+	snapshot := (&UdpServer{fc: fc}).SnapshotCacheStats()
+	if snapshot.Name != "UDP fast path" {
+		t.Fatalf("unexpected snapshot name: %q", snapshot.Name)
+	}
+	if snapshot.BackendSize != 1 {
+		t.Fatalf("BackendSize = %d, want 1", snapshot.BackendSize)
+	}
+	if snapshot.Counters["query_total"] != 1 || snapshot.Counters["hit_total"] != 1 {
+		t.Fatalf("unexpected generic counters: %+v", snapshot.Counters)
+	}
+	if snapshot.Counters["cache_store"] != 1 || snapshot.Counters["cache_hit"] != 1 {
+		t.Fatalf("unexpected fast counters: %+v", snapshot.Counters)
+	}
+	if snapshot.Config["runtime_cache_kind"] != "udp_fast" {
+		t.Fatalf("unexpected runtime cache kind: %+v", snapshot.Config)
+	}
+	if snapshot.Config["internal_ttl"] != 5 || snapshot.Config["stale_retry_seconds"] != 10 || snapshot.Config["stale_max_seconds"] != 30 {
+		t.Fatalf("unexpected ttl config: %+v", snapshot.Config)
+	}
+}
+
 type testSwitchPlugin struct {
 	value string
 }
@@ -493,6 +627,52 @@ type testDomainMapperPlugin struct {
 
 func (m testDomainMapperPlugin) FastMatch(qname string) ([]uint8, string, bool) {
 	return m.marks, m.tag, m.match
+}
+
+type testRevisionDomainMapperPlugin struct {
+	testDomainMapperPlugin
+	revision string
+	calls    *atomic.Uint64
+}
+
+func (m testRevisionDomainMapperPlugin) FastMatch(qname string) ([]uint8, string, bool) {
+	if m.calls != nil {
+		m.calls.Add(1)
+	}
+	return m.testDomainMapperPlugin.FastMatch(qname)
+}
+
+func (m testRevisionDomainMapperPlugin) CacheRevision() string {
+	return m.revision
+}
+
+type testNumericRevisionDomainMapperPlugin struct {
+	testDomainMapperPlugin
+	revision uint64
+	calls    *atomic.Uint64
+}
+
+func (m testNumericRevisionDomainMapperPlugin) FastMatch(qname string) ([]uint8, string, bool) {
+	if m.calls != nil {
+		m.calls.Add(1)
+	}
+	return m.testDomainMapperPlugin.FastMatch(qname)
+}
+
+func (m testNumericRevisionDomainMapperPlugin) CacheRevision() string {
+	return fmt.Sprintf("%d", m.revision)
+}
+
+func (m testNumericRevisionDomainMapperPlugin) CacheRevisionUint64() uint64 {
+	return m.revision
+}
+
+type testCacheRevisionPlugin struct {
+	revision string
+}
+
+func (p testCacheRevisionPlugin) CacheRevision() string {
+	return p.revision
 }
 
 type testIPSetPlugin struct {
@@ -734,6 +914,257 @@ func TestBuildFastBypassCacheHitReturnsReply(t *testing.T) {
 	}
 }
 
+func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
+	name := "cached.example."
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	resp := makeAnswerWithIP(t, name, dns.TypeA, 0x9999, 30, "1.2.3.4")
+	question, ok := parseFastQuestionMeta(len(req), req)
+	if !ok {
+		t.Fatal("parse fast question")
+	}
+
+	start := time.Now().Add(-2 * time.Millisecond)
+	log, ok := buildFastAuditLogFromWire(
+		start,
+		question,
+		resp,
+		netip.MustParseAddrPort("192.0.2.10:5353"),
+		"缓存命中",
+		coremain.AuditCacheHit,
+		fastAuditResponseMetaFromPayload("cached.example", resp),
+	)
+	if !ok {
+		t.Fatal("build fast audit log")
+	}
+	if log.ClientIP != "192.0.2.10" {
+		t.Fatalf("client ip = %q", log.ClientIP)
+	}
+	if log.QueryName != "cached.example" || log.QueryType != "A" || log.QueryClass != "IN" {
+		t.Fatalf("unexpected query metadata: name=%q type=%q class=%q", log.QueryName, log.QueryType, log.QueryClass)
+	}
+	if log.ResponseCode != "NOERROR" || log.AnswerCount != 1 {
+		t.Fatalf("unexpected response metadata: code=%q answers=%d", log.ResponseCode, log.AnswerCount)
+	}
+	if len(log.Answers) != 1 || log.Answers[0].Type != "A" || log.Answers[0].TTL != 30 || log.Answers[0].Data != "1.2.3.4" {
+		t.Fatalf("unexpected answers: %+v", log.Answers)
+	}
+	if log.DomainSetRaw != "缓存命中" || log.CacheStatus != coremain.AuditCacheHit || log.Transport != "udp" {
+		t.Fatalf("unexpected audit tags: domain_set=%q cache=%q transport=%q", log.DomainSetRaw, log.CacheStatus, log.Transport)
+	}
+	if log.DurationMs <= 0 {
+		t.Fatalf("duration should be positive, got %.6f", log.DurationMs)
+	}
+}
+
+func TestCollectFastAuditFromWireRecordsRealtimeOverview(t *testing.T) {
+	oldCollector := coremain.GlobalAuditCollector
+	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, t.TempDir())
+	coremain.GlobalAuditCollector = collector
+	t.Cleanup(func() {
+		coremain.GlobalAuditCollector = oldCollector
+	})
+
+	name := "overview-cache.example."
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	resp := makeAnswer(t, name, dns.TypeA, 0x9999, 30)
+	question, ok := parseFastQuestionMeta(len(req), req)
+	if !ok {
+		t.Fatal("parse fast question")
+	}
+
+	collectFastAuditFromWire(
+		true,
+		time.Now(),
+		question,
+		resp,
+		netip.MustParseAddrPort("192.0.2.11:5353"),
+		"缓存命中",
+		coremain.AuditCacheHit,
+		fastAuditResponseMetaFromPayload("overview-cache.example", resp),
+	)
+
+	overview := collector.GetOverview(60)
+	if overview.QueryCount != 1 {
+		t.Fatalf("query count = %d, want 1", overview.QueryCount)
+	}
+	if overview.CacheHitCount != 1 {
+		t.Fatalf("cache hit count = %d, want 1", overview.CacheHitCount)
+	}
+	if overview.AverageDurationMs < 0 || overview.AverageDurationMs > 10 {
+		t.Fatalf("average duration looks wrong: %.6f", overview.AverageDurationMs)
+	}
+}
+
+func TestBuildFastBypassCacheHitSkipsMapperWhenRevisionMatches(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "revision-hit.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 0, "rev1") {
+		t.Fatal("expected cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"unified_matcher1": testRevisionDomainMapperPlugin{revision: "rev1", calls: &calls},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected cache reply, got %d", action)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected revision-matched cache hit to skip mapper, got %d calls", calls.Load())
+	}
+}
+
+func TestBuildFastBypassCacheHitUsesNumericRevisionWithoutMapper(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "numeric-revision-hit.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "", false, 0, fastRuleRevision{
+		domainMapper: fastNumericRevisionValue(7),
+	}) {
+		t.Fatal("expected cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{revision: 7, calls: &calls},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected cache reply, got %d", action)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected numeric revision cache hit to skip mapper, got %d calls", calls.Load())
+	}
+}
+
+func TestBuildFastBypassCacheHitRefreshesWhenRevisionChanges(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "revision-miss.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 0, "rev1") {
+		t.Fatal("expected cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"unified_matcher1": testRevisionDomainMapperPlugin{revision: "rev2", calls: &calls},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected stale revision to continue to full chain, got %d", action)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("expected mapper to run after revision mismatch")
+	}
+}
+
+func TestBuildFastBypassCacheHitRefreshesWhenRewriteRevisionChanges(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "rewrite-revision-miss.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 0, "dm1|rewrite1") {
+		t.Fatal("expected cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"unified_matcher1": testRevisionDomainMapperPlugin{revision: "dm1", calls: &calls},
+		"rewrite":          testCacheRevisionPlugin{revision: "rewrite2"},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected rewrite revision mismatch to continue to full chain, got %d", action)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("expected mapper to run after rewrite revision mismatch")
+	}
+}
+
+func TestBuildFastBypassCachedRuleFlagsHonorSwitches(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "cached-block.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 1<<1, "rev1") {
+		t.Fatal("expected cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"block_response":   testSwitchPlugin{value: "on"},
+		"unified_matcher1": testRevisionDomainMapperPlugin{revision: "rev1", calls: &calls},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, respLen, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected cached rule reject, got %d", action)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected cached rule flags to skip mapper, got %d calls", calls.Load())
+	}
+	if respLen != len(req) {
+		t.Fatalf("unexpected reject length: got %d want %d", respLen, len(req))
+	}
+	if gotRcode := buf[3] & 0x0F; gotRcode != 3 {
+		t.Fatalf("expected NXDOMAIN-style reject rcode=3, got %d", gotRcode)
+	}
+}
+
 func TestBuildFastBypassSkipsCacheForBypassDomainSet(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -772,6 +1203,100 @@ func TestBuildFastBypassSkipsCacheForBypassDomainSet(t *testing.T) {
 	}
 	if stats.cacheLookup.Load() != 0 {
 		t.Fatalf("expected bypass domain set to skip fast cache lookup, got %d", stats.cacheLookup.Load())
+	}
+}
+
+func TestBuildFastBypassCachesRuleMetaForBypassDomainSet(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+	name := "ddns-rule-cache.example."
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{tag: "DDNS域名", match: true},
+			revision:               7,
+			calls:                  &calls,
+		},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := append([]byte(nil), req...)
+	action, _, _, dset, matched, _ := fastBypass(len(req), buf, addr)
+	if action != server.FastActionContinue || dset != "DDNS域名" || !matched {
+		t.Fatalf("first bypass result action=%d dset=%q matched=%v", action, dset, matched)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected first call to run mapper once, got %d", calls.Load())
+	}
+	if stats.cacheLookup.Load() != 1 {
+		t.Fatalf("expected first call to try response cache once before mapper, got %d", stats.cacheLookup.Load())
+	}
+
+	buf = append([]byte(nil), req...)
+	action, _, _, dset, matched, _ = fastBypass(len(req), buf, addr)
+	if action != server.FastActionContinue || dset != "DDNS域名" || !matched {
+		t.Fatalf("second bypass result action=%d dset=%q matched=%v", action, dset, matched)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected rule-meta hit to skip mapper, got %d calls", calls.Load())
+	}
+	if stats.cacheLookup.Load() != 2 {
+		t.Fatalf("expected rule-meta hit to keep response cache miss cheap before skipping mapper, got %d", stats.cacheLookup.Load())
+	}
+}
+
+func TestBuildFastBypassRuleMetaRefreshesWhenMapperRevisionChanges(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "rule-revision-refresh.example."
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+
+	var calls1 atomic.Uint64
+	m1 := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{marks: []uint8{17}, tag: "rev1", match: true},
+			revision:               1,
+			calls:                  &calls1,
+		},
+	})
+	fastBypass1 := buildFastBypass(coremain.NewBP("udp_test_1", m1), fc, stats, 0)
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	action, _, marks, dset, matched, _ := fastBypass1(len(req), append([]byte(nil), req...), addr)
+	if action != server.FastActionContinue || dset != "rev1" || !matched || (marks&(1<<17)) == 0 {
+		t.Fatalf("revision 1 result action=%d marks=%064b dset=%q matched=%v", action, marks, dset, matched)
+	}
+	if calls1.Load() != 1 {
+		t.Fatalf("expected revision 1 mapper call, got %d", calls1.Load())
+	}
+
+	var calls2 atomic.Uint64
+	m2 := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{marks: []uint8{18}, tag: "rev2", match: true},
+			revision:               2,
+			calls:                  &calls2,
+		},
+	})
+	fastBypass2 := buildFastBypass(coremain.NewBP("udp_test_2", m2), fc, stats, 0)
+	action, _, marks, dset, matched, _ = fastBypass2(len(req), append([]byte(nil), req...), addr)
+	if action != server.FastActionContinue || dset != "rev2" || !matched || (marks&(1<<18)) == 0 {
+		t.Fatalf("revision 2 result action=%d marks=%064b dset=%q matched=%v", action, marks, dset, matched)
+	}
+	if calls2.Load() != 1 {
+		t.Fatalf("expected revision 2 mapper refresh, got %d", calls2.Load())
 	}
 }
 
@@ -816,7 +1341,7 @@ func TestBuildFastBypassExpiredCacheRequestsStaleRefresh(t *testing.T) {
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
 	fc.Store(name, dns.TypeA, resp, "stale", false)
 
-	hash := maphash.String(maphashSeed, name) ^ uint64(dns.TypeA)
+	hash := fastQNameHashString(name, dns.TypeA)
 	ptr, _ := fc.findItem(hash, name, dns.TypeA)
 	atomic.StoreInt64(&ptr.expire, time.Now().Add(-time.Second).Unix())
 
@@ -855,7 +1380,7 @@ func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
 	newResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "8.8.8.8")
 	fc.Store(name, dns.TypeA, oldResp, "stale", false)
 
-	hash := maphash.String(maphashSeed, name) ^ uint64(dns.TypeA)
+	hash := fastQNameHashString(name, dns.TypeA)
 	ptr, _ := fc.findItem(hash, name, dns.TypeA)
 	atomic.StoreInt64(&ptr.expire, time.Now().Add(-time.Second).Unix())
 	atomic.StoreUint32(&ptr.updating, 1)
@@ -929,11 +1454,12 @@ func BenchmarkBuildFastBypassColdMiss(b *testing.B) {
 	}, &fastStats{}), nil, 0)
 	req := makeQueryNoTest("bench.example.", dns.TypeA, 0x1234)
 	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+	buf := make([]byte, len(req))
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buf := append([]byte(nil), req...)
+		copy(buf, req)
 		_, _, _, _, _, _ = fastBypass(len(buf), buf, addr)
 	}
 }
@@ -955,11 +1481,72 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 	fastBypass := buildFastBypass(bp, fc, stats, 0)
 	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
 	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+	buf := make([]byte, len(resp))
 
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		buf := make([]byte, len(resp))
+		copy(buf, req)
+		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+	}
+}
+
+func BenchmarkBuildFastBypassCacheHitNumericRevision(b *testing.B) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "bench-numeric-revision.example."
+	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
+	fc.storeWithRuleRevision(name, dns.TypeA, resp, "bench", false, 0, fastRuleRevision{
+		domainMapper: fastNumericRevisionValue(7),
+	})
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{revision: 7},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+	buf := make([]byte, len(resp))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(buf, req)
+		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+	}
+}
+
+func BenchmarkBuildFastBypassNoResponseCacheRuleMetaHit(b *testing.B) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+	name := "bench-no-response-cache.example."
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{tag: "DDNS域名", match: true},
+			revision:               7,
+		},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+	buf := make([]byte, len(req))
+	copy(buf, req)
+	_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
 		copy(buf, req)
 		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
 	}

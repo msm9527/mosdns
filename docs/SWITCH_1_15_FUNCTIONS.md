@@ -19,7 +19,7 @@
 | `client_proxy_mode` | 客户端代理模式 | `all` / `blacklist` / `whitelist` |
 | `main_cache` | 真实解析主缓存 | `on` / `off` |
 | `branch_cache` | 真实解析分支缓存（国内/国外/ECS） | `on` / `off` |
-| `fakeip_cache` | fakeip 响应缓存 | `on` / `off` |
+| `fakeip_cache` | FakeIP 响应缓存与 UDP 快路径 FakeIP 准入 | `on` / `off` |
 | `probe_cache` | 节点探测专用缓存 | `on` / `off` |
 | `block_query_type` | 屏蔽 SOA/PTR/HTTPS 等类型 | `on` / `off` |
 | `block_ipv6` | 屏蔽 IPv6 | `on` / `off` |
@@ -31,7 +31,7 @@
 
 - `client_proxy_mode=whitelist` 时读取 `config/rule/client_ip_whitelist.txt`
 - `client_proxy_mode=blacklist` 时读取 `config/rule/client_ip_blacklist.txt`
-- `fakeip_cache` 只控制 FakeIP DNS 响应缓存是否复用
+- `fakeip_cache` 控制 FakeIP DNS 响应缓存是否复用；关闭时 FakeIP 响应也不会进入 UDP 快路径缓存
 - 它不影响 `my_fakeiplist` 这类运行记忆池
 - `my_fakeiplist` 用来记录哪些域名在运行中走过 FakeIP 路径，供查看、统计和规则候选发布使用，不是另一层 DNS 应答缓存
 

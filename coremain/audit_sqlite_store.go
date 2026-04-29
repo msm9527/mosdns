@@ -143,6 +143,59 @@ func auditSQLiteMigrations() []runtimesqlite.Migration {
 				CREATE INDEX idx_audit_log_duration_time ON audit_log(duration_ms DESC, query_time_unix_ms DESC, id DESC);
 			`,
 		},
+		{
+			ID: "0202_audit_resolved_aggregates",
+			Up: `
+				ALTER TABLE audit_minute ADD COLUMN resolved_query_count INTEGER NOT NULL DEFAULT 0;
+				ALTER TABLE audit_minute ADD COLUMN resolved_duration_sum_ms REAL NOT NULL DEFAULT 0;
+				ALTER TABLE audit_minute ADD COLUMN resolved_duration_max_ms REAL NOT NULL DEFAULT 0;
+				ALTER TABLE audit_hour ADD COLUMN resolved_query_count INTEGER NOT NULL DEFAULT 0;
+				ALTER TABLE audit_hour ADD COLUMN resolved_duration_sum_ms REAL NOT NULL DEFAULT 0;
+				ALTER TABLE audit_hour ADD COLUMN resolved_duration_max_ms REAL NOT NULL DEFAULT 0;
+
+				UPDATE audit_minute
+				SET
+					resolved_query_count = COALESCE((
+						SELECT COUNT(*)
+						FROM audit_log
+						WHERE ((query_time_unix_ms / 60000) * 60) = audit_minute.bucket_start_unix
+							AND response_code IN ('NOERROR', 'NXDOMAIN')
+					), 0),
+					resolved_duration_sum_ms = COALESCE((
+						SELECT SUM(duration_ms)
+						FROM audit_log
+						WHERE ((query_time_unix_ms / 60000) * 60) = audit_minute.bucket_start_unix
+							AND response_code IN ('NOERROR', 'NXDOMAIN')
+					), 0),
+					resolved_duration_max_ms = COALESCE((
+						SELECT MAX(duration_ms)
+						FROM audit_log
+						WHERE ((query_time_unix_ms / 60000) * 60) = audit_minute.bucket_start_unix
+							AND response_code IN ('NOERROR', 'NXDOMAIN')
+					), 0);
+
+				UPDATE audit_hour
+				SET
+					resolved_query_count = COALESCE((
+						SELECT COUNT(*)
+						FROM audit_log
+						WHERE ((query_time_unix_ms / 3600000) * 3600) = audit_hour.bucket_start_unix
+							AND response_code IN ('NOERROR', 'NXDOMAIN')
+					), 0),
+					resolved_duration_sum_ms = COALESCE((
+						SELECT SUM(duration_ms)
+						FROM audit_log
+						WHERE ((query_time_unix_ms / 3600000) * 3600) = audit_hour.bucket_start_unix
+							AND response_code IN ('NOERROR', 'NXDOMAIN')
+					), 0),
+					resolved_duration_max_ms = COALESCE((
+						SELECT MAX(duration_ms)
+						FROM audit_log
+						WHERE ((query_time_unix_ms / 3600000) * 3600) = audit_hour.bucket_start_unix
+							AND response_code IN ('NOERROR', 'NXDOMAIN')
+					), 0);
+			`,
+		},
 	}
 }
 

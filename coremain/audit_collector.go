@@ -15,9 +15,9 @@ import (
 )
 
 const (
-	auditQueueCapacityFactor = 8
+	auditQueueCapacityFactor = 32
 	auditMinQueueCapacity    = 512
-	auditMaxQueueCapacity    = 4096
+	auditMaxQueueCapacity    = 32768
 )
 
 type AuditCollector struct {
@@ -76,6 +76,23 @@ func (c *AuditCollector) Collect(qCtx *query_context.Context) {
 		return
 	}
 	log := buildAuditLog(qCtx, time.Since(qCtx.StartTime()))
+	c.CollectLog(log)
+}
+
+// CollectLog records an already-built audit log into realtime and persistent audit stores.
+func (c *AuditCollector) CollectLog(log AuditLog) {
+	if !c.IsCapturing() {
+		return
+	}
+	if log.QueryTime.IsZero() {
+		log.QueryTime = nowTime()
+	}
+	if log.DomainSetRaw == "" {
+		log.DomainSetRaw = "unmatched_rule"
+	}
+	if log.DomainSetNorm == "" {
+		log.DomainSetNorm = normalizeAuditDomainSet(log.DomainSetRaw, log.QueryType)
+	}
 	c.realtime.Record(log)
 	select {
 	case c.queue <- log:
@@ -165,7 +182,7 @@ func buildAuditLog(qCtx *query_context.Context, duration time.Duration) AuditLog
 		QueryType:    dns.TypeToString[question.Qtype],
 		QueryName:    queryName,
 		QueryClass:   dns.ClassToString[question.Qclass],
-		DurationMs:   float64(duration.Microseconds()) / 1000.0,
+		DurationMs:   auditDurationMs(duration),
 		TraceID:      qCtx.TraceID,
 		DomainSetRaw: getAuditDomainSet(qCtx),
 		UpstreamTag:  getAuditUpstreamTag(qCtx),
@@ -177,6 +194,10 @@ func buildAuditLog(qCtx *query_context.Context, duration time.Duration) AuditLog
 	log.DomainSetNorm = normalizeAuditDomainSet(log.DomainSetRaw, log.QueryType)
 	populateAuditResponse(&log, qCtx.R())
 	return log
+}
+
+func auditDurationMs(duration time.Duration) float64 {
+	return float64(duration.Nanoseconds()) / float64(time.Millisecond)
 }
 
 func getAuditDomainSet(qCtx *query_context.Context) string {

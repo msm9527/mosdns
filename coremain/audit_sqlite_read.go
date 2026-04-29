@@ -20,7 +20,10 @@ func (s *SQLiteAuditStorage) QueryTimeseries(params AuditTimeseriesQuery) ([]Aud
 		table = "audit_hour"
 	}
 	rows, err := db.Query(`
-		SELECT bucket_start_unix, query_count, duration_sum_ms, duration_max_ms, error_count, cache_hit_count
+		SELECT
+			bucket_start_unix, query_count, duration_sum_ms, duration_max_ms,
+			resolved_query_count, resolved_duration_sum_ms, resolved_duration_max_ms,
+			error_count, cache_hit_count
 		FROM `+table+`
 		WHERE bucket_start_unix BETWEEN ? AND ?
 		ORDER BY bucket_start_unix ASC
@@ -37,18 +40,24 @@ func (s *SQLiteAuditStorage) QueryTimeseries(params AuditTimeseriesQuery) ([]Aud
 			&row.QueryCount,
 			&row.DurationSumMs,
 			&row.DurationMaxMs,
+			&row.ResolvedQueryCount,
+			&row.ResolvedDurationSumMs,
+			&row.ResolvedDurationMaxMs,
 			&row.ErrorCount,
 			&row.CacheHitCount,
 		); err != nil {
 			return nil, fmt.Errorf("scan sqlite audit timeseries: %w", err)
 		}
 		points = append(points, AuditTimeseriesPoint{
-			BucketStart:       time.Unix(row.BucketStartUnix, 0),
-			QueryCount:        row.QueryCount,
-			AverageDurationMs: row.avgDurationMs(),
-			MaxDurationMs:     row.DurationMaxMs,
-			ErrorCount:        row.ErrorCount,
-			CacheHitCount:     row.CacheHitCount,
+			BucketStart:               time.Unix(row.BucketStartUnix, 0),
+			QueryCount:                row.QueryCount,
+			AverageDurationMs:         row.avgDurationMs(),
+			MaxDurationMs:             row.DurationMaxMs,
+			ResolvedQueryCount:        row.ResolvedQueryCount,
+			ResolvedAverageDurationMs: row.resolvedAvgDurationMs(),
+			ResolvedMaxDurationMs:     row.ResolvedDurationMaxMs,
+			ErrorCount:                row.ErrorCount,
+			CacheHitCount:             row.CacheHitCount,
 		})
 	}
 	if err := rows.Err(); err != nil {

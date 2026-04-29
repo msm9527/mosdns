@@ -86,6 +86,7 @@ const (
 var _ sequence.RecursiveExecutable = (*Cache)(nil)
 
 var cacheRefreshBypassKey = query_context.RegKey()
+var cacheResponseStaleKey = query_context.RegKey()
 
 // keyBufferPool 用于复用生成 Key 时的字节缓冲区，显著降低内存分配压力
 var keyBufferPool = sync.Pool{
@@ -629,6 +630,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	c.queryCount.Add(1)
 	q := qCtx.Q()
 	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheBypass)
+	clearCacheResponseStale(qCtx)
 
 	// 补丁：获取 Key 的字节切片和原始 Pool 指针
 	msgKeyBuf, bufPtr := getMsgKeyBytes(q, qCtx, c.args.EnableECS)
@@ -779,6 +781,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	if cachedResp != nil {
 		if lazyHit {
 			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheLazy)
+			markCacheResponseStale(qCtx)
 		} else {
 			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
 		}
@@ -914,6 +917,30 @@ func shouldBypassCacheForRefresh(qCtx *query_context.Context) bool {
 	}
 	bypass, _ := value.(bool)
 	return bypass
+}
+
+func markCacheResponseStale(qCtx *query_context.Context) {
+	if qCtx != nil {
+		qCtx.StoreValue(cacheResponseStaleKey, true)
+	}
+}
+
+func clearCacheResponseStale(qCtx *query_context.Context) {
+	if qCtx != nil {
+		qCtx.DeleteValue(cacheResponseStaleKey)
+	}
+}
+
+func responseFromStaleCache(qCtx *query_context.Context) bool {
+	if qCtx == nil {
+		return false
+	}
+	value, ok := qCtx.GetValue(cacheResponseStaleKey)
+	if !ok {
+		return false
+	}
+	stale, _ := value.(bool)
+	return stale
 }
 
 func (c *Cache) ensureLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) (*lazyRefreshState, bool) {
@@ -1742,6 +1769,9 @@ func resetDNSMsg(m *dns.Msg) {
 func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*item, bool) {
 	r := qCtx.R()
 	if r == nil || r.Truncated != false {
+		return nil, false
+	}
+	if responseFromStaleCache(qCtx) {
 		return nil, false
 	}
 	if c.shouldBypassForCurrentDomainSet(currentRouteDomainSet(qCtx)) {

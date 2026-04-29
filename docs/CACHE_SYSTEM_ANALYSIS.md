@@ -228,6 +228,23 @@ L2 基于：
 
 - 对接近过期的热点项，缓存会提前触发后台刷新。
 
+### 4.8.1 多级缓存中的 stale 传播保护
+
+主解析链路可能出现 `main_cache -> branch_cache -> upstream` 这种多级缓存结构。
+
+这里有一个额外保护：
+
+- 如果下层缓存返回的是 lazy stale 响应，上层缓存只把它透传给当前请求。
+- 上层缓存不会把这个 stale 响应重新写成自己的新缓存项。
+
+这个约束的目的不是降低缓存命中，而是避免下面这种放大：
+
+1. 下层缓存里有一个已经过期但仍在 stale 窗口内的 CDN IP。
+2. 上层缓存刚好 miss。
+3. 如果上层把下层 stale 当成新结果保存，就会人为延长旧 IP 的可见时间。
+
+当前实现通过 query context 标记 stale 来源，在 `saveRespToCache` 前拦截这类写入。
+
 ## 4.9 路由签名与依赖失效
 
 当前缓存不仅记录响应，还记录了和路由相关的元数据：
@@ -389,19 +406,20 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 ### 5.3 过期语义
 
-默认策略较短：
+默认策略面向热点查询：
 
-- `internal_ttl = 5s`
+- `internal_ttl = 120s`
 - `stale_retry_seconds = 10s`
+- `stale_max_seconds = 300s`
 - `ttl_min = 1`
 - `ttl_max = 5`
 
 因此它更像是：
 
-- 极短时热点缓冲
-- 短窗口 stale-refresh 辅助层
+- 服务端短期热点缓冲
+- 有上限的 stale-refresh 辅助层
 
-它不是长时间运行后异常积累的主要来源。
+它不会无上限地返回过期结果。
 
 ## 6. 当前设计的几个关键特征
 
@@ -513,13 +531,14 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 - 只缓存 `NOERROR` 和 `NXDOMAIN`
 - 不缓存 `SERVFAIL`
-- `internal_ttl` 默认只有 `5s`
+- `internal_ttl` 默认 `120s`
 - stale retry 默认 `10s`
+- stale 返回上限默认 `300s`
 
 这意味着：
 
-- 即便 UDP fast path 参与了 App Store 查询链，它也只会在很短窗口内缓存热点结果。
-- 它不会成为“运行 1 到 3 天后持续异常”的主要放大器。
+- 即便 UDP fast path 参与了 App Store 查询链，它也只会在短期热点窗口内缓存结果。
+- 刷新失败时不会无限返回旧结果。
 
 ## 8.6 路由变化和依赖 revision 变化会绕过旧缓存
 

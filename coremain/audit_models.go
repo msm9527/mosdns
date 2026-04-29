@@ -58,41 +58,52 @@ type AuditStorageStats struct {
 }
 
 type AuditOverview struct {
-	Enabled                bool                 `json:"enabled"`
-	WindowSeconds          int                  `json:"window_seconds"`
-	TotalQueryCount        uint64               `json:"total_query_count"`
-	TotalAverageDurationMs float64              `json:"total_average_duration_ms"`
-	PeriodSummaries        []AuditPeriodSummary `json:"period_summaries,omitempty"`
-	QueryCount             uint64               `json:"query_count"`
-	QPS                    float64              `json:"qps"`
-	AverageDurationMs      float64              `json:"average_duration_ms"`
-	MaxDurationMs          float64              `json:"max_duration_ms"`
-	ErrorCount             uint64               `json:"error_count"`
-	ErrorRate              float64              `json:"error_rate"`
-	NoResponseCount        uint64               `json:"no_response_count"`
-	CacheHitCount          uint64               `json:"cache_hit_count"`
-	CacheHitRate           float64              `json:"cache_hit_rate"`
-	DroppedEvents          uint64               `json:"dropped_events"`
-	QueueDepth             int                  `json:"queue_depth"`
-	Degraded               bool                 `json:"degraded"`
-	CurrentStorageBytes    int64                `json:"current_storage_bytes"`
+	Enabled                        bool                 `json:"enabled"`
+	WindowSeconds                  int                  `json:"window_seconds"`
+	TotalQueryCount                uint64               `json:"total_query_count"`
+	TotalAverageDurationMs         float64              `json:"total_average_duration_ms"`
+	ResolvedTotalQueryCount        uint64               `json:"resolved_total_query_count"`
+	ResolvedTotalAverageDurationMs float64              `json:"resolved_total_average_duration_ms"`
+	PeriodSummaries                []AuditPeriodSummary `json:"period_summaries,omitempty"`
+	QueryCount                     uint64               `json:"query_count"`
+	QPS                            float64              `json:"qps"`
+	AverageDurationMs              float64              `json:"average_duration_ms"`
+	MaxDurationMs                  float64              `json:"max_duration_ms"`
+	ResolvedQueryCount             uint64               `json:"resolved_query_count"`
+	ResolvedQPS                    float64              `json:"resolved_qps"`
+	ResolvedAverageDurationMs      float64              `json:"resolved_average_duration_ms"`
+	ResolvedMaxDurationMs          float64              `json:"resolved_max_duration_ms"`
+	ErrorCount                     uint64               `json:"error_count"`
+	ErrorRate                      float64              `json:"error_rate"`
+	NoResponseCount                uint64               `json:"no_response_count"`
+	CacheHitCount                  uint64               `json:"cache_hit_count"`
+	CacheHitRate                   float64              `json:"cache_hit_rate"`
+	DroppedEvents                  uint64               `json:"dropped_events"`
+	QueueDepth                     int                  `json:"queue_depth"`
+	Degraded                       bool                 `json:"degraded"`
+	CurrentStorageBytes            int64                `json:"current_storage_bytes"`
 }
 
 type AuditPeriodSummary struct {
-	Key               string  `json:"key"`
-	Label             string  `json:"label"`
-	WindowSeconds     int     `json:"window_seconds,omitempty"`
-	QueryCount        uint64  `json:"query_count"`
-	AverageDurationMs float64 `json:"average_duration_ms"`
+	Key                       string  `json:"key"`
+	Label                     string  `json:"label"`
+	WindowSeconds             int     `json:"window_seconds,omitempty"`
+	QueryCount                uint64  `json:"query_count"`
+	AverageDurationMs         float64 `json:"average_duration_ms"`
+	ResolvedQueryCount        uint64  `json:"resolved_query_count"`
+	ResolvedAverageDurationMs float64 `json:"resolved_average_duration_ms"`
 }
 
 type AuditTimeseriesPoint struct {
-	BucketStart       time.Time `json:"bucket_start"`
-	QueryCount        int       `json:"query_count"`
-	AverageDurationMs float64   `json:"average_duration_ms"`
-	MaxDurationMs     float64   `json:"max_duration_ms"`
-	ErrorCount        int       `json:"error_count"`
-	CacheHitCount     int       `json:"cache_hit_count"`
+	BucketStart               time.Time `json:"bucket_start"`
+	QueryCount                int       `json:"query_count"`
+	AverageDurationMs         float64   `json:"average_duration_ms"`
+	MaxDurationMs             float64   `json:"max_duration_ms"`
+	ResolvedQueryCount        int       `json:"resolved_query_count"`
+	ResolvedAverageDurationMs float64   `json:"resolved_average_duration_ms"`
+	ResolvedMaxDurationMs     float64   `json:"resolved_max_duration_ms"`
+	ErrorCount                int       `json:"error_count"`
+	CacheHitCount             int       `json:"cache_hit_count"`
 }
 
 type AuditRankItem struct {
@@ -125,13 +136,16 @@ type AuditTimeseriesQuery struct {
 }
 
 type auditAggregateRow struct {
-	BucketStartUnix int64
-	QueryCount      int
-	DurationSumMs   float64
-	DurationMaxMs   float64
-	ErrorCount      int
-	NoResponseCount int
-	CacheHitCount   int
+	BucketStartUnix       int64
+	QueryCount            int
+	DurationSumMs         float64
+	DurationMaxMs         float64
+	ResolvedQueryCount    int
+	ResolvedDurationSumMs float64
+	ResolvedDurationMaxMs float64
+	ErrorCount            int
+	NoResponseCount       int
+	CacheHitCount         int
 }
 
 func (r auditAggregateRow) avgDurationMs() float64 {
@@ -139,4 +153,11 @@ func (r auditAggregateRow) avgDurationMs() float64 {
 		return 0
 	}
 	return r.DurationSumMs / float64(r.QueryCount)
+}
+
+func (r auditAggregateRow) resolvedAvgDurationMs() float64 {
+	if r.ResolvedQueryCount == 0 {
+		return 0
+	}
+	return r.ResolvedDurationSumMs / float64(r.ResolvedQueryCount)
 }

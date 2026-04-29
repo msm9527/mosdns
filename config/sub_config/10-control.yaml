@@ -32,6 +32,8 @@ control:
     - name: core_mode
     - name: main_cache
     - name: branch_cache
+    - name: domestic_ecs
+    - name: foreign_ecs
     - name: fakeip_cache
     - name: probe_cache
     - name: block_query_type

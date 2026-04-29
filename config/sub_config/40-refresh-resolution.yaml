@@ -10,14 +10,16 @@ policies:
   - name: sequence_local_refresh
     type: sequence
     args:
-      - exec: ecs auto
+      - matches: switch 'domestic_ecs:on'
+        exec: ecs __domestic_ecs__
       - exec: $domestic
       - exec: cname_remover
 
   - name: sequence_local_exit_refresh
     type: sequence
     args:
-      - exec: ecs auto
+      - matches: switch 'domestic_ecs:on'
+        exec: ecs __domestic_ecs__
       - exec: $domestic
       - exec: cname_remover
       - exec: exit
@@ -25,16 +27,20 @@ policies:
   - name: sequence_google_refresh
     type: sequence
     args:
+      - matches: switch 'foreign_ecs:on'
+        exec: ecs __foreign_ecs__
       - exec: $foreign
       - exec: cname_remover
 
   - name: sequence_google_node_refresh
     type: sequence
     args:
+      - matches: switch 'foreign_ecs:on'
+        exec: ecs __foreign_ecs__
       - exec: $foreign
       - exec: cname_remover
 
-  # 刷新链与主链保持一致：国外默认不带 ECS，失败时退回普通国外真实解析入口。
+  # 刷新链与主链保持一致：foreign_ecs 只控制是否附带 ECS，上游仍使用普通国外上游。
   - name: sequence_google_node_refresh_resilient
     type: fallback
     args:

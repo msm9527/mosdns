@@ -14,6 +14,9 @@ func materializeRuntimeArgs(src *Args, logger *zap.Logger) *Args {
 
 	expandedLegacyCount := 0
 	for i := range args.Upstreams {
+		if args.Upstreams[i].UpstreamQueryTimeout <= 0 && args.DefaultUpstreamQueryTimeout > 0 {
+			args.Upstreams[i].UpstreamQueryTimeout = args.DefaultUpstreamQueryTimeout
+		}
 		if !strings.EqualFold(strings.TrimSpace(args.Upstreams[i].Type), "aliapi") {
 			continue
 		}

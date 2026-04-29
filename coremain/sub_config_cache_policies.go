@@ -15,18 +15,18 @@ import (
 const cachePoliciesConfigRelPath = "sub_config/cache_policies.yaml"
 
 const (
-	defaultCacheMainSize             = 40000
-	defaultCacheBranchDomesticSize   = 20000
-	defaultCacheBranchForeignSize    = 20000
-	defaultCacheBranchForeignECSSize = 8000
-	defaultCacheFakeIPDomesticSize   = 10000
-	defaultCacheFakeIPProxySize      = 12000
-	defaultCacheProbeSize            = 4000
-	defaultCacheMainL1TotalCap       = 1024
-	defaultCacheBranchL1TotalCap     = 512
-	defaultCacheForeignECSL1TotalCap = 256
-	defaultCacheFakeIPL1TotalCap     = 256
-	defaultCacheProbeL1TotalCap      = 128
+	defaultCacheMainSize             = 400000
+	defaultCacheBranchDomesticSize   = 200000
+	defaultCacheBranchForeignSize    = 150000
+	defaultCacheBranchForeignECSSize = 100000
+	defaultCacheFakeIPDomesticSize   = 100000
+	defaultCacheFakeIPProxySize      = 120000
+	defaultCacheProbeSize            = 80000
+	defaultCacheMainL1TotalCap       = 8192
+	defaultCacheBranchL1TotalCap     = 4096
+	defaultCacheForeignECSL1TotalCap = 2048
+	defaultCacheFakeIPL1TotalCap     = 2048
+	defaultCacheProbeL1TotalCap      = 2048
 )
 
 var defaultResponseCacheBypassDomainSets = []string{"DDNS域名"}
@@ -68,6 +68,7 @@ type cachePolicyFile struct {
 type UDPFastCachePolicy struct {
 	InternalTTL      int      `yaml:"internal_ttl"`
 	StaleRetry       int      `yaml:"stale_retry_seconds"`
+	StaleMax         int      `yaml:"stale_max_seconds"`
 	TTLMin           uint32   `yaml:"ttl_min"`
 	TTLMax           uint32   `yaml:"ttl_max"`
 	BypassDomainSets []string `yaml:"bypass_domain_sets"`
@@ -76,6 +77,7 @@ type UDPFastCachePolicy struct {
 type udpFastCachePolicyFile struct {
 	InternalTTL      *int      `yaml:"internal_ttl,omitempty"`
 	StaleRetry       *int      `yaml:"stale_retry_seconds,omitempty"`
+	StaleMax         *int      `yaml:"stale_max_seconds,omitempty"`
 	TTLMin           *uint32   `yaml:"ttl_min,omitempty"`
 	TTLMax           *uint32   `yaml:"ttl_max,omitempty"`
 	BypassDomainSets *[]string `yaml:"bypass_domain_sets,omitempty"`
@@ -107,48 +109,49 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: defaultCacheMainSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 300, ServfailTTL: 30,
+				Size: defaultCacheMainSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 300, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 180, ServfailTTL: 30,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_domestic.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 180, ServfailTTL: 30,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_foreign.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 120, ServfailTTL: 20,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 120, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_foreign_ecs.dump", DumpInterval: 1800, WALSyncInterval: 1,
 			},
 			"cache_fakeip_domestic": {
-				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 15,
+				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_fakeip_proxy": {
-				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 15,
+				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_probe": {
-				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, NXDomainTTL: 60, ServfailTTL: 15,
+				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheProbeL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 		},
 		UDPFastPath: UDPFastCachePolicy{
-			InternalTTL:      5,
+			InternalTTL:      120,
 			StaleRetry:       10,
+			StaleMax:         300,
 			TTLMin:           1,
 			TTLMax:           5,
 			BypassDomainSets: defaultResponseCacheBypassDomains(),
@@ -211,6 +214,9 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	if raw.UDPFastPath.StaleRetry != nil {
 		cfg.UDPFastPath.StaleRetry = *raw.UDPFastPath.StaleRetry
 	}
+	if raw.UDPFastPath.StaleMax != nil {
+		cfg.UDPFastPath.StaleMax = *raw.UDPFastPath.StaleMax
+	}
 	if raw.UDPFastPath.TTLMin != nil {
 		cfg.UDPFastPath.TTLMin = *raw.UDPFastPath.TTLMin
 	}
@@ -225,6 +231,9 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	}
 	if cfg.UDPFastPath.StaleRetry <= 0 {
 		return nil, fmt.Errorf("udp_fast_path.stale_retry_seconds requires > 0")
+	}
+	if cfg.UDPFastPath.StaleMax <= 0 {
+		return nil, fmt.Errorf("udp_fast_path.stale_max_seconds requires > 0")
 	}
 	if cfg.UDPFastPath.TTLMax > 0 && cfg.UDPFastPath.TTLMin > cfg.UDPFastPath.TTLMax {
 		return nil, fmt.Errorf("udp_fast_path.ttl_min cannot exceed ttl_max")
@@ -381,6 +390,7 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		}
 		args["fast_cache_internal_ttl"] = cfg.UDPFastPath.InternalTTL
 		args["fast_cache_stale_retry_seconds"] = cfg.UDPFastPath.StaleRetry
+		args["fast_cache_stale_max_seconds"] = cfg.UDPFastPath.StaleMax
 		args["fast_cache_ttl_min"] = cfg.UDPFastPath.TTLMin
 		args["fast_cache_ttl_max"] = cfg.UDPFastPath.TTLMax
 		if len(cfg.UDPFastPath.BypassDomainSets) > 0 {

@@ -109,6 +109,13 @@ func updateAggregateRow(rows map[int64]auditAggregateRow, bucket int64, log Audi
 	if log.DurationMs > row.DurationMaxMs {
 		row.DurationMaxMs = log.DurationMs
 	}
+	if isAuditResolvedCode(log.ResponseCode) {
+		row.ResolvedQueryCount++
+		row.ResolvedDurationSumMs += log.DurationMs
+		if log.DurationMs > row.ResolvedDurationMaxMs {
+			row.ResolvedDurationMaxMs = log.DurationMs
+		}
+	}
 	if isAuditErrorCode(log.ResponseCode) {
 		row.ErrorCount++
 	}
@@ -128,12 +135,16 @@ func upsertAggregateTable(tx txPreparer, table string, rows map[int64]auditAggre
 	stmt, err := tx.Prepare(`
 		INSERT INTO ` + table + ` (
 			bucket_start_unix, query_count, duration_sum_ms, duration_max_ms,
+			resolved_query_count, resolved_duration_sum_ms, resolved_duration_max_ms,
 			error_count, no_response_count, cache_hit_count
-		) VALUES (?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(bucket_start_unix) DO UPDATE SET
 			query_count = ` + table + `.query_count + excluded.query_count,
 			duration_sum_ms = ` + table + `.duration_sum_ms + excluded.duration_sum_ms,
 			duration_max_ms = MAX(` + table + `.duration_max_ms, excluded.duration_max_ms),
+			resolved_query_count = ` + table + `.resolved_query_count + excluded.resolved_query_count,
+			resolved_duration_sum_ms = ` + table + `.resolved_duration_sum_ms + excluded.resolved_duration_sum_ms,
+			resolved_duration_max_ms = MAX(` + table + `.resolved_duration_max_ms, excluded.resolved_duration_max_ms),
 			error_count = ` + table + `.error_count + excluded.error_count,
 			no_response_count = ` + table + `.no_response_count + excluded.no_response_count,
 			cache_hit_count = ` + table + `.cache_hit_count + excluded.cache_hit_count
@@ -149,6 +160,9 @@ func upsertAggregateTable(tx txPreparer, table string, rows map[int64]auditAggre
 			row.QueryCount,
 			row.DurationSumMs,
 			row.DurationMaxMs,
+			row.ResolvedQueryCount,
+			row.ResolvedDurationSumMs,
+			row.ResolvedDurationMaxMs,
 			row.ErrorCount,
 			row.NoResponseCount,
 			row.CacheHitCount,

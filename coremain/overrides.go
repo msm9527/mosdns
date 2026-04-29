@@ -11,6 +11,12 @@ import (
 
 const overridesFilename = "config_overrides.json"
 
+const (
+	domesticECSPlaceholder = "__domestic_ecs__"
+	foreignECSPlaceholder  = "__foreign_ecs__"
+	defaultECSOverride     = "auto"
+)
+
 // ReplacementRule defines a single replacement rule.
 type ReplacementRule struct {
 	Original string `json:"original" yaml:"original"`
@@ -25,8 +31,10 @@ type ReplacementRule struct {
 // GlobalOverrides defines the structure of the config_overrides.json file.
 type GlobalOverrides struct {
 	// User-facing global override fields.
-	Socks5 string `json:"socks5,omitempty" yaml:"socks5,omitempty"`
-	ECS    string `json:"ecs,omitempty" yaml:"ecs,omitempty"`
+	Socks5      string `json:"socks5,omitempty" yaml:"socks5,omitempty"`
+	ECS         string `json:"ecs,omitempty" yaml:"ecs,omitempty"`
+	DomesticECS string `json:"domestic_ecs,omitempty" yaml:"domestic_ecs,omitempty"`
+	ForeignECS  string `json:"foreign_ecs,omitempty" yaml:"foreign_ecs,omitempty"`
 
 	// New generic replacements
 	Replacements []*ReplacementRule `json:"replacements,omitempty" yaml:"replacements,omitempty"`
@@ -179,11 +187,11 @@ func ApplyOverrides(tag string, pluginConf *PluginConfig, overrides *GlobalOverr
 
 // ApplyOverrideString applies ECS and replacement rules to a single string value.
 func ApplyOverrideString(tag string, currentVal string, overrides *GlobalOverrides) string {
+	if applied, ok := applyECSOverrideString(currentVal, overrides); ok {
+		return applied
+	}
 	if overrides == nil {
 		return currentVal
-	}
-	if overrides.ECS != "" && strings.HasPrefix(currentVal, "ecs ") {
-		currentVal = "ecs " + overrides.ECS
 	}
 	if overrides.lookupMap != nil {
 		if rule, ok := overrides.lookupMap[currentVal]; ok {
@@ -197,6 +205,41 @@ func ApplyOverrideString(tag string, currentVal string, overrides *GlobalOverrid
 		}
 	}
 	return currentVal
+}
+
+func applyECSOverrideString(currentVal string, overrides *GlobalOverrides) (string, bool) {
+	if !strings.HasPrefix(currentVal, "ecs ") {
+		return "", false
+	}
+
+	value := strings.TrimSpace(strings.TrimPrefix(currentVal, "ecs "))
+	switch value {
+	case domesticECSPlaceholder:
+		if overrides == nil {
+			return "ecs " + defaultECSOverride, true
+		}
+		return "ecs " + resolveECSOverrideValue(overrides.DomesticECS, overrides.ECS), true
+	case foreignECSPlaceholder:
+		if overrides == nil {
+			return "ecs " + defaultECSOverride, true
+		}
+		return "ecs " + resolveECSOverrideValue(overrides.ForeignECS), true
+	default:
+		if overrides != nil && strings.TrimSpace(overrides.ECS) != "" {
+			return "ecs " + strings.TrimSpace(overrides.ECS), true
+		}
+		return currentVal, true
+	}
+}
+
+func resolveECSOverrideValue(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return defaultECSOverride
 }
 
 // applyRecursive is a generic function that traverses and modifies the config data structure.

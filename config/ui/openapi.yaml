@@ -2706,7 +2706,13 @@ components:
           type: string
         ecs:
           type: string
-          description: ECS 覆盖值；填 `auto` 表示使用公网客户端地址自动生成 ECS，也可填 IPv4/IPv6 地址
+          description: 旧版 ECS 覆盖值；`domestic_ecs` 为空时作为国内 ECS 值使用
+        domestic_ecs:
+          type: string
+          description: 国内真实解析 ECS 值；填 `auto` 表示使用公网客户端地址自动生成 ECS，也可填 IPv4/IPv6 地址
+        foreign_ecs:
+          type: string
+          description: 国外真实解析 ECS 值；填 `auto` 表示使用公网客户端地址自动生成 ECS，也可填 IPv4/IPv6 地址
         replacements:
           type: array
           items:
@@ -2718,7 +2724,13 @@ components:
           type: string
         ecs:
           type: string
-          description: 当前 ECS 覆盖值；可能为 `auto`、IPv4/IPv6 地址或空字符串
+          description: 当前旧版 ECS 覆盖值；可能为 `auto`、IPv4/IPv6 地址或空字符串
+        domestic_ecs:
+          type: string
+          description: 当前国内 ECS 值；可能为 `auto` 或 IPv4/IPv6 地址
+        foreign_ecs:
+          type: string
+          description: 当前国外 ECS 值；可能为 `auto` 或 IPv4/IPv6 地址
         replacements:
           type: array
           items:

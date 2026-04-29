@@ -90,16 +90,20 @@ func (c *AuditCollector) fillOverviewTotals(overview *AuditOverview) {
 	if storage == nil {
 		return
 	}
-	totalQueryCount, totalAverageDurationMs, err := storage.QueryOverviewTotals()
+	totals, err := storage.QueryOverviewTotals()
 	if err != nil {
 		mlog.L().Warn("failed to query audit overview totals", zap.Error(err))
 		return
 	}
-	overview.TotalQueryCount = totalQueryCount
-	overview.TotalAverageDurationMs = totalAverageDurationMs
+	overview.TotalQueryCount = totals.QueryCount
+	overview.TotalAverageDurationMs = totals.AverageDurationMs
+	overview.ResolvedTotalQueryCount = totals.ResolvedQueryCount
+	overview.ResolvedTotalAverageDurationMs = totals.ResolvedAverageDurationMs
 	if len(overview.PeriodSummaries) > 0 {
-		overview.PeriodSummaries[0].QueryCount = totalQueryCount
-		overview.PeriodSummaries[0].AverageDurationMs = totalAverageDurationMs
+		overview.PeriodSummaries[0].QueryCount = totals.QueryCount
+		overview.PeriodSummaries[0].AverageDurationMs = totals.AverageDurationMs
+		overview.PeriodSummaries[0].ResolvedQueryCount = totals.ResolvedQueryCount
+		overview.PeriodSummaries[0].ResolvedAverageDurationMs = totals.ResolvedAverageDurationMs
 	}
 
 	windowSummaries, err := storage.QueryOverviewWindowSummaries(nowTime())

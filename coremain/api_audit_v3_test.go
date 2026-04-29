@@ -27,11 +27,20 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	if overview.TotalQueryCount != 3 {
 		t.Fatalf("overview.TotalQueryCount = %d, want 3", overview.TotalQueryCount)
 	}
+	if overview.ResolvedQueryCount != 2 {
+		t.Fatalf("overview.ResolvedQueryCount = %d, want 2", overview.ResolvedQueryCount)
+	}
+	if overview.ResolvedTotalQueryCount != 2 {
+		t.Fatalf("overview.ResolvedTotalQueryCount = %d, want 2", overview.ResolvedTotalQueryCount)
+	}
 	if overview.CacheHitCount != 2 {
 		t.Fatalf("overview.CacheHitCount = %d, want 2", overview.CacheHitCount)
 	}
 	if overview.TotalAverageDurationMs != 5 {
 		t.Fatalf("overview.TotalAverageDurationMs = %.2f, want 5", overview.TotalAverageDurationMs)
+	}
+	if overview.ResolvedTotalAverageDurationMs != 5 {
+		t.Fatalf("overview.ResolvedTotalAverageDurationMs = %.2f, want 5", overview.ResolvedTotalAverageDurationMs)
 	}
 	if len(overview.PeriodSummaries) != 5 {
 		t.Fatalf("len(overview.PeriodSummaries) = %d, want 5", len(overview.PeriodSummaries))
@@ -45,6 +54,11 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	assertAuditSummary(t, periods["3d"], 3, 5)
 	assertAuditSummary(t, periods["24h"], 3, 5)
 	assertAuditSummary(t, periods["1h"], 3, 5)
+	assertAuditResolvedSummary(t, periods["total"], 2, 5)
+	assertAuditResolvedSummary(t, periods["7d"], 2, 5)
+	assertAuditResolvedSummary(t, periods["3d"], 2, 5)
+	assertAuditResolvedSummary(t, periods["24h"], 2, 5)
+	assertAuditResolvedSummary(t, periods["1h"], 2, 5)
 
 	settings := fetchAuditSettings(t, router)
 	if settings.RawLogCount != 3 {

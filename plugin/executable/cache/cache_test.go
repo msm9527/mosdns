@@ -23,6 +23,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -597,6 +598,119 @@ func Test_cachePlugin_LazyRefreshBypassesNestedCache(t *testing.T) {
 	t.Fatalf("expected main cache lazy refresh to store raw response, got %+v", refreshedResp)
 }
 
+func Test_cachePlugin_DoesNotPromoteNestedStaleResponse(t *testing.T) {
+	mainCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
+	defer mainCache.Close()
+	branchCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
+	defer branchCache.Close()
+
+	const qname = "nested-stale-promote.example."
+	seedStaleCacheEntry(t, branchCache, qname, net.IPv4(1, 1, 1, 1))
+
+	raw := &testResponseExec{ip: net.IPv4(2, 2, 2, 2)}
+	plugins := map[string]any{
+		"main_cache":   mainCache,
+		"branch_cache": branchCache,
+		"raw":          raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$main_cache"},
+		{Exec: "$branch_cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion(qname, dns.TypeA)
+	qCtx := query_context.NewContext(q)
+	if err := s.Exec(context.Background(), qCtx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if !responseHasA(qCtx.R(), net.IPv4(1, 1, 1, 1)) {
+		t.Fatalf("expected first response from branch stale cache, got %+v", qCtx.R())
+	}
+
+	mainKey := cacheKeyForQuery(t, qname)
+	if stored, _, _ := mainCache.backend.Get(key(mainKey)); stored != nil {
+		t.Fatal("expected main cache not to store stale response returned by nested cache")
+	}
+}
+
+func Test_cachePlugin_LongRunLargeCacheAddressChangeDoesNotKeepOldAddress(t *testing.T) {
+	mainCache := NewCache(&Args{Size: 400000, LazyCacheTTL: 21600, LazyStaleTTL: 1800}, Opts{})
+	defer mainCache.Close()
+	branchCache := NewCache(&Args{Size: 400000, LazyCacheTTL: 21600, LazyStaleTTL: 1800}, Opts{})
+	defer branchCache.Close()
+
+	const fillerEntries = 20000
+	seedLargeCacheSet(t, mainCache, "main-large-fill", fillerEntries)
+	seedLargeCacheSet(t, branchCache, "branch-large-fill", fillerEntries)
+	if got := mainCache.backend.Len(); got < fillerEntries {
+		t.Fatalf("expected large main cache to contain at least %d entries, got %d", fillerEntries, got)
+	}
+	if got := branchCache.backend.Len(); got < fillerEntries {
+		t.Fatalf("expected large branch cache to contain at least %d entries, got %d", fillerEntries, got)
+	}
+
+	const qname = "video-cdn-address-change.example."
+	oldIP := net.IPv4(1, 1, 1, 1)
+	newIP := net.IPv4(2, 2, 2, 2)
+	seedStaleCacheEntry(t, branchCache, qname, oldIP)
+
+	raw := &testResponseExec{ip: newIP}
+	plugins := map[string]any{
+		"main_cache":   mainCache,
+		"branch_cache": branchCache,
+		"raw":          raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$main_cache"},
+		{Exec: "$branch_cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := queryThroughSequence(t, s, qname)
+	if !responseHasA(first.R(), oldIP) {
+		t.Fatalf("expected first long-run access to see branch stale old address, got %+v", first.R())
+	}
+
+	mainKey := cacheKeyForQuery(t, qname)
+	if stored, _, _ := mainCache.backend.Get(key(mainKey)); stored != nil {
+		t.Fatal("expected main cache not to promote branch stale old address")
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stored, _, _ := branchCache.backend.Get(key(mainKey))
+		refreshedResp, lazy, _, corrupt := respFromCacheItem(stored, 0, expiredMsgTtl)
+		if !corrupt && !lazy && responseHasA(refreshedResp, newIP) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := raw.calls.Load(); got == 0 {
+		t.Fatal("expected background refresh to reach changed upstream address")
+	}
+
+	second := queryThroughSequence(t, s, qname)
+	if !responseHasA(second.R(), newIP) {
+		t.Fatalf("expected second access to use refreshed new address, got %+v", second.R())
+	}
+
+	stored, _, _ := mainCache.backend.Get(key(mainKey))
+	storedResp, lazy, _, corrupt := respFromCacheItem(stored, 0, expiredMsgTtl)
+	if corrupt || lazy || !responseHasA(storedResp, newIP) {
+		t.Fatalf("expected main cache to store only fresh new address, resp=%+v lazy=%v corrupt=%v", storedResp, lazy, corrupt)
+	}
+}
+
 func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
 	c := NewCache(&Args{Size: 64, BypassDomainSets: []string{"高变CDN"}}, Opts{})
 	defer c.Close()
@@ -1107,6 +1221,30 @@ func seedStaleCacheEntry(t testingHelper, c *Cache, name string, ip net.IP) {
 	k := key(msgKey)
 	c.backend.Store(k, cachedItem, now.Add(time.Hour))
 	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+}
+
+func seedLargeCacheSet(t testingHelper, c *Cache, prefix string, entries int) {
+	t.Helper()
+	for i := 0; i < entries; i++ {
+		name := fmt.Sprintf("%s-%05d.example.", prefix, i)
+		ip := net.IPv4(10, byte(i>>16), byte(i>>8), byte(i))
+		qCtx := testQueryContext(t, name, ip)
+		msgKey := cacheKeyForQuery(t, name)
+		if _, ok := c.saveRespToCache(msgKey, qCtx); !ok {
+			t.Fatal("expected filler response to be cached")
+		}
+	}
+}
+
+func queryThroughSequence(t testingHelper, s *sequence.Sequence, name string) *query_context.Context {
+	t.Helper()
+	q := new(dns.Msg)
+	q.SetQuestion(name, dns.TypeA)
+	qCtx := query_context.NewContext(q)
+	if err := s.Exec(context.Background(), qCtx); err != nil {
+		t.Fatal(err)
+	}
+	return qCtx
 }
 
 func responseHasA(resp *dns.Msg, ip net.IP) bool {

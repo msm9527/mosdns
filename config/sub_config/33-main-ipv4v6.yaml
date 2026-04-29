@@ -27,20 +27,20 @@ policies:
         exec: $sequence_local_fake_exit
       - matches: fast_mark 8
         exec: exit
-      - matches: fast_mark 11
-        exec: $sequence_local_divert
-      - matches: fast_mark 11
-        exec: exit
       - matches: fast_mark 12
         exec: $sequence_fakeip
-      - matches: fast_mark 13
-        exec: $sequence_local
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 13
+        exec: $sequence_local
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 11
+        exec: $sequence_local_divert
+      - matches: fast_mark 11
+        exec: exit
       - matches: fast_mark 16
         exec: $sequence_local
 
@@ -91,20 +91,20 @@ policies:
         exec: $sequence_local_fake_exit
       - matches: fast_mark 8
         exec: exit
-      - matches: fast_mark 11
-        exec: $sequence_local_divert
-      - matches: fast_mark 11
-        exec: exit
       - matches: fast_mark 12
         exec: $sequence_fakeip
-      - matches: fast_mark 13
-        exec: $sequence_local
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 13
+        exec: $sequence_local
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 11
+        exec: $sequence_local_divert
+      - matches: fast_mark 11
+        exec: exit
       - matches: fast_mark 16
         exec: $sequence_local
 
@@ -152,7 +152,7 @@ policies:
         exec: $sequence_not_in_list_noleak_v6
 
   # 节点模式的回退器：
-  # - 优先走国外真实解析链路（默认不带 ECS）
+  # - 优先走国外真实解析链路（是否带 ECS 由 foreign_ecs 开关控制）
   # - 失败后退到本地链路
   - name: sbnodefallback
     type: fallback

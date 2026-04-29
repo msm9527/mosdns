@@ -24,19 +24,22 @@ policies:
   # - 不再承担 fakeip 结果缓存
   - name: cache_main
     type: cache
-    args: {}
+    args:
+      enable_ecs: true
 
-  # 国内真实解析分支缓存。
+  # 国内真实解析分支缓存。开启 ECS 时缓存 key 会包含 ECS，避免调度结果串用。
   - name: cache_branch_domestic
     type: cache
-    args: {}
+    args:
+      enable_ecs: true
 
-  # 国外真实解析分支缓存。
+  # 国外真实解析分支缓存。foreign_ecs 开启时仍使用同一组国外上游，但缓存 key 会包含 ECS。
   - name: cache_branch_foreign
     type: cache
-    args: {}
+    args:
+      enable_ecs: true
 
-  # 兼容旧配置保留的国外 ECS 分支缓存；默认真实链路不再使用。
+  # 兼容旧配置保留的国外 ECS 分支缓存；新链路不再直接使用。
   - name: cache_branch_foreign_ecs
     type: cache
     args:
@@ -62,43 +65,82 @@ policies:
     type: aliapi
     args:
       concurrent: 3
+      default_upstream_query_timeout: 800
+      negative_response_grace_ms: 50
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 15
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: 223.5.5.5
+          upstream_query_timeout: 800
         - addr: 223.6.6.6
+          upstream_query_timeout: 800
 
   # 国外解析上游。
   - name: foreign
     type: aliapi
     args:
       concurrent: 2
+      default_upstream_query_timeout: 1000
+      negative_response_grace_ms: 50
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 15
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: https://1.1.1.1/dns-query
           socks5: 127.0.0.1:7891
+          upstream_query_timeout: 1000
         - addr: https://8.8.8.8/dns-query
           socks5: 127.0.0.1:7891
           upstream_query_timeout: 1000
 
-  # 兼容旧配置保留的国外带 ECS 专用上游；默认真实链路不再使用。
+  # 兼容旧配置保留的国外带 ECS 专用上游；新链路不再直接使用。
   - name: foreignecs
     type: aliapi
     args:
       concurrent: 1
+      default_upstream_query_timeout: 1000
+      negative_response_grace_ms: 50
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 15
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 60
       upstreams:
         - addr: https://8.8.8.8/dns-query
           socks5: 127.0.0.1:7891
+          upstream_query_timeout: 1000
 
   # 国外 fakeip 生成器入口。
   - name: nocnfake
     type: aliapi
     args:
       concurrent: 1
+      default_upstream_query_timeout: 500
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 15
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 30
       upstreams:
         - addr: udp://127.0.0.1:6666
+          upstream_query_timeout: 500
 
   # 国内 fakeip 生成器入口。
   - name: cnfake
     type: aliapi
     args:
       concurrent: 1
+      default_upstream_query_timeout: 500
+      failure_suppress_ttl: 5
+      persistent_servfail_threshold: 3
+      persistent_servfail_ttl: 15
+      upstream_failure_threshold: 2
+      upstream_circuit_break_seconds: 30
       upstreams:
         - addr: udp://127.0.0.1:1053
+          upstream_query_timeout: 500

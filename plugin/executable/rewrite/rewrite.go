@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -60,10 +61,12 @@ type Rewrite struct {
 	ruleFiles []string
 	rules     []string
 	exchange  dnsExchangeFunc
+	revision  atomic.Uint64
 }
 
 var (
 	_ coremain.ControlConfigReloader = (*Rewrite)(nil)
+	_ coremain.CacheRevisionProvider = (*Rewrite)(nil)
 	_ sequence.RecursiveExecutable   = (*Rewrite)(nil)
 )
 
@@ -96,7 +99,7 @@ func newRewrite(pluginTag string, baseArgs, effective *Args) (*Rewrite, error) {
 		return nil, err
 	}
 
-	return &Rewrite{
+	r := &Rewrite{
 		pluginTag:     pluginTag,
 		baseArgs:      cloneArgs(baseArgs),
 		matcher:       matcher,
@@ -104,7 +107,9 @@ func newRewrite(pluginTag string, baseArgs, effective *Args) (*Rewrite, error) {
 		dnsServerAddr: dnsServerAddr,
 		ruleFiles:     ruleFiles,
 		rules:         rules,
-	}, nil
+	}
+	r.revision.Store(1)
+	return r, nil
 }
 
 func newDNSClient() *dns.Client {
@@ -202,6 +207,15 @@ func (r *Rewrite) ReloadControlConfig(global *coremain.GlobalOverrides, _ []core
 	r.dnsServerAddr = next.dnsServerAddr
 	r.ruleFiles = next.ruleFiles
 	r.rules = next.rules
+	r.revision.Add(1)
 	r.mu.Unlock()
 	return nil
+}
+
+func (r *Rewrite) CacheRevision() string {
+	return strconv.FormatUint(r.revision.Load(), 10)
+}
+
+func (r *Rewrite) CacheRevisionUint64() uint64 {
+	return r.revision.Load()
 }
