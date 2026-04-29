@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"go.uber.org/zap"
 )
 
@@ -84,6 +85,52 @@ func TestAliAPIRuntimeOverridesInheritDefaultUpstreamTimeout(t *testing.T) {
 	}
 	if effective.Upstreams[0].UpstreamQueryTimeout != 800 {
 		t.Fatalf("expected override to inherit default timeout 800, got %+v", effective.Upstreams[0])
+	}
+}
+
+func TestAliAPIWeakDecodeAcceptsLegacyDefaultUpstreamTimeout(t *testing.T) {
+	raw := map[string]any{
+		"default_upstream_query_timeout": 750,
+		"upstreams": []any{
+			map[string]any{
+				"tag":  "aliudp",
+				"addr": "223.5.5.5",
+			},
+		},
+	}
+
+	args := &Args{}
+	if err := utils.WeakDecode(raw, args); err != nil {
+		t.Fatalf("WeakDecode should accept legacy default_upstream_query_timeout: %v", err)
+	}
+	if args.DefaultUpstreamQueryTimeout != 750 {
+		t.Fatalf("expected legacy default timeout 750, got %d", args.DefaultUpstreamQueryTimeout)
+	}
+
+	effective := materializeRuntimeArgs(args, zap.NewNop())
+	if got := effective.Upstreams[0].UpstreamQueryTimeout; got != 750 {
+		t.Fatalf("expected upstream to inherit legacy default timeout 750, got %d", got)
+	}
+}
+
+func TestAliAPIWeakDecodeAllowsMissingLegacyDefaultUpstreamTimeout(t *testing.T) {
+	raw := map[string]any{
+		"upstreams": []any{
+			map[string]any{
+				"tag":  "aliudp",
+				"addr": "223.5.5.5",
+			},
+		},
+	}
+
+	args := &Args{}
+	if err := utils.WeakDecode(raw, args); err != nil {
+		t.Fatalf("WeakDecode should allow missing legacy default_upstream_query_timeout: %v", err)
+	}
+
+	effective := materializeRuntimeArgs(args, zap.NewNop())
+	if got := effective.Upstreams[0].UpstreamQueryTimeout; got != 0 {
+		t.Fatalf("expected upstream timeout to remain unset without legacy default, got %d", got)
 	}
 }
 
