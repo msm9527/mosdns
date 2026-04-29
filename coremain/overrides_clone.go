@@ -9,8 +9,10 @@ func CloneGlobalOverrides(src *GlobalOverrides) *GlobalOverrides {
 	}
 
 	dst := &GlobalOverrides{
-		Socks5: src.Socks5,
-		ECS:    src.ECS,
+		Socks5:      src.Socks5,
+		ECS:         src.ECS,
+		DomesticECS: src.DomesticECS,
+		ForeignECS:  src.ForeignECS,
 	}
 
 	if len(src.Replacements) > 0 {

@@ -41,6 +41,9 @@ func TestSwitchesCustomConfigRoundTrip(t *testing.T) {
 	if values["fakeip_cache"] != "off" || values["probe_cache"] != "on" {
 		t.Fatalf("expected new cache switches to use defaults: %+v", values)
 	}
+	if values["domestic_ecs"] != "on" || values["foreign_ecs"] != "off" {
+		t.Fatalf("expected ECS switches to use defaults: %+v", values)
+	}
 }
 
 func TestSaveSwitchesToCustomConfigRejectsUnknownSwitch(t *testing.T) {

@@ -11,6 +11,8 @@
 # - core_mode: compat/secure，控制未命中域名走兼容（leak）还是安全（noleak）补判链。
 # - main_cache: on/off，控制真实解析主缓存总开关。
 # - branch_cache: on/off，控制真实解析分支缓存（国内/国外/ECS）。
+# - domestic_ecs: on/off，控制国内真实解析是否附带 ECS。
+# - foreign_ecs: on/off，控制国外真实解析是否附带 ECS。
 # - fakeip_cache: on/off，控制 FakeIP DNS 响应缓存，不影响系统记录 FakeIP 路径域名的运行记忆列表。
 # - probe_cache: on/off，控制节点探测专用缓存。
 # - block_query_type: on/off，控制 SOA/PTR/HTTPS 等类型屏蔽。
@@ -28,6 +30,10 @@ core_mode: "compat"
 main_cache: "on"
 
 branch_cache: "on"
+
+domestic_ecs: "on"
+
+foreign_ecs: "off"
 
 fakeip_cache: "off"
 

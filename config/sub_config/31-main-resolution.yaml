@@ -10,6 +10,8 @@ policies:
   - name: sequence_google_raw
     type: sequence
     args:
+      - matches: switch 'foreign_ecs:on'
+        exec: ecs __foreign_ecs__
       - exec: $foreign
       - exec: cname_remover
 
@@ -17,13 +19,16 @@ policies:
   - name: sequence_google_node_raw
     type: sequence
     args:
+      - matches: switch 'foreign_ecs:on'
+        exec: ecs __foreign_ecs__
       - exec: $foreign
       - exec: cname_remover
 
   - name: sequence_local_raw
     type: sequence
     args:
-      - exec: ecs auto
+      - matches: switch 'domestic_ecs:on'
+        exec: ecs __domestic_ecs__
       - exec: $domestic
       - exec: cname_remover
 
