@@ -477,6 +477,52 @@ func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
 	}
 }
 
+func TestUdpServerSnapshotCacheStats(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      5 * time.Second,
+		staleRetry:       10 * time.Second,
+		ttlMin:           1,
+		ttlMax:           30,
+		bypassDomainSets: []string{"DDNS域名"},
+	}, stats)
+
+	name := "stats.example."
+	qtype := uint16(dns.TypeA)
+	resp := makeAnswer(t, name, qtype, 0x1111, 30)
+	fc.Store(name, qtype, resp, "stats", false)
+
+	query := makeQuery(t, name, qtype, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	hash := maphash.String(maphashSeed, name) ^ uint64(qtype)
+	stats.cacheLookup.Add(1)
+	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionReply {
+		t.Fatalf("expected cache hit before snapshot, got action=%d", action)
+	}
+
+	snapshot := (&UdpServer{fc: fc}).SnapshotCacheStats()
+	if snapshot.Name != "UDP fast path" {
+		t.Fatalf("unexpected snapshot name: %q", snapshot.Name)
+	}
+	if snapshot.BackendSize != 1 {
+		t.Fatalf("BackendSize = %d, want 1", snapshot.BackendSize)
+	}
+	if snapshot.Counters["query_total"] != 1 || snapshot.Counters["hit_total"] != 1 {
+		t.Fatalf("unexpected generic counters: %+v", snapshot.Counters)
+	}
+	if snapshot.Counters["cache_store"] != 1 || snapshot.Counters["cache_hit"] != 1 {
+		t.Fatalf("unexpected fast counters: %+v", snapshot.Counters)
+	}
+	if snapshot.Config["runtime_cache_kind"] != "udp_fast" {
+		t.Fatalf("unexpected runtime cache kind: %+v", snapshot.Config)
+	}
+	if snapshot.Config["internal_ttl"] != 5 || snapshot.Config["stale_retry_seconds"] != 10 {
+		t.Fatalf("unexpected ttl config: %+v", snapshot.Config)
+	}
+}
+
 type testSwitchPlugin struct {
 	value string
 }

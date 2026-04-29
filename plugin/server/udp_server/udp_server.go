@@ -154,6 +154,11 @@ type UdpServer struct {
 	fc   *fastCache
 }
 
+var (
+	_ coremain.RuntimeCacheController = (*UdpServer)(nil)
+	_ coremain.CacheStatsProvider     = (*UdpServer)(nil)
+)
+
 func (s *UdpServer) Close() error {
 	return s.c.Close()
 }
@@ -182,6 +187,63 @@ func (s *UdpServer) RuntimeCacheEntryCount() int {
 		return 0
 	}
 	return s.fc.Len()
+}
+
+func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
+	var cfg fastCacheConfig
+	var snapshot fastStatsSnapshot
+	backendSize := 0
+	if s != nil && s.fc != nil {
+		cfg = s.fc.cfg
+		backendSize = s.fc.Len()
+		if s.fc.stats != nil {
+			snapshot = s.fc.stats.snapshot()
+		}
+	}
+
+	return coremain.CacheStatsSnapshot{
+		Name:        "UDP fast path",
+		BackendSize: backendSize,
+		Counters:    fastStatsCounters(snapshot),
+		Config: map[string]interface{}{
+			"size":                        cacheSize * cacheWays,
+			"internal_ttl":                int(cfg.internalTTL / time.Second),
+			"stale_retry_seconds":         int(cfg.staleRetry / time.Second),
+			"ttl_min":                     cfg.ttlMin,
+			"ttl_max":                     cfg.ttlMax,
+			"bypass_domain_sets":          append([]string(nil), cfg.bypassDomainSets...),
+			"runtime_cache_kind":          "udp_fast",
+			"fakeip_requires_switch_on":   true,
+			"cache_hits_bypass_audit_log": true,
+		},
+	}
+}
+
+func fastStatsCounters(s fastStatsSnapshot) map[string]uint64 {
+	return map[string]uint64{
+		"query_total":        s.CacheLookup,
+		"hit_total":          s.CacheHit,
+		"lazy_hit_total":     s.BypassStaleReply,
+		"miss_total":         s.CacheMiss,
+		"bypass_requests":    s.BypassRequests,
+		"bypass_bad_packet":  s.BypassBadPacket,
+		"bypass_rule_reply":  s.BypassRuleReply,
+		"bypass_cache_reply": s.BypassCacheReply,
+		"bypass_stale_reply": s.BypassStaleReply,
+		"bypass_warmup_skip": s.BypassWarmupSkip,
+		"refresh_requested":  s.RefreshRequested,
+		"refresh_miss":       s.RefreshMiss,
+		"refresh_no_payload": s.RefreshNoPayload,
+		"refresh_store":      s.RefreshStore,
+		"refresh_store_skip": s.RefreshStoreSkip,
+		"cache_lookup":       s.CacheLookup,
+		"cache_store":        s.CacheStore,
+		"cache_hit":          s.CacheHit,
+		"cache_miss":         s.CacheMiss,
+		"cache_collision":    s.CacheCollision,
+		"cache_expired":      s.CacheExpired,
+		"cache_eviction":     s.CacheEviction,
+	}
 }
 
 type SwitchPlugin interface{ GetValue() string }

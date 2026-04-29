@@ -3,8 +3,8 @@
     {
       tag: 'core_mode',
       name: '核心运行模式',
-      desc: '切换未命中域名走兼容 / 安全补判链',
-      tip: 'compat=兼容模式，未命中走 leak 链；secure=安全模式，未命中走 noleak 链并保留 ECS 首查回退。切换后会先清 UDP 快路径，再在后台异步启动快速预热。',
+      desc: '切换未命中域名走安全 / 兼容补判链',
+      tip: 'secure=安全模式，未命中先走 noleak 链，避免未知国外域名先泄露给国内上游；compat=兼容模式，会先走国内 DNS 补判。切换后会先清 UDP 快路径，再在后台异步启动快速预热。',
       control: 'select',
       modes: {
         compat: { name: '兼容模式', icon: 'fa-globe-americas' },
@@ -47,7 +47,7 @@
       tag: 'fakeip_cache',
       name: 'FakeIP 缓存',
       desc: '控制 fakeip 响应缓存',
-      tip: 'on=启用，off=关闭。只影响 FakeIP DNS 应答缓存，不影响系统记录“哪些域名走过 FakeIP 路径”的运行记忆列表。',
+      tip: 'on=启用，off=关闭。开启后 FakeIP 应答才允许进入 UDP 快路径缓存；不影响系统记录“哪些域名走过 FakeIP 路径”的运行记忆列表。',
       valueForOn: 'on',
       valueForOff: 'off',
     },

@@ -37,7 +37,7 @@ var ordered = []Definition{
 	{Name: "branch_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "domestic_ecs", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "foreign_ecs", DefaultValue: "off", aliases: onOffAliases()},
-	{Name: "fakeip_cache", DefaultValue: "off", aliases: onOffAliases()},
+	{Name: "fakeip_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "probe_cache", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_query_type", DefaultValue: "on", aliases: onOffAliases()},
 	{Name: "block_ipv6", DefaultValue: "off", aliases: onOffAliases()},
