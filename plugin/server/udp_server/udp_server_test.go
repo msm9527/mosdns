@@ -928,10 +928,10 @@ func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
 		start,
 		question,
 		resp,
-		len(resp),
 		netip.MustParseAddrPort("192.0.2.10:5353"),
 		"缓存命中",
 		coremain.AuditCacheHit,
+		fastAuditResponseMetaFromPayload("cached.example", resp),
 	)
 	if !ok {
 		t.Fatal("build fast audit log")
@@ -977,10 +977,10 @@ func TestCollectFastAuditFromWireRecordsRealtimeOverview(t *testing.T) {
 		time.Now(),
 		question,
 		resp,
-		len(resp),
 		netip.MustParseAddrPort("192.0.2.11:5353"),
 		"缓存命中",
 		coremain.AuditCacheHit,
+		fastAuditResponseMetaFromPayload("overview-cache.example", resp),
 	)
 
 	overview := collector.GetOverview(60)
