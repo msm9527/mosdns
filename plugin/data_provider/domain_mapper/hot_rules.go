@@ -115,6 +115,7 @@ func (dm *DomainMapper) rebuildHotLookupLocked() {
 		}
 	}
 	dm.hotLookup.Store(lookup)
+	dm.revision.Add(1)
 }
 
 func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {

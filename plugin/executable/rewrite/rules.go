@@ -190,6 +190,7 @@ func (r *Rewrite) ReplaceListRuntime(_ context.Context, values []string) (int, e
 	r.mu.Lock()
 	r.matcher = matcher
 	r.rules = rules
+	r.revision.Add(1)
 	r.mu.Unlock()
 	return len(rules), nil
 }

@@ -3,6 +3,7 @@ package domain_mapper
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,10 +76,12 @@ type DomainMapper struct {
 	providers   map[string]data_provider.RuleExporter
 	subscribed  map[string]bool
 	hotRules    map[string]map[string]struct{}
+	revision    atomic.Uint64
 }
 
 var _ sequence.Executable = (*DomainMapper)(nil)
 var _ coremain.ControlConfigReloader = (*DomainMapper)(nil)
+var _ coremain.CacheRevisionProvider = (*DomainMapper)(nil)
 
 func validateDomainMapperMark(scope string, mark uint8) error {
 	if mark > 63 {
@@ -262,11 +265,16 @@ func (dm *DomainMapper) rebuild() {
 	}
 
 	dm.matcher.Store(newMatcher)
+	dm.revision.Add(1)
 
 	dm.logger.Info("rebuild finished",
 		zap.Int("rules", totalRules),
 		zap.Int("compiled_rules", compiledRules),
 		zap.Duration("duration", time.Since(start)))
+}
+
+func (dm *DomainMapper) CacheRevision() string {
+	return strconv.FormatUint(dm.revision.Load(), 10)
 }
 
 func normalizeRuleKey(rule string) string {

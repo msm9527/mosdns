@@ -100,6 +100,22 @@ func TestReplaceListRuntimeSupportsMultipleFiles(t *testing.T) {
 	}
 }
 
+func TestReplaceListRuntimeBumpsCacheRevision(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "rewrite.txt")
+	r := &Rewrite{
+		ruleFiles: []string{file},
+	}
+	before := r.CacheRevision()
+	if _, err := r.ReplaceListRuntime(context.Background(), []string{"example.com 1.1.1.1"}); err != nil {
+		t.Fatalf("ReplaceListRuntime() error = %v", err)
+	}
+	after := r.CacheRevision()
+	if after == before {
+		t.Fatalf("expected cache revision to change, before=%q after=%q", before, after)
+	}
+}
+
 func TestExecFlattensDomainTargets(t *testing.T) {
 	r := mustNewTestRewrite(t, "example.com upstream.test")
 	r.exchange = func(_ context.Context, req *dns.Msg, _ string) (*dns.Msg, error) {
