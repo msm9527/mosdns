@@ -1,3 +1,4 @@
+full:license.19930520.xyz
 full:localhost.pan.baidu.com
 domain:alibabachengdun.com
 full:cn.download.nvidia.com
