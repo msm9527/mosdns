@@ -1,6 +1,7 @@
 package aliapi
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -111,6 +112,35 @@ func TestAliAPIWeakDecodeAcceptsLegacyDefaultUpstreamTimeout(t *testing.T) {
 	if got := effective.Upstreams[0].UpstreamQueryTimeout; got != 750 {
 		t.Fatalf("expected upstream to inherit legacy default timeout 750, got %d", got)
 	}
+}
+
+func TestAliAPIPluginLoadAcceptsLegacyDefaultUpstreamTimeout(t *testing.T) {
+	tempDir := t.TempDir()
+	cfg := &coremain.Config{
+		ControlDBPath: filepath.Join(tempDir, "control.db"),
+		Plugins: []coremain.PluginConfig{{
+			Tag:  "domestic",
+			Type: PluginType,
+			Args: map[string]any{
+				"concurrent":                     1,
+				"default_upstream_query_timeout": 750,
+				"upstreams": []any{
+					map[string]any{
+						"tag":  "aliudp",
+						"addr": "223.5.5.5",
+					},
+				},
+			},
+		}},
+	}
+	m, err := coremain.NewMosdns(cfg)
+	if err != nil {
+		t.Fatalf("legacy config should load without invalid key error: %v", err)
+	}
+	t.Cleanup(func() {
+		m.CloseWithErr(nil)
+		_ = m.GetSafeClose().WaitClosed()
+	})
 }
 
 func TestAliAPIWeakDecodeAllowsMissingLegacyDefaultUpstreamTimeout(t *testing.T) {
