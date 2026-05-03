@@ -152,8 +152,8 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			InternalTTL:      600,
 			StaleRetry:       30,
 			StaleMax:         600,
-			TTLMin:           30,
-			TTLMax:           600,
+			TTLMin:           120,
+			TTLMax:           900,
 			BypassDomainSets: defaultResponseCacheBypassDomains(),
 		},
 	}

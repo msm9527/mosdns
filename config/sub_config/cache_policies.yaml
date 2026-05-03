@@ -150,7 +150,7 @@ udp_fast_path:
   internal_ttl: 600
   stale_retry_seconds: 30
   stale_max_seconds: 600
-  ttl_min: 30
-  ttl_max: 600
+  ttl_min: 120
+  ttl_max: 900
   bypass_domain_sets:
     - DDNS域名
