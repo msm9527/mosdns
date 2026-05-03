@@ -19,6 +19,15 @@ func (t *testRuntimeReloader) ReloadControlConfig(_ *GlobalOverrides, _ []Upstre
 	return nil
 }
 
+type countingRuntimeReloader struct {
+	count int
+}
+
+func (t *countingRuntimeReloader) ReloadControlConfig(_ *GlobalOverrides, _ []UpstreamOverrideConfig) error {
+	t.count++
+	return nil
+}
+
 func TestHandleSetUpstreamConfig_NoDeadlockWhenOverridesNil(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	upstreamOverridesLock.Lock()
@@ -107,6 +116,43 @@ func TestHandleSetUpstreamConfigWithMosdns_NoDeadlockOnRuntimeApply(t *testing.T
 	}
 	if !strings.Contains(w.Body.String(), "上游配置已保存并生效") {
 		t.Fatalf("unexpected body: %s", w.Body.String())
+	}
+}
+
+func TestHandleSetUpstreamConfigWithMosdns_SkipsReloadWhenUnchanged(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	upstreamOverridesLock.Lock()
+	oldOverrides := upstreamOverrides
+	upstreamOverrides = nil
+	upstreamOverridesLock.Unlock()
+
+	MainConfigBaseDir = t.TempDir()
+
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+		upstreamOverridesLock.Lock()
+		upstreamOverrides = oldOverrides
+		upstreamOverridesLock.Unlock()
+	})
+
+	reloader := &countingRuntimeReloader{}
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"test_plugin": reloader,
+	})
+
+	reqBody := `{"plugin_tag":"test_plugin","upstreams":[{"tag":"u1","enabled":false,"protocol":"udp"}]}`
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/upstream/config", strings.NewReader(reqBody))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handleSetUpstreamConfigWithMosdns(w, req, m)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d unexpected status code: got %d, body=%s", i+1, w.Code, w.Body.String())
+		}
+	}
+
+	if reloader.count != 1 {
+		t.Fatalf("reload count = %d, want 1", reloader.count)
 	}
 }
 

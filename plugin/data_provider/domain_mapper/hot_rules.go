@@ -119,18 +119,43 @@ func (dm *DomainMapper) rebuildHotLookupLocked() {
 }
 
 func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
-	now := time.Now()
 	matcher := dm.loadMatcher()
 	mainCompiled, mainOK := matcher.Match(qname)
+	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
+	if len(lookup) == 0 {
+		if mainCompiled == nil {
+			return nil, false
+		}
+		if len(mainCompiled.dynamicProviders) == 0 {
+			return mainCompiled.staticResult, mainOK
+		}
+	}
+
+	now := time.Now()
 	mainResult := dm.resolveCompiledMatch(mainCompiled, qname, now)
-	hotResult, hotOK := dm.matchHot(qname, now)
-	result := mergeMatchResult(mainResult, hotResult)
-	return result, result != nil && (mainOK || hotOK)
+	hotResult, hotOK := dm.matchHotWithLookup(lookup, qname, now)
+	switch {
+	case mainResult == nil && hotResult == nil:
+		return nil, false
+	case mainResult == nil:
+		return hotResult, hotOK
+	case hotResult == nil:
+		return mainResult, mainOK
+	default:
+		return mergeMatchResult(mainResult, hotResult), true
+	}
 }
 
 func (dm *DomainMapper) matchHot(qname string, now time.Time) (*MatchResult, bool) {
 	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
-	compiled, ok := lookup[ensureFQDN(qname)]
+	return dm.matchHotWithLookup(lookup, qname, now)
+}
+
+func (dm *DomainMapper) matchHotWithLookup(lookup map[string]*compiledMatch, qname string, now time.Time) (*MatchResult, bool) {
+	if len(lookup) == 0 {
+		return nil, false
+	}
+	compiled, ok := lookup[fastEnsureFQDN(qname)]
 	result := dm.resolveCompiledMatch(compiled, qname, now)
 	return result, ok && result != nil
 }
@@ -143,6 +168,9 @@ func mergeMatchResult(mainResult, hotResult *MatchResult) *MatchResult {
 		return cloneMatchResult(mainResult)
 	}
 	merged := cloneMatchResult(mainResult)
+	if merged == nil {
+		return cloneMatchResult(hotResult)
+	}
 	for _, mark := range hotResult.Marks {
 		if !slices.Contains(merged.Marks, mark) {
 			merged.Marks = append(merged.Marks, mark)
@@ -158,7 +186,7 @@ func cloneMatchResult(result *MatchResult) *MatchResult {
 		return nil
 	}
 	return &MatchResult{
-		Marks:      append([]uint8(nil), result.Marks...),
+		Marks:      slices.Clone(result.Marks),
 		JoinedTags: result.JoinedTags,
 	}
 }
@@ -206,4 +234,21 @@ func ensureFQDN(name string) string {
 		return ""
 	}
 	return name + "."
+}
+
+func fastEnsureFQDN(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	needsChange := name[len(name)-1] != '.'
+	for i := 0; i < len(name) && !needsChange; i++ {
+		if name[i] >= 'A' && name[i] <= 'Z' {
+			needsChange = true
+		}
+	}
+	if !needsChange {
+		return name
+	}
+	return ensureFQDN(name)
 }

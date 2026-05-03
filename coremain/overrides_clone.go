@@ -36,3 +36,32 @@ func CloneGlobalOverrides(src *GlobalOverrides) *GlobalOverrides {
 	}
 	return dst
 }
+
+func GlobalOverridesEqual(a, b *GlobalOverrides) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	if a.Socks5 != b.Socks5 ||
+		a.ECS != b.ECS ||
+		a.DomesticECS != b.DomesticECS ||
+		a.ForeignECS != b.ForeignECS {
+		return false
+	}
+	if len(a.Replacements) != len(b.Replacements) {
+		return false
+	}
+	for i := range a.Replacements {
+		ar := a.Replacements[i]
+		br := b.Replacements[i]
+		if ar == nil || br == nil {
+			if ar != br {
+				return false
+			}
+			continue
+		}
+		if ar.Original != br.Original || ar.New != br.New || ar.Comment != br.Comment {
+			return false
+		}
+	}
+	return true
+}

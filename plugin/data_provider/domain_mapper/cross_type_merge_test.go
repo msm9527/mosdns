@@ -74,3 +74,21 @@ func TestDomainMapperFastMatchMergesRegexpAndDomainRules(t *testing.T) {
 		t.Fatalf("unexpected combined tags: %q", tags)
 	}
 }
+
+func TestDomainMapperFastMatchStaticHitWithoutHotRules(t *testing.T) {
+	dm := newTestMapper(17, "未命中", &MatchResult{
+		Marks:      []uint8{11},
+		JoinedTags: "订阅直连",
+	}, "Example.Org.")
+
+	marks, tags, ok := dm.FastMatch("example.org.")
+	if !ok {
+		t.Fatal("expected static match")
+	}
+	if len(marks) != 1 || marks[0] != 11 {
+		t.Fatalf("unexpected marks: %v", marks)
+	}
+	if tags != "订阅直连" {
+		t.Fatalf("unexpected tags: %q", tags)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"strings"
 	"sync"
 
@@ -218,6 +219,10 @@ func cloneGlobalUpstreamOverrides(src GlobalUpstreamOverrides) GlobalUpstreamOve
 	return dst
 }
 
+func globalUpstreamOverridesEqual(a, b GlobalUpstreamOverrides) bool {
+	return reflect.DeepEqual(a, b)
+}
+
 func validateUpstreamEntry(u UpstreamOverrideConfig, idx int) (string, string, bool) {
 	_, code, msg, ok := normalizeUpstreamEntry(u, idx)
 	return code, msg, ok
@@ -238,6 +243,17 @@ func applyUpstreamRuntimeReload(m *Mosdns, pluginTag string) error {
 		return nil
 	}
 	return m.ReloadControlConfig(pluginTag)
+}
+
+func applyUpstreamRuntimeReloadIfChanged(m *Mosdns, pluginTag string, changed bool) error {
+	if !changed {
+		if m != nil && m.logger != nil {
+			m.logger.Debug("upstream overrides unchanged; runtime reload skipped",
+				zap.String("plugin_tag", pluginTag))
+		}
+		return nil
+	}
+	return applyUpstreamRuntimeReload(m, pluginTag)
 }
 
 func parseQueryBool(r *http.Request, key string) bool {
@@ -321,9 +337,11 @@ func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	changed := true
 	if err := func() error {
 		upstreamOverridesLock.Lock()
 		defer upstreamOverridesLock.Unlock()
+		changed = !globalUpstreamOverridesEqual(upstreamOverrides, normalizedConfig)
 		upstreamOverrides = cloneGlobalUpstreamOverrides(normalizedConfig)
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
@@ -332,7 +350,7 @@ func handleReplaceUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Reques
 	}
 
 	if payload.Apply {
-		if err := applyUpstreamRuntimeReload(m, ""); err != nil {
+		if err := applyUpstreamRuntimeReloadIfChanged(m, "", changed); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
@@ -414,6 +432,7 @@ func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	changed := true
 	if err := func() error {
 		upstreamOverridesLock.Lock()
 		defer upstreamOverridesLock.Unlock()
@@ -432,6 +451,7 @@ func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 		if !ok {
 			return fmt.Errorf("%s|%s", code, msg)
 		}
+		changed = !reflect.DeepEqual(upstreamOverrides[payload.PluginTag], normalizedList)
 		upstreamOverrides[payload.PluginTag] = normalizedList
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
@@ -449,7 +469,7 @@ func handleCreateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if payload.Apply {
-		if err := applyUpstreamRuntimeReload(m, payload.PluginTag); err != nil {
+		if err := applyUpstreamRuntimeReloadIfChanged(m, payload.PluginTag, changed); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
@@ -497,6 +517,7 @@ func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 
 	notFound := false
 	conflictErr := false
+	changed := true
 	if err := func() error {
 		upstreamOverridesLock.Lock()
 		defer upstreamOverridesLock.Unlock()
@@ -528,6 +549,7 @@ func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 		if !ok {
 			return fmt.Errorf("%s|%s", code, msg)
 		}
+		changed = !reflect.DeepEqual(upstreamOverrides[payload.PluginTag], normalizedList)
 		upstreamOverrides[payload.PluginTag] = normalizedList
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
@@ -549,7 +571,7 @@ func handleUpdateUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if payload.Apply {
-		if err := applyUpstreamRuntimeReload(m, payload.PluginTag); err != nil {
+		if err := applyUpstreamRuntimeReloadIfChanged(m, payload.PluginTag, changed); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
@@ -576,6 +598,7 @@ func handleDeleteUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 	}
 
 	deleted := false
+	changed := false
 	if err := func() error {
 		upstreamOverridesLock.Lock()
 		defer upstreamOverridesLock.Unlock()
@@ -597,6 +620,7 @@ func handleDeleteUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 			return nil
 		}
 		upstreamOverrides[pluginTag] = nextList
+		changed = true
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
 		writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_CONFIG_SAVE_FAILED", "Failed to save upstream config")
@@ -608,7 +632,7 @@ func handleDeleteUpstreamItemWithMosdns(w http.ResponseWriter, r *http.Request, 
 	}
 
 	if parseQueryBool(r, "apply") {
-		if err := applyUpstreamRuntimeReload(m, pluginTag); err != nil {
+		if err := applyUpstreamRuntimeReloadIfChanged(m, pluginTag, changed); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}
@@ -665,6 +689,7 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 
 	// Only hold the lock for in-memory mutation and file persistence.
 	// Runtime reload may read upstream overrides again, so it must run after unlocking.
+	changed := true
 	if err := func() error {
 		upstreamOverridesLock.Lock()
 		defer upstreamOverridesLock.Unlock()
@@ -672,6 +697,7 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 		if upstreamOverrides == nil {
 			upstreamOverrides = make(GlobalUpstreamOverrides)
 		}
+		changed = !reflect.DeepEqual(upstreamOverrides[payload.PluginTag], normalizedUpstreams)
 		upstreamOverrides[payload.PluginTag] = normalizedUpstreams
 		return saveUpstreamOverridesLocked()
 	}(); err != nil {
@@ -681,7 +707,7 @@ func handleSetUpstreamConfigWithMosdns(w http.ResponseWriter, r *http.Request, m
 	}
 
 	if m != nil {
-		if err := m.ReloadControlConfig(payload.PluginTag); err != nil {
+		if err := applyUpstreamRuntimeReloadIfChanged(m, payload.PluginTag, changed); err != nil {
 			writeAPIError(w, http.StatusInternalServerError, "UPSTREAM_RUNTIME_APPLY_FAILED", "Config saved but runtime apply failed: "+err.Error())
 			return
 		}

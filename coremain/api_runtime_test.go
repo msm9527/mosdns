@@ -368,6 +368,34 @@ func TestRuntimeOverridesPostSupportsConcurrentRequests(t *testing.T) {
 	}
 }
 
+func TestHandleSetOverridesWithMosdnsSkipsReloadWhenUnchanged(t *testing.T) {
+	oldBaseDir := MainConfigBaseDir
+	MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		MainConfigBaseDir = oldBaseDir
+	})
+
+	reloader := &countingRuntimeReloader{}
+	m := NewTestMosdnsWithPlugins(map[string]any{
+		"test_plugin": reloader,
+	})
+
+	body := `{"socks5":"127.0.0.1:7891","ecs":"auto","replacements":[]}`
+	for i := 0; i < 2; i++ {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/control/overrides", strings.NewReader(body))
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		handleSetOverridesWithMosdns(w, req, m)
+		if w.Code != http.StatusOK {
+			t.Fatalf("request %d unexpected status: %d body=%s", i+1, w.Code, w.Body.String())
+		}
+	}
+
+	if reloader.count != 1 {
+		t.Fatalf("reload count = %d, want 1", reloader.count)
+	}
+}
+
 func TestHandleControlShuntExplainLiveFlag(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()

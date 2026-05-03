@@ -426,6 +426,45 @@ func TestFastCacheClampsAuthorityTTLForNegativeResponse(t *testing.T) {
 	}
 }
 
+func TestFastCacheStoresAuditMetaOnlyWhenEnabled(t *testing.T) {
+	name := "audit-cache.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x1111, 30)
+
+	fcNoAudit := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, &fastStats{})
+	if !fcNoAudit.Store(name, dns.TypeA, resp, "dset", false) {
+		t.Fatal("expected no-audit cache store")
+	}
+	ptr, _ := fcNoAudit.findItem(fastQNameHashString(name, dns.TypeA), name, dns.TypeA)
+	if ptr == nil {
+		t.Fatal("expected no-audit cache item")
+	}
+	if ptr.audit.responseCode != "" || ptr.audit.answerCount != 0 || len(ptr.audit.answers) != 0 {
+		t.Fatalf("no-audit cache item should not store audit details: %+v", ptr.audit)
+	}
+
+	fcAudit := newFastCache(fastCacheConfig{
+		internalTTL:  time.Minute,
+		ttlMax:       30,
+		auditEnabled: true,
+	}, &fastStats{})
+	if !fcAudit.Store(name, dns.TypeA, resp, "dset", false) {
+		t.Fatal("expected audit cache store")
+	}
+	ptr, _ = fcAudit.findItem(fastQNameHashString(name, dns.TypeA), name, dns.TypeA)
+	if ptr == nil {
+		t.Fatal("expected audit cache item")
+	}
+	if ptr.audit.responseCode != "NOERROR" || ptr.audit.answerCount != 1 {
+		t.Fatalf("unexpected audit header: %+v", ptr.audit)
+	}
+	if len(ptr.audit.answers) != 1 || ptr.audit.answers[0].Type != "A" {
+		t.Fatalf("unexpected audit answers: %+v", ptr.audit.answers)
+	}
+}
+
 func TestFastCacheRespectsFakeIPToggle(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -561,6 +600,39 @@ func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
 	fc.Flush()
 	if got := fc.Len(); got != 0 {
 		t.Fatalf("Len() after flush = %d, want 0", got)
+	}
+}
+
+func TestFastCacheNormalizesStoredQName(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+
+	resp := makeAnswer(t, "Mixed.Example.", dns.TypeA, 0x1111, 30)
+	fc.Store("Mixed.Example.", dns.TypeA, resp, "direct", false)
+
+	query := makeQuery(t, "mixed.example.", dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	question, ok := parseFastQuestionMeta(len(query), buf)
+	if !ok {
+		t.Fatal("parse fast question")
+	}
+	action, respLen, _, _, _ := fc.getOrUpdatingWire(question.hash, buf, question.qnameWire(buf), dns.TypeA, true, fastRuleRevision{})
+	if action != server.FastActionReply {
+		t.Fatalf("expected normalized qname cache hit, got action=%d", action)
+	}
+	var out dns.Msg
+	if err := out.Unpack(buf[:respLen]); err != nil {
+		t.Fatalf("unpack response: %v", err)
+	}
+	if out.Id != 0x9999 {
+		t.Fatalf("expected txid from request, got %x", out.Id)
+	}
+	if purged := fc.PurgeDomains([]string{"MIXED.EXAMPLE"}, nil); purged != 1 {
+		t.Fatalf("PurgeDomains normalized name = %d, want 1", purged)
 	}
 }
 

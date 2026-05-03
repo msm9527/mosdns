@@ -133,11 +133,18 @@ func handleSetOverridesWithMosdns(w http.ResponseWriter, r *http.Request, m *Mos
 		zap.Int("replacements", len(payload.Replacements)))
 
 	payload.Prepare()
+	changed := true
 	if m != nil {
+		current := m.GetGlobalOverrides()
+		changed = !GlobalOverridesEqual(current, &payload)
 		m.setGlobalOverrides(CloneGlobalOverrides(&payload))
-		if err := m.ReloadControlConfig(""); err != nil {
-			writeAPIError(w, http.StatusInternalServerError, "RUNTIME_RELOAD_FAILED", "Settings saved but runtime apply failed: "+err.Error())
-			return
+		if changed {
+			if err := m.ReloadControlConfig(""); err != nil {
+				writeAPIError(w, http.StatusInternalServerError, "RUNTIME_RELOAD_FAILED", "Settings saved but runtime apply failed: "+err.Error())
+				return
+			}
+		} else if m.logger != nil {
+			m.logger.Debug("global overrides unchanged; runtime reload skipped")
 		}
 	}
 
