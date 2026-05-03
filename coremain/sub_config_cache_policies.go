@@ -149,11 +149,11 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			},
 		},
 		UDPFastPath: UDPFastCachePolicy{
-			InternalTTL:      120,
-			StaleRetry:       10,
-			StaleMax:         300,
-			TTLMin:           1,
-			TTLMax:           5,
+			InternalTTL:      600,
+			StaleRetry:       30,
+			StaleMax:         600,
+			TTLMin:           30,
+			TTLMax:           600,
 			BypassDomainSets: defaultResponseCacheBypassDomains(),
 		},
 	}

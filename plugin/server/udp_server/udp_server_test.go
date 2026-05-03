@@ -49,6 +49,9 @@ func TestArgsInitSetsDefaultStaleRetry(t *testing.T) {
 	if args.FastCacheStaleMaxSec != 300 {
 		t.Fatalf("stale max = %d, want 300", args.FastCacheStaleMaxSec)
 	}
+	if args.FastCacheTTLMax != 600 {
+		t.Fatalf("ttl max = %d, want 600", args.FastCacheTTLMax)
+	}
 	if args.FastListenerWorkers < 1 {
 		t.Fatalf("listener workers = %d, want at least 1", args.FastListenerWorkers)
 	}

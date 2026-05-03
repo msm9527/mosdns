@@ -35,7 +35,7 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_fakeip_proxy"].Persist {
 		t.Fatalf("expected fakeip proxy cache to default to non-persistent, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
-	if cfg.UDPFastPath.InternalTTL != 120 || cfg.UDPFastPath.StaleRetry != 10 || cfg.UDPFastPath.StaleMax != 300 {
+	if cfg.UDPFastPath.InternalTTL != 600 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 600 || cfg.UDPFastPath.TTLMin != 30 || cfg.UDPFastPath.TTLMax != 600 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
 	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {

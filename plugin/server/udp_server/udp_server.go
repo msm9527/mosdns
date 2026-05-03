@@ -88,7 +88,7 @@ func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.FastCacheInternalTTL, 120)
 	utils.SetDefaultUnsignNum(&a.FastCacheStaleRetrySec, defaultStaleRefreshRetrySec)
 	utils.SetDefaultUnsignNum(&a.FastCacheStaleMaxSec, 300)
-	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(30))
+	utils.SetDefaultNum(&a.FastCacheTTLMax, uint32(600))
 	utils.SetDefaultUnsignNum(&a.FastMetricsLogInterval, 60)
 	if a.FastBypassWarmupSec <= 0 {
 		a.FastBypassWarmupSec = inferFastBypassWarmupSec(a.Entry, a.Listen)

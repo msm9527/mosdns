@@ -94,7 +94,7 @@ policies:
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_domestic
       - exec: $cnfake
-      - exec: ttl 5
+      - exec: ttl 600
 
   # 国内 fakeip 链路：
   # - fast_mark 10 时仍回到真实解析
@@ -131,6 +131,7 @@ policies:
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_proxy
       - exec: $nocnfake
+      - exec: ttl 600
       - exec: exit
 
   # 进入 fakeip 池并按需补记忆列表的实际生成链。
@@ -140,6 +141,7 @@ policies:
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_proxy
       - exec: $nocnfake
+      - exec: ttl 600
       - matches: '!fast_mark 12'
         exec: $my_fakeiplist
       - exec: exit

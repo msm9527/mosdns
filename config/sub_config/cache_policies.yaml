@@ -39,7 +39,7 @@
 # - 真实解析缓存保留较长 backend 窗口保证命中率，但只允许较短 lazy stale 返回窗口。
 # - 这样热点域名可通过预刷新维持加速，低频域名过期太久后会强制重新解析。
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
-# - UDP 快路径默认保留短期热点结果，并设置最大 stale 窗口避免长期返回旧结果。
+# - UDP 快路径默认保留热点结果，并允许 FakeIP / 热点缓存向客户端返回更长 TTL。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
 #
 # udp_fast_path 字段说明：
@@ -147,10 +147,10 @@ response:
     persist: false
 
 udp_fast_path:
-  internal_ttl: 120
-  stale_retry_seconds: 10
-  stale_max_seconds: 300
-  ttl_min: 1
-  ttl_max: 5
+  internal_ttl: 600
+  stale_retry_seconds: 30
+  stale_max_seconds: 600
+  ttl_min: 30
+  ttl_max: 600
   bypass_domain_sets:
     - DDNS域名

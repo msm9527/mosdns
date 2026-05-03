@@ -56,7 +56,7 @@ policies:
         exec: $sequence_local_refresh
       - matches: '!fast_mark 10'
         exec: $cnfake
-      - exec: ttl 5
+      - exec: ttl 600
       - exec: exit
 
   - name: sequence_local_fake_exit_refresh
@@ -65,7 +65,7 @@ policies:
       - matches: fast_mark 10
         exec: exit
       - exec: $cnfake
-      - exec: ttl 5
+      - exec: ttl 600
       - exec: exit
 
   - name: sequence_local_divert_refresh
@@ -84,6 +84,7 @@ policies:
           - $sequence_google_refresh
           - exit
       - exec: $nocnfake
+      - exec: ttl 600
       - exec: exit
 
   - name: sequence_fakeip_addlist_refresh
@@ -94,6 +95,7 @@ policies:
           - $sequence_google_refresh
           - exit
       - exec: $nocnfake
+      - exec: ttl 600
       - matches: '!fast_mark 12'
         exec: $my_fakeiplist
       - exec: exit
