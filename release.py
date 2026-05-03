@@ -135,6 +135,8 @@ def add_text_file_from_root(zf: zipfile.ZipFile, relative_path: str) -> None:
 def package_release(target: dict, version: str, release_dir: Path, config_files: list[Path]) -> Path:
     env = os.environ.copy()
     env.update(target["env"])
+    if target["env"].get("GOOS") == "linux":
+        env.setdefault("CGO_ENABLED", "0")
 
     suffix = ".exe" if target["env"]["GOOS"] == "windows" else ""
     archive_name = archive_filename(target)
