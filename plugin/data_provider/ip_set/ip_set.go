@@ -69,6 +69,7 @@ type IPSet struct {
 	baseArgs  *Args
 
 	matcherVal atomic.Value
+	revision   atomic.Uint64
 
 	list  *netlist.List
 	files []string
@@ -90,6 +91,10 @@ func (d *IPSet) Match(addr netip.Addr) bool {
 		return false
 	}
 	return m.Match(addr)
+}
+
+func (d *IPSet) CacheRevisionUint64() uint64 {
+	return d.revision.Load()
 }
 
 // Init plugin, build IPSet and register HTTP API
@@ -160,6 +165,7 @@ func (d *IPSet) rebuildSnapshot() {
 	}
 
 	d.matcherVal.Store(mg)
+	d.revision.Add(1)
 }
 
 func (d *IPSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {

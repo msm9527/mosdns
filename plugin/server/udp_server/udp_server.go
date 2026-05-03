@@ -45,12 +45,14 @@ import (
 )
 
 const (
-	PluginType = "udp_server"
-	cacheWays  = 4
-	cacheSize  = 65536
-	cacheMask  = cacheSize - 1
-	ruleWays   = 4
-	ruleSize   = 32768
+	PluginType       = "udp_server"
+	cacheWays        = 4
+	cacheSize        = 65536
+	cacheMask        = cacheSize - 1
+	ruleWays         = 4
+	ruleSize         = 32768
+	clientPolicyWays = 2
+	clientPolicySize = 4096
 
 	defaultFastBypassWarmupMain    = 3
 	defaultFastBypassWarmupRequery = 1
@@ -446,6 +448,30 @@ type fastRuleCacheTable struct {
 	mask    uint64
 }
 
+type clientPolicyCacheItem struct {
+	addr            netip.Addr
+	mode            string
+	whitelistPlugin IPSetPlugin
+	blacklistPlugin IPSetPlugin
+	whitelistRev    uint64
+	blacklistRev    uint64
+	marks           uint64
+}
+
+type clientPolicyCacheBucket struct {
+	slots [clientPolicyWays]atomic.Pointer[clientPolicyCacheItem]
+}
+
+type clientPolicyCacheTable struct {
+	buckets []clientPolicyCacheBucket
+	mask    uint64
+}
+
+type clientPolicyCache struct {
+	table atomic.Pointer[clientPolicyCacheTable]
+	once  sync.Once
+}
+
 type fastCache struct {
 	table    atomic.Pointer[fastCacheTable]
 	rules    atomic.Pointer[fastRuleCacheTable]
@@ -623,6 +649,128 @@ func (fc *fastCache) ensureRuleTable() *fastRuleCacheTable {
 		})
 	})
 	return fc.rules.Load()
+}
+
+func (c *clientPolicyCache) ensureTable() *clientPolicyCacheTable {
+	if c == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		c.table.Store(&clientPolicyCacheTable{
+			buckets: make([]clientPolicyCacheBucket, clientPolicySize),
+			mask:    clientPolicySize - 1,
+		})
+	})
+	return c.table.Load()
+}
+
+func (c *clientPolicyCache) loadTable() *clientPolicyCacheTable {
+	if c == nil {
+		return nil
+	}
+	return c.table.Load()
+}
+
+func (c *clientPolicyCache) get(addr netip.Addr, mode string, whitelistPlugin, blacklistPlugin IPSetPlugin, whitelistRev, blacklistRev uint64) (uint64, bool) {
+	table := c.loadTable()
+	if table == nil || !addr.IsValid() {
+		return 0, false
+	}
+	hash := fastAddrHash(addr)
+	bucket := &table.buckets[hash&table.mask]
+	for i := range bucket.slots {
+		item := bucket.slots[i].Load()
+		if item == nil {
+			continue
+		}
+		if item.addr == addr && item.mode == mode && item.whitelistPlugin == whitelistPlugin && item.blacklistPlugin == blacklistPlugin && item.whitelistRev == whitelistRev && item.blacklistRev == blacklistRev {
+			return item.marks, true
+		}
+	}
+	return 0, false
+}
+
+func (c *clientPolicyCache) store(addr netip.Addr, mode string, whitelistPlugin, blacklistPlugin IPSetPlugin, whitelistRev, blacklistRev uint64, marks uint64) {
+	if !addr.IsValid() {
+		return
+	}
+	table := c.ensureTable()
+	if table == nil {
+		return
+	}
+	hash := fastAddrHash(addr)
+	bucket := &table.buckets[hash&table.mask]
+	item := &clientPolicyCacheItem{
+		addr:            addr,
+		mode:            mode,
+		whitelistPlugin: whitelistPlugin,
+		blacklistPlugin: blacklistPlugin,
+		whitelistRev:    whitelistRev,
+		blacklistRev:    blacklistRev,
+		marks:           marks,
+	}
+	var emptySlot *atomic.Pointer[clientPolicyCacheItem]
+	for i := range bucket.slots {
+		slot := &bucket.slots[i]
+		current := slot.Load()
+		if current == nil {
+			if emptySlot == nil {
+				emptySlot = slot
+			}
+			continue
+		}
+		if current.addr == addr && current.mode == mode && current.whitelistPlugin == whitelistPlugin && current.blacklistPlugin == blacklistPlugin && current.whitelistRev == whitelistRev && current.blacklistRev == blacklistRev {
+			slot.Store(item)
+			return
+		}
+	}
+	if emptySlot != nil {
+		emptySlot.Store(item)
+		return
+	}
+	bucket.slots[(hash>>16)%clientPolicyWays].Store(item)
+}
+
+func fastClientPolicyMarks(cache *clientPolicyCache, addr netip.Addr, mode string, whitelistPlugin, blacklistPlugin IPSetPlugin) uint64 {
+	if !addr.IsValid() || (whitelistPlugin == nil && blacklistPlugin == nil) {
+		return 0
+	}
+	addr = addr.Unmap()
+	if addr.IsLoopback() {
+		return 1 << 48
+	}
+
+	marks := uint64(1 << 48)
+	switch mode {
+	case "whitelist":
+		if whitelistPlugin == nil {
+			return 0
+		}
+		whitelistRev := fastCacheRevisionOf(whitelistPlugin).number
+		if cached, ok := cache.get(addr, mode, whitelistPlugin, nil, whitelistRev, 0); ok {
+			return cached
+		}
+		if !whitelistPlugin.Match(addr) {
+			marks |= 1 << 39
+		}
+		cache.store(addr, mode, whitelistPlugin, nil, whitelistRev, 0, marks)
+		return marks
+	case "blacklist":
+		if blacklistPlugin == nil {
+			return 0
+		}
+		blacklistRev := fastCacheRevisionOf(blacklistPlugin).number
+		if cached, ok := cache.get(addr, mode, nil, blacklistPlugin, 0, blacklistRev); ok {
+			return cached
+		}
+		if blacklistPlugin.Match(addr) {
+			marks |= 1 << 39
+		}
+		cache.store(addr, mode, nil, blacklistPlugin, 0, blacklistRev, marks)
+		return marks
+	default:
+		return 0
+	}
 }
 
 func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
@@ -956,6 +1104,25 @@ func fastCacheBucketIndex(hash uint64, mask uint64) uint64 {
 	hash *= 0xff51afd7ed558ccd
 	hash ^= hash >> 33
 	return hash & mask
+}
+
+func fastAddrHash(addr netip.Addr) uint64 {
+	hash := uint64(fastQNameHashOffset64)
+	if !addr.IsValid() {
+		return hash
+	}
+	if addr.Is4() {
+		a := addr.As4()
+		for _, b := range a {
+			hash = fastHashRawByte(hash, b)
+		}
+		return hash
+	}
+	a := addr.As16()
+	for _, b := range a {
+		hash = fastHashRawByte(hash, b)
+	}
+	return hash
 }
 
 func fastQNameHashByte(hash uint64, b byte) uint64 {
@@ -1506,6 +1673,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 	revisionTracked := false
 	readyAt := time.Now().Add(warmup)
 	enableAudit := len(enableAuditOpt) > 0 && enableAuditOpt[0]
+	clientPolicy := &clientPolicyCache{}
 
 	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
 		var auditStart time.Time
@@ -1585,34 +1753,11 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 
-		var marks uint64
-		whitelistMatch := false
-		blacklistMatch := false
-		clientListChecked := false
-		if clientWhitelist != nil || clientBlacklist != nil {
-			addr := remoteAddr.Addr().Unmap()
-			if clientWhitelist != nil {
-				whitelistMatch = clientWhitelist.Match(addr)
-				clientListChecked = true
-			}
-			if clientBlacklist != nil {
-				blacklistMatch = clientBlacklist.Match(addr)
-				clientListChecked = true
-			}
-		}
-		if clientListChecked {
-			marks |= (1 << 48)
-		}
 		mode := "all"
 		if clientProxyMode != nil {
 			mode = clientProxyMode.GetValue()
 		}
-
-		if mode == "whitelist" && !whitelistMatch {
-			marks |= (1 << 39)
-		} else if mode == "blacklist" && blacklistMatch {
-			marks |= (1 << 39)
-		}
+		marks := fastClientPolicyMarks(clientPolicy, remoteAddr.Addr(), mode, clientWhitelist, clientBlacklist)
 
 		var ruleRevision fastRuleRevision
 		if revisionTracked {

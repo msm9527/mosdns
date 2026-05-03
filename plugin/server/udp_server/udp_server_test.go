@@ -755,6 +755,21 @@ func (p testIPSetPlugin) Match(addr netip.Addr) bool {
 	return p.match
 }
 
+type countingIPSetPlugin struct {
+	match    bool
+	calls    atomic.Uint64
+	revision atomic.Uint64
+}
+
+func (p *countingIPSetPlugin) Match(addr netip.Addr) bool {
+	p.calls.Add(1)
+	return p.match
+}
+
+func (p *countingIPSetPlugin) CacheRevisionUint64() uint64 {
+	return p.revision.Load()
+}
+
 type pooledHandler struct {
 	payload []byte
 	called  chan struct{}
@@ -902,7 +917,7 @@ func TestBuildFastBypassClientIPWhitelistFastMarks(t *testing.T) {
 	}, &fastStats{}), &fastStats{}, 0)
 
 	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
-	action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("192.168.5.13:5353"))
 	if action != server.FastActionContinue {
 		t.Fatalf("expected continue action, got %d", action)
 	}
@@ -914,6 +929,85 @@ func TestBuildFastBypassClientIPWhitelistFastMarks(t *testing.T) {
 	}
 	if (marks & (uint64(1) << 39)) == 0 {
 		t.Fatalf("expected fast mark 39 for direct-path branch, got %064b", marks)
+	}
+}
+
+func TestBuildFastBypassClientIPWhitelistMatchKeepsProxyPath(t *testing.T) {
+	whitelist := &countingIPSetPlugin{match: true}
+	blacklist := &countingIPSetPlugin{}
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":       testSwitchPlugin{value: "on"},
+		"client_proxy_mode":   testSwitchPlugin{value: "whitelist"},
+		"client_ip_whitelist": whitelist,
+		"client_ip_blacklist": blacklist,
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), &fastStats{}, 0)
+
+	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("192.168.5.13:5353")
+	for i := 0; i < 3; i++ {
+		action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), addr)
+		if action != server.FastActionContinue {
+			t.Fatalf("expected continue action, got %d", action)
+		}
+		if staleRefresh {
+			t.Fatal("client_ip fast marks should not request stale refresh")
+		}
+		if (marks & (uint64(1) << 48)) == 0 {
+			t.Fatalf("expected fast mark 48 to indicate client_ip fast-checked, got %064b", marks)
+		}
+		if (marks & (uint64(1) << 39)) != 0 {
+			t.Fatalf("whitelisted client should keep proxy path, got %064b", marks)
+		}
+	}
+	if got := whitelist.calls.Load(); got != 1 {
+		t.Fatalf("expected repeated LAN client whitelist checks to be cached, got %d calls", got)
+	}
+	if got := blacklist.calls.Load(); got != 0 {
+		t.Fatalf("whitelist mode should not check blacklist, got %d calls", got)
+	}
+}
+
+func TestBuildFastBypassClientIPWhitelistKeepsLoopbackOnProxyPath(t *testing.T) {
+	whitelist := &countingIPSetPlugin{}
+	blacklist := &countingIPSetPlugin{}
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":       testSwitchPlugin{value: "on"},
+		"client_proxy_mode":   testSwitchPlugin{value: "whitelist"},
+		"client_ip_whitelist": whitelist,
+		"client_ip_blacklist": blacklist,
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+	}, &fastStats{}), &fastStats{}, 0)
+
+	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
+	for _, addr := range []string{"127.0.0.1:5353", "[::1]:5353"} {
+		t.Run(addr, func(t *testing.T) {
+			action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort(addr))
+			if action != server.FastActionContinue {
+				t.Fatalf("expected continue action, got %d", action)
+			}
+			if staleRefresh {
+				t.Fatal("loopback client_ip fast marks should not request stale refresh")
+			}
+			if (marks & (uint64(1) << 48)) == 0 {
+				t.Fatalf("expected fast mark 48 to indicate client_ip fast-checked, got %064b", marks)
+			}
+			if (marks & (uint64(1) << 39)) != 0 {
+				t.Fatalf("loopback should keep proxy path in whitelist mode, got %064b", marks)
+			}
+		})
+	}
+	if got := whitelist.calls.Load(); got != 0 {
+		t.Fatalf("loopback should skip whitelist lookup, got %d calls", got)
+	}
+	if got := blacklist.calls.Load(); got != 0 {
+		t.Fatalf("loopback should skip blacklist lookup, got %d calls", got)
 	}
 }
 
@@ -930,7 +1024,7 @@ func TestBuildFastBypassClientIPBlacklistFastMarks(t *testing.T) {
 	}, &fastStats{}), &fastStats{}, 0)
 
 	req := makeQuery(t, "example.org.", dns.TypeA, 0x1234)
-	action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("127.0.0.1:5353"))
+	action, _, marks, _, _, staleRefresh := fastBypass(len(req), append([]byte(nil), req...), netip.MustParseAddrPort("192.168.5.13:5353"))
 	if action != server.FastActionContinue {
 		t.Fatalf("expected continue action, got %d", action)
 	}
@@ -1621,5 +1715,37 @@ func BenchmarkBuildFastBypassNoResponseCacheRuleMetaHit(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		copy(buf, req)
 		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+	}
+}
+
+func TestFastClientPolicyMarksRefreshesWhenIPSetRevisionChanges(t *testing.T) {
+	cache := &clientPolicyCache{}
+	addr := netip.MustParseAddr("192.168.5.13")
+	whitelist := &countingIPSetPlugin{match: true}
+
+	marks := fastClientPolicyMarks(cache, addr, "whitelist", whitelist, nil)
+	if (marks & (uint64(1) << 39)) != 0 {
+		t.Fatalf("expected whitelisted client to keep proxy path, got %064b", marks)
+	}
+	if got := whitelist.calls.Load(); got != 1 {
+		t.Fatalf("expected first lookup to check whitelist once, got %d", got)
+	}
+
+	marks = fastClientPolicyMarks(cache, addr, "whitelist", whitelist, nil)
+	if (marks & (uint64(1) << 39)) != 0 {
+		t.Fatalf("expected cached whitelisted client to keep proxy path, got %064b", marks)
+	}
+	if got := whitelist.calls.Load(); got != 1 {
+		t.Fatalf("expected cached lookup to skip whitelist, got %d calls", got)
+	}
+
+	whitelist.match = false
+	whitelist.revision.Add(1)
+	marks = fastClientPolicyMarks(cache, addr, "whitelist", whitelist, nil)
+	if (marks & (uint64(1) << 39)) == 0 {
+		t.Fatalf("expected refreshed whitelist miss to use direct-path branch, got %064b", marks)
+	}
+	if got := whitelist.calls.Load(); got != 2 {
+		t.Fatalf("expected revision change to recheck whitelist, got %d calls", got)
 	}
 }
