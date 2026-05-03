@@ -206,6 +206,9 @@ func newAuditAPITestHarness(t *testing.T) (*chi.Mux, *AuditCollector, time.Time)
 		AggregateRetentionDays: 30,
 		MaxStorageMB:           128,
 	}, MainConfigBaseDir)
+	if err := collector.reopenStorage(collector.GetSettings(), MainConfigBaseDir); err != nil {
+		t.Fatalf("collector.reopenStorage() error = %v", err)
+	}
 	GlobalAuditCollector = collector
 
 	base := time.Now().Add(-2 * time.Minute).Truncate(time.Second)

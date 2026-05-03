@@ -77,6 +77,9 @@ func newAuditSearchAPITestHarness(t *testing.T) (*chi.Mux, *AuditCollector, time
 		AggregateRetentionDays: 30,
 		MaxStorageMB:           128,
 	}, MainConfigBaseDir)
+	if err := collector.reopenStorage(collector.GetSettings(), MainConfigBaseDir); err != nil {
+		t.Fatalf("collector.reopenStorage() error = %v", err)
+	}
 	GlobalAuditCollector = collector
 
 	base, logs := buildAuditSearchFixtures()

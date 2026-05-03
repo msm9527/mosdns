@@ -31,6 +31,7 @@ type AuditCollector struct {
 	maintDone     chan struct{}
 	closed        atomic.Bool
 	degraded      atomic.Bool
+	opening       atomic.Bool
 }
 
 var GlobalAuditCollector = NewAuditCollector(defaultAuditSettings(), "")
@@ -50,14 +51,11 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 		workerDone:    make(chan struct{}),
 		maintDone:     make(chan struct{}),
 	}
-	if err := collector.reopenStorage(settings, configBaseDir); err != nil {
-		collector.degraded.Store(true)
-		mlog.L().Warn("failed to open audit storage", zap.Error(err))
-	}
 	return collector
 }
 
 func (c *AuditCollector) StartWorker() {
+	c.OpenStorageAsync()
 	go c.runWriter()
 	go c.runMaintenance()
 }
@@ -131,33 +129,91 @@ func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) e
 	if configBaseDir == "" {
 		configBaseDir = c.configBaseDir
 	}
-	if err := c.reopenStorage(next, configBaseDir); err != nil {
+	storage, err := openAuditStorage(next, configBaseDir)
+	if err != nil {
 		return err
 	}
 	c.mu.Lock()
+	oldStorage := c.storage
 	c.settings = next
 	c.configBaseDir = configBaseDir
+	c.storage = storage
 	c.mu.Unlock()
+	c.degraded.Store(false)
+	closeAuditStorageAfterSwap(oldStorage)
 	return nil
 }
 
 func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir string) error {
-	path := resolveAuditSQLitePath(configBaseDir, settings.SQLitePath)
-	storage := newSQLiteAuditStorage(path)
-	if err := storage.Open(); err != nil {
-		return fmt.Errorf("open sqlite audit storage: %w", err)
+	storage, err := openAuditStorage(settings, configBaseDir)
+	if err != nil {
+		return err
 	}
 	c.mu.Lock()
 	oldStorage := c.storage
 	c.storage = storage
 	c.mu.Unlock()
-	if oldStorage != nil {
-		// Grace period: allow in-flight workers that captured oldStorage
-		// before the swap to finish their current operation.
-		time.Sleep(200 * time.Millisecond)
-		_ = oldStorage.Close()
-	}
+	c.degraded.Store(false)
+	closeAuditStorageAfterSwap(oldStorage)
 	return nil
+}
+
+func (c *AuditCollector) OpenStorageAsync() {
+	if c == nil || c.closed.Load() || !c.opening.CompareAndSwap(false, true) {
+		return
+	}
+	c.degraded.Store(true)
+	go func() {
+		defer c.opening.Store(false)
+		settings := c.GetSettings()
+		c.mu.RLock()
+		configBaseDir := c.configBaseDir
+		c.mu.RUnlock()
+		storage, err := openAuditStorage(settings, configBaseDir)
+		if err != nil {
+			c.degraded.Store(true)
+			mlog.L().Warn("failed to open audit storage", zap.Error(err))
+			return
+		}
+		if !c.installStorageIfCurrent(settings, configBaseDir, storage) {
+			_ = storage.Close()
+			return
+		}
+		mlog.L().Info("audit storage opened")
+	}()
+}
+
+var openAuditStorage = func(settings AuditSettings, configBaseDir string) (*SQLiteAuditStorage, error) {
+	path := resolveAuditSQLitePath(configBaseDir, settings.SQLitePath)
+	storage := newSQLiteAuditStorage(path)
+	if err := storage.Open(); err != nil {
+		return nil, fmt.Errorf("open sqlite audit storage: %w", err)
+	}
+	return storage, nil
+}
+
+func (c *AuditCollector) installStorageIfCurrent(settings AuditSettings, configBaseDir string, storage *SQLiteAuditStorage) bool {
+	c.mu.Lock()
+	if c.closed.Load() || c.configBaseDir != configBaseDir || c.settings != settings {
+		c.mu.Unlock()
+		return false
+	}
+	oldStorage := c.storage
+	c.storage = storage
+	c.mu.Unlock()
+	c.degraded.Store(false)
+	closeAuditStorageAfterSwap(oldStorage)
+	return true
+}
+
+func closeAuditStorageAfterSwap(storage *SQLiteAuditStorage) {
+	if storage == nil {
+		return
+	}
+	// Grace period: allow in-flight workers that captured oldStorage
+	// before the swap to finish their current operation.
+	time.Sleep(200 * time.Millisecond)
+	_ = storage.Close()
 }
 
 func (c *AuditCollector) closeStorage() {
