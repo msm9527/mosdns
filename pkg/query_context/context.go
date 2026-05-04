@@ -58,6 +58,7 @@ type Context struct {
 	resp        *dns.Msg
 	respOpt     *dns.OPT // nil if clientOpt == nil
 	upstreamOpt *dns.OPT // may be nil
+	respPayload *ResponsePayload
 
 	// lazy init.
 	kv           map[uint32]any
@@ -170,6 +171,7 @@ func (ctx *Context) ClientOpt() *dns.OPT {
 // SetResponse sets m as response. It takes the ownership of m.
 // If m is nil. It removes existing response.
 func (ctx *Context) SetResponse(m *dns.Msg) {
+	ctx.respPayload = nil
 	ctx.resp = m
 	if m == nil {
 		ctx.upstreamOpt = nil
@@ -229,6 +231,9 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 	if ctx.resp != nil {
 		d.resp = ctx.resp.Copy()
 	}
+	if ctx.respPayload != nil {
+		d.respPayload = ctx.respPayload.Copy()
+	}
 	if ctx.respOpt != nil {
 		d.respOpt = dns.Copy(ctx.respOpt).(*dns.OPT)
 	}
@@ -243,6 +248,38 @@ func (ctx *Context) CopyTo(d *Context) *Context {
 	d.FastQName = ctx.FastQName
 	d.FastQType = ctx.FastQType
 	return d
+}
+
+// ResponsePayload carries a pre-packed DNS response. It is used by hot cache
+// paths that can safely reply without re-materializing a dns.Msg.
+type ResponsePayload struct {
+	Wire  []byte
+	Msg   *dns.Msg
+	Stale bool
+}
+
+func (p *ResponsePayload) Copy() *ResponsePayload {
+	if p == nil {
+		return nil
+	}
+	out := &ResponsePayload{Stale: p.Stale}
+	if len(p.Wire) > 0 {
+		out.Wire = append([]byte(nil), p.Wire...)
+	}
+	if p.Msg != nil {
+		out.Msg = p.Msg.Copy()
+	}
+	return out
+}
+
+// SetResponsePayload stores a pre-packed response and its optional parsed form.
+func (ctx *Context) SetResponsePayload(p *ResponsePayload) {
+	ctx.respPayload = p
+}
+
+// ResponsePayload returns the pre-packed response, if any.
+func (ctx *Context) ResponsePayload() *ResponsePayload {
+	return ctx.respPayload
 }
 
 // StoreValue stores any v in to this Context

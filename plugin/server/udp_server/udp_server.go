@@ -24,9 +24,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"math"
+	"math/bits"
 	"net"
 	"net/netip"
 	"runtime"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +61,7 @@ const (
 	defaultStaleRefreshRetrySec    = 10
 	defaultMainListenerWorkers     = 4
 	fastStatsShards                = 32
+	defaultFastCacheMemoryBudgetMB = 8
 
 	fastQNameHashOffset64 = 1469598103934665603
 	fastQNameHashPrime64  = 1099511628211
@@ -81,6 +84,9 @@ type Args struct {
 	FastMetricsLogInterval    int      `yaml:"fast_metrics_log_interval"`
 	FastBypassWarmupSec       int      `yaml:"fast_bypass_warmup_seconds"`
 	FastListenerWorkers       int      `yaml:"fast_listener_workers"`
+	FastCacheSlots            int      `yaml:"fast_cache_slots"`
+	FastRuleCacheSlots        int      `yaml:"fast_rule_cache_slots"`
+	FastCacheMemoryBudgetMB   int      `yaml:"fast_cache_memory_budget_mb"`
 }
 
 func (a *Args) init() {
@@ -108,6 +114,11 @@ func (a *Args) init() {
 	if a.FastListenerWorkers > defaultMainListenerWorkers {
 		a.FastListenerWorkers = defaultMainListenerWorkers
 	}
+	if a.FastCacheMemoryBudgetMB < 0 {
+		a.FastCacheMemoryBudgetMB = 0
+	}
+	a.FastCacheSlots = normalizeFastSlotCount(a.FastCacheSlots, cacheWays, cacheSize*cacheWays)
+	a.FastRuleCacheSlots = normalizeFastSlotCount(a.FastRuleCacheSlots, ruleWays, ruleSize*ruleWays)
 	a.FastCacheBypassDomainSets = normalizeFastCacheDomainSetTokens(a.FastCacheBypassDomainSets)
 }
 
@@ -252,7 +263,10 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 		BackendSize: backendSize,
 		Counters:    fastStatsCounters(snapshot),
 		Config: map[string]interface{}{
-			"size":                        cacheSize * cacheWays,
+			"size":                        cfg.responseSlots,
+			"configured_response_slots":   cfg.responseSlots,
+			"configured_rule_slots":       cfg.ruleSlots,
+			"memory_budget_mb":            cfg.memoryBudgetMB,
 			"internal_ttl":                int(cfg.internalTTL / time.Second),
 			"stale_retry_seconds":         int(cfg.staleRetry / time.Second),
 			"stale_max_seconds":           int(cfg.staleMax / time.Second),
@@ -489,6 +503,9 @@ type fastCacheConfig struct {
 	ttlMax           uint32
 	bypassDomainSets []string
 	auditEnabled     bool
+	responseSlots    int
+	ruleSlots        int
+	memoryBudgetMB   int
 }
 
 type fastStats struct {
@@ -600,8 +617,78 @@ func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
 	if cfg.staleMax <= 0 {
 		cfg.staleMax = 300 * time.Second
 	}
+	cfg.responseSlots, cfg.ruleSlots = resolveFastCacheSlots(cfg)
 	cfg.bypassDomainSets = normalizeFastCacheDomainSetTokens(cfg.bypassDomainSets)
 	return &fastCache{cfg: cfg, stats: stats}
+}
+
+func resolveFastCacheSlots(cfg fastCacheConfig) (int, int) {
+	responseSlots := normalizeFastSlotCount(cfg.responseSlots, cacheWays, cacheSize*cacheWays)
+	ruleSlots := normalizeFastSlotCount(cfg.ruleSlots, ruleWays, ruleSize*ruleWays)
+	if responseSlots > 0 && ruleSlots > 0 {
+		return responseSlots, ruleSlots
+	}
+	budgetMB := cfg.memoryBudgetMB
+	if budgetMB <= 0 {
+		budgetMB = inferFastCacheMemoryBudgetMB()
+	}
+	if budgetMB <= 0 {
+		budgetMB = defaultFastCacheMemoryBudgetMB
+	}
+	switch {
+	case budgetMB <= 4:
+		return 32768, 16384
+	case budgetMB <= 8:
+		return 65536, 32768
+	case budgetMB <= 16:
+		return 131072, 65536
+	default:
+		return cacheSize * cacheWays, ruleSize * ruleWays
+	}
+}
+
+func inferFastCacheMemoryBudgetMB() int {
+	limit := debug.SetMemoryLimit(-1)
+	if limit <= 0 || limit == math.MaxInt64 {
+		return defaultFastCacheMemoryBudgetMB
+	}
+	mb := limit >> 20
+	switch {
+	case mb <= 96:
+		return 4
+	case mb <= 192:
+		return 8
+	case mb <= 384:
+		return 16
+	default:
+		return 32
+	}
+}
+
+func normalizeFastSlotCount(slots, ways, maxSlots int) int {
+	if slots <= 0 {
+		return 0
+	}
+	minSlots := ways
+	if slots < minSlots {
+		slots = minSlots
+	}
+	if slots > maxSlots {
+		slots = maxSlots
+	}
+	buckets := nextPowerOfTwo((slots + ways - 1) / ways)
+	maxBuckets := maxSlots / ways
+	if buckets > maxBuckets {
+		buckets = maxBuckets
+	}
+	return buckets * ways
+}
+
+func nextPowerOfTwo(v int) int {
+	if v <= 1 {
+		return 1
+	}
+	return 1 << bits.Len(uint(v-1))
 }
 
 func (fc *fastCache) shouldBypassDomainSet(domainSet string) bool {
@@ -623,9 +710,13 @@ func (fc *fastCache) ensureTable() *fastCacheTable {
 		return nil
 	}
 	fc.initOnce.Do(func() {
+		buckets := cacheSize
+		if fc.cfg.responseSlots > 0 {
+			buckets = fc.cfg.responseSlots / cacheWays
+		}
 		fc.table.Store(&fastCacheTable{
-			buckets: make([]fastCacheBucket, cacheSize),
-			mask:    cacheSize - 1,
+			buckets: make([]fastCacheBucket, buckets),
+			mask:    uint64(buckets - 1),
 		})
 	})
 	return fc.table.Load()
@@ -643,9 +734,13 @@ func (fc *fastCache) ensureRuleTable() *fastRuleCacheTable {
 		return nil
 	}
 	fc.ruleOnce.Do(func() {
+		buckets := ruleSize
+		if fc.cfg.ruleSlots > 0 {
+			buckets = fc.cfg.ruleSlots / ruleWays
+		}
 		fc.rules.Store(&fastRuleCacheTable{
-			buckets: make([]fastRuleCacheBucket, ruleSize),
-			mask:    ruleSize - 1,
+			buckets: make([]fastRuleCacheBucket, buckets),
+			mask:    uint64(buckets - 1),
 		})
 	})
 	return fc.rules.Load()
@@ -1580,6 +1675,9 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		ttlMax:           args.FastCacheTTLMax,
 		bypassDomainSets: args.FastCacheBypassDomainSets,
 		auditEnabled:     args.EnableAudit,
+		responseSlots:    args.FastCacheSlots,
+		ruleSlots:        args.FastRuleCacheSlots,
+		memoryBudgetMB:   args.FastCacheMemoryBudgetMB,
 	}, stats)
 	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, rewriteRevision: rewriteRevision, sw: sw15, fakeCacheSwitch: swFake, enableAudit: args.EnableAudit}
 	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second, args.EnableAudit)

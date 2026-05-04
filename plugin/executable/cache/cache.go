@@ -115,6 +115,7 @@ func (k key) Sum() uint64 {
 // item stores the cached response in L2.
 type item struct {
 	resp           []byte
+	ttlOffsets     []uint16
 	storedUnixNano int64
 	expireUnixNano int64
 	domainSet      string
@@ -160,6 +161,7 @@ type Args struct {
 	L1TotalCap       int      `yaml:"l1_total_cap"`
 	L1ShardCap       int      `yaml:"l1_shard_cap"`
 	EnableECS        bool     `yaml:"enable_ecs"`
+	ExitOnHit        bool     `yaml:"exit_on_hit"`
 	ExcludeIPs       []string `yaml:"exclude_ip"`
 	BypassDomainSets []string `yaml:"bypass_domain_sets"`
 	DumpFile         string   `yaml:"dump_file"`
@@ -180,6 +182,7 @@ type argsRaw struct {
 	L1TotalCap       int         `yaml:"l1_total_cap"`
 	L1ShardCap       int         `yaml:"l1_shard_cap"`
 	EnableECS        bool        `yaml:"enable_ecs"`
+	ExitOnHit        bool        `yaml:"exit_on_hit"`
 	ExcludeIP        interface{} `yaml:"exclude_ip"`
 	BypassDomainSets interface{} `yaml:"bypass_domain_sets"`
 	DumpFile         string      `yaml:"dump_file"`
@@ -212,6 +215,7 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	a.WALFile = raw.WALFile
 	a.WALSyncInterval = raw.WALSyncInterval
 	a.EnableECS = raw.EnableECS
+	a.ExitOnHit = raw.ExitOnHit
 	var err error
 
 	switch v := raw.ExcludeIP.(type) {
@@ -316,6 +320,7 @@ type Cache struct {
 	plugin       func(string) any
 	backend      *cache.Cache[key, *item]
 	lazyUpdateSF singleflight.Group
+	coldQuerySF  singleflight.Group
 	closeOnce    sync.Once
 	closeNotify  chan struct{}
 	updatedKey   atomic.Uint64
@@ -679,6 +684,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 			r.Id = q.Id
 			qCtx.SetResponse(r)
+			c.trySetCachedResponsePayload(qCtx, v1, r, false, expiredMsgTtl, nowUnix)
 			if domainSet != "" {
 				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
 			}
@@ -686,7 +692,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 			// 归还 Key 缓冲区
 			releaseKeyBuffer(bufPtr)
-			return nil
+			return c.cacheHitReturn()
 		}
 	}
 
@@ -752,6 +758,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		c.l2HitCount.Add(1)
 		cachedResp.Id = q.Id
 		qCtx.SetResponse(cachedResp)
+		c.trySetCachedResponsePayload(qCtx, cachedItem, cachedResp, lazyHit, expiredMsgTtl, nowUnix)
 		if domainSet != "" {
 			qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
 		}
@@ -761,7 +768,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			shard.updateL1(kReal, cachedItem)
 			c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
 		}
-		return nil
+		return c.cacheHitReturn()
 	}
 
 	if cachedItem != nil && nowUnix >= cachedItem.expireUnixNano && domainSetContainsToken(cachedItem.domainSet, "DDNS域名") {
@@ -787,30 +794,113 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 				c.l2HitCount.Add(1)
 				refreshedResp.Id = q.Id
 				qCtx.SetResponse(refreshedResp)
+				c.trySetCachedResponsePayload(qCtx, refreshedItem, refreshedResp, false, expiredMsgTtl, nowUnix)
 				if refreshedDomainSet != "" {
 					qCtx.StoreValue(query_context.KeyDomainSet, refreshedDomainSet)
 				}
-				return nil
+				return c.cacheHitReturn()
 			}
 		}
 	}
 
 	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
+	return c.execColdMiss(ctx, msgKey, kReal, shard, qCtx, next)
+}
+
+func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l1Shard, qCtx *query_context.Context, next sequence.ChainWalker) error {
+	sfKey := c.coldQuerySingleflightKey(msgKey, qCtx)
+	result, err, shared := c.coldQuerySF.Do(sfKey, func() (any, error) {
+		err := next.ExecNext(ctx, qCtx)
+		r := qCtx.R()
+		if r != nil && !c.containsExcluded(r) {
+			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
+				c.updatedKey.Add(1)
+				if c.l1Enabled && shard != nil {
+					shard.updateL1(k, cachedItem)
+				}
+				return cachedItem, err
+			}
+		}
+		return nil, err
+	})
+	if !shared {
+		return err
+	}
+	if err != nil && !errors.Is(err, sequence.ErrExit) {
+		return err
+	}
+	cachedItem, _ := result.(*item)
+	if cachedItem == nil {
+		cachedItem, _, _ = c.backend.Get(k)
+	}
+	if cachedItem == nil {
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
+		return c.execColdMissDirect(ctx, msgKey, k, shard, qCtx, next)
+	}
+	if shouldBypassForRouteChange(cachedItem.domainSet, currentRouteDomainSet(qCtx), c.plugin) {
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
+		return err
+	}
+	nowUnix := time.Now().UnixNano()
+	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
+	if corrupt {
+		c.deleteRuntimeCacheKey(k, "cold_shared_corrupt")
+		return err
+	}
+	if cachedResp == nil {
+		return err
+	}
+	if lazyHit {
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheLazy)
+		markCacheResponseStale(qCtx)
+	} else {
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
+	}
+	c.hitTotal.Inc()
+	c.hitCount.Add(1)
+	c.l2HitTotalMetric.Inc()
+	c.l2HitCount.Add(1)
+	cachedResp.Id = qCtx.Q().Id
+	qCtx.SetResponse(cachedResp)
+	c.trySetCachedResponsePayload(qCtx, cachedItem, cachedResp, lazyHit, expiredMsgTtl, nowUnix)
+	if domainSet != "" {
+		qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
+	}
+	if c.l1Enabled && !lazyHit && shard != nil {
+		shard.updateL1(k, cachedItem)
+	}
+	return c.cacheHitReturn()
+}
+
+func (c *Cache) cacheHitReturn() error {
+	if c.args != nil && c.args.ExitOnHit {
+		return sequence.ErrExit
+	}
+	return nil
+}
+
+func (c *Cache) execColdMissDirect(ctx context.Context, msgKey string, k key, shard *l1Shard, qCtx *query_context.Context, next sequence.ChainWalker) error {
 	err := next.ExecNext(ctx, qCtx)
 	r := qCtx.R()
-
 	if r != nil && !c.containsExcluded(r) {
 		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
 			c.updatedKey.Add(1)
-
-			// 同时更新 L1
-			if c.l1Enabled {
-				shard.updateL1(kReal, cachedItem)
+			if c.l1Enabled && shard != nil {
+				shard.updateL1(k, cachedItem)
 			}
 		}
 	}
-
 	return err
+}
+
+func (c *Cache) coldQuerySingleflightKey(msgKey string, qCtx *query_context.Context) string {
+	domainSet := currentRouteDomainSet(qCtx)
+	dependencies := mergeDependencySets(domainSet, currentCacheDependencies(qCtx))
+	if domainSet == "" && dependencies == "" {
+		return msgKey
+	}
+	signature := resolveRouteSignature(dependencies, c.plugin)
+	return msgKey + "\x00" + domainSet + "\x00" + dependencies + "\x00" + signature
 }
 
 func (c *Cache) waitForLazyRefresh(state *lazyRefreshState, wait time.Duration) bool {
@@ -1528,6 +1618,7 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 				expireUnixNano: msgExpTime.UnixNano(),
 				domainSet:      entry.GetDomainSet(),
 			}
+			i.refreshTTLOffsets()
 			c.prepareCacheItemForStore(i)
 			c.backend.Store(key(entry.GetKey()), i, cacheExpTime)
 		}
@@ -1712,6 +1803,85 @@ func respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.
 	return nil, false, "", false
 }
 
+func (v *item) refreshTTLOffsets() {
+	if v == nil || len(v.resp) == 0 {
+		return
+	}
+	offsets := findResponseTTLOffsets(v.resp)
+	if len(offsets) == 0 {
+		v.ttlOffsets = nil
+		return
+	}
+	if cap(v.ttlOffsets) < len(offsets) {
+		v.ttlOffsets = make([]uint16, 0, len(offsets))
+	} else {
+		v.ttlOffsets = v.ttlOffsets[:0]
+	}
+	for _, offset := range offsets {
+		if offset > 0 && offset+4 <= len(v.resp) && offset <= int(^uint16(0)) {
+			v.ttlOffsets = append(v.ttlOffsets, uint16(offset))
+		}
+	}
+}
+
+func (c *Cache) trySetCachedResponsePayload(qCtx *query_context.Context, v *item, msg *dns.Msg, lazy bool, expiredResponseTTL int, nowUnix int64) {
+	if qCtx == nil || v == nil || msg == nil || !qCtx.ServerMeta.FromUDP || qCtx.ClientOpt() != nil {
+		return
+	}
+	wire := buildCachedWirePayload(v, msg.Id, lazy, expiredResponseTTL, nowUnix)
+	if wire == nil {
+		return
+	}
+	qCtx.SetResponsePayload(&query_context.ResponsePayload{
+		Wire:  wire,
+		Msg:   msg,
+		Stale: lazy,
+	})
+}
+
+func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL int, nowUnix int64) []byte {
+	if v == nil || len(v.resp) < 12 {
+		return nil
+	}
+	if len(v.resp) > dns.MinMsgSize {
+		return nil
+	}
+	if nowUnix <= 0 {
+		nowUnix = time.Now().UnixNano()
+	}
+	wire := make([]byte, len(v.resp))
+	copy(wire, v.resp)
+	binary.BigEndian.PutUint16(wire[:2], txid)
+	wire[3] |= 0x80 // RecursionAvailable; matches EntryHandler's normal response path.
+
+	var subtract uint32
+	if !lazy && nowUnix > v.storedUnixNano {
+		ageSeconds := (nowUnix - v.storedUnixNano) / int64(time.Second)
+		if ageSeconds > int64(^uint32(0)) {
+			subtract = ^uint32(0)
+		} else if ageSeconds > 0 {
+			subtract = uint32(ageSeconds)
+		}
+	}
+	for _, offset16 := range v.ttlOffsets {
+		offset := int(offset16)
+		if offset+4 > len(wire) {
+			continue
+		}
+		if lazy {
+			binary.BigEndian.PutUint32(wire[offset:offset+4], uint32(expiredResponseTTL))
+			continue
+		}
+		ttl := binary.BigEndian.Uint32(wire[offset : offset+4])
+		if subtract >= ttl {
+			binary.BigEndian.PutUint32(wire[offset:offset+4], 0)
+		} else if subtract > 0 {
+			binary.BigEndian.PutUint32(wire[offset:offset+4], ttl-subtract)
+		}
+	}
+	return wire
+}
+
 func releaseDNSMsg(m *dns.Msg) {
 	if m == nil {
 		return
@@ -1788,6 +1958,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 		storedUnixNano: now.UnixNano(),
 		expireUnixNano: now.Add(msgTtl).UnixNano(),
 	}
+	v.refreshTTLOffsets()
 
 	domainSet := currentRouteDomainSet(qCtx)
 	dependencySet := mergeDependencySets(domainSet, currentCacheDependencies(qCtx))

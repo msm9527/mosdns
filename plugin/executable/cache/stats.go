@@ -136,6 +136,7 @@ func (c *Cache) snapshotConfig(snapshotPath, walPath string) map[string]interfac
 		"l1_total_cap":       c.args.L1TotalCap,
 		"l1_shard_cap":       c.l1ShardCap,
 		"enable_ecs":         c.args.EnableECS,
+		"exit_on_hit":        c.args.ExitOnHit,
 		"bypass_domain_sets": append([]string(nil), c.args.BypassDomainSets...),
 		"persist":            snapshotPath != "" || walPath != "",
 	}

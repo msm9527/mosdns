@@ -118,12 +118,12 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 		ctx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
 		defer cancel()
 		err := f.primary.Exec(ctx, qCtx)
-		if err != nil {
+		if err != nil && !errors.Is(err, sequence.ErrExit) {
 			f.logger.Warn("primary error", qCtx.InfoField(), zap.Error(err))
 		}
 
 		r := qCtx.R()
-		if err != nil || r == nil {
+		if (err != nil && !errors.Is(err, sequence.ErrExit)) || r == nil {
 			close(primFailed)
 			respChan <- nil
 		} else {
@@ -151,7 +151,7 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 		ctx, cancel := makeDdlCtx(ctx, defaultParallelTimeout)
 		defer cancel()
 		err := f.secondary.Exec(ctx, qCtx)
-		if err != nil {
+		if err != nil && !errors.Is(err, sequence.ErrExit) {
 			f.logger.Warn("secondary error", qCtx.InfoField(), zap.Error(err))
 			respChan <- nil
 			return

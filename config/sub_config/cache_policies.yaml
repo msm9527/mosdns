@@ -41,6 +41,8 @@
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
 # - UDP 快路径默认保留热点结果，并允许 FakeIP / 热点缓存向客户端返回更长 TTL。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
+# - 真实解析以 cache_main 作为长期持久化真源；分支缓存只保留小型短期去抖，
+#   避免同一真实响应在主缓存和分支缓存中长期重复占用内存与 WAL。
 #
 # udp_fast_path 字段说明：
 # - internal_ttl: 快路径内部缓存保留秒数；只影响服务端热点缓存寿命。
@@ -48,6 +50,8 @@
 # - stale_max_seconds: 过期后最多允许返回 stale 结果多久；超过后强制回落完整解析。
 # - ttl_min / ttl_max: 返回给客户端的 TTL 裁剪范围；0 表示不限制该边界。
 # - bypass_domain_sets: 命中这些域名集时完全绕过 UDP 快路径缓存。
+# - memory_budget_mb: 快路径表自动容量预算；0 表示按 Go 内存限制推断。
+# - response_slots / rule_slots: 手动固定快路径响应/规则槽位；0 表示自动。
 
 response:
   cache_main:
@@ -66,49 +70,40 @@ response:
     wal_sync_interval: 1
 
   cache_branch_domestic:
-    size: 200000
-    lazy_cache_ttl: 43200
-    lazy_stale_ttl: 7200
+    size: 30000
+    lazy_cache_ttl: 900
+    lazy_stale_ttl: 120
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
-    l1_total_cap: 4096
+    l1_total_cap: 1024
     bypass_domain_sets:
       - DDNS域名
-    persist: true
-    dump_file: db/cache/cache_branch_domestic.dump
-    dump_interval: 3600
-    wal_sync_interval: 1
+    persist: false
 
   cache_branch_foreign:
-    size: 150000
-    lazy_cache_ttl: 43200
-    lazy_stale_ttl: 7200
+    size: 30000
+    lazy_cache_ttl: 900
+    lazy_stale_ttl: 120
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
-    l1_total_cap: 4096
+    l1_total_cap: 1024
     bypass_domain_sets:
       - DDNS域名
-    persist: true
-    dump_file: db/cache/cache_branch_foreign.dump
-    dump_interval: 3600
-    wal_sync_interval: 1
+    persist: false
 
   cache_branch_foreign_ecs:
-    size: 100000
-    lazy_cache_ttl: 43200
-    lazy_stale_ttl: 7200
+    size: 10000
+    lazy_cache_ttl: 900
+    lazy_stale_ttl: 120
     nxdomain_ttl: 120
     servfail_ttl: 5
     l1_enabled: true
-    l1_total_cap: 2048
+    l1_total_cap: 512
     bypass_domain_sets:
       - DDNS域名
-    persist: true
-    dump_file: db/cache/cache_branch_foreign_ecs.dump
-    dump_interval: 1800
-    wal_sync_interval: 1
+    persist: false
 
   cache_fakeip_domestic:
     size: 100000
@@ -152,5 +147,8 @@ udp_fast_path:
   stale_max_seconds: 3600
   ttl_min: 120
   ttl_max: 900
+  memory_budget_mb: 8
+  response_slots: 0
+  rule_slots: 0
   bypass_domain_sets:
     - DDNS域名

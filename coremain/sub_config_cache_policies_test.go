@@ -43,7 +43,7 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	}
 }
 
-func TestDefaultCachePolicyConfigUsesLargeHotCacheProfile(t *testing.T) {
+func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 
 	totalSize := 0
@@ -56,11 +56,14 @@ func TestDefaultCachePolicyConfigUsesLargeHotCacheProfile(t *testing.T) {
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 43200 {
-		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 43200", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
+	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 900 {
+		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 7200 {
-		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 7200", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 120 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	}
+	if cfg.Response["cache_branch_foreign"].Persist {
+		t.Fatal("cache_branch_foreign should be short-term only")
 	}
 	if totalSize > 1200000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)
@@ -70,7 +73,7 @@ func TestDefaultCachePolicyConfigUsesLargeHotCacheProfile(t *testing.T) {
 	}
 }
 
-func TestRepoCachePoliciesTemplateUsesLargeHotCacheProfile(t *testing.T) {
+func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *testing.T) {
 	baseDir := filepath.Join("..", "config")
 	cfg, ok, err := LoadCachePolicyConfigFromSubConfigForBaseDir(baseDir)
 	if err != nil {
@@ -89,6 +92,9 @@ func TestRepoCachePoliciesTemplateUsesLargeHotCacheProfile(t *testing.T) {
 
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("template cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
+	}
+	if cfg.Response["cache_branch_domestic"].Persist || cfg.Response["cache_branch_foreign"].Persist {
+		t.Fatal("template branch real caches should be non-persistent")
 	}
 	if totalSize > 1200000 {
 		t.Fatalf("template cache total size is too large: %d", totalSize)
@@ -242,6 +248,9 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		StaleMax:         60,
 		TTLMin:           2,
 		TTLMax:           4,
+		MemoryBudgetMB:   6,
+		ResponseSlots:    1024,
+		RuleSlots:        512,
 		BypassDomainSets: []string{"DDNS域名"},
 	}
 
@@ -265,6 +274,9 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 	udpArgs := udp.Args.(map[string]any)
 	if udpArgs["fast_cache_internal_ttl"] != 9 || udpArgs["fast_cache_stale_retry_seconds"] != 12 || udpArgs["fast_cache_stale_max_seconds"] != 60 || udpArgs["fast_cache_ttl_max"] != uint32(4) {
 		t.Fatalf("unexpected udp args: %+v", udpArgs)
+	}
+	if udpArgs["fast_cache_memory_budget_mb"] != 6 || udpArgs["fast_cache_slots"] != 1024 || udpArgs["fast_rule_cache_slots"] != 512 {
+		t.Fatalf("unexpected udp slot args: %+v", udpArgs)
 	}
 	udpBypassDomainSets, ok := udpArgs["fast_cache_bypass_domain_sets"].([]string)
 	if !ok || len(udpBypassDomainSets) != 1 || udpBypassDomainSets[0] != "DDNS域名" {

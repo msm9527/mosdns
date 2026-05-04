@@ -16,15 +16,15 @@ const cachePoliciesConfigRelPath = "sub_config/cache_policies.yaml"
 
 const (
 	defaultCacheMainSize             = 400000
-	defaultCacheBranchDomesticSize   = 200000
-	defaultCacheBranchForeignSize    = 150000
-	defaultCacheBranchForeignECSSize = 100000
+	defaultCacheBranchDomesticSize   = 30000
+	defaultCacheBranchForeignSize    = 30000
+	defaultCacheBranchForeignECSSize = 10000
 	defaultCacheFakeIPDomesticSize   = 100000
 	defaultCacheFakeIPProxySize      = 120000
 	defaultCacheProbeSize            = 80000
 	defaultCacheMainL1TotalCap       = 8192
-	defaultCacheBranchL1TotalCap     = 4096
-	defaultCacheForeignECSL1TotalCap = 2048
+	defaultCacheBranchL1TotalCap     = 1024
+	defaultCacheForeignECSL1TotalCap = 512
 	defaultCacheFakeIPL1TotalCap     = 2048
 	defaultCacheProbeL1TotalCap      = 2048
 )
@@ -71,6 +71,9 @@ type UDPFastCachePolicy struct {
 	StaleMax         int      `yaml:"stale_max_seconds"`
 	TTLMin           uint32   `yaml:"ttl_min"`
 	TTLMax           uint32   `yaml:"ttl_max"`
+	MemoryBudgetMB   int      `yaml:"memory_budget_mb"`
+	ResponseSlots    int      `yaml:"response_slots"`
+	RuleSlots        int      `yaml:"rule_slots"`
 	BypassDomainSets []string `yaml:"bypass_domain_sets"`
 }
 
@@ -80,6 +83,9 @@ type udpFastCachePolicyFile struct {
 	StaleMax         *int      `yaml:"stale_max_seconds,omitempty"`
 	TTLMin           *uint32   `yaml:"ttl_min,omitempty"`
 	TTLMax           *uint32   `yaml:"ttl_max,omitempty"`
+	MemoryBudgetMB   *int      `yaml:"memory_budget_mb,omitempty"`
+	ResponseSlots    *int      `yaml:"response_slots,omitempty"`
+	RuleSlots        *int      `yaml:"rule_slots,omitempty"`
 	BypassDomainSets *[]string `yaml:"bypass_domain_sets,omitempty"`
 }
 
@@ -115,22 +121,19 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 180, ServfailTTL: 5,
-				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 120, NXDomainTTL: 180, ServfailTTL: 5,
+				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
-				DumpFile:         "db/cache/cache_branch_domestic.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 180, ServfailTTL: 5,
-				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 120, NXDomainTTL: 180, ServfailTTL: 5,
+				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
-				DumpFile:         "db/cache/cache_branch_foreign.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 120, ServfailTTL: 5,
-				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: true,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 120, NXDomainTTL: 120, ServfailTTL: 5,
+				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
-				DumpFile:         "db/cache/cache_branch_foreign_ecs.dump", DumpInterval: 1800, WALSyncInterval: 1,
 			},
 			"cache_fakeip_domestic": {
 				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 5,
@@ -154,6 +157,7 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			StaleMax:         3600,
 			TTLMin:           120,
 			TTLMax:           900,
+			MemoryBudgetMB:   8,
 			BypassDomainSets: defaultResponseCacheBypassDomains(),
 		},
 	}
@@ -223,6 +227,15 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	if raw.UDPFastPath.TTLMax != nil {
 		cfg.UDPFastPath.TTLMax = *raw.UDPFastPath.TTLMax
 	}
+	if raw.UDPFastPath.MemoryBudgetMB != nil {
+		cfg.UDPFastPath.MemoryBudgetMB = *raw.UDPFastPath.MemoryBudgetMB
+	}
+	if raw.UDPFastPath.ResponseSlots != nil {
+		cfg.UDPFastPath.ResponseSlots = *raw.UDPFastPath.ResponseSlots
+	}
+	if raw.UDPFastPath.RuleSlots != nil {
+		cfg.UDPFastPath.RuleSlots = *raw.UDPFastPath.RuleSlots
+	}
 	if raw.UDPFastPath.BypassDomainSets != nil {
 		cfg.UDPFastPath.BypassDomainSets = normalizeCachePolicyDomainSets(*raw.UDPFastPath.BypassDomainSets)
 	}
@@ -237,6 +250,12 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	}
 	if cfg.UDPFastPath.TTLMax > 0 && cfg.UDPFastPath.TTLMin > cfg.UDPFastPath.TTLMax {
 		return nil, fmt.Errorf("udp_fast_path.ttl_min cannot exceed ttl_max")
+	}
+	if cfg.UDPFastPath.MemoryBudgetMB < 0 {
+		return nil, fmt.Errorf("udp_fast_path.memory_budget_mb cannot be negative")
+	}
+	if cfg.UDPFastPath.ResponseSlots < 0 || cfg.UDPFastPath.RuleSlots < 0 {
+		return nil, fmt.Errorf("udp_fast_path slots cannot be negative")
 	}
 	sort.Strings(ignored)
 	return ignored, nil
@@ -393,6 +412,17 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		args["fast_cache_stale_max_seconds"] = cfg.UDPFastPath.StaleMax
 		args["fast_cache_ttl_min"] = cfg.UDPFastPath.TTLMin
 		args["fast_cache_ttl_max"] = cfg.UDPFastPath.TTLMax
+		args["fast_cache_memory_budget_mb"] = cfg.UDPFastPath.MemoryBudgetMB
+		if cfg.UDPFastPath.ResponseSlots > 0 {
+			args["fast_cache_slots"] = cfg.UDPFastPath.ResponseSlots
+		} else {
+			delete(args, "fast_cache_slots")
+		}
+		if cfg.UDPFastPath.RuleSlots > 0 {
+			args["fast_rule_cache_slots"] = cfg.UDPFastPath.RuleSlots
+		} else {
+			delete(args, "fast_rule_cache_slots")
+		}
 		if len(cfg.UDPFastPath.BypassDomainSets) > 0 {
 			args["fast_cache_bypass_domain_sets"] = append([]string(nil), cfg.UDPFastPath.BypassDomainSets...)
 		} else {

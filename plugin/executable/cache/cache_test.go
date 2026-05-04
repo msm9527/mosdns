@@ -22,7 +22,9 @@ package cache
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -577,7 +579,7 @@ func Test_cachePlugin_LazyRefreshBypassesNestedCache(t *testing.T) {
 	q := new(dns.Msg)
 	q.SetQuestion(qname, dns.TypeA)
 	qCtx := query_context.NewContext(q)
-	if err := s.Exec(context.Background(), qCtx); err != nil {
+	if err := s.Exec(context.Background(), qCtx); err != nil && !errors.Is(err, sequence.ErrExit) {
 		t.Fatalf("Exec: %v", err)
 	}
 
@@ -657,6 +659,297 @@ func Test_cachePlugin_LazyStaleHitReturnsImmediatelyDuringRefresh(t *testing.T) 
 	t.Fatalf("expected background refresh to eventually store fresh response, raw_calls=%d", raw.calls.Load())
 }
 
+func Test_cachePlugin_CachedUDPHitSetsWirePayload(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	const qname = "wire-hit.example."
+	seed := testQueryContext(t, qname, net.IPv4(10, 0, 0, 1))
+	msgKey := cacheKeyForQuery(t, qname)
+	cachedItem, ok := c.saveRespToCache(msgKey, seed)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	cachedItem.storedUnixNano = time.Now().Add(-10 * time.Second).UnixNano()
+	cachedItem.refreshTTLOffsets()
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, time.Now().Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	q := new(dns.Msg)
+	q.SetQuestion(qname, dns.TypeA)
+	q.Id = 0xBEEF
+	qCtx := query_context.NewContext(q)
+	qCtx.ServerMeta.FromUDP = true
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil && !errors.Is(err, sequence.ErrExit) {
+		t.Fatal(err)
+	}
+	payload := qCtx.ResponsePayload()
+	if payload == nil || len(payload.Wire) == 0 {
+		t.Fatal("expected cached UDP hit to set wire payload")
+	}
+	if got := binary.BigEndian.Uint16(payload.Wire[:2]); got != q.Id {
+		t.Fatalf("wire txid = %#x, want %#x", got, q.Id)
+	}
+	if payload.Wire[3]&0x80 == 0 {
+		t.Fatal("expected cached wire payload to set recursion-available bit")
+	}
+	resp := new(dns.Msg)
+	if err := resp.Unpack(payload.Wire); err != nil {
+		t.Fatalf("unpack payload: %v", err)
+	}
+	if !responseHasA(resp, net.IPv4(10, 0, 0, 1)) {
+		t.Fatalf("expected cached A response, got %+v", resp)
+	}
+	if len(resp.Answer) != 1 || resp.Answer[0].Header().Ttl >= 60 {
+		t.Fatalf("expected payload TTL to be reduced, got %+v", resp.Answer)
+	}
+}
+
+func Test_cachePlugin_CachedUDPHitSkipsWirePayloadWhenTooLargeForPlainUDP(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	qCtx := testQueryContext(t, "large-wire-hit.example.", net.IPv4(10, 0, 0, 1))
+	resp := qCtx.R()
+	for i := 0; i < 40; i++ {
+		resp.Answer = append(resp.Answer, &dns.TXT{
+			Hdr: dns.RR_Header{
+				Name:   fmt.Sprintf("txt-%02d.large-wire-hit.example.", i),
+				Rrtype: dns.TypeTXT,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			Txt: []string{"0123456789abcdef0123456789abcdef"},
+		})
+	}
+	msgKey := cacheKeyForQuery(t, "large-wire-hit.example.")
+	cachedItem, ok := c.saveRespToCache(msgKey, qCtx)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	if len(cachedItem.resp) <= dns.MinMsgSize {
+		t.Fatalf("test response is too small: %d", len(cachedItem.resp))
+	}
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, time.Now().Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	q := new(dns.Msg)
+	q.SetQuestion("large-wire-hit.example.", dns.TypeA)
+	qCtx = query_context.NewContext(q)
+	qCtx.ServerMeta.FromUDP = true
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil && !errors.Is(err, sequence.ErrExit) {
+		t.Fatal(err)
+	}
+	if payload := qCtx.ResponsePayload(); payload != nil {
+		t.Fatal("expected oversized plain UDP cache hit to use normal pack/truncate path")
+	}
+	if qCtx.R() == nil {
+		t.Fatal("expected cached response to remain available")
+	}
+}
+
+func Test_cachePlugin_CachedHitStopsFollowingExecutors(t *testing.T) {
+	c := NewCache(&Args{Size: 64, ExitOnHit: true}, Opts{})
+	defer c.Close()
+
+	const qname = "hit-stops-next.example."
+	seed := testQueryContext(t, qname, net.IPv4(10, 0, 0, 1))
+	msgKey := cacheKeyForQuery(t, qname)
+	cachedItem, ok := c.saveRespToCache(msgKey, seed)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, time.Now().Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	childRaw := &testResponseExec{ip: net.IPv4(10, 0, 0, 2)}
+	parentRaw := &testResponseExec{ip: net.IPv4(10, 0, 0, 3)}
+	plugins := map[string]any{
+		"cache":      c,
+		"child_raw":  childRaw,
+		"parent_raw": parentRaw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	child, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("child", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$child_raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	plugins["child"] = child
+	parent, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("parent", m)), []sequence.RuleArgs{
+		{Exec: "$child"},
+		{Exec: "$parent_raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	qCtx := queryThroughSequence(t, parent, qname)
+	if !responseHasA(qCtx.R(), net.IPv4(10, 0, 0, 1)) {
+		t.Fatalf("expected cached response, got %+v", qCtx.R())
+	}
+	if got := childRaw.calls.Load(); got != 0 {
+		t.Fatalf("child raw calls = %d, want 0 after terminal cache hit", got)
+	}
+	if got := parentRaw.calls.Load(); got != 0 {
+		t.Fatalf("parent raw calls = %d, want 0 after terminal cache hit", got)
+	}
+}
+
+func Test_cachePlugin_DefaultCachedHitAllowsParentSequenceToContinue(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	const qname = "hit-continues-next.example."
+	seed := testQueryContext(t, qname, net.IPv4(10, 0, 0, 1))
+	msgKey := cacheKeyForQuery(t, qname)
+	cachedItem, ok := c.saveRespToCache(msgKey, seed)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, time.Now().Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	childRaw := &testResponseExec{ip: net.IPv4(10, 0, 0, 2)}
+	parentRaw := &testResponseExec{ip: net.IPv4(10, 0, 0, 3)}
+	plugins := map[string]any{
+		"cache":      c,
+		"child_raw":  childRaw,
+		"parent_raw": parentRaw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	child, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("child", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$child_raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer child.Close()
+	plugins["child"] = child
+	parent, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("parent", m)), []sequence.RuleArgs{
+		{Exec: "$child"},
+		{Exec: "$parent_raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	qCtx := queryThroughSequence(t, parent, qname)
+	if !responseHasA(qCtx.R(), net.IPv4(10, 0, 0, 3)) {
+		t.Fatalf("expected parent sequence to continue after default cache hit, got %+v", qCtx.R())
+	}
+	if got := childRaw.calls.Load(); got != 0 {
+		t.Fatalf("child raw calls = %d, want 0 after cache hit", got)
+	}
+	if got := parentRaw.calls.Load(); got != 1 {
+		t.Fatalf("parent raw calls = %d, want 1 after default cache hit", got)
+	}
+}
+
+func Test_cachePlugin_ColdMissSingleflightSharesResponse(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	const qname = "cold-share.example."
+	raw := &testResponseExec{
+		ip:    net.IPv4(10, 0, 0, 2),
+		delay: 100 * time.Millisecond,
+	}
+	plugins := map[string]any{
+		"cache": c,
+		"raw":   raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 8
+	errCh := make(chan error, workers)
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			qCtx := queryThroughSequence(t, s, qname)
+			if !responseHasA(qCtx.R(), net.IPv4(10, 0, 0, 2)) {
+				errCh <- fmt.Errorf("unexpected response: %+v", qCtx.R())
+				return
+			}
+			errCh <- nil
+		}()
+	}
+	close(start)
+	for i := 0; i < workers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := raw.calls.Load(); got != 1 {
+		t.Fatalf("raw calls = %d, want 1", got)
+	}
+}
+
+func Test_cachePlugin_ColdMissSingleflightFallsBackWhenUncacheable(t *testing.T) {
+	c := NewCache(&Args{Size: 64, ExcludeIPs: []string{"10.0.0.0/24"}}, Opts{})
+	defer c.Close()
+
+	const qname = "cold-uncacheable.example."
+	raw := &testResponseExec{
+		ip:    net.IPv4(10, 0, 0, 3),
+		delay: 100 * time.Millisecond,
+	}
+	plugins := map[string]any{
+		"cache": c,
+		"raw":   raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const workers = 4
+	errCh := make(chan error, workers)
+	start := make(chan struct{})
+	for i := 0; i < workers; i++ {
+		go func() {
+			<-start
+			qCtx := queryThroughSequence(t, s, qname)
+			if !responseHasA(qCtx.R(), net.IPv4(10, 0, 0, 3)) {
+				errCh <- fmt.Errorf("unexpected response: %+v", qCtx.R())
+				return
+			}
+			errCh <- nil
+		}()
+	}
+	close(start)
+	for i := 0; i < workers; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := raw.calls.Load(); got < 2 {
+		t.Fatalf("raw calls = %d, want fallback calls for uncacheable response", got)
+	}
+}
+
 func Test_cachePlugin_DoesNotPromoteNestedStaleResponse(t *testing.T) {
 	mainCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
 	defer mainCache.Close()
@@ -685,7 +978,7 @@ func Test_cachePlugin_DoesNotPromoteNestedStaleResponse(t *testing.T) {
 	q := new(dns.Msg)
 	q.SetQuestion(qname, dns.TypeA)
 	qCtx := query_context.NewContext(q)
-	if err := s.Exec(context.Background(), qCtx); err != nil {
+	if err := s.Exec(context.Background(), qCtx); err != nil && !errors.Is(err, sequence.ErrExit) {
 		t.Fatalf("Exec: %v", err)
 	}
 	if !responseHasA(qCtx.R(), net.IPv4(1, 1, 1, 1)) {
@@ -1310,7 +1603,7 @@ func queryThroughSequence(t testingHelper, s *sequence.Sequence, name string) *q
 	q := new(dns.Msg)
 	q.SetQuestion(name, dns.TypeA)
 	qCtx := query_context.NewContext(q)
-	if err := s.Exec(context.Background(), qCtx); err != nil {
+	if err := s.Exec(context.Background(), qCtx); err != nil && !errors.Is(err, sequence.ErrExit) {
 		t.Fatal(err)
 	}
 	return qCtx
