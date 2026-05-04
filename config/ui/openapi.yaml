@@ -1477,6 +1477,7 @@ paths:
         - 缓存策略真源位于 `config/sub_config/cache_policies.yaml`
         - `config.lazy_cache_ttl` 表示成功响应在后端缓存中最多保留多久
         - `config.lazy_stale_ttl` 表示真实 TTL 过期后允许直接返回 stale 结果多久
+        - `config.client_ttl_min` / `config.client_ttl_max` 表示缓存命中后返回给客户端的 TTL 裁剪范围
         - `config.persist=true` 表示该缓存会做 dump + WAL 持久化
         - `config.persist=false` 表示该缓存仅保存在内存中
       responses:
@@ -3634,6 +3635,12 @@ components:
         lazy_stale_ttl:
           type: integer
           description: TTL 过期后允许返回 stale 结果的窗口，单位秒
+        client_ttl_min:
+          type: integer
+          description: 缓存命中后返回给客户端的最小 TTL，单位秒；0 表示不限制
+        client_ttl_max:
+          type: integer
+          description: 缓存命中后返回给客户端的最大 TTL，单位秒；0 表示不限制
         l1_enabled:
           type: boolean
         l1_total_cap:

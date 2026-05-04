@@ -14,6 +14,8 @@
 # - size: 最大缓存条目数；超出后按 LRU 自动淘汰旧条目，不会整库清空。
 # - lazy_cache_ttl: 成功响应在后端缓存中最多保留多久，单位秒；0 表示按真实 DNS TTL 保留。
 # - lazy_stale_ttl: 真实 TTL 过期后，最多还能返回 stale 结果多久，单位秒；0 表示禁用。
+# - client_ttl_min / client_ttl_max: 命中该响应缓存后返回给客户端的 TTL 裁剪范围；
+#   0 表示不限制该边界。真实解析默认 120-900 秒，FakeIP 默认固定为 600 秒。
 # - nxdomain_ttl / servfail_ttl: 负面结果缓存秒数，用于收敛重复失败查询。
 # - l1_enabled: 是否启用进程内 L1 热缓存。
 # - l1_total_cap / l1_shard_cap: L1 热缓存容量上限；不设 shard 时按实现自动分配。
@@ -34,7 +36,8 @@
 # - cache_probe: 节点探测专用缓存。
 #
 # 设计默认值：
-# - fakeip 缓存默认不持久化，且不使用 lazy stale。
+# - fakeip 缓存默认不持久化，后端保留 2 小时并向客户端稳定返回 600s TTL，
+#   避免命中缓存后 TTL 衰减到 1s 导致局域网客户端持续重查。
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
 # - 真实解析缓存保留较长 backend 窗口保证命中率，但只允许较短 lazy stale 返回窗口。
 # - 这样热点域名可通过预刷新维持加速，低频域名过期太久后会强制重新解析。
@@ -58,6 +61,8 @@ response:
     size: 400000
     lazy_cache_ttl: 43200
     lazy_stale_ttl: 7200
+    client_ttl_min: 120
+    client_ttl_max: 900
     nxdomain_ttl: 300
     servfail_ttl: 5
     l1_enabled: true
@@ -73,6 +78,8 @@ response:
     size: 30000
     lazy_cache_ttl: 900
     lazy_stale_ttl: 120
+    client_ttl_min: 120
+    client_ttl_max: 900
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
@@ -85,6 +92,8 @@ response:
     size: 30000
     lazy_cache_ttl: 900
     lazy_stale_ttl: 120
+    client_ttl_min: 120
+    client_ttl_max: 900
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
@@ -97,6 +106,8 @@ response:
     size: 10000
     lazy_cache_ttl: 900
     lazy_stale_ttl: 120
+    client_ttl_min: 120
+    client_ttl_max: 900
     nxdomain_ttl: 120
     servfail_ttl: 5
     l1_enabled: true
@@ -107,8 +118,10 @@ response:
 
   cache_fakeip_domestic:
     size: 100000
-    lazy_cache_ttl: 0
-    lazy_stale_ttl: 0
+    lazy_cache_ttl: 7200
+    lazy_stale_ttl: 7200
+    client_ttl_min: 600
+    client_ttl_max: 600
     nxdomain_ttl: 60
     servfail_ttl: 5
     l1_enabled: true
@@ -119,8 +132,10 @@ response:
 
   cache_fakeip_proxy:
     size: 120000
-    lazy_cache_ttl: 0
-    lazy_stale_ttl: 0
+    lazy_cache_ttl: 7200
+    lazy_stale_ttl: 7200
+    client_ttl_min: 600
+    client_ttl_max: 600
     nxdomain_ttl: 60
     servfail_ttl: 5
     l1_enabled: true
@@ -133,6 +148,8 @@ response:
     size: 80000
     lazy_cache_ttl: 600
     lazy_stale_ttl: 600
+    client_ttl_min: 120
+    client_ttl_max: 900
     nxdomain_ttl: 60
     servfail_ttl: 5
     l1_enabled: true

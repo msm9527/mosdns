@@ -4,20 +4,28 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/miekg/dns"
 )
 
 type serviceE2EStubServer struct {
-	addr string
-	udp  *dns.Server
-	tcp  *dns.Server
-	a    net.IP
-	aaaa net.IP
+	addr  string
+	udp   *dns.Server
+	tcp   *dns.Server
+	a     net.IP
+	aaaa  net.IP
+	ttl   uint32
+	mu    sync.Mutex
+	calls map[uint16]int
 }
 
 func newServiceE2EStubServer(ipv4, ipv6 string) (*serviceE2EStubServer, error) {
+	return newServiceE2EStubServerWithTTL(ipv4, ipv6, 60)
+}
+
+func newServiceE2EStubServerWithTTL(ipv4, ipv6 string, ttl uint32) (*serviceE2EStubServer, error) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		return nil, err
@@ -35,6 +43,12 @@ func newServiceE2EStubServer(ipv4, ipv6 string) (*serviceE2EStubServer, error) {
 		tcp:  &dns.Server{Listener: ln},
 		a:    net.ParseIP(ipv4).To4(),
 		aaaa: net.ParseIP(ipv6),
+		ttl:  ttl,
+		calls: map[uint16]int{
+			dns.TypeA:    0,
+			dns.TypeAAAA: 0,
+			dns.TypeSOA:  0,
+		},
 	}
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", server.serveDNS)
@@ -52,22 +66,22 @@ func startServiceE2EStub(server *dns.Server) {
 }
 
 func startServiceE2EUpstreams() (serviceE2EUpstreams, func(), error) {
-	domestic, err := newServiceE2EStubServer("1.1.1.1", "2001:db8::1")
+	domestic, err := newServiceE2EStubServerWithTTL("1.1.1.1", "2001:db8::1", 5)
 	if err != nil {
 		return serviceE2EUpstreams{}, nil, err
 	}
-	foreign, err := newServiceE2EStubServer("8.8.8.8", "2001:db8::8")
+	foreign, err := newServiceE2EStubServerWithTTL("8.8.8.8", "2001:db8::8", 5)
 	if err != nil {
 		domestic.Close()
 		return serviceE2EUpstreams{}, nil, err
 	}
-	cnfake, err := newServiceE2EStubServer("30.0.0.2", "2400::2")
+	cnfake, err := newServiceE2EStubServerWithTTL("30.0.0.2", "2400::2", 1)
 	if err != nil {
 		domestic.Close()
 		foreign.Close()
 		return serviceE2EUpstreams{}, nil, err
 	}
-	nocnfake, err := newServiceE2EStubServer("28.0.0.2", "f2b0::2")
+	nocnfake, err := newServiceE2EStubServerWithTTL("28.0.0.2", "f2b0::2", 1)
 	if err != nil {
 		domestic.Close()
 		foreign.Close()
@@ -80,6 +94,12 @@ func startServiceE2EUpstreams() (serviceE2EUpstreams, func(), error) {
 			foreignecs: foreign.addr,
 			cnfake:     cnfake.addr,
 			nocnfake:   nocnfake.addr,
+			servers: map[string]*serviceE2EStubServer{
+				"domestic": domestic,
+				"foreign":  foreign,
+				"cnfake":   cnfake,
+				"nocnfake": nocnfake,
+			},
 		}, func() {
 			domestic.Close()
 			foreign.Close()
@@ -93,6 +113,12 @@ func (s *serviceE2EStubServer) Close() {
 	_ = s.tcp.Shutdown()
 }
 
+func (s *serviceE2EStubServer) Calls(qtype uint16) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls[qtype]
+}
+
 func (s *serviceE2EStubServer) serveDNS(w dns.ResponseWriter, req *dns.Msg) {
 	resp := new(dns.Msg)
 	resp.SetReply(req)
@@ -100,25 +126,28 @@ func (s *serviceE2EStubServer) serveDNS(w dns.ResponseWriter, req *dns.Msg) {
 		_ = w.WriteMsg(resp)
 		return
 	}
-	resp.Answer = buildServiceE2EAnswers(req.Question[0], s.a, s.aaaa)
+	s.mu.Lock()
+	s.calls[req.Question[0].Qtype]++
+	s.mu.Unlock()
+	resp.Answer = buildServiceE2EAnswers(req.Question[0], s.a, s.aaaa, s.ttl)
 	_ = w.WriteMsg(resp)
 }
 
-func buildServiceE2EAnswers(q dns.Question, ipv4, ipv6 net.IP) []dns.RR {
+func buildServiceE2EAnswers(q dns.Question, ipv4, ipv6 net.IP, ttl uint32) []dns.RR {
 	switch q.Qtype {
 	case dns.TypeA:
 		return []dns.RR{&dns.A{
-			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
 			A:   append(net.IP(nil), ipv4...),
 		}}
 	case dns.TypeAAAA:
 		return []dns.RR{&dns.AAAA{
-			Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
+			Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: ttl},
 			AAAA: append(net.IP(nil), ipv6...),
 		}}
 	case dns.TypeSOA:
 		return []dns.RR{&dns.SOA{
-			Hdr:     dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 60},
+			Hdr:     dns.RR_Header{Name: q.Name, Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: ttl},
 			Ns:      "ns1.example.",
 			Mbox:    "hostmaster.example.",
 			Serial:  1,

@@ -155,6 +155,8 @@ type Args struct {
 	Size             int      `yaml:"size"`
 	LazyCacheTTL     int      `yaml:"lazy_cache_ttl"`
 	LazyStaleTTL     int      `yaml:"lazy_stale_ttl"`
+	ClientTTLMin     uint32   `yaml:"client_ttl_min"`
+	ClientTTLMax     uint32   `yaml:"client_ttl_max"`
 	NXDomainTTL      int      `yaml:"nxdomain_ttl"`
 	ServfailTTL      int      `yaml:"servfail_ttl"`
 	L1Enabled        *bool    `yaml:"l1_enabled"`
@@ -176,6 +178,8 @@ type argsRaw struct {
 	Size             int         `yaml:"size"`
 	LazyCacheTTL     int         `yaml:"lazy_cache_ttl"`
 	LazyStaleTTL     *int        `yaml:"lazy_stale_ttl"`
+	ClientTTLMin     uint32      `yaml:"client_ttl_min"`
+	ClientTTLMax     uint32      `yaml:"client_ttl_max"`
 	NXDomainTTL      int         `yaml:"nxdomain_ttl"`
 	ServfailTTL      int         `yaml:"servfail_ttl"`
 	L1Enabled        *bool       `yaml:"l1_enabled"`
@@ -205,6 +209,8 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	} else {
 		a.LazyStaleTTL = raw.LazyCacheTTL
 	}
+	a.ClientTTLMin = raw.ClientTTLMin
+	a.ClientTTLMax = raw.ClientTTLMax
 	a.NXDomainTTL = raw.NXDomainTTL
 	a.ServfailTTL = raw.ServfailTTL
 	a.L1Enabled = raw.L1Enabled
@@ -273,6 +279,9 @@ func (a *Args) init() {
 	}
 	if a.LazyStaleTTL < 0 {
 		a.LazyStaleTTL = 0
+	}
+	if a.ClientTTLMax > 0 && a.ClientTTLMin > a.ClientTTLMax {
+		a.ClientTTLMin = a.ClientTTLMax
 	}
 	utils.SetDefaultUnsignNum(&a.Size, 1024)
 	utils.SetDefaultUnsignNum(&a.DumpInterval, 600)
@@ -671,7 +680,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		ok1 = false
 	}
 	if ok1 && nowUnix < v1.expireUnixNano {
-		r, lazy, domainSet, corrupt := respFromCacheItem(v1, 0, expiredMsgTtl)
+		r, lazy, domainSet, corrupt := c.respFromCacheItem(v1, 0, expiredMsgTtl)
 		if corrupt {
 			c.deleteRuntimeCacheKey(k, "corrupt_l1")
 			ok1 = false
@@ -730,7 +739,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		c.deleteRuntimeCacheKey(kReal, "route_change")
 		cachedItem = nil
 	}
-	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
+	cachedResp, lazyHit, domainSet, corrupt := c.respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
 	if corrupt {
 		c.deleteRuntimeCacheKey(kReal, "corrupt_l2")
 		cachedItem = nil
@@ -779,7 +788,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_route_change")
 				refreshedItem = nil
 			}
-			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, 0, expiredMsgTtl)
+			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := c.respFromCacheItem(refreshedItem, 0, expiredMsgTtl)
 			if refreshedCorrupt {
 				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_corrupt")
 				refreshedResp = nil
@@ -842,7 +851,7 @@ func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l
 		return err
 	}
 	nowUnix := time.Now().UnixNano()
-	cachedResp, lazyHit, domainSet, corrupt := respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
+	cachedResp, lazyHit, domainSet, corrupt := c.respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
 	if corrupt {
 		c.deleteRuntimeCacheKey(k, "cold_shared_corrupt")
 		return err
@@ -1769,6 +1778,15 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyStale
 	return resp, lazy, domainSet
 }
 
+func (c *Cache) respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string, bool) {
+	resp, lazy, domainSet, corrupt := respFromCacheItem(v, lazyStaleTTL, expiredResponseTTL)
+	if corrupt || resp == nil {
+		return resp, lazy, domainSet, corrupt
+	}
+	c.applyClientTTL(resp)
+	return resp, lazy, domainSet, corrupt
+}
+
 func respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string, bool) {
 	if v != nil {
 		nowUnix := time.Now().UnixNano()
@@ -1803,6 +1821,25 @@ func respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.
 	return nil, false, "", false
 }
 
+func (c *Cache) applyClientTTL(msg *dns.Msg) {
+	if c == nil || c.args == nil || msg == nil {
+		return
+	}
+	applyClientTTL(msg, c.args.ClientTTLMin, c.args.ClientTTLMax)
+}
+
+func applyClientTTL(msg *dns.Msg, minTTL, maxTTL uint32) {
+	if msg == nil {
+		return
+	}
+	if minTTL > 0 {
+		dnsutils.ApplyMinimalTTL(msg, minTTL)
+	}
+	if maxTTL > 0 {
+		dnsutils.ApplyMaximumTTL(msg, maxTTL)
+	}
+}
+
 func (v *item) refreshTTLOffsets() {
 	if v == nil || len(v.resp) == 0 {
 		return
@@ -1828,7 +1865,7 @@ func (c *Cache) trySetCachedResponsePayload(qCtx *query_context.Context, v *item
 	if qCtx == nil || v == nil || msg == nil || !qCtx.ServerMeta.FromUDP || qCtx.ClientOpt() != nil {
 		return
 	}
-	wire := buildCachedWirePayload(v, msg.Id, lazy, expiredResponseTTL, nowUnix)
+	wire := buildCachedWirePayload(v, msg.Id, lazy, expiredResponseTTL, nowUnix, c.args.ClientTTLMin, c.args.ClientTTLMax)
 	if wire == nil {
 		return
 	}
@@ -1839,7 +1876,7 @@ func (c *Cache) trySetCachedResponsePayload(qCtx *query_context.Context, v *item
 	})
 }
 
-func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL int, nowUnix int64) []byte {
+func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL int, nowUnix int64, clientTTLMin, clientTTLMax uint32) []byte {
 	if v == nil || len(v.resp) < 12 {
 		return nil
 	}
@@ -1869,17 +1906,30 @@ func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL 
 			continue
 		}
 		if lazy {
-			binary.BigEndian.PutUint32(wire[offset:offset+4], uint32(expiredResponseTTL))
+			ttl := clampClientTTL(uint32(expiredResponseTTL), clientTTLMin, clientTTLMax)
+			binary.BigEndian.PutUint32(wire[offset:offset+4], ttl)
 			continue
 		}
 		ttl := binary.BigEndian.Uint32(wire[offset : offset+4])
 		if subtract >= ttl {
-			binary.BigEndian.PutUint32(wire[offset:offset+4], 0)
+			ttl = 1
 		} else if subtract > 0 {
-			binary.BigEndian.PutUint32(wire[offset:offset+4], ttl-subtract)
+			ttl -= subtract
 		}
+		ttl = clampClientTTL(ttl, clientTTLMin, clientTTLMax)
+		binary.BigEndian.PutUint32(wire[offset:offset+4], ttl)
 	}
 	return wire
+}
+
+func clampClientTTL(ttl, minTTL, maxTTL uint32) uint32 {
+	if minTTL > 0 && ttl < minTTL {
+		ttl = minTTL
+	}
+	if maxTTL > 0 && ttl > maxTTL {
+		ttl = maxTTL
+	}
+	return ttl
 }
 
 func releaseDNSMsg(m *dns.Msg) {
@@ -1942,8 +1992,17 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 	if msgTtl <= 0 {
 		msgTtl = minCacheableTTL
 	}
+	if c.args.ClientTTLMin > 0 {
+		clientMinTTL := time.Duration(c.args.ClientTTLMin) * time.Second
+		if msgTtl < clientMinTTL {
+			msgTtl = clientMinTTL
+		}
+	}
 	if cacheTtl <= 0 {
 		cacheTtl = minCacheableTTL
+	}
+	if cacheTtl < msgTtl {
+		cacheTtl = msgTtl
 	}
 
 	msgToCache := copyNoOpt(r)

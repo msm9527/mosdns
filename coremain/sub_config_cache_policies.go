@@ -35,6 +35,8 @@ type CachePolicy struct {
 	Size             int
 	LazyCacheTTL     int
 	LazyStaleTTL     int
+	ClientTTLMin     uint32
+	ClientTTLMax     uint32
 	NXDomainTTL      int
 	ServfailTTL      int
 	L1Enabled        bool
@@ -52,6 +54,8 @@ type cachePolicyFile struct {
 	Size             *int      `yaml:"size,omitempty"`
 	LazyCacheTTL     *int      `yaml:"lazy_cache_ttl,omitempty"`
 	LazyStaleTTL     *int      `yaml:"lazy_stale_ttl,omitempty"`
+	ClientTTLMin     *uint32   `yaml:"client_ttl_min,omitempty"`
+	ClientTTLMax     *uint32   `yaml:"client_ttl_max,omitempty"`
 	NXDomainTTL      *int      `yaml:"nxdomain_ttl,omitempty"`
 	ServfailTTL      *int      `yaml:"servfail_ttl,omitempty"`
 	L1Enabled        *bool     `yaml:"l1_enabled,omitempty"`
@@ -115,38 +119,38 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: defaultCacheMainSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 300, ServfailTTL: 5,
+				Size: defaultCacheMainSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 300, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 120, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 120, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 120, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 120, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 120, NXDomainTTL: 120, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 120, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 120, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_fakeip_domestic": {
-				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 7200, LazyStaleTTL: 7200, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_fakeip_proxy": {
-				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 0, LazyStaleTTL: 0, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 7200, LazyStaleTTL: 7200, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_probe": {
-				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheProbeL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
@@ -274,6 +278,12 @@ func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) {
 	if src.LazyStaleTTL != nil {
 		dst.LazyStaleTTL = *src.LazyStaleTTL
 	}
+	if src.ClientTTLMin != nil {
+		dst.ClientTTLMin = *src.ClientTTLMin
+	}
+	if src.ClientTTLMax != nil {
+		dst.ClientTTLMax = *src.ClientTTLMax
+	}
 	if src.NXDomainTTL != nil {
 		dst.NXDomainTTL = *src.NXDomainTTL
 	}
@@ -344,6 +354,9 @@ func validateCachePolicy(tag string, policy CachePolicy) error {
 	if policy.LazyCacheTTL < 0 || policy.LazyStaleTTL < 0 {
 		return fmt.Errorf("%s lazy ttl cannot be negative", tag)
 	}
+	if policy.ClientTTLMax > 0 && policy.ClientTTLMin > policy.ClientTTLMax {
+		return fmt.Errorf("%s client_ttl_min cannot exceed client_ttl_max", tag)
+	}
 	if policy.L1TotalCap < 0 || policy.L1ShardCap < 0 {
 		return fmt.Errorf("%s l1 capacity cannot be negative", tag)
 	}
@@ -376,6 +389,8 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		args["size"] = policy.Size
 		args["lazy_cache_ttl"] = policy.LazyCacheTTL
 		args["lazy_stale_ttl"] = policy.LazyStaleTTL
+		args["client_ttl_min"] = policy.ClientTTLMin
+		args["client_ttl_max"] = policy.ClientTTLMax
 		args["nxdomain_ttl"] = policy.NXDomainTTL
 		args["servfail_ttl"] = policy.ServfailTTL
 		args["l1_enabled"] = policy.L1Enabled

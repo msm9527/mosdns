@@ -38,6 +38,7 @@ type serviceE2EUpstreams struct {
 	foreignecs string
 	cnfake     string
 	nocnfake   string
+	servers    map[string]*serviceE2EStubServer
 }
 
 type serviceE2EFixture struct {
@@ -54,6 +55,7 @@ type serviceE2EFixture struct {
 	server        *coremain.Mosdns
 	client        *http.Client
 	stopUpstream  func()
+	upstreams     serviceE2EUpstreams
 }
 
 type serviceE2ESwitchState struct {
@@ -131,6 +133,7 @@ func startServiceE2EFixture(savedEnv coremain.RuntimeEnv) (*serviceE2EFixture, e
 		server:        server,
 		client:        &http.Client{Timeout: 3 * time.Second},
 		stopUpstream:  stopUpstream,
+		upstreams:     upstreams,
 	}
 	if err := fx.waitReady(); err != nil {
 		fx.Close()

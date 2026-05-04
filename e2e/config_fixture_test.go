@@ -283,7 +283,7 @@ func writeServiceE2ERuleFiles(configDir string) error {
 	files := map[string]string{
 		filepath.Join(configDir, "adguard", "base.rules"):           "||ad.example^\n",
 		filepath.Join(configDir, "diversion", "geoip-cn.list"):      "1.1.1.0/24\n",
-		filepath.Join(configDir, "diversion", "geosite-cn.list"):    "full:cn.example\n",
+		filepath.Join(configDir, "diversion", "geosite-cn.list"):    "full:cn.example\nfull:ttl-cn.example\n",
 		filepath.Join(configDir, "diversion", "geosite-no-cn.list"): "full:proxy.example\n",
 		filepath.Join(configDir, "rule", "blocklist.txt"):           "full:blocked.example\n",
 		filepath.Join(configDir, "rule", "client_ip.txt"):           "\n",
@@ -291,7 +291,7 @@ func writeServiceE2ERuleFiles(configDir string) error {
 		filepath.Join(configDir, "rule", "ddnslist.txt"):            "\n",
 		filepath.Join(configDir, "rule", "direct_ip.txt"):           "\n",
 		filepath.Join(configDir, "rule", "greylist.txt"):            "full:proxy-cache.example\n",
-		filepath.Join(configDir, "rule", "realiplist.txt"):          "full:default.example\nfull:branch.example\n",
+		filepath.Join(configDir, "rule", "realiplist.txt"):          "full:default.example\nfull:branch.example\nfull:ttl-real.example\n",
 		filepath.Join(configDir, "rule", "rewrite.txt"):             "\n",
 		filepath.Join(configDir, "rule", "whitelist.txt"):           "\n",
 	}

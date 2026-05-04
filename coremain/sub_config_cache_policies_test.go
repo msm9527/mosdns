@@ -29,11 +29,20 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].LazyStaleTTL != 7200 {
 		t.Fatalf("expected default cache_main lazy stale ttl 7200, got %+v", cfg.Response["cache_main"])
 	}
+	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
+		t.Fatalf("expected default cache_main client ttl clamp 120-900, got %+v", cfg.Response["cache_main"])
+	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
 	}
 	if cfg.Response["cache_fakeip_proxy"].Persist {
 		t.Fatalf("expected fakeip proxy cache to default to non-persistent, got %+v", cfg.Response["cache_fakeip_proxy"])
+	}
+	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_proxy"].LazyStaleTTL != 7200 {
+		t.Fatalf("expected fakeip proxy cache to retain backend entries and stale replies, got %+v", cfg.Response["cache_fakeip_proxy"])
+	}
+	if cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
+		t.Fatalf("expected fakeip proxy cache to return stable client ttl, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
 	if cfg.UDPFastPath.InternalTTL != 3600 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 3600 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
@@ -62,8 +71,17 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 120 {
 		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
+	if cfg.Response["cache_branch_foreign"].ClientTTLMin != 120 || cfg.Response["cache_branch_foreign"].ClientTTLMax != 900 {
+		t.Fatalf("cache_branch_foreign client ttl clamp = %+v, want 120-900", cfg.Response["cache_branch_foreign"])
+	}
 	if cfg.Response["cache_branch_foreign"].Persist {
 		t.Fatal("cache_branch_foreign should be short-term only")
+	}
+	if cfg.Response["cache_fakeip_domestic"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_domestic"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_domestic"].ClientTTLMax != 600 {
+		t.Fatalf("cache_fakeip_domestic should use long backend retention and stable client ttl, got %+v", cfg.Response["cache_fakeip_domestic"])
+	}
+	if cfg.Response["cache_probe"].ClientTTLMin != 120 || cfg.Response["cache_probe"].ClientTTLMax != 900 {
+		t.Fatalf("cache_probe should clamp client ttl, got %+v", cfg.Response["cache_probe"])
 	}
 	if totalSize > 1200000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)
@@ -96,6 +114,12 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	if cfg.Response["cache_branch_domestic"].Persist || cfg.Response["cache_branch_foreign"].Persist {
 		t.Fatal("template branch real caches should be non-persistent")
 	}
+	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
+		t.Fatalf("template cache_main should clamp client ttl 120-900, got %+v", cfg.Response["cache_main"])
+	}
+	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
+		t.Fatalf("template fakeip proxy cache should use stable client ttl, got %+v", cfg.Response["cache_fakeip_proxy"])
+	}
 	if totalSize > 1200000 {
 		t.Fatalf("template cache total size is too large: %d", totalSize)
 	}
@@ -122,6 +146,8 @@ response:
     size: 2048
     lazy_cache_ttl: 120
     lazy_stale_ttl: 30
+    client_ttl_min: 10
+    client_ttl_max: 60
     bypass_domain_sets:
       - 高变CDN
       - DDNS域名
@@ -152,6 +178,9 @@ udp_fast_path:
 	}
 	if cfg.Response["cache_main"].LazyCacheTTL != 120 || cfg.Response["cache_main"].LazyStaleTTL != 30 {
 		t.Fatalf("unexpected cache_main lazy ttl split: %+v", cfg.Response["cache_main"])
+	}
+	if cfg.Response["cache_main"].ClientTTLMin != 10 || cfg.Response["cache_main"].ClientTTLMax != 60 {
+		t.Fatalf("unexpected cache_main client ttl clamp: %+v", cfg.Response["cache_main"])
 	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变CDN" {
 		t.Fatalf("unexpected cache_main bypass domain sets: %+v", got)
@@ -238,7 +267,7 @@ response:
 func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
-		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, NXDomainTTL: 11, ServfailTTL: 12,
+		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, ClientTTLMin: 3, ClientTTLMax: 30, NXDomainTTL: 11, ServfailTTL: 12,
 		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名"}, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
@@ -259,7 +288,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("ApplyRuntimeCachePolicy(cache): %v", err)
 	}
 	args := pc.Args.(map[string]any)
-	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 {
+	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 || args["client_ttl_min"] != uint32(3) || args["client_ttl_max"] != uint32(30) {
 		t.Fatalf("unexpected cache args: %+v", args)
 	}
 	bypassDomainSets, ok := args["bypass_domain_sets"].([]string)

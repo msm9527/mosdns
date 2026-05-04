@@ -37,6 +37,7 @@ func TestServiceE2E(t *testing.T) {
 	report.RunCase(t, "rule apis", fx.testRuleAPIs)
 	report.RunCase(t, "requery cache invalidation", fx.testRequeryCacheInvalidation)
 	report.RunCase(t, "cache stats and stability", fx.testCacheAndStability)
+	report.RunCase(t, "cache client ttl governance", fx.testCacheClientTTLGovernance)
 }
 
 func (fx *serviceE2EFixture) testControlAPI(t *testing.T, rec *e2eCaseRecorder) {
@@ -345,6 +346,74 @@ func requireServiceE2ECacheHits(t *testing.T, item coremain.CacheStatsSnapshot) 
 	t.Helper()
 	if item.Counters["query_total"] < 2 || item.Counters["hit_total"] < 1 {
 		t.Fatalf("unexpected cache counters for %s: %+v", item.Tag, item.Counters)
+	}
+}
+
+func (fx *serviceE2EFixture) testCacheClientTTLGovernance(t *testing.T, rec *e2eCaseRecorder) {
+	fx.setSwitch(t, "core_mode", "secure")
+	fx.setSwitch(t, "client_proxy_mode", "all")
+	fx.setSwitch(t, "main_cache", "on")
+	fx.setSwitch(t, "branch_cache", "on")
+	fx.setSwitch(t, "fakeip_cache", "on")
+	fx.setSwitch(t, "udp_fast_path", "off")
+	fx.setSwitch(t, "cn_answer_mode", "realip")
+
+	realBefore := fx.upstreamCalls("foreign", dns.TypeA)
+	realFirst := fx.queryUDP(t, "ttl-real.example", dns.TypeA)
+	realSecond := fx.queryUDP(t, "ttl-real.example", dns.TypeA)
+	realAfter := fx.upstreamCalls("foreign", dns.TypeA)
+	requireServiceE2EARecord(t, realFirst, "8.8.8.8")
+	requireServiceE2EARecord(t, realSecond, "8.8.8.8")
+	requireServiceE2ETTL(t, realSecond, 120, 900)
+	if got := realAfter - realBefore; got != 1 {
+		t.Fatalf("expected one foreign upstream A query for cached realip domain, got %d", got)
+	}
+
+	fx.setSwitch(t, "cn_answer_mode", "fakeip")
+	cnFakeBefore := fx.upstreamCalls("cnfake", dns.TypeA)
+	cnFakeFirst := fx.queryUDP(t, "ttl-cn.example", dns.TypeA)
+	cnFakeSecond := fx.queryUDP(t, "ttl-cn.example", dns.TypeA)
+	cnFakeAfter := fx.upstreamCalls("cnfake", dns.TypeA)
+	requireServiceE2EARecord(t, cnFakeFirst, "30.0.0.2")
+	requireServiceE2EARecord(t, cnFakeSecond, "30.0.0.2")
+	requireServiceE2ETTL(t, cnFakeSecond, 600, 600)
+	if got := cnFakeAfter - cnFakeBefore; got != 1 {
+		t.Fatalf("expected one cnfake upstream A query for cached fakeip domain, got %d", got)
+	}
+
+	proxyBefore := fx.upstreamCalls("nocnfake", dns.TypeA)
+	proxyFirst := fx.queryUDP(t, "ttl-proxy-cache.example", dns.TypeA)
+	proxySecond := fx.queryUDP(t, "ttl-proxy-cache.example", dns.TypeA)
+	proxyAfter := fx.upstreamCalls("nocnfake", dns.TypeA)
+	proxyAnswer := requireServiceE2EAnyARecord(t, proxyFirst).A.String()
+	requireServiceE2EARecord(t, proxySecond, proxyAnswer)
+	requireServiceE2ETTL(t, proxySecond, 600, 600)
+	if got := proxyAfter - proxyBefore; got != 1 {
+		t.Fatalf("expected one nocnfake upstream A query for cached proxy fakeip domain, got %d", got)
+	}
+
+	rec.SetDetail("low TTL upstream answers were cached once and returned with governed client TTLs")
+	recordDNSCheck(rec, "realip ttl governed first", "udp", fx.dnsAddr, "ttl-real.example", dns.TypeA, realFirst)
+	recordDNSCheck(rec, "realip ttl governed second", "udp", fx.dnsAddr, "ttl-real.example", dns.TypeA, realSecond)
+	recordDNSCheck(rec, "cn fakeip ttl governed first", "udp", fx.dnsAddr, "ttl-cn.example", dns.TypeA, cnFakeFirst)
+	recordDNSCheck(rec, "cn fakeip ttl governed second", "udp", fx.dnsAddr, "ttl-cn.example", dns.TypeA, cnFakeSecond)
+	recordDNSCheck(rec, "proxy fakeip ttl governed first", "udp", fx.dnsAddr, "ttl-proxy-cache.example", dns.TypeA, proxyFirst)
+	recordDNSCheck(rec, "proxy fakeip ttl governed second", "udp", fx.dnsAddr, "ttl-proxy-cache.example", dns.TypeA, proxySecond)
+	rec.AddMetric("foreign upstream delta", fmt.Sprintf("%d", realAfter-realBefore), "A queries for realip cached domain")
+	rec.AddMetric("cnfake upstream delta", fmt.Sprintf("%d", cnFakeAfter-cnFakeBefore), "A queries for domestic fakeip cached domain")
+	rec.AddMetric("nocnfake upstream delta", fmt.Sprintf("%d", proxyAfter-proxyBefore), "A queries for proxy fakeip cached domain")
+}
+
+func requireServiceE2ETTL(t *testing.T, resp *dns.Msg, minTTL, maxTTL uint32) {
+	t.Helper()
+	if resp == nil || len(resp.Answer) == 0 {
+		t.Fatalf("missing DNS answer for TTL check: %+v", resp)
+	}
+	for _, rr := range resp.Answer {
+		ttl := rr.Header().Ttl
+		if ttl < minTTL || ttl > maxTTL {
+			t.Fatalf("unexpected TTL %d, want %d-%d in %+v", ttl, minTTL, maxTTL, resp.Answer)
+		}
 	}
 }
 

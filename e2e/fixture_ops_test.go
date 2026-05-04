@@ -57,6 +57,14 @@ func (fx *serviceE2EFixture) querySingbox(t TestingT, name string, qtype uint16)
 	return fx.mustExchange(t, "udp", fx.singboxAddr, name, qtype)
 }
 
+func (fx *serviceE2EFixture) upstreamCalls(name string, qtype uint16) int {
+	server := fx.upstreams.servers[name]
+	if server == nil {
+		return 0
+	}
+	return server.Calls(qtype)
+}
+
 func (fx *serviceE2EFixture) mustExchange(t TestingT, network, addr, name string, qtype uint16) *dns.Msg {
 	t.Helper()
 	resp, err := fx.exchange(network, addr, name, qtype)

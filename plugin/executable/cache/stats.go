@@ -132,6 +132,8 @@ func (c *Cache) snapshotConfig(snapshotPath, walPath string) map[string]interfac
 		"size":               c.args.Size,
 		"lazy_cache_ttl":     c.args.LazyCacheTTL,
 		"lazy_stale_ttl":     c.args.LazyStaleTTL,
+		"client_ttl_min":     c.args.ClientTTLMin,
+		"client_ttl_max":     c.args.ClientTTLMax,
 		"l1_enabled":         c.l1Enabled,
 		"l1_total_cap":       c.args.L1TotalCap,
 		"l1_shard_cap":       c.l1ShardCap,

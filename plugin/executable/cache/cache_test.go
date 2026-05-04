@@ -707,6 +707,70 @@ func Test_cachePlugin_CachedUDPHitSetsWirePayload(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_ClientTTLClampAppliesToMessageAndWirePayload(t *testing.T) {
+	c := NewCache(&Args{Size: 64, ClientTTLMin: 600, ClientTTLMax: 600}, Opts{})
+	defer c.Close()
+
+	const qname = "client-ttl.example."
+	seed := testQueryContext(t, qname, net.IPv4(28, 0, 1, 11))
+	msgKey := cacheKeyForQuery(t, qname)
+	cachedItem, ok := c.saveRespToCache(msgKey, seed)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	cachedItem.storedUnixNano = time.Now().Add(-59 * time.Second).UnixNano()
+	cachedItem.expireUnixNano = time.Now().Add(time.Second).UnixNano()
+	cachedItem.refreshTTLOffsets()
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, time.Now().Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	q := new(dns.Msg)
+	q.SetQuestion(qname, dns.TypeA)
+	q.Id = 0xCAFE
+	qCtx := query_context.NewContext(q)
+	qCtx.ServerMeta.FromUDP = true
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil && !errors.Is(err, sequence.ErrExit) {
+		t.Fatal(err)
+	}
+	if qCtx.R() == nil || len(qCtx.R().Answer) != 1 || qCtx.R().Answer[0].Header().Ttl != 600 {
+		t.Fatalf("expected cached dns.Msg TTL to be clamped to 600, got %+v", qCtx.R())
+	}
+	payload := qCtx.ResponsePayload()
+	if payload == nil || len(payload.Wire) == 0 {
+		t.Fatal("expected cached UDP hit to set wire payload")
+	}
+	var wire dns.Msg
+	if err := wire.Unpack(payload.Wire); err != nil {
+		t.Fatalf("unpack payload: %v", err)
+	}
+	if len(wire.Answer) != 1 || wire.Answer[0].Header().Ttl != 600 {
+		t.Fatalf("expected cached wire TTL to be clamped to 600, got %+v", wire.Answer)
+	}
+}
+
+func Test_cachePlugin_ClientTTLMinExtendsFreshWindow(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 5, ClientTTLMin: 120, ClientTTLMax: 900}, Opts{})
+	defer c.Close()
+
+	const qname = "client-ttl-fresh-window.example."
+	seed := testQueryContextWithTTL(t, qname, net.IPv4(1, 2, 3, 4), 5)
+	msgKey := cacheKeyForQuery(t, qname)
+	cachedItem, ok := c.saveRespToCache(msgKey, seed)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+
+	freshWindow := time.Duration(cachedItem.expireUnixNano-cachedItem.storedUnixNano) * time.Nanosecond
+	if freshWindow < 120*time.Second {
+		t.Fatalf("expected client_ttl_min to extend cache fresh window to at least 120s, got %s", freshWindow)
+	}
+	if cachedItemTTL, _, _, corrupt := c.respFromCacheItem(cachedItem, 0, expiredMsgTtl); corrupt || cachedItemTTL == nil || len(cachedItemTTL.Answer) != 1 || cachedItemTTL.Answer[0].Header().Ttl != 120 {
+		t.Fatalf("expected cached response TTL to be governed to 120, corrupt=%v resp=%+v", corrupt, cachedItemTTL)
+	}
+}
+
 func Test_cachePlugin_CachedUDPHitSkipsWirePayloadWhenTooLargeForPlainUDP(t *testing.T) {
 	c := NewCache(&Args{Size: 64}, Opts{})
 	defer c.Close()
@@ -1632,6 +1696,10 @@ func counterValue(t *testing.T, counter prometheus.Counter) float64 {
 }
 
 func testQueryContext(t testingHelper, name string, ip net.IP) *query_context.Context {
+	return testQueryContextWithTTL(t, name, ip, 60)
+}
+
+func testQueryContextWithTTL(t testingHelper, name string, ip net.IP, ttl uint32) *query_context.Context {
 	t.Helper()
 	q := new(dns.Msg)
 	q.SetQuestion(name, dns.TypeA)
@@ -1645,7 +1713,7 @@ func testQueryContext(t testingHelper, name string, ip net.IP) *query_context.Co
 			Name:   name,
 			Rrtype: dns.TypeA,
 			Class:  dns.ClassINET,
-			Ttl:    60,
+			Ttl:    ttl,
 		},
 		A: ip.To4(),
 	})
