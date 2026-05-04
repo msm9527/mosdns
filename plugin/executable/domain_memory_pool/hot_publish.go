@@ -88,7 +88,9 @@ func (d *domainMemoryPool) flushPendingHotAdds(pending map[string]struct{}) {
 		return
 	}
 	target := d.publishTarget()
+	count := d.addActiveHotRules(rules)
 	if err := coremain.DispatchHotRulesAdd(d.snapshotter, target, rules); err != nil {
+		atomic.StoreInt64(&d.publishedCount, int64(count))
 		d.recordHotDispatchFailure("add", target, err)
 		d.hotNeedsReplace.Store(true)
 		return
@@ -97,7 +99,7 @@ func (d *domainMemoryPool) flushPendingHotAdds(pending map[string]struct{}) {
 	atomicStoreInt64(&d.hotPendingCount, 0)
 	atomic.AddInt64(&d.hotAddTotal, int64(len(rules)))
 	atomic.StoreInt64(&d.lastHotSyncAtUnixMS, time.Now().UTC().UnixMilli())
-	atomic.StoreInt64(&d.publishedCount, int64(d.addActiveHotRules(rules)))
+	atomic.StoreInt64(&d.publishedCount, int64(count))
 }
 
 func (d *domainMemoryPool) dispatchHotReplace(rules []string) error {
