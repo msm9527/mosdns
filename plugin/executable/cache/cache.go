@@ -150,12 +150,6 @@ func (s *lazyRefreshState) setErr(err error) {
 	s.err = err
 }
 
-func (s *lazyRefreshState) getErr() error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.err
-}
-
 type Args struct {
 	Size             int      `yaml:"size"`
 	LazyCacheTTL     int      `yaml:"lazy_cache_ttl"`
@@ -743,39 +737,6 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		if state.staleServed.CompareAndSwap(false, true) {
 			c.lazyHitTotal.Inc()
 			c.lazyHitCount.Add(1)
-		} else {
-			if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
-				refreshedItem, _, _ := c.backend.Get(kReal)
-				if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
-					c.deleteRuntimeCacheKey(kReal, "lazy_refresh_route_change")
-					refreshedItem = nil
-				}
-				refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := respFromCacheItem(refreshedItem, 0, expiredMsgTtl)
-				if refreshedCorrupt {
-					c.deleteRuntimeCacheKey(kReal, "lazy_refresh_corrupt")
-					refreshedResp = nil
-					refreshedLazy = false
-					refreshedDomainSet = ""
-				}
-				if refreshedResp != nil && !refreshedLazy {
-					coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
-					c.hitTotal.Inc()
-					c.hitCount.Add(1)
-					c.l2HitTotalMetric.Inc()
-					c.l2HitCount.Add(1)
-					refreshedResp.Id = q.Id
-					qCtx.SetResponse(refreshedResp)
-					if refreshedDomainSet != "" {
-						qCtx.StoreValue(query_context.KeyDomainSet, refreshedDomainSet)
-					}
-					return nil
-				}
-				if err := state.getErr(); err != nil && !errors.Is(err, sequence.ErrExit) {
-					c.logger.Debug("lazy refresh wait completed without fresh cache", zap.String("key", msgKey), zap.Error(err))
-				}
-			}
-			cachedResp = nil
-			lazyHit = false
 		}
 	}
 	if cachedResp != nil {

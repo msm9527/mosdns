@@ -109,25 +109,25 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: defaultCacheMainSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 300, ServfailTTL: 5,
+				Size: defaultCacheMainSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 300, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_domestic.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_foreign.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 21600, LazyStaleTTL: 1800, NXDomainTTL: 120, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 43200, LazyStaleTTL: 7200, NXDomainTTL: 120, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_branch_foreign_ecs.dump", DumpInterval: 1800, WALSyncInterval: 1,
@@ -149,9 +149,9 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			},
 		},
 		UDPFastPath: UDPFastCachePolicy{
-			InternalTTL:      600,
+			InternalTTL:      3600,
 			StaleRetry:       30,
-			StaleMax:         600,
+			StaleMax:         3600,
 			TTLMin:           120,
 			TTLMax:           900,
 			BypassDomainSets: defaultResponseCacheBypassDomains(),

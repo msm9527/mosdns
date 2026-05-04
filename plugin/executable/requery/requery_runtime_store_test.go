@@ -158,7 +158,7 @@ func TestUpdateSchedulerNormalizesInvalidInterval(t *testing.T) {
 		"quick_queries_per_second": 200,
 		"prewarm_queries_per_second": 300,
 		"quick_rebuild_limit": 3500,
-		"prewarm_limit": 2000,
+		"prewarm_limit": 8000,
 		"full_rebuild_priority_limit": 6000
 	}`))
 	req.Header.Set("Content-Type", "application/json")

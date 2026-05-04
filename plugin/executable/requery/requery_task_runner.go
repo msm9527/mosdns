@@ -141,7 +141,7 @@ func (p *Requery) prepareTaskExecutionState(ctx context.Context, profile taskPro
 	return taskExecutionState{
 		plan:          plan,
 		recovery:      recovery,
-		changedDomain: flattenCandidateDomains(plan),
+		changedDomain: flattenPublishDomains(plan),
 	}, true
 }
 
@@ -217,7 +217,7 @@ func (p *Requery) syncTaskProgress(plan taskCandidatePlan, recovery *FullRebuild
 		return
 	}
 
-	totalDomains := len(plan.Primary) + len(plan.Secondary)
+	totalDomains := len(plan.Prewarm) + len(plan.Primary) + len(plan.Secondary)
 	p.mu.Lock()
 	p.status.LastRunDomainCount = totalDomains
 	p.status.Progress.Total = int64(totalDomains)
@@ -261,6 +261,9 @@ func (p *Requery) executeTaskStages(ctx context.Context, profile taskProfile, st
 }
 
 func (p *Requery) runTaskPlan(ctx context.Context, profile taskProfile, plan *taskCandidatePlan, recovery *FullRebuildTask) bool {
+	if !p.runPrewarmStage(ctx, profile, plan.Prewarm) {
+		return false
+	}
 	if !p.runTaskStage(ctx, profile, recovery, "priority", plan.Primary, &plan.Primary, &plan.Secondary) {
 		return false
 	}
@@ -270,9 +273,29 @@ func (p *Requery) runTaskPlan(ctx context.Context, profile taskProfile, plan *ta
 	return true
 }
 
+func (p *Requery) runPrewarmStage(ctx context.Context, profile taskProfile, domains []domainCandidate) bool {
+	if len(domains) == 0 {
+		return true
+	}
+
+	prewarmProfile := p.profileForMode("quick_prewarm", len(domains))
+	prewarmProfile.TriggerSource = profile.TriggerSource
+	p.setTaskStage("prewarm", stageLabel("prewarm"), int64(len(domains)))
+	log.Printf("[requery] Step 6.0: 定时任务先执行热点缓存预热，处理 %d 个域名...", len(domains))
+	if err := p.resendDNSQueries(ctx, domains, true, prewarmProfile); err != nil {
+		log.Printf("[requery] Task stopped during scheduled prewarm phase: %v", err)
+		return false
+	}
+	return true
+}
+
 func (p *Requery) finalizeTaskExecution(ctx context.Context, profile taskProfile, state *taskExecutionState) bool {
 	if !p.saveRulesAfterRun(ctx, profile) {
 		return false
+	}
+	if profile.Mode == "quick_prewarm" {
+		p.clearFullRebuildTask()
+		return true
 	}
 	if !p.invalidateCachesAfterPublish(ctx, state.changedDomain) {
 		return false
@@ -349,7 +372,7 @@ func (p *Requery) saveRulesAfterRun(ctx context.Context, profile taskProfile) bo
 	return true
 }
 
-func flattenCandidateDomains(plan taskCandidatePlan) []string {
+func flattenPublishDomains(plan taskCandidatePlan) []string {
 	seen := make(map[string]struct{}, len(plan.Primary)+len(plan.Secondary))
 	domains := make([]string, 0, len(plan.Primary)+len(plan.Secondary))
 	appendDomain := func(items []domainCandidate) {

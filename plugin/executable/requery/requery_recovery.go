@@ -52,6 +52,8 @@ func cloneFullRebuildTask(task *FullRebuildTask) *FullRebuildTask {
 
 func stageLabel(stage string) string {
 	switch stage {
+	case "prewarm":
+		return "热点预热阶段"
 	case "priority":
 		return "高优先级阶段"
 	case "tail":

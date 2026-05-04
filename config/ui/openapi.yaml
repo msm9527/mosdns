@@ -3018,7 +3018,7 @@ components:
           default: 3500
         prewarm_limit:
           type: integer
-          default: 2000
+          default: 8000
         full_rebuild_priority_limit:
           type: integer
           default: 6000
@@ -3381,7 +3381,7 @@ components:
               default: 3500
             prewarm_limit:
               type: integer
-              default: 2000
+              default: 8000
             full_rebuild_priority_limit:
               type: integer
               default: 6000

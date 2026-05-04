@@ -52,8 +52,8 @@
 response:
   cache_main:
     size: 400000
-    lazy_cache_ttl: 21600
-    lazy_stale_ttl: 1800
+    lazy_cache_ttl: 43200
+    lazy_stale_ttl: 7200
     nxdomain_ttl: 300
     servfail_ttl: 5
     l1_enabled: true
@@ -67,8 +67,8 @@ response:
 
   cache_branch_domestic:
     size: 200000
-    lazy_cache_ttl: 21600
-    lazy_stale_ttl: 1800
+    lazy_cache_ttl: 43200
+    lazy_stale_ttl: 7200
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
@@ -82,8 +82,8 @@ response:
 
   cache_branch_foreign:
     size: 150000
-    lazy_cache_ttl: 21600
-    lazy_stale_ttl: 1800
+    lazy_cache_ttl: 43200
+    lazy_stale_ttl: 7200
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
@@ -97,8 +97,8 @@ response:
 
   cache_branch_foreign_ecs:
     size: 100000
-    lazy_cache_ttl: 21600
-    lazy_stale_ttl: 1800
+    lazy_cache_ttl: 43200
+    lazy_stale_ttl: 7200
     nxdomain_ttl: 120
     servfail_ttl: 5
     l1_enabled: true
@@ -147,9 +147,9 @@ response:
     persist: false
 
 udp_fast_path:
-  internal_ttl: 600
+  internal_ttl: 3600
   stale_retry_seconds: 30
-  stale_max_seconds: 600
+  stale_max_seconds: 3600
   ttl_min: 120
   ttl_max: 900
   bypass_domain_sets:

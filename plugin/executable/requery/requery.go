@@ -308,6 +308,7 @@ type taskProfile struct {
 	Limit          int
 	ResolverAddr   string
 	QPS            int
+	TriggerSource  string
 	SaveBefore     bool
 	SaveAfter      bool
 	FlushBefore    bool
@@ -318,6 +319,7 @@ type taskProfile struct {
 type taskCandidatePlan struct {
 	Primary   []domainCandidate
 	Secondary []domainCandidate
+	Prewarm   []domainCandidate
 }
 
 type taskExecutionState struct {
@@ -484,6 +486,7 @@ func (p *Requery) startTaskWithSource(profile taskProfile, recovery *FullRebuild
 	if p.status.TaskState == "running" {
 		return false
 	}
+	profile.TriggerSource = triggerSource
 	p.activeTriggerSource = triggerSource
 	p.taskCtx, p.taskCancel = context.WithCancel(context.Background())
 	go p.runTask(p.taskCtx, profile, recovery)
@@ -541,14 +544,18 @@ func (p *Requery) buildTaskCandidatePlan(ctx context.Context, profile taskProfil
 		return taskCandidatePlan{}, err
 	}
 	if profile.Mode != "full_rebuild" {
+		var plan taskCandidatePlan
 		if len(runtimeDomains) > 0 {
-			return taskCandidatePlan{Primary: applyCandidateLimit(runtimeDomains, profile.Limit)}, nil
+			plan.Primary = applyCandidateLimit(runtimeDomains, profile.Limit)
+		} else {
+			fallback, err := p.scanDomainsFromSourceFiles(ctx, profile.Limit)
+			if err != nil {
+				return taskCandidatePlan{}, err
+			}
+			plan.Primary = fallback
 		}
-		fallback, err := p.scanDomainsFromSourceFiles(ctx, profile.Limit)
-		if err != nil {
-			return taskCandidatePlan{}, err
-		}
-		return taskCandidatePlan{Primary: fallback}, nil
+		plan.Prewarm = p.prewarmCandidatesForScheduledQuickRebuild(profile, plan.Primary)
+		return plan, nil
 	}
 
 	fileDomains, err := p.scanDomainsFromSourceFiles(ctx, 0)
@@ -557,7 +564,26 @@ func (p *Requery) buildTaskCandidatePlan(ctx context.Context, profile taskProfil
 	}
 	merged := mergeDomainCandidates(runtimeDomains, fileDomains)
 	merged = applyCandidateLimit(merged, profile.Limit)
-	return splitCandidatePlan(runtimeDomains, merged, p.fullRebuildPriorityLimit()), nil
+	plan := splitCandidatePlan(runtimeDomains, merged, p.fullRebuildPriorityLimit())
+	plan.Prewarm = p.prewarmCandidatesForScheduledQuickRebuild(profile, runtimeDomains)
+	return plan, nil
+}
+
+func (p *Requery) prewarmCandidatesForScheduledQuickRebuild(profile taskProfile, rebuildCandidates []domainCandidate) []domainCandidate {
+	if profile.Mode != "quick_rebuild" || profile.TriggerSource != "scheduler" {
+		return nil
+	}
+	prewarmProfile := p.profileForMode("quick_prewarm", 0)
+	prewarmCandidates, err := p.collectRuntimeCandidates(prewarmProfile)
+	if err != nil {
+		log.Printf("[requery] WARN: collect scheduled prewarm candidates failed: %v", err)
+		return nil
+	}
+	if len(prewarmCandidates) == 0 {
+		return nil
+	}
+	merged := mergeDomainCandidates(prewarmCandidates, rebuildCandidates)
+	return applyCandidateLimit(merged, prewarmProfile.Limit)
 }
 
 // scanDomainsFromSourceFiles handles reading source files, parsing formats, and filtering by date.

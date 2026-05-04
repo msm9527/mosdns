@@ -23,11 +23,11 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].Size <= 0 {
 		t.Fatalf("expected default cache_main policy, got %+v", cfg.Response["cache_main"])
 	}
-	if cfg.Response["cache_main"].LazyCacheTTL != 21600 {
-		t.Fatalf("expected default cache_main lazy cache ttl 21600, got %+v", cfg.Response["cache_main"])
+	if cfg.Response["cache_main"].LazyCacheTTL != 43200 {
+		t.Fatalf("expected default cache_main lazy cache ttl 43200, got %+v", cfg.Response["cache_main"])
 	}
-	if cfg.Response["cache_main"].LazyStaleTTL != 1800 {
-		t.Fatalf("expected default cache_main lazy stale ttl 1800, got %+v", cfg.Response["cache_main"])
+	if cfg.Response["cache_main"].LazyStaleTTL != 7200 {
+		t.Fatalf("expected default cache_main lazy stale ttl 7200, got %+v", cfg.Response["cache_main"])
 	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
@@ -35,7 +35,7 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_fakeip_proxy"].Persist {
 		t.Fatalf("expected fakeip proxy cache to default to non-persistent, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
-	if cfg.UDPFastPath.InternalTTL != 600 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 600 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
+	if cfg.UDPFastPath.InternalTTL != 3600 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 3600 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
 	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
@@ -56,11 +56,11 @@ func TestDefaultCachePolicyConfigUsesLargeHotCacheProfile(t *testing.T) {
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 21600 {
-		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 21600", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
+	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 43200 {
+		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 43200", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 1800 {
-		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 1800", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 7200 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 7200", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
 	if totalSize > 1200000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)

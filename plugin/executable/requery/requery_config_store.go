@@ -21,7 +21,7 @@ const (
 	defaultMaxQueueSize             = 2048
 	defaultOnDemandBatchSize        = 32
 	defaultQuickRebuildLimit        = 3500
-	defaultPrewarmLimit             = 2000
+	defaultPrewarmLimit             = 8000
 	defaultFullRebuildPriorityLimit = 6000
 	defaultCheckpointBatchSize      = 256
 	defaultResumeDelayMS            = 1500

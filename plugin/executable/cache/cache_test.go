@@ -598,6 +598,65 @@ func Test_cachePlugin_LazyRefreshBypassesNestedCache(t *testing.T) {
 	t.Fatalf("expected main cache lazy refresh to store raw response, got %+v", refreshedResp)
 }
 
+func Test_cachePlugin_LazyStaleHitReturnsImmediatelyDuringRefresh(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 3600, LazyStaleTTL: 3600}, Opts{})
+	defer c.Close()
+
+	const qname = "lazy-no-wait.example."
+	staleIP := net.IPv4(1, 1, 1, 1)
+	freshIP := net.IPv4(2, 2, 2, 2)
+	seedStaleCacheEntry(t, c, qname, staleIP)
+
+	raw := &testResponseExec{
+		ip:    freshIP,
+		delay: defaultLazyWaitTimeout + 150*time.Millisecond,
+	}
+	plugins := map[string]any{
+		"cache": c,
+		"raw":   raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := queryThroughSequence(t, s, qname)
+	if !responseHasA(first.R(), staleIP) {
+		t.Fatalf("expected first stale response, got %+v", first.R())
+	}
+	if !responseFromStaleCache(first) {
+		t.Fatal("expected first response to be marked stale")
+	}
+
+	start := time.Now()
+	second := queryThroughSequence(t, s, qname)
+	elapsed := time.Since(start)
+	if !responseHasA(second.R(), staleIP) {
+		t.Fatalf("expected second stale response while refresh is running, got %+v", second.R())
+	}
+	if !responseFromStaleCache(second) {
+		t.Fatal("expected second response to be marked stale")
+	}
+	if elapsed >= defaultLazyWaitTimeout/2 {
+		t.Fatalf("expected stale response to return without waiting for lazy refresh, elapsed=%s", elapsed)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stored, _, _ := c.backend.Get(key(cacheKeyForQuery(t, qname)))
+		refreshedResp, lazy, _, corrupt := respFromCacheItem(stored, 0, expiredMsgTtl)
+		if !corrupt && !lazy && responseHasA(refreshedResp, freshIP) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected background refresh to eventually store fresh response, raw_calls=%d", raw.calls.Load())
+}
+
 func Test_cachePlugin_DoesNotPromoteNestedStaleResponse(t *testing.T) {
 	mainCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
 	defer mainCache.Close()
@@ -1175,11 +1234,21 @@ type testCacheRevisionProvider struct {
 
 type testResponseExec struct {
 	ip    net.IP
+	delay time.Duration
 	calls atomic.Uint64
 }
 
-func (e *testResponseExec) Exec(_ context.Context, qCtx *query_context.Context) error {
+func (e *testResponseExec) Exec(ctx context.Context, qCtx *query_context.Context) error {
 	e.calls.Add(1)
+	if e.delay > 0 {
+		timer := time.NewTimer(e.delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 	q := qCtx.Q()
 	resp := new(dns.Msg)
 	resp.SetReply(q)

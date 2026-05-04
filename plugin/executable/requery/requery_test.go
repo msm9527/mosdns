@@ -135,6 +135,48 @@ func TestMergeAndFilterDomainsPrefersRuntimeCandidatesForQuickMode(t *testing.T)
 	}
 }
 
+func TestScheduledQuickRebuildAddsPrewarmPlan(t *testing.T) {
+	t.Parallel()
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"my_realiplist": mockRefreshCandidateProvider{
+			candidates: []coremain.DomainRefreshCandidate{
+				{Domain: "dirty.example", QTypeMask: qtypeMaskA, Weight: 9000, Reason: "stale", RefreshState: "dirty"},
+				{Domain: "hot.example", QTypeMask: qtypeMaskAAAA, Weight: 1000, Reason: "observed"},
+			},
+		},
+	})
+
+	p := &Requery{
+		plugin: m.GetPlugin,
+		config: &Config{
+			URLActions: URLActions{SaveRules: []string{"/api/v1/memory/my_realiplist/save"}},
+			ExecutionSettings: ExecutionSettings{
+				QuickRebuildLimit: 1,
+				PrewarmLimit:      2,
+			},
+		},
+	}
+
+	plan, err := p.buildTaskCandidatePlan(context.Background(), taskProfile{
+		Mode:          "quick_rebuild",
+		Limit:         1,
+		TriggerSource: "scheduler",
+	})
+	if err != nil {
+		t.Fatalf("buildTaskCandidatePlan: %v", err)
+	}
+	if len(plan.Primary) != 1 || plan.Primary[0].Name != "dirty.example" {
+		t.Fatalf("unexpected quick rebuild primary plan: %#v", plan.Primary)
+	}
+	if len(plan.Prewarm) != 2 {
+		t.Fatalf("expected scheduled quick rebuild to include two prewarm candidates, got %#v", plan.Prewarm)
+	}
+	if plan.Prewarm[0].Name != "dirty.example" || plan.Prewarm[1].Name != "hot.example" {
+		t.Fatalf("unexpected prewarm plan ordering: %#v", plan.Prewarm)
+	}
+}
+
 func TestCollectRuntimeCandidatesUsesMemoryPoolPolicies(t *testing.T) {
 	t.Parallel()
 
@@ -552,6 +594,27 @@ func TestInvalidateCachesAfterPublishDoesNotFlushSmallWarmCache(t *testing.T) {
 	}
 	if udp.flushCalls != 0 || udp.purgeCalls != 1 {
 		t.Fatalf("unexpected udp cache calls: purge=%d flush=%d", udp.purgeCalls, udp.flushCalls)
+	}
+}
+
+func TestFinalizeQuickPrewarmSkipsCacheInvalidation(t *testing.T) {
+	t.Parallel()
+
+	response := &mockRuntimeCacheController{kind: "response", entryCount: 8}
+	p := &Requery{
+		snapshotter: mockSnapshotter{plugins: map[string]any{
+			"cache_main": response,
+		}},
+	}
+
+	state := taskExecutionState{
+		changedDomain: []string{"hot.example"},
+	}
+	if !p.finalizeTaskExecution(context.Background(), taskProfile{Mode: "quick_prewarm", SaveAfter: false}, &state) {
+		t.Fatal("expected prewarm finalize to succeed")
+	}
+	if response.flushCalls != 0 || response.purgeCalls != 0 {
+		t.Fatalf("expected prewarm finalize not to invalidate warmed caches, purge=%d flush=%d", response.purgeCalls, response.flushCalls)
 	}
 }
 
