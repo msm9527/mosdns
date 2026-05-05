@@ -13,6 +13,10 @@ domain:sealaly.net
 domain:tracker.m-team.io
 domain:tracker.hdsky.me
 domain:steamcontent.com
+domain:battlenet.com.cn
+domain:blizzard.cn
+domain:blzstatic.cn
+full:cn.battle.net
 full:6.ipw.cn
 full:test6.ustc.edu.cn
 full:apiauth.quickconnect.to

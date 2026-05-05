@@ -176,6 +176,8 @@ policies:
         exec: reject 0
       - matches: switch 'probe_cache:on'
         exec: $cache_probe
+      - matches: has_resp
+        exec: exit
       - exec: sleep 1000
       - exec: $sbnodefallback
       - matches:

@@ -172,3 +172,42 @@ func TestUpdateSchedulerNormalizesInvalidInterval(t *testing.T) {
 		t.Fatalf("unexpected normalized interval: %d", p.config.Scheduler.IntervalMinutes)
 	}
 }
+
+func TestUpdateSchedulerClearsOptionalResolverFieldsWhenProvidedEmpty(t *testing.T) {
+	dir := t.TempDir()
+	runtimeKey, dbPath := newTestRequeryStore(dir)
+
+	p := &Requery{
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
+		config:     newDefaultConfig(),
+		status:     Status{TaskState: "idle"},
+	}
+	p.config.ExecutionSettings.RefreshResolverAddress = "223.5.5.5:53"
+	p.config.ExecutionSettings.RefreshResolverPool = []string{"223.5.5.5:53", "119.29.29.29:53"}
+	if err := p.saveConfigUnlocked(); err != nil {
+		t.Fatalf("saveConfigUnlocked: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodPost, "/scheduler/config", strings.NewReader(`{
+		"enabled": true,
+		"interval_minutes": 120,
+		"mode": "hybrid",
+		"date_range_days": 30,
+		"refresh_resolver_address": "",
+		"refresh_resolver_pool": []
+	}`))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	p.api().ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("unexpected status: %d body=%s", w.Code, w.Body.String())
+	}
+	if p.config.ExecutionSettings.RefreshResolverAddress != "" {
+		t.Fatalf("expected refresh resolver address to be cleared, got %q", p.config.ExecutionSettings.RefreshResolverAddress)
+	}
+	if len(p.config.ExecutionSettings.RefreshResolverPool) != 0 {
+		t.Fatalf("expected refresh resolver pool to be cleared, got %#v", p.config.ExecutionSettings.RefreshResolverPool)
+	}
+}

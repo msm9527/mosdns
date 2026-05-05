@@ -74,6 +74,37 @@ func TestHandleSetUpstreamConfig_NoDeadlockWhenOverridesNil(t *testing.T) {
 	}
 }
 
+func TestSetUpstreamOverridesBaseDirClearsLoadedOverridesOnDirChange(t *testing.T) {
+	upstreamOverridesLock.Lock()
+	oldOverrides := upstreamOverrides
+	oldDir := upstreamOverridesDir
+	upstreamOverrides = GlobalUpstreamOverrides{
+		"foreign": {
+			{Tag: "old", Enabled: true, Protocol: "udp", Addr: "udp://127.0.0.1:5353"},
+		},
+	}
+	upstreamOverridesDir = "/tmp/mosdns-old-config"
+	upstreamOverridesLock.Unlock()
+
+	t.Cleanup(func() {
+		upstreamOverridesLock.Lock()
+		upstreamOverrides = oldOverrides
+		upstreamOverridesDir = oldDir
+		upstreamOverridesLock.Unlock()
+	})
+
+	setUpstreamOverridesBaseDir("/tmp/mosdns-new-config")
+
+	upstreamOverridesLock.RLock()
+	defer upstreamOverridesLock.RUnlock()
+	if upstreamOverridesDir != "/tmp/mosdns-new-config" {
+		t.Fatalf("upstreamOverridesDir = %q, want new dir", upstreamOverridesDir)
+	}
+	if upstreamOverrides != nil {
+		t.Fatalf("upstreamOverrides should be cleared after base dir change, got %+v", upstreamOverrides)
+	}
+}
+
 func TestHandleSetUpstreamConfigWithMosdns_NoDeadlockOnRuntimeApply(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	upstreamOverridesLock.Lock()

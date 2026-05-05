@@ -91,8 +91,11 @@ policies:
   - name: sequence_local_fake_generated
     type: sequence
     args:
+      - exec: drop_resp
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_domestic
+      - matches: has_resp
+        exec: exit
       - exec: $cnfake
       - exec: ttl 600
 
@@ -128,8 +131,11 @@ policies:
   - name: sequence_fakeip_generated
     type: sequence
     args:
+      - exec: drop_resp
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_proxy
+      - matches: has_resp
+        exec: exit
       - exec: $nocnfake
       - exec: ttl 600
       - exec: exit
@@ -138,8 +144,11 @@ policies:
   - name: sequence_fakeip_generated_addlist
     type: sequence
     args:
+      - exec: drop_resp
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_proxy
+      - matches: has_resp
+        exec: exit
       - exec: $nocnfake
       - exec: ttl 600
       - matches: '!fast_mark 12'
@@ -155,6 +164,8 @@ policies:
           - $sequence_google
           - exit
       - exec: $sequence_fakeip_generated
+      - matches: has_resp
+        exec: exit
 
   # 进入 fakeip 池并按需补记忆列表。
   - name: sequence_fakeip_addlist
@@ -165,3 +176,5 @@ policies:
           - $sequence_google
           - exit
       - exec: $sequence_fakeip_generated_addlist
+      - matches: has_resp
+        exec: exit

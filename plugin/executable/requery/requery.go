@@ -1788,16 +1788,16 @@ func (p *Requery) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) {
 	type SchedulerUpdatePayload struct {
 		SchedulerConfig
-		DateRangeDays            int      `json:"date_range_days"`
-		Mode                     string   `json:"mode"`
-		QueriesPerSecond         int      `json:"queries_per_second"`
-		QuickQueriesPerSecond    int      `json:"quick_queries_per_second"`
-		PrewarmQueriesPerSecond  int      `json:"prewarm_queries_per_second"`
-		QuickRebuildLimit        int      `json:"quick_rebuild_limit"`
-		PrewarmLimit             int      `json:"prewarm_limit"`
-		FullRebuildPriorityLimit int      `json:"full_rebuild_priority_limit"`
-		RefreshResolverAddress   string   `json:"refresh_resolver_address"`
-		RefreshResolverPool      []string `json:"refresh_resolver_pool"`
+		DateRangeDays            *int      `json:"date_range_days"`
+		Mode                     *string   `json:"mode"`
+		QueriesPerSecond         *int      `json:"queries_per_second"`
+		QuickQueriesPerSecond    *int      `json:"quick_queries_per_second"`
+		PrewarmQueriesPerSecond  *int      `json:"prewarm_queries_per_second"`
+		QuickRebuildLimit        *int      `json:"quick_rebuild_limit"`
+		PrewarmLimit             *int      `json:"prewarm_limit"`
+		FullRebuildPriorityLimit *int      `json:"full_rebuild_priority_limit"`
+		RefreshResolverAddress   *string   `json:"refresh_resolver_address"`
+		RefreshResolverPool      *[]string `json:"refresh_resolver_pool"`
 	}
 
 	var payload SchedulerUpdatePayload
@@ -1809,36 +1809,36 @@ func (p *Requery) handleUpdateScheduler(w http.ResponseWriter, r *http.Request) 
 	p.mu.Lock()
 	p.config.Scheduler = payload.SchedulerConfig
 	normalizeSchedulerDefaults(&p.config.Scheduler)
-	if payload.Mode != "" {
-		p.config.Workflow.Mode = strings.ToLower(payload.Mode)
+	if payload.Mode != nil {
+		p.config.Workflow.Mode = strings.ToLower(strings.TrimSpace(*payload.Mode))
 	}
 
-	if payload.DateRangeDays > 0 {
-		p.config.ExecutionSettings.DateRangeDays = payload.DateRangeDays
+	if payload.DateRangeDays != nil && *payload.DateRangeDays > 0 {
+		p.config.ExecutionSettings.DateRangeDays = *payload.DateRangeDays
 	}
-	if payload.QueriesPerSecond > 0 {
-		p.config.ExecutionSettings.QueriesPerSecond = payload.QueriesPerSecond
+	if payload.QueriesPerSecond != nil && *payload.QueriesPerSecond > 0 {
+		p.config.ExecutionSettings.QueriesPerSecond = *payload.QueriesPerSecond
 	}
-	if payload.QuickQueriesPerSecond > 0 {
-		p.config.ExecutionSettings.QuickQueriesPerSecond = payload.QuickQueriesPerSecond
+	if payload.QuickQueriesPerSecond != nil && *payload.QuickQueriesPerSecond > 0 {
+		p.config.ExecutionSettings.QuickQueriesPerSecond = *payload.QuickQueriesPerSecond
 	}
-	if payload.PrewarmQueriesPerSecond > 0 {
-		p.config.ExecutionSettings.PrewarmQueriesPerSecond = payload.PrewarmQueriesPerSecond
+	if payload.PrewarmQueriesPerSecond != nil && *payload.PrewarmQueriesPerSecond > 0 {
+		p.config.ExecutionSettings.PrewarmQueriesPerSecond = *payload.PrewarmQueriesPerSecond
 	}
-	if payload.QuickRebuildLimit > 0 {
-		p.config.ExecutionSettings.QuickRebuildLimit = payload.QuickRebuildLimit
+	if payload.QuickRebuildLimit != nil && *payload.QuickRebuildLimit > 0 {
+		p.config.ExecutionSettings.QuickRebuildLimit = *payload.QuickRebuildLimit
 	}
-	if payload.PrewarmLimit > 0 {
-		p.config.ExecutionSettings.PrewarmLimit = payload.PrewarmLimit
+	if payload.PrewarmLimit != nil && *payload.PrewarmLimit > 0 {
+		p.config.ExecutionSettings.PrewarmLimit = *payload.PrewarmLimit
 	}
-	if payload.FullRebuildPriorityLimit > 0 {
-		p.config.ExecutionSettings.FullRebuildPriorityLimit = payload.FullRebuildPriorityLimit
+	if payload.FullRebuildPriorityLimit != nil && *payload.FullRebuildPriorityLimit > 0 {
+		p.config.ExecutionSettings.FullRebuildPriorityLimit = *payload.FullRebuildPriorityLimit
 	}
-	if strings.TrimSpace(payload.RefreshResolverAddress) != "" {
-		p.config.ExecutionSettings.RefreshResolverAddress = strings.TrimSpace(payload.RefreshResolverAddress)
+	if payload.RefreshResolverAddress != nil {
+		p.config.ExecutionSettings.RefreshResolverAddress = strings.TrimSpace(*payload.RefreshResolverAddress)
 	}
-	if len(payload.RefreshResolverPool) > 0 {
-		p.config.ExecutionSettings.RefreshResolverPool = append([]string(nil), payload.RefreshResolverPool...)
+	if payload.RefreshResolverPool != nil {
+		p.config.ExecutionSettings.RefreshResolverPool = uniqueResolverAddresses(splitResolverAddressesSlice(*payload.RefreshResolverPool))
 	}
 
 	if err := p.saveConfigUnlocked(); err != nil {

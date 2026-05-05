@@ -176,7 +176,11 @@ func saveUpstreamOverridesLocked() error {
 func setUpstreamOverridesBaseDir(baseDir string) {
 	upstreamOverridesLock.Lock()
 	defer upstreamOverridesLock.Unlock()
-	upstreamOverridesDir = strings.TrimSpace(baseDir)
+	nextDir := strings.TrimSpace(baseDir)
+	if upstreamOverridesDir != nextDir {
+		upstreamOverridesDir = nextDir
+		upstreamOverrides = nil
+	}
 }
 
 func currentUpstreamOverridesBaseDir() string {

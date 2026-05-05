@@ -16,15 +16,15 @@ const cachePoliciesConfigRelPath = "sub_config/cache_policies.yaml"
 
 const (
 	defaultCacheMainSize             = 400000
-	defaultCacheBranchDomesticSize   = 30000
-	defaultCacheBranchForeignSize    = 30000
-	defaultCacheBranchForeignECSSize = 10000
+	defaultCacheBranchDomesticSize   = 5000
+	defaultCacheBranchForeignSize    = 5000
+	defaultCacheBranchForeignECSSize = 2000
 	defaultCacheFakeIPDomesticSize   = 100000
 	defaultCacheFakeIPProxySize      = 120000
 	defaultCacheProbeSize            = 80000
 	defaultCacheMainL1TotalCap       = 8192
-	defaultCacheBranchL1TotalCap     = 1024
-	defaultCacheForeignECSL1TotalCap = 512
+	defaultCacheBranchL1TotalCap     = 256
+	defaultCacheForeignECSL1TotalCap = 128
 	defaultCacheFakeIPL1TotalCap     = 2048
 	defaultCacheProbeL1TotalCap      = 2048
 )
@@ -119,33 +119,33 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: defaultCacheMainSize, LazyCacheTTL: 43200, LazyStaleTTL: 43200, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 300, ServfailTTL: 5,
+				Size: defaultCacheMainSize, LazyCacheTTL: 2592000, LazyStaleTTL: 2592000, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 300, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 900, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 120, LazyStaleTTL: 120, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 900, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 120, LazyStaleTTL: 120, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 900, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 120, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 120, LazyStaleTTL: 120, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 120, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_fakeip_domestic": {
-				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 7200, LazyStaleTTL: 7200, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_fakeip_proxy": {
-				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 7200, LazyStaleTTL: 7200, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
@@ -156,9 +156,9 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			},
 		},
 		UDPFastPath: UDPFastCachePolicy{
-			InternalTTL:      3600,
+			InternalTTL:      7200,
 			StaleRetry:       30,
-			StaleMax:         3600,
+			StaleMax:         7200,
 			TTLMin:           120,
 			TTLMax:           900,
 			MemoryBudgetMB:   8,

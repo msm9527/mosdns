@@ -3,6 +3,7 @@ package coremain
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -23,11 +24,11 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].Size <= 0 {
 		t.Fatalf("expected default cache_main policy, got %+v", cfg.Response["cache_main"])
 	}
-	if cfg.Response["cache_main"].LazyCacheTTL != 43200 {
-		t.Fatalf("expected default cache_main lazy cache ttl 43200, got %+v", cfg.Response["cache_main"])
+	if cfg.Response["cache_main"].LazyCacheTTL != 2592000 {
+		t.Fatalf("expected default cache_main lazy cache ttl 2592000, got %+v", cfg.Response["cache_main"])
 	}
-	if cfg.Response["cache_main"].LazyStaleTTL != 43200 {
-		t.Fatalf("expected default cache_main lazy stale ttl 43200, got %+v", cfg.Response["cache_main"])
+	if cfg.Response["cache_main"].LazyStaleTTL != 2592000 {
+		t.Fatalf("expected default cache_main lazy stale ttl 2592000, got %+v", cfg.Response["cache_main"])
 	}
 	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
 		t.Fatalf("expected default cache_main client ttl clamp 120-900, got %+v", cfg.Response["cache_main"])
@@ -38,13 +39,13 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_fakeip_proxy"].Persist {
 		t.Fatalf("expected fakeip proxy cache to default to non-persistent, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
-	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_proxy"].LazyStaleTTL != 7200 {
+	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 14400 || cfg.Response["cache_fakeip_proxy"].LazyStaleTTL != 14400 {
 		t.Fatalf("expected fakeip proxy cache to retain backend entries and stale replies, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
 	if cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
 		t.Fatalf("expected fakeip proxy cache to return stable client ttl, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
-	if cfg.UDPFastPath.InternalTTL != 3600 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 3600 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
+	if cfg.UDPFastPath.InternalTTL != 7200 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 7200 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
 	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
@@ -65,11 +66,11 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 900 {
-		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
+	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 120 {
+		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 900 {
-		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 120 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
 	if cfg.Response["cache_branch_foreign"].ClientTTLMin != 120 || cfg.Response["cache_branch_foreign"].ClientTTLMax != 900 {
 		t.Fatalf("cache_branch_foreign client ttl clamp = %+v, want 120-900", cfg.Response["cache_branch_foreign"])
@@ -77,7 +78,7 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_branch_foreign"].Persist {
 		t.Fatal("cache_branch_foreign should be short-term only")
 	}
-	if cfg.Response["cache_fakeip_domestic"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_domestic"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_domestic"].ClientTTLMax != 600 {
+	if cfg.Response["cache_fakeip_domestic"].LazyCacheTTL != 14400 || cfg.Response["cache_fakeip_domestic"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_domestic"].ClientTTLMax != 600 {
 		t.Fatalf("cache_fakeip_domestic should use long backend retention and stable client ttl, got %+v", cfg.Response["cache_fakeip_domestic"])
 	}
 	if cfg.Response["cache_probe"].ClientTTLMin != 120 || cfg.Response["cache_probe"].ClientTTLMax != 900 {
@@ -120,7 +121,7 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("template cache_main should bypass DDNS and high-churn domain sets, got %+v", got)
 	}
-	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
+	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 14400 || cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
 		t.Fatalf("template fakeip proxy cache should use stable client ttl, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
 	if totalSize > 1200000 {
@@ -128,6 +129,124 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	}
 	if totalL1Cap > 25000 {
 		t.Fatalf("template cache total l1 cap is too large: %d", totalL1Cap)
+	}
+}
+
+func TestRepoCacheUpstreamTemplateUsesCompatibleCacheArgs(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "21-data-cache-upstreams.yaml"))
+	if err != nil {
+		t.Fatalf("read cache upstream template: %v", err)
+	}
+	body := string(data)
+	if strings.Contains(body, "exit_on_hit") {
+		t.Fatalf("repo cache upstream template must not require exit_on_hit; target upgrade packages reject that cache arg")
+	}
+	if strings.Contains(body, "default_upstream_query_timeout") {
+		t.Fatalf("repo cache upstream template must not use legacy aliapi default_upstream_query_timeout")
+	}
+}
+
+func TestRepoFakeIPAndProbeCacheHitsExitWithoutExitOnHitArg(t *testing.T) {
+	mainResolution, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "31-main-resolution.yaml"))
+	if err != nil {
+		t.Fatalf("read main resolution template: %v", err)
+	}
+	mainResolutionBody := string(mainResolution)
+	for _, marker := range []string{
+		"exec: $cache_fakeip_domestic\n      - matches: has_resp\n        exec: exit",
+		"exec: $cache_fakeip_proxy\n      - matches: has_resp\n        exec: exit",
+		"exec: $sequence_fakeip_generated\n      - matches: has_resp\n        exec: exit",
+		"exec: $sequence_fakeip_generated_addlist\n      - matches: has_resp\n        exec: exit",
+	} {
+		if !strings.Contains(mainResolutionBody, marker) {
+			t.Fatalf("main resolution template missing cache hit exit marker %q", marker)
+		}
+	}
+
+	mainIPv4V6, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "33-main-ipv4v6.yaml"))
+	if err != nil {
+		t.Fatalf("read ipv4/v6 template: %v", err)
+	}
+	if !strings.Contains(string(mainIPv4V6), "exec: $cache_probe\n      - matches: has_resp\n        exec: exit") {
+		t.Fatalf("ipv4/v6 template missing probe cache hit exit marker")
+	}
+}
+
+func TestRepoBattleNetRulesUseDomesticDirectAndForeignFakeIP(t *testing.T) {
+	whitelist, err := os.ReadFile(filepath.Join("..", "config", "rule", "whitelist.txt"))
+	if err != nil {
+		t.Fatalf("read whitelist template: %v", err)
+	}
+	whitelistBody := string(whitelist)
+	for _, rule := range []string{
+		"domain:battlenet.com.cn",
+		"domain:blizzard.cn",
+		"domain:blzstatic.cn",
+		"full:cn.battle.net",
+	} {
+		if !strings.Contains(whitelistBody, rule) {
+			t.Fatalf("whitelist template missing domestic Battle.net rule %q", rule)
+		}
+	}
+
+	greylist, err := os.ReadFile(filepath.Join("..", "config", "rule", "greylist.txt"))
+	if err != nil {
+		t.Fatalf("read greylist template: %v", err)
+	}
+	greylistBody := string(greylist)
+	for _, rule := range []string{
+		"domain:blizzard.com",
+		"domain:akamaized.net",
+		"domain:cloudfront.net",
+		"full:geo.battle.net",
+		"full:rum.battle.net",
+	} {
+		if !strings.Contains(greylistBody, rule) {
+			t.Fatalf("greylist template missing foreign Battle.net rule %q", rule)
+		}
+	}
+
+	for _, rule := range []string{"cloudfront.net", "akamaized.net"} {
+		if strings.Contains(whitelistBody, rule) {
+			t.Fatalf("whitelist template should not contain foreign CDN rule %q", rule)
+		}
+	}
+	for _, rule := range []string{"battlenet.com.cn", "blzstatic.cn"} {
+		if strings.Contains(greylistBody, rule) {
+			t.Fatalf("greylist template should not contain domestic Battle.net rule %q", rule)
+		}
+	}
+}
+
+func TestRepoRequeryUIDefaultsMatchSchedulerDefaults(t *testing.T) {
+	indexHTML, err := os.ReadFile(filepath.Join("..", "config", "ui", "index.html"))
+	if err != nil {
+		t.Fatalf("read index html: %v", err)
+	}
+	indexBody := string(indexHTML)
+	for _, marker := range []string{
+		`id="requery-full-qps-input" min="1" value="10"`,
+		`id="requery-quick-qps-input" min="1" value="15"`,
+		`id="requery-prewarm-qps-input" min="1" value="20"`,
+	} {
+		if !strings.Contains(indexBody, marker) {
+			t.Fatalf("index html missing scheduler default marker %q", marker)
+		}
+	}
+
+	logJS, err := os.ReadFile(filepath.Join("..", "config", "ui", "assets", "js", "log.js"))
+	if err != nil {
+		t.Fatalf("read log js: %v", err)
+	}
+	logBody := string(logJS)
+	for _, marker := range []string{
+		"REQUERY_FULL_QPS_DEFAULT: 10",
+		"REQUERY_QUICK_QPS_DEFAULT: 15",
+		"REQUERY_PREWARM_QPS_DEFAULT: 20",
+	} {
+		if !strings.Contains(logBody, marker) {
+			t.Fatalf("log js missing scheduler default marker %q", marker)
+		}
 	}
 }
 

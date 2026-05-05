@@ -54,6 +54,7 @@ policies:
     args:
       - matches: fast_mark 10
         exec: $sequence_local_refresh
+      - exec: drop_resp
       - matches: '!fast_mark 10'
         exec: $cnfake
       - exec: ttl 600
@@ -64,6 +65,7 @@ policies:
     args:
       - matches: fast_mark 10
         exec: exit
+      - exec: drop_resp
       - exec: $cnfake
       - exec: ttl 600
       - exec: exit
@@ -83,6 +85,7 @@ policies:
         exec:
           - $sequence_google_refresh
           - exit
+      - exec: drop_resp
       - exec: $nocnfake
       - exec: ttl 600
       - exec: exit
@@ -94,6 +97,7 @@ policies:
         exec:
           - $sequence_google_refresh
           - exit
+      - exec: drop_resp
       - exec: $nocnfake
       - exec: ttl 600
       - matches: '!fast_mark 12'

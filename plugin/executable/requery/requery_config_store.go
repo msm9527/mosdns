@@ -13,10 +13,10 @@ import (
 const (
 	defaultURLCallDelayMS           = 50
 	defaultURLCallConcurrency       = 4
-	defaultSchedulerIntervalMinutes = 8 * 60
-	defaultFullQPS                  = 50
-	defaultQuickQPS                 = 80
-	defaultPrewarmQPS               = 100
+	defaultSchedulerIntervalMinutes = 2 * 60
+	defaultFullQPS                  = 10
+	defaultQuickQPS                 = 15
+	defaultPrewarmQPS               = 20
 	defaultDateRangeDays            = 30
 	defaultMaxQueueSize             = 2048
 	defaultOnDemandBatchSize        = 32

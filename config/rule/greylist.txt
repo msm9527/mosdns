@@ -14,6 +14,11 @@ domain:googleapis.com
 domain:google.com
 domain:gstatic.com
 full:e13252.dscg.akamaiedge.net
+domain:blizzard.com
+domain:akamaized.net
+domain:cloudfront.net
+full:geo.battle.net
+full:rum.battle.net
 full:h-netflix.online-metrix.net
 full:netflix.com.edgesuite.net
 domain:cookielaw.org

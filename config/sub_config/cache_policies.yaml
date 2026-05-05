@@ -36,15 +36,16 @@
 # - cache_probe: 节点探测专用缓存。
 #
 # 设计默认值：
-# - fakeip 缓存默认不持久化，后端保留 2 小时并向客户端稳定返回 600s TTL，
+# - fakeip 缓存默认不持久化，后端保留 4 小时并向客户端稳定返回 600s TTL，
 #   避免命中缓存后 TTL 衰减到 1s 导致局域网客户端持续重查。
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
-# - 真实解析缓存采用 stale-while-revalidate：后端保留期内优先返回缓存并后台刷新。
+# - 真实解析主缓存采用 30 天治理保留 + stale-while-revalidate：
+#   后端保留期内优先返回缓存并后台刷新。
 # - 这样查询过的普通域名不会在保留期内退回冷查询，DDNS/高变化域名通过绕过名单保证时效。
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
 # - UDP 快路径默认保留热点结果，并允许 FakeIP / 热点缓存向客户端返回更长 TTL。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
-# - 真实解析以 cache_main 作为长期持久化真源；分支缓存只保留小型短期去抖，
+# - 真实解析以 cache_main 作为长期持久化真源；分支缓存只保留极小短期去抖，
 #   避免同一真实响应在主缓存和分支缓存中长期重复占用内存与 WAL。
 #
 # udp_fast_path 字段说明：
@@ -59,8 +60,8 @@
 response:
   cache_main:
     size: 400000
-    lazy_cache_ttl: 43200
-    lazy_stale_ttl: 43200
+    lazy_cache_ttl: 2592000
+    lazy_stale_ttl: 2592000
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 300
@@ -76,45 +77,45 @@ response:
     wal_sync_interval: 1
 
   cache_branch_domestic:
-    size: 30000
-    lazy_cache_ttl: 900
-    lazy_stale_ttl: 900
+    size: 5000
+    lazy_cache_ttl: 120
+    lazy_stale_ttl: 120
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
-    l1_total_cap: 1024
+    l1_total_cap: 256
     bypass_domain_sets:
       - DDNS域名
       - 高变化域名
     persist: false
 
   cache_branch_foreign:
-    size: 30000
-    lazy_cache_ttl: 900
-    lazy_stale_ttl: 900
+    size: 5000
+    lazy_cache_ttl: 120
+    lazy_stale_ttl: 120
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
     servfail_ttl: 5
     l1_enabled: true
-    l1_total_cap: 1024
+    l1_total_cap: 256
     bypass_domain_sets:
       - DDNS域名
       - 高变化域名
     persist: false
 
   cache_branch_foreign_ecs:
-    size: 10000
-    lazy_cache_ttl: 900
-    lazy_stale_ttl: 900
+    size: 2000
+    lazy_cache_ttl: 120
+    lazy_stale_ttl: 120
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 120
     servfail_ttl: 5
     l1_enabled: true
-    l1_total_cap: 512
+    l1_total_cap: 128
     bypass_domain_sets:
       - DDNS域名
       - 高变化域名
@@ -122,8 +123,8 @@ response:
 
   cache_fakeip_domestic:
     size: 100000
-    lazy_cache_ttl: 7200
-    lazy_stale_ttl: 7200
+    lazy_cache_ttl: 14400
+    lazy_stale_ttl: 14400
     client_ttl_min: 600
     client_ttl_max: 600
     nxdomain_ttl: 60
@@ -137,8 +138,8 @@ response:
 
   cache_fakeip_proxy:
     size: 120000
-    lazy_cache_ttl: 7200
-    lazy_stale_ttl: 7200
+    lazy_cache_ttl: 14400
+    lazy_stale_ttl: 14400
     client_ttl_min: 600
     client_ttl_max: 600
     nxdomain_ttl: 60
@@ -166,9 +167,9 @@ response:
     persist: false
 
 udp_fast_path:
-  internal_ttl: 3600
+  internal_ttl: 7200
   stale_retry_seconds: 30
-  stale_max_seconds: 3600
+  stale_max_seconds: 7200
   ttl_min: 120
   ttl_max: 900
   memory_budget_mb: 8

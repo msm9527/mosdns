@@ -48,20 +48,14 @@ policies:
   # 国内 fakeip 响应缓存。
   - name: cache_fakeip_domestic
     type: cache
-    args:
-      exit_on_hit: true
 
   # 代理 fakeip 响应缓存。
   - name: cache_fakeip_proxy
     type: cache
-    args:
-      exit_on_hit: true
 
   # 节点探测专用缓存。
   - name: cache_probe
     type: cache
-    args:
-      exit_on_hit: true
 
   # 国内真实解析上游。
   - name: domestic
