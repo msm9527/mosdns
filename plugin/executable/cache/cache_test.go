@@ -659,6 +659,79 @@ func Test_cachePlugin_LazyStaleHitReturnsImmediatelyDuringRefresh(t *testing.T) 
 	t.Fatalf("expected background refresh to eventually store fresh response, raw_calls=%d", raw.calls.Load())
 }
 
+func Test_cachePlugin_BackendRetainedExpiredEntryStaysHot(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 900, LazyStaleTTL: 900, ClientTTLMin: 120, ClientTTLMax: 900}, Opts{})
+	defer c.Close()
+
+	const qname = "backend-retained-stale.example."
+	staleIP := net.IPv4(10, 10, 10, 1)
+	freshIP := net.IPv4(10, 10, 10, 2)
+	msgKey := cacheKeyForQuery(t, qname)
+	seed := testQueryContextWithTTL(t, qname, staleIP, 5)
+	cachedItem, ok := c.saveRespToCache(msgKey, seed)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+
+	now := time.Now()
+	cachedItem.storedUnixNano = now.Add(-5 * time.Minute).UnixNano()
+	cachedItem.expireUnixNano = now.Add(-time.Second).UnixNano()
+	cachedItem.refreshTTLOffsets()
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, now.Add(15*time.Minute))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	raw := &testResponseExec{
+		ip:    freshIP,
+		delay: 250 * time.Millisecond,
+	}
+	plugins := map[string]any{
+		"cache": c,
+		"raw":   raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	first := queryThroughSequence(t, s, qname)
+	elapsed := time.Since(start)
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("expected backend-retained stale cache to return immediately, elapsed=%s", elapsed)
+	}
+	if !responseHasA(first.R(), staleIP) {
+		t.Fatalf("expected first response from stale cache, got %+v", first.R())
+	}
+	if !responseFromStaleCache(first) {
+		t.Fatal("expected backend-retained response to be marked stale")
+	}
+	waitForRawCalls(t, raw, 1, 100*time.Millisecond)
+
+	second := queryThroughSequence(t, s, qname)
+	if !responseHasA(second.R(), staleIP) {
+		t.Fatalf("expected concurrent stale response while refresh runs, got %+v", second.R())
+	}
+	if got := raw.calls.Load(); got != 1 {
+		t.Fatalf("expected lazy refresh to be singleflight, got raw calls=%d", got)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		stored, _, _ := c.backend.Get(k)
+		refreshedResp, lazy, _, corrupt := respFromCacheItem(stored, 0, expiredMsgTtl)
+		if !corrupt && !lazy && responseHasA(refreshedResp, freshIP) {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("expected background refresh to replace stale entry, raw_calls=%d", raw.calls.Load())
+}
+
 func Test_cachePlugin_CachedUDPHitSetsWirePayload(t *testing.T) {
 	c := NewCache(&Args{Size: 64}, Opts{})
 	defer c.Close()
@@ -1693,6 +1766,18 @@ func counterValue(t *testing.T, counter prometheus.Counter) float64 {
 		t.Fatalf("counter.Write: %v", err)
 	}
 	return metric.GetCounter().GetValue()
+}
+
+func waitForRawCalls(t *testing.T, exec *testResponseExec, want uint64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if got := exec.calls.Load(); got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("expected raw calls >= %d within %s, got %d", want, timeout, exec.calls.Load())
 }
 
 func testQueryContext(t testingHelper, name string, ip net.IP) *query_context.Context {

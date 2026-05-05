@@ -26,8 +26,8 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].LazyCacheTTL != 43200 {
 		t.Fatalf("expected default cache_main lazy cache ttl 43200, got %+v", cfg.Response["cache_main"])
 	}
-	if cfg.Response["cache_main"].LazyStaleTTL != 7200 {
-		t.Fatalf("expected default cache_main lazy stale ttl 7200, got %+v", cfg.Response["cache_main"])
+	if cfg.Response["cache_main"].LazyStaleTTL != 43200 {
+		t.Fatalf("expected default cache_main lazy stale ttl 43200, got %+v", cfg.Response["cache_main"])
 	}
 	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
 		t.Fatalf("expected default cache_main client ttl clamp 120-900, got %+v", cfg.Response["cache_main"])
@@ -68,8 +68,8 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 900 {
 		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 120 {
-		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 900 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
 	if cfg.Response["cache_branch_foreign"].ClientTTLMin != 120 || cfg.Response["cache_branch_foreign"].ClientTTLMax != 900 {
 		t.Fatalf("cache_branch_foreign client ttl clamp = %+v, want 120-900", cfg.Response["cache_branch_foreign"])

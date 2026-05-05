@@ -39,8 +39,8 @@
 # - fakeip 缓存默认不持久化，后端保留 2 小时并向客户端稳定返回 600s TTL，
 #   避免命中缓存后 TTL 衰减到 1s 导致局域网客户端持续重查。
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
-# - 真实解析缓存保留较长 backend 窗口保证命中率，但只允许较短 lazy stale 返回窗口。
-# - 这样热点域名可通过预刷新维持加速，低频域名过期太久后会强制重新解析。
+# - 真实解析缓存采用 stale-while-revalidate：后端保留期内优先返回缓存并后台刷新。
+# - 这样查询过的普通域名不会在保留期内退回冷查询，DDNS/高变化域名通过绕过名单保证时效。
 # - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
 # - UDP 快路径默认保留热点结果，并允许 FakeIP / 热点缓存向客户端返回更长 TTL。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
@@ -60,7 +60,7 @@ response:
   cache_main:
     size: 400000
     lazy_cache_ttl: 43200
-    lazy_stale_ttl: 7200
+    lazy_stale_ttl: 43200
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 300
@@ -77,7 +77,7 @@ response:
   cache_branch_domestic:
     size: 30000
     lazy_cache_ttl: 900
-    lazy_stale_ttl: 120
+    lazy_stale_ttl: 900
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
@@ -91,7 +91,7 @@ response:
   cache_branch_foreign:
     size: 30000
     lazy_cache_ttl: 900
-    lazy_stale_ttl: 120
+    lazy_stale_ttl: 900
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
@@ -105,7 +105,7 @@ response:
   cache_branch_foreign_ecs:
     size: 10000
     lazy_cache_ttl: 900
-    lazy_stale_ttl: 120
+    lazy_stale_ttl: 900
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 120
