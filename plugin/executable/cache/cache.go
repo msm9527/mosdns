@@ -603,6 +603,10 @@ func (c *Cache) shouldBypassForStoredDomainSet(domainSet string) bool {
 	return domainSetContainsAnyToken(domainSet, c.args.BypassDomainSets)
 }
 
+func (c *Cache) shouldServeLazyStale(domainSet string) bool {
+	return !c.shouldBypassForStoredDomainSet(domainSet)
+}
+
 func (c *Cache) RegMetricsTo(r prometheus.Registerer) error {
 	for _, collector := range [...]prometheus.Collector{
 		c.queryTotal,
@@ -780,17 +784,17 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		return c.cacheHitReturn()
 	}
 
-	if cachedItem != nil && nowUnix >= cachedItem.expireUnixNano && domainSetContainsToken(cachedItem.domainSet, "DDNS域名") {
+	if cachedItem != nil && nowUnix >= cachedItem.expireUnixNano && c.shouldBypassForStoredDomainSet(cachedItem.domainSet) {
 		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 			refreshedItem, _, _ := c.backend.Get(kReal)
 			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
-				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_route_change")
+				c.deleteRuntimeCacheKey(kReal, "bypass_refresh_route_change")
 				refreshedItem = nil
 			}
 			refreshedResp, refreshedLazy, refreshedDomainSet, refreshedCorrupt := c.respFromCacheItem(refreshedItem, 0, expiredMsgTtl)
 			if refreshedCorrupt {
-				c.deleteRuntimeCacheKey(kReal, "ddns_refresh_corrupt")
+				c.deleteRuntimeCacheKey(kReal, "bypass_refresh_corrupt")
 				refreshedResp = nil
 				refreshedLazy = false
 				refreshedDomainSet = ""
@@ -1779,7 +1783,7 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyStale
 }
 
 func (c *Cache) respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string, bool) {
-	resp, lazy, domainSet, corrupt := respFromCacheItem(v, lazyStaleTTL, expiredResponseTTL)
+	resp, lazy, domainSet, corrupt := respFromCacheItemWithLazyPolicy(v, lazyStaleTTL, expiredResponseTTL, c.shouldServeLazyStale)
 	if corrupt || resp == nil {
 		return resp, lazy, domainSet, corrupt
 	}
@@ -1788,6 +1792,10 @@ func (c *Cache) respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL 
 }
 
 func respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string, bool) {
+	return respFromCacheItemWithLazyPolicy(v, lazyStaleTTL, expiredResponseTTL, nil)
+}
+
+func respFromCacheItemWithLazyPolicy(v *item, lazyStaleTTL int, expiredResponseTTL int, allowLazyStale func(string) bool) (*dns.Msg, bool, string, bool) {
 	if v != nil {
 		nowUnix := time.Now().UnixNano()
 
@@ -1812,7 +1820,13 @@ func respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.
 		}
 
 		staleUntilUnixNano := v.expireUnixNano + int64(lazyStaleTTL)*int64(time.Second)
-		if lazyStaleTTL > 0 && nowUnix < staleUntilUnixNano && !domainSetContainsToken(v.domainSet, "DDNS域名") {
+		canLazyStale := true
+		if allowLazyStale != nil {
+			canLazyStale = allowLazyStale(v.domainSet)
+		} else if domainSetContainsToken(v.domainSet, "DDNS域名") {
+			canLazyStale = false
+		}
+		if lazyStaleTTL > 0 && nowUnix < staleUntilUnixNano && canLazyStale {
 			r := m.Copy()
 			dnsutils.SetTTL(r, uint32(expiredResponseTTL))
 			return r, true, rawDomainSet, false

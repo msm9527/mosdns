@@ -32,7 +32,7 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
 		t.Fatalf("expected default cache_main client ttl clamp 120-900, got %+v", cfg.Response["cache_main"])
 	}
-	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
+	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
 	}
 	if cfg.Response["cache_fakeip_proxy"].Persist {
@@ -47,7 +47,7 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.UDPFastPath.InternalTTL != 3600 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 3600 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
-	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
+	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("expected default udp fast bypass domain sets, got %+v", got)
 	}
 }
@@ -116,6 +116,9 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	}
 	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
 		t.Fatalf("template cache_main should clamp client ttl 120-900, got %+v", cfg.Response["cache_main"])
+	}
+	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
+		t.Fatalf("template cache_main should bypass DDNS and high-churn domain sets, got %+v", got)
 	}
 	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 7200 || cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
 		t.Fatalf("template fakeip proxy cache should use stable client ttl, got %+v", cfg.Response["cache_fakeip_proxy"])
@@ -268,7 +271,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
 		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, ClientTTLMin: 3, ClientTTLMax: 30, NXDomainTTL: 11, ServfailTTL: 12,
-		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名"}, Persist: true,
+		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名", "高变化域名"}, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
 	cfg.UDPFastPath = UDPFastCachePolicy{
@@ -280,7 +283,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		MemoryBudgetMB:   6,
 		ResponseSlots:    1024,
 		RuleSlots:        512,
-		BypassDomainSets: []string{"DDNS域名"},
+		BypassDomainSets: []string{"DDNS域名", "高变化域名"},
 	}
 
 	pc := PluginConfig{Tag: "cache_main", Type: "cache", Args: map[string]any{"size": 1}}
@@ -292,7 +295,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("unexpected cache args: %+v", args)
 	}
 	bypassDomainSets, ok := args["bypass_domain_sets"].([]string)
-	if !ok || len(bypassDomainSets) != 1 || bypassDomainSets[0] != "DDNS域名" {
+	if !ok || len(bypassDomainSets) != 2 || bypassDomainSets[0] != "DDNS域名" || bypassDomainSets[1] != "高变化域名" {
 		t.Fatalf("unexpected bypass domain sets: %+v", args["bypass_domain_sets"])
 	}
 
@@ -308,7 +311,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("unexpected udp slot args: %+v", udpArgs)
 	}
 	udpBypassDomainSets, ok := udpArgs["fast_cache_bypass_domain_sets"].([]string)
-	if !ok || len(udpBypassDomainSets) != 1 || udpBypassDomainSets[0] != "DDNS域名" {
+	if !ok || len(udpBypassDomainSets) != 2 || udpBypassDomainSets[0] != "DDNS域名" || udpBypassDomainSets[1] != "高变化域名" {
 		t.Fatalf("unexpected udp bypass domain sets: %+v", udpArgs["fast_cache_bypass_domain_sets"])
 	}
 }

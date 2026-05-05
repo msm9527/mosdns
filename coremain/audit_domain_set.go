@@ -15,6 +15,7 @@ var auditDomainSetPriority = []string{
 	"黑名单",
 	"广告屏蔽",
 	"DDNS域名",
+	"高变化域名",
 	"灰名单",
 	"白名单",
 	"记忆代理",

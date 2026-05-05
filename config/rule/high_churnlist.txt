@@ -1,0 +1,37 @@
+# 高变化域名
+# 命中后绕过响应缓存和 UDP 快路径缓存，避免 PCDN、HTTPDNS、STUN、
+# 游戏下载调度等短周期域名被长 stale 缓存拖住。
+
+# PCDN / P2P / STUN
+domain:bsccdn.net
+domain:xycdn.com
+domain:douyucdn.cn
+domain:bilivideo.cn
+domain:iqiyi.com
+domain:xmcdn.com
+domain:yximgs.com
+keyword:pcdn
+keyword:p2p
+keyword:stun
+
+# HTTPDNS
+keyword:httpdns
+domain:q2cdn.com
+domain:cdnhwc2.com
+domain:cdnhwc5.com
+domain:tbcache.com
+
+# 短视频高频调度
+domain:douyin.com
+domain:douyinvod.com
+domain:snssdk.com
+domain:bytecdn.cn
+domain:byteimg.com
+domain:bytedance.com
+
+# 游戏下载/CDN 调度
+domain:steamcontent.com
+domain:steamserver.net
+domain:steamstatic.com
+domain:steamcdn-a.akamaihd.net
+full:lancache.steamcontent.com

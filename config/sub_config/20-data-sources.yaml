@@ -187,6 +187,11 @@ policies:
     args:
       files:
         - rule/ddnslist.txt
+  - name: high_churnlist
+    type: domain_set_light
+    args:
+      files:
+        - rule/high_churnlist.txt
 
   # 统一命中标记器。
   # 所有基础规则先在这里收敛为 fast_mark，后续 sequence 再按 fast_mark 走分支。
@@ -241,3 +246,6 @@ policies:
         - tag: geosite_cn
           mark: 16
           output_tag: 订阅直连
+        - tag: high_churnlist
+          mark: 17
+          output_tag: 高变化域名

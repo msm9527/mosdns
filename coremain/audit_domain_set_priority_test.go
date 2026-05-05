@@ -22,3 +22,10 @@ func TestNormalizeAuditDomainSetPrefersGeositeNoCnOverMemoryDirect(t *testing.T)
 		t.Fatalf("unexpected normalized domain set: %q", got)
 	}
 }
+
+func TestNormalizeAuditDomainSetPrefersHighChurnOverWhitelist(t *testing.T) {
+	got := normalizeAuditDomainSet("白名单|高变化域名", "A")
+	if got != "高变化域名" {
+		t.Fatalf("unexpected normalized domain set: %q", got)
+	}
+}

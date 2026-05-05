@@ -29,7 +29,7 @@ const (
 	defaultCacheProbeL1TotalCap      = 2048
 )
 
-var defaultResponseCacheBypassDomainSets = []string{"DDNS域名"}
+var defaultResponseCacheBypassDomainSets = []string{"DDNS域名", "高变化域名"}
 
 type CachePolicy struct {
 	Size             int

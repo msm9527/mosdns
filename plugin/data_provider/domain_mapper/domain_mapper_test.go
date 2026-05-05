@@ -216,6 +216,39 @@ func TestDomainMapperHotRulesMergeWithMainMatcher(t *testing.T) {
 	}
 }
 
+func TestDomainMapperHighChurnAddsBypassTagWithoutChangingDefaultRoute(t *testing.T) {
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"high_churnlist": &mockRuleExporter{rules: []string{"domain:steamcontent.com"}},
+	})
+	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
+		DefaultMark: 17,
+		DefaultTag:  "未命中",
+		Rules: []RuleConfig{{
+			Tag:       "high_churnlist",
+			Mark:      17,
+			OutputTag: "高变化域名",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("NewMapper: %v", err)
+	}
+
+	qCtx := newTestQueryContext("content.steamcontent.com.")
+	if err := dmAny.(*DomainMapper).Exec(context.Background(), qCtx); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if !qCtx.HasFastFlag(17) {
+		t.Fatal("expected high-churn-only hit to keep default unmatched route mark")
+	}
+	value, ok := qCtx.GetValue(query_context.KeyDomainSet)
+	if !ok {
+		t.Fatal("expected high-churn tag to be stored")
+	}
+	if got := value.(string); got != "高变化域名" {
+		t.Fatalf("unexpected high-churn tag: %q", got)
+	}
+}
+
 func TestDomainMapperSkipsDisallowedProviderOnCurrentRequest(t *testing.T) {
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"my_realiprule": &mockRuleExporter{

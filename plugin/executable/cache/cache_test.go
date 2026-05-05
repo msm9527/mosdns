@@ -314,6 +314,30 @@ func Test_getRespFromCache_NoLazyStaleForDDNS(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_NoLazyStaleForConfiguredBypassDomainSet(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyStaleTTL: 3600, BypassDomainSets: []string{"高变化域名"}}, Opts{})
+	defer c.Close()
+
+	const qname = "high-churn-stale.example."
+	qCtx := testQueryContext(t, qname, net.IPv4(1, 2, 3, 4))
+	msgKey := cacheKeyForQuery(t, qname)
+	cachedItem, ok := c.saveRespToCache(msgKey, qCtx)
+	if !ok {
+		t.Fatal("expected seed response to be cached before bypass policy changed")
+	}
+	now := time.Now()
+	cachedItem.expireUnixNano = now.Add(-time.Second).UnixNano()
+	cachedItem.domainSet = encodeStoredRouteMetadata("未命中|高变化域名", "未命中|高变化域名", "")
+
+	resp, lazy, domainSet, corrupt := c.respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
+	if corrupt {
+		t.Fatal("unexpected corrupt cached response")
+	}
+	if resp != nil || lazy || domainSet != "" {
+		t.Fatalf("expected configured bypass domain set to skip lazy stale response, resp=%v lazy=%v domainSet=%q", resp != nil, lazy, domainSet)
+	}
+}
+
 func Test_getRespFromCache_LazyStaleWindow(t *testing.T) {
 	backend := pcache.New[key, *item](pcache.Opts{Size: 64})
 	defer backend.Close()
@@ -1267,6 +1291,20 @@ func Test_cachePlugin_SaveSkipsConfiguredDomainSet(t *testing.T) {
 	qCtx.StoreValue(query_context.KeyDomainSet, "DDNS域名")
 	if _, ok := c.saveRespToCache("ddns-save-bypass-key", qCtx); ok {
 		t.Fatal("expected configured domain-set response not to be cached")
+	}
+	if got := c.backend.Len(); got != 0 {
+		t.Fatalf("expected cache to remain empty, got %d entries", got)
+	}
+}
+
+func Test_cachePlugin_SaveSkipsHighChurnDomainSet(t *testing.T) {
+	c := NewCache(&Args{Size: 64, BypassDomainSets: []string{"高变化域名"}}, Opts{})
+	defer c.Close()
+
+	qCtx := testQueryContext(t, "steamcontent.com.", net.IPv4(5, 5, 5, 5))
+	qCtx.StoreValue(query_context.KeyDomainSet, "白名单|高变化域名")
+	if _, ok := c.saveRespToCache("high-churn-save-bypass-key", qCtx); ok {
+		t.Fatal("expected high-churn response not to be cached")
 	}
 	if got := c.backend.Len(); got != 0 {
 		t.Fatalf("expected cache to remain empty, got %d entries", got)
