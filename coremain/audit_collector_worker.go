@@ -7,17 +7,23 @@ import (
 	"go.uber.org/zap"
 )
 
+type auditQueuedLog struct {
+	generation uint64
+	log        AuditLog
+}
+
 func (c *AuditCollector) runWriter() {
 	defer close(c.workerDone)
 	timer := time.NewTimer(c.flushInterval())
 	defer timer.Stop()
 
+	batchGeneration := c.generation.Load()
 	batch := make([]AuditLog, 0, c.batchSize())
 	flush := func() {
 		if len(batch) == 0 {
 			return
 		}
-		if err := c.writeBatch(batch); err != nil {
+		if err := c.writeBatch(batchGeneration, batch); err != nil {
 			c.degraded.Store(true)
 			mlog.L().Warn("failed to persist audit batch", zap.Error(err))
 		}
@@ -26,12 +32,16 @@ func (c *AuditCollector) runWriter() {
 
 	for {
 		select {
-		case log, ok := <-c.queue:
+		case item, ok := <-c.queue:
 			if !ok {
 				flush()
 				return
 			}
-			batch = append(batch, log)
+			if len(batch) > 0 && item.generation != batchGeneration {
+				flush()
+			}
+			batchGeneration = item.generation
+			batch = append(batch, item.log)
 			if len(batch) >= c.batchSize() {
 				flush()
 				resetTimer(timer, c.flushInterval())
@@ -77,17 +87,30 @@ func (c *AuditCollector) maintenanceInterval() time.Duration {
 	return time.Duration(c.GetSettings().MaintenanceIntervalSeconds) * time.Second
 }
 
-func (c *AuditCollector) writeBatch(batch []AuditLog) error {
+func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
+	c.clearMu.RLock()
+	defer c.clearMu.RUnlock()
+	if generation != c.generation.Load() {
+		return nil
+	}
+
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
 	c.mu.RLock()
 	storage := c.storage
 	c.mu.RUnlock()
 	if storage == nil {
 		return nil
 	}
+	if generation != c.generation.Load() {
+		return nil
+	}
 	return storage.WriteBatch(batch)
 }
 
 func (c *AuditCollector) enforceRetention() error {
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
 	c.mu.RLock()
 	storage := c.storage
 	settings := c.settings

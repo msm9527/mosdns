@@ -6,6 +6,8 @@ import (
 )
 
 func (c *AuditCollector) GetDiskUsageBytes() int64 {
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return 0
@@ -18,6 +20,8 @@ func (c *AuditCollector) GetDiskUsageBytes() int64 {
 }
 
 func (c *AuditCollector) GetStorageStats() AuditStorageStats {
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return AuditStorageStats{}
@@ -31,12 +35,34 @@ func (c *AuditCollector) GetStorageStats() AuditStorageStats {
 }
 
 func (c *AuditCollector) ClearLogs() error {
-	c.realtime.Reset()
-	storage := c.getStorage()
-	if storage == nil {
-		return nil
+	c.clearMu.Lock()
+	defer c.clearMu.Unlock()
+
+	c.generation.Add(1)
+	for {
+		select {
+		case _, ok := <-c.queue:
+			if !ok {
+				c.realtime.Reset()
+				c.storageMu.Lock()
+				defer c.storageMu.Unlock()
+				storage := c.getStorage()
+				if storage == nil {
+					return nil
+				}
+				return storage.Clear()
+			}
+		default:
+			c.realtime.Reset()
+			c.storageMu.Lock()
+			defer c.storageMu.Unlock()
+			storage := c.getStorage()
+			if storage == nil {
+				return nil
+			}
+			return storage.Clear()
+		}
 	}
-	return storage.Clear()
 }
 
 func (c *AuditCollector) GetOverview(windowSeconds int) AuditOverview {
@@ -50,6 +76,8 @@ func (c *AuditCollector) GetOverview(windowSeconds int) AuditOverview {
 }
 
 func (c *AuditCollector) GetTimeseries(params AuditTimeseriesQuery) ([]AuditTimeseriesPoint, error) {
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return []AuditTimeseriesPoint{}, nil
@@ -58,6 +86,8 @@ func (c *AuditCollector) GetTimeseries(params AuditTimeseriesQuery) ([]AuditTime
 }
 
 func (c *AuditCollector) GetRank(rankType RankType, params AuditRangeQuery) ([]AuditRankItem, error) {
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return []AuditRankItem{}, nil
@@ -66,6 +96,8 @@ func (c *AuditCollector) GetRank(rankType RankType, params AuditRangeQuery) ([]A
 }
 
 func (c *AuditCollector) GetSlowLogs(params AuditRangeQuery) ([]AuditLog, error) {
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return []AuditLog{}, nil
@@ -74,6 +106,8 @@ func (c *AuditCollector) GetSlowLogs(params AuditRangeQuery) ([]AuditLog, error)
 }
 
 func (c *AuditCollector) GetLogs(params AuditLogsQuery) (AuditLogsResponse, error) {
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return AuditLogsResponse{}, nil
@@ -86,6 +120,8 @@ func (c *AuditCollector) fillOverviewTotals(overview *AuditOverview) {
 		return
 	}
 	overview.PeriodSummaries = defaultAuditPeriodSummaries()
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
 	storage := c.getStorage()
 	if storage == nil {
 		return

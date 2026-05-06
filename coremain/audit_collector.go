@@ -22,13 +22,16 @@ const (
 
 type AuditCollector struct {
 	mu            sync.RWMutex
+	clearMu       sync.RWMutex
+	storageMu     sync.RWMutex
 	settings      AuditSettings
 	configBaseDir string
 	storage       *SQLiteAuditStorage
 	realtime      *auditRealtimeStore
-	queue         chan AuditLog
+	queue         chan auditQueuedLog
 	workerDone    chan struct{}
 	maintDone     chan struct{}
+	generation    atomic.Uint64
 	closed        atomic.Bool
 	degraded      atomic.Bool
 	opening       atomic.Bool
@@ -47,7 +50,7 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 		settings:      settings,
 		configBaseDir: configBaseDir,
 		realtime:      newAuditRealtimeStore(auditRealtimeBucketCount),
-		queue:         make(chan AuditLog, auditQueueCapacity(settings)),
+		queue:         make(chan auditQueuedLog, auditQueueCapacity(settings)),
 		workerDone:    make(chan struct{}),
 		maintDone:     make(chan struct{}),
 	}
@@ -79,6 +82,9 @@ func (c *AuditCollector) Collect(qCtx *query_context.Context) {
 
 // CollectLog records an already-built audit log into realtime and persistent audit stores.
 func (c *AuditCollector) CollectLog(log AuditLog) {
+	c.clearMu.RLock()
+	defer c.clearMu.RUnlock()
+
 	if !c.IsCapturing() {
 		return
 	}
@@ -93,7 +99,7 @@ func (c *AuditCollector) CollectLog(log AuditLog) {
 	}
 	c.realtime.Record(log)
 	select {
-	case c.queue <- log:
+	case c.queue <- auditQueuedLog{generation: c.generation.Load(), log: log}:
 	default:
 		c.degraded.Store(true)
 		c.realtime.RecordDrop(log.QueryTime)
@@ -133,6 +139,8 @@ func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) e
 	if err != nil {
 		return err
 	}
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
 	c.mu.Lock()
 	oldStorage := c.storage
 	c.settings = next
@@ -149,6 +157,8 @@ func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir str
 	if err != nil {
 		return err
 	}
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
 	c.mu.Lock()
 	oldStorage := c.storage
 	c.storage = storage
@@ -193,6 +203,8 @@ var openAuditStorage = func(settings AuditSettings, configBaseDir string) (*SQLi
 }
 
 func (c *AuditCollector) installStorageIfCurrent(settings AuditSettings, configBaseDir string, storage *SQLiteAuditStorage) bool {
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
 	c.mu.Lock()
 	if c.closed.Load() || c.configBaseDir != configBaseDir || c.settings != settings {
 		c.mu.Unlock()
@@ -217,6 +229,8 @@ func closeAuditStorageAfterSwap(storage *SQLiteAuditStorage) {
 }
 
 func (c *AuditCollector) closeStorage() {
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.storage != nil {

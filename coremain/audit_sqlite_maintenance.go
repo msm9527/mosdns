@@ -106,6 +106,12 @@ func (s *SQLiteAuditStorage) Clear() error {
 	if err := s.checkpointWAL(); err != nil {
 		return err
 	}
+	if err := s.compactDatabase(); err != nil {
+		return err
+	}
+	if err := s.checkpointWAL(); err != nil {
+		return err
+	}
 	return nil
 }
 
