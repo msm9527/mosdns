@@ -1,9 +1,13 @@
 package coremain
 
 import (
+	"net"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/miekg/dns"
 )
 
 func TestAuditRealtimeOverviewSnapshot(t *testing.T) {
@@ -72,6 +76,53 @@ func TestAuditDurationMsKeepsNanosecondPrecision(t *testing.T) {
 				t.Fatalf("auditDurationMs(%s) = %.9f, want %.9f", tc.duration, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestBuildAuditLogPrefersFinalResponsePayload(t *testing.T) {
+	query := new(dns.Msg)
+	query.SetQuestion("www.youtube.com.", dns.TypeA)
+	qCtx := query_context.NewContext(query)
+
+	intermediate := new(dns.Msg)
+	intermediate.SetReply(query)
+	intermediate.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{
+			Name:   "www.youtube.com.",
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    1,
+		},
+		A: net.IPv4(157, 240, 7, 20),
+	}}
+	qCtx.SetResponse(intermediate)
+
+	finalResp := new(dns.Msg)
+	finalResp.SetReply(query)
+	finalResp.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{
+			Name:   "www.youtube.com.",
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    600,
+		},
+		A: net.IPv4(28, 0, 38, 223),
+	}}
+	wire, err := finalResp.Pack()
+	if err != nil {
+		t.Fatalf("Pack() error = %v", err)
+	}
+	qCtx.SetResponsePayload(&query_context.ResponsePayload{Wire: wire})
+
+	log := buildAuditLog(qCtx, time.Millisecond)
+	if log.AnswerCount != 1 {
+		t.Fatalf("AnswerCount = %d, want 1", log.AnswerCount)
+	}
+	if got := log.Answers[0].TTL; got != 600 {
+		t.Fatalf("audit answer TTL = %d, want 600", got)
+	}
+	if got := log.Answers[0].Data; got != "28.0.38.223" {
+		t.Fatalf("audit answer data = %q, want final payload answer", got)
 	}
 }
 

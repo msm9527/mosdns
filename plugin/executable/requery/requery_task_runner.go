@@ -300,7 +300,29 @@ func (p *Requery) finalizeTaskExecution(ctx context.Context, profile taskProfile
 	if !p.invalidateCachesAfterPublish(ctx, state.changedDomain) {
 		return false
 	}
+	if !p.runPostPublishPrewarm(ctx, profile, state.changedDomain) {
+		return false
+	}
 	p.clearFullRebuildTask()
+	return true
+}
+
+func (p *Requery) runPostPublishPrewarm(ctx context.Context, profile taskProfile, domains []string) bool {
+	if !profile.PostWarm {
+		return true
+	}
+	candidates := domainCandidatesFromNames(domains)
+	if len(candidates) == 0 {
+		return true
+	}
+	if limit := p.defaultPrewarmLimit(); limit > 0 && len(candidates) > limit {
+		candidates = candidates[:limit]
+	}
+	log.Printf("[requery] Step 8.1: publishing finished; post-warming %d changed domains through main cache...", len(candidates))
+	if err := p.prewarmChangedDomainsAfterPublish(ctx, candidates); err != nil {
+		p.setFailedState("post-publish prewarm failed: %v", err)
+		return false
+	}
 	return true
 }
 

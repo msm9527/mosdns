@@ -375,8 +375,10 @@ func TestRunTaskUsesRefreshResolverAndSkipsLegacyFlush(t *testing.T) {
 func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 	t.Parallel()
 
-	dnsAddr, queries, shutdownDNS := startTestDNSServer(t)
-	defer shutdownDNS()
+	refreshAddr, refreshQueries, shutdownRefreshDNS := startTestDNSServer(t)
+	defer shutdownRefreshDNS()
+	prewarmAddr, prewarmQueries, shutdownPrewarmDNS := startTestDNSServer(t)
+	defer shutdownPrewarmDNS()
 
 	var (
 		mu        sync.Mutex
@@ -416,7 +418,8 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 			},
 			ExecutionSettings: ExecutionSettings{
 				QueriesPerSecond:       50,
-				RefreshResolverAddress: dnsAddr,
+				ResolverAddress:        prewarmAddr,
+				RefreshResolverAddress: refreshAddr,
 				QueryMode:              "observed",
 				MaxQueueSize:           16,
 			},
@@ -441,8 +444,11 @@ func TestOnDemandQueueRefreshesAndVerifies(t *testing.T) {
 	}
 	p.processOnDemandBatch(jobs)
 
-	if count := len(queries()); count != 1 {
+	if count := len(refreshQueries()); count != 1 {
 		t.Fatalf("expected one on-demand refresh query, got %d", count)
+	}
+	if count := len(prewarmQueries()); count != 1 {
+		t.Fatalf("expected one post-publish prewarm query, got %d", count)
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -618,6 +624,54 @@ func TestFinalizeQuickPrewarmSkipsCacheInvalidation(t *testing.T) {
 	}
 }
 
+func TestFinalizeQuickRebuildInvalidatesThenPostWarmsChangedDomains(t *testing.T) {
+	t.Parallel()
+
+	prewarmAddr, queries, shutdownDNS := startTestDNSServer(t)
+	defer shutdownDNS()
+
+	response := &mockRuntimeCacheController{kind: "response", entryCount: 8}
+	p := &Requery{
+		snapshotter: mockSnapshotter{plugins: map[string]any{
+			"cache_main": response,
+		}},
+		config: &Config{
+			ExecutionSettings: ExecutionSettings{
+				ResolverAddress:          prewarmAddr,
+				PrewarmQueriesPerSecond:  100,
+				PrewarmLimit:             8,
+				RefreshResolverAddress:   "127.0.0.1:9",
+				QuickQueriesPerSecond:    100,
+				QueriesPerSecond:         100,
+				QuickRebuildLimit:        8,
+				FullRebuildPriorityLimit: 8,
+				QueryMode:                "observed",
+				URLCallDelayMS:           1,
+				URLCallConcurrency:       1,
+				MaxQueueSize:             8,
+				OnDemandBatchSize:        8,
+			},
+			Workflow: WorkflowSettings{SaveAfterRefresh: boolPtr(false)},
+		},
+		status: Status{TaskState: "idle"},
+	}
+
+	state := taskExecutionState{changedDomain: []string{"warm.example"}}
+	if !p.finalizeTaskExecution(context.Background(), p.profileForMode("quick_rebuild", 1), &state) {
+		t.Fatal("expected finalize to succeed")
+	}
+	if response.purgeCalls != 1 || response.flushCalls != 0 {
+		t.Fatalf("unexpected cache invalidation calls: purge=%d flush=%d", response.purgeCalls, response.flushCalls)
+	}
+	qtypes := queries()
+	if len(qtypes) != 2 {
+		t.Fatalf("expected A and AAAA post-publish prewarm queries, got %d: %#v", len(qtypes), qtypes)
+	}
+	if qtypes[0] != dns.TypeA || qtypes[1] != dns.TypeAAAA {
+		t.Fatalf("unexpected post-publish qtypes: %#v", qtypes)
+	}
+}
+
 func TestResolverAddressesForProfileUsesPool(t *testing.T) {
 	t.Parallel()
 
@@ -774,6 +828,12 @@ func TestApplyConfigDefaults(t *testing.T) {
 	if cfg.ExecutionSettings.PrewarmQueriesPerSecond != defaultPrewarmQPS {
 		t.Fatalf("unexpected prewarm qps: %d", cfg.ExecutionSettings.PrewarmQueriesPerSecond)
 	}
+	if cfg.ExecutionSettings.ResolverAddress != defaultResolverAddress {
+		t.Fatalf("unexpected resolver address: %q", cfg.ExecutionSettings.ResolverAddress)
+	}
+	if cfg.ExecutionSettings.RefreshResolverAddress != defaultRefreshResolverAddress {
+		t.Fatalf("unexpected refresh resolver address: %q", cfg.ExecutionSettings.RefreshResolverAddress)
+	}
 	if cfg.ExecutionSettings.QuickRebuildLimit != defaultQuickRebuildLimit {
 		t.Fatalf("unexpected quick limit: %d", cfg.ExecutionSettings.QuickRebuildLimit)
 	}
@@ -783,7 +843,7 @@ func TestApplyConfigDefaults(t *testing.T) {
 	if cfg.ExecutionSettings.FullRebuildPriorityLimit != defaultFullRebuildPriorityLimit {
 		t.Fatalf("unexpected full priority limit: %d", cfg.ExecutionSettings.FullRebuildPriorityLimit)
 	}
-	if cfg.Workflow.FlushMode != "legacy" {
+	if cfg.Workflow.FlushMode != "none" {
 		t.Fatalf("unexpected flush mode: %q", cfg.Workflow.FlushMode)
 	}
 	if cfg.ExecutionSettings.URLCallDelayMS != defaultURLCallDelayMS {
@@ -816,6 +876,57 @@ func TestNewDefaultConfigSchedulerDefaults(t *testing.T) {
 		cfg.ExecutionSettings.PrewarmLimit != defaultPrewarmLimit ||
 		cfg.ExecutionSettings.FullRebuildPriorityLimit != defaultFullRebuildPriorityLimit {
 		t.Fatalf("unexpected default limit settings: %+v", cfg.ExecutionSettings)
+	}
+	if cfg.ExecutionSettings.ResolverAddress != defaultResolverAddress ||
+		cfg.ExecutionSettings.RefreshResolverAddress != defaultRefreshResolverAddress {
+		t.Fatalf("unexpected default resolver settings: %+v", cfg.ExecutionSettings)
+	}
+}
+
+func TestApplyConfigDefaultsMigratesLegacyRuntimeTuning(t *testing.T) {
+	t.Parallel()
+
+	cfg := &Config{
+		Scheduler: SchedulerConfig{Enabled: true, IntervalMinutes: defaultSchedulerIntervalMinutes},
+		Workflow:  WorkflowSettings{Mode: "hybrid", FlushMode: "none"},
+		ExecutionSettings: ExecutionSettings{
+			QueriesPerSecond:         50,
+			QuickQueriesPerSecond:    80,
+			PrewarmQueriesPerSecond:  100,
+			ResolverAddress:          "127.0.0.1:53",
+			RefreshResolverAddress:   "127.0.0.1:53",
+			QueryMode:                "observed",
+			DateRangeDays:            defaultDateRangeDays,
+			URLCallDelayMS:           defaultURLCallDelayMS,
+			URLCallConcurrency:       defaultURLCallConcurrency,
+			MaxQueueSize:             2048,
+			OnDemandBatchSize:        defaultOnDemandBatchSize,
+			QuickRebuildLimit:        defaultQuickRebuildLimit,
+			PrewarmLimit:             8000,
+			FullRebuildPriorityLimit: defaultFullRebuildPriorityLimit,
+		},
+		Recovery: RecoverySettings{
+			AutoResume:          boolPtr(true),
+			CheckpointBatchSize: defaultCheckpointBatchSize,
+			ResumeDelayMS:       defaultResumeDelayMS,
+		},
+		Status: Status{TaskState: "idle"},
+	}
+
+	if !applyConfigDefaults(cfg) {
+		t.Fatal("expected legacy tuning migration to change config")
+	}
+	if cfg.ExecutionSettings.QueriesPerSecond != defaultFullQPS ||
+		cfg.ExecutionSettings.QuickQueriesPerSecond != defaultQuickQPS ||
+		cfg.ExecutionSettings.PrewarmQueriesPerSecond != defaultPrewarmQPS {
+		t.Fatalf("legacy qps defaults were not migrated: %+v", cfg.ExecutionSettings)
+	}
+	if cfg.ExecutionSettings.MaxQueueSize != defaultMaxQueueSize {
+		t.Fatalf("legacy queue size was not migrated: %d", cfg.ExecutionSettings.MaxQueueSize)
+	}
+	if cfg.ExecutionSettings.ResolverAddress != defaultResolverAddress ||
+		cfg.ExecutionSettings.RefreshResolverAddress != defaultRefreshResolverAddress {
+		t.Fatalf("legacy resolver addresses were not migrated: %+v", cfg.ExecutionSettings)
 	}
 }
 

@@ -17,11 +17,13 @@ const (
 	defaultFullQPS                  = 10
 	defaultQuickQPS                 = 15
 	defaultPrewarmQPS               = 20
+	defaultResolverAddress          = "127.0.0.1:7766"
+	defaultRefreshResolverAddress   = "127.0.0.1:7767"
 	defaultDateRangeDays            = 30
-	defaultMaxQueueSize             = 2048
+	defaultMaxQueueSize             = 8192
 	defaultOnDemandBatchSize        = 32
 	defaultQuickRebuildLimit        = 3500
-	defaultPrewarmLimit             = 8000
+	defaultPrewarmLimit             = 12000
 	defaultFullRebuildPriorityLimit = 6000
 	defaultCheckpointBatchSize      = 256
 	defaultResumeDelayMS            = 1500
@@ -66,6 +68,8 @@ func newDefaultConfig() *Config {
 	cfg.ExecutionSettings.QueriesPerSecond = defaultFullQPS
 	cfg.ExecutionSettings.QuickQueriesPerSecond = defaultQuickQPS
 	cfg.ExecutionSettings.PrewarmQueriesPerSecond = defaultPrewarmQPS
+	cfg.ExecutionSettings.ResolverAddress = defaultResolverAddress
+	cfg.ExecutionSettings.RefreshResolverAddress = defaultRefreshResolverAddress
 	cfg.ExecutionSettings.URLCallDelayMS = defaultURLCallDelayMS
 	cfg.ExecutionSettings.URLCallConcurrency = defaultURLCallConcurrency
 	cfg.ExecutionSettings.MaxQueueSize = defaultMaxQueueSize
@@ -106,6 +110,9 @@ func applyConfigDefaults(cfg *Config) bool {
 		cfg.ExecutionSettings.URLCallConcurrency = defaultURLCallConcurrency
 		configChanged = true
 	}
+	if migrateLegacyQPSDefaults(&cfg.ExecutionSettings) {
+		configChanged = true
+	}
 	if cfg.ExecutionSettings.QueriesPerSecond == 0 {
 		cfg.ExecutionSettings.QueriesPerSecond = defaultFullQPS
 		configChanged = true
@@ -126,7 +133,18 @@ func applyConfigDefaults(cfg *Config) bool {
 		cfg.ExecutionSettings.QueryMode = "observed"
 		configChanged = true
 	}
+	if strings.TrimSpace(cfg.ExecutionSettings.ResolverAddress) == "" || strings.TrimSpace(cfg.ExecutionSettings.ResolverAddress) == "127.0.0.1:53" {
+		cfg.ExecutionSettings.ResolverAddress = defaultResolverAddress
+		configChanged = true
+	}
+	if strings.TrimSpace(cfg.ExecutionSettings.RefreshResolverAddress) == "" || strings.TrimSpace(cfg.ExecutionSettings.RefreshResolverAddress) == "127.0.0.1:53" {
+		cfg.ExecutionSettings.RefreshResolverAddress = defaultRefreshResolverAddress
+		configChanged = true
+	}
 	if cfg.ExecutionSettings.MaxQueueSize <= 0 {
+		cfg.ExecutionSettings.MaxQueueSize = defaultMaxQueueSize
+		configChanged = true
+	} else if cfg.ExecutionSettings.MaxQueueSize == 2048 {
 		cfg.ExecutionSettings.MaxQueueSize = defaultMaxQueueSize
 		configChanged = true
 	}
@@ -189,6 +207,21 @@ func applyConfigDefaults(cfg *Config) bool {
 	}
 
 	return configChanged
+}
+
+func migrateLegacyQPSDefaults(settings *ExecutionSettings) bool {
+	if settings == nil {
+		return false
+	}
+	if settings.QueriesPerSecond != 50 ||
+		settings.QuickQueriesPerSecond != 80 ||
+		settings.PrewarmQueriesPerSecond != 100 {
+		return false
+	}
+	settings.QueriesPerSecond = defaultFullQPS
+	settings.QuickQueriesPerSecond = defaultQuickQPS
+	settings.PrewarmQueriesPerSecond = defaultPrewarmQPS
+	return true
 }
 
 func configFromPersisted(cfg *Config) persistedConfig {

@@ -83,12 +83,12 @@ policies:
     type: sequence
     args:
       - exec: $sequence_google_node_refresh_resilient
-      - matches: '!resp_ip 0.0.0.0/0'
-        exec: $sequence_google_refresh
       - matches: rcode 3
         exec:
           - $my_nov4list
           - exit
+      - matches: '!resp_ip 0.0.0.0/0'
+        exec: $sequence_google_refresh
       - matches: rcode 2 5
         exec: $sequence_local_refresh
       - matches: '!resp_ip 0.0.0.0/0'
@@ -107,12 +107,12 @@ policies:
     type: sequence
     args:
       - exec: $sequence_google_node_refresh_resilient
-      - matches: '!resp_ip 2000::/3'
-        exec: $sequence_google_refresh
       - matches: rcode 3
         exec:
           - $my_nov6list
           - exit
+      - matches: '!resp_ip 2000::/3'
+        exec: $sequence_google_refresh
       - matches: rcode 2 5
         exec: $sequence_local_refresh
       - matches: '!resp_ip 2000::/3'

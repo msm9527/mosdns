@@ -66,11 +66,11 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_main"].Size != defaultCacheMainSize {
 		t.Fatalf("cache_main size = %d, want %d", cfg.Response["cache_main"].Size, defaultCacheMainSize)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 120 {
-		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
+	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 900 {
+		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 120 {
-		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 120", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 900 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
 	if cfg.Response["cache_branch_foreign"].ClientTTLMin != 120 || cfg.Response["cache_branch_foreign"].ClientTTLMax != 900 {
 		t.Fatalf("cache_branch_foreign client ttl clamp = %+v, want 120-900", cfg.Response["cache_branch_foreign"])
@@ -153,6 +153,9 @@ func TestRepoFakeIPAndProbeCacheHitsExitWithoutExitOnHitArg(t *testing.T) {
 	}
 	mainResolutionBody := string(mainResolution)
 	for _, marker := range []string{
+		"exec: $cache_main\n      - matches: has_resp\n        exec: exit",
+		"exec: $cache_branch_domestic\n      - matches: has_resp\n        exec: exit",
+		"exec: $cache_branch_foreign\n      - matches: has_resp\n        exec: exit",
 		"exec: $cache_fakeip_domestic\n      - matches: has_resp\n        exec: exit",
 		"exec: $cache_fakeip_proxy\n      - matches: has_resp\n        exec: exit",
 		"exec: $sequence_fakeip_generated\n      - matches: has_resp\n        exec: exit",
@@ -169,6 +172,69 @@ func TestRepoFakeIPAndProbeCacheHitsExitWithoutExitOnHitArg(t *testing.T) {
 	}
 	if !strings.Contains(string(mainIPv4V6), "exec: $cache_probe\n      - matches: has_resp\n        exec: exit") {
 		t.Fatalf("ipv4/v6 template missing probe cache hit exit marker")
+	}
+}
+
+func TestRepoNoLeakNXDomainExitsBeforeForeignFallback(t *testing.T) {
+	mainNotInList, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "32-main-not-in-list.yaml"))
+	if err != nil {
+		t.Fatalf("read main not-in-list template: %v", err)
+	}
+	mainBody := string(mainNotInList)
+	assertSequenceOrder(t, mainBody, "sequence_not_in_list_noleak_v4",
+		"exec: $sequence_google_node_resilient",
+		"matches: rcode 3",
+		"exec:\n          - $my_nov4list\n          - exit",
+		"matches: '!resp_ip 0.0.0.0/0'\n        exec: $sequence_google",
+	)
+	assertSequenceOrder(t, mainBody, "sequence_not_in_list_noleak_v6",
+		"exec: $sequence_google_node_resilient",
+		"matches: rcode 3",
+		"exec:\n          - $my_nov6list\n          - exit",
+		"matches: '!resp_ip 2000::/3'\n        exec: $sequence_google",
+	)
+
+	refreshNotInList, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "41-refresh-not-in-list.yaml"))
+	if err != nil {
+		t.Fatalf("read refresh not-in-list template: %v", err)
+	}
+	refreshBody := string(refreshNotInList)
+	assertSequenceOrder(t, refreshBody, "sequence_not_in_list_noleak_v4_refresh",
+		"exec: $sequence_google_node_refresh_resilient",
+		"matches: rcode 3",
+		"exec:\n          - $my_nov4list\n          - exit",
+		"matches: '!resp_ip 0.0.0.0/0'\n        exec: $sequence_google_refresh",
+	)
+	assertSequenceOrder(t, refreshBody, "sequence_not_in_list_noleak_v6_refresh",
+		"exec: $sequence_google_node_refresh_resilient",
+		"matches: rcode 3",
+		"exec:\n          - $my_nov6list\n          - exit",
+		"matches: '!resp_ip 2000::/3'\n        exec: $sequence_google_refresh",
+	)
+}
+
+func assertSequenceOrder(t *testing.T, body, sequenceName string, markers ...string) {
+	t.Helper()
+
+	sequenceStart := strings.Index(body, "- name: "+sequenceName)
+	if sequenceStart < 0 {
+		t.Fatalf("template missing sequence %s", sequenceName)
+	}
+	sequenceBody := body[sequenceStart:]
+	if nextSequenceRel := strings.Index(sequenceBody[1:], "\n  - name: "); nextSequenceRel >= 0 {
+		sequenceBody = sequenceBody[:nextSequenceRel+1]
+	}
+
+	lastIndex := -1
+	for _, marker := range markers {
+		index := strings.Index(sequenceBody, marker)
+		if index < 0 {
+			t.Fatalf("sequence %s missing marker %q", sequenceName, marker)
+		}
+		if index <= lastIndex {
+			t.Fatalf("sequence %s marker %q appears out of order", sequenceName, marker)
+		}
+		lastIndex = index
 	}
 }
 

@@ -262,12 +262,30 @@ func buildAuditLog(qCtx *query_context.Context, duration time.Duration) AuditLog
 		CacheStatus:  getAuditCacheStatus(qCtx),
 	}
 	log.DomainSetNorm = normalizeAuditDomainSet(log.DomainSetRaw, log.QueryType)
-	populateAuditResponse(&log, qCtx.R())
+	populateAuditResponse(&log, finalAuditResponse(qCtx))
 	return log
 }
 
 func auditDurationMs(duration time.Duration) float64 {
 	return float64(duration.Nanoseconds()) / float64(time.Millisecond)
+}
+
+func finalAuditResponse(qCtx *query_context.Context) *dns.Msg {
+	if qCtx == nil {
+		return nil
+	}
+	if payload := qCtx.ResponsePayload(); payload != nil {
+		if len(payload.Wire) > 0 {
+			resp := new(dns.Msg)
+			if err := resp.Unpack(payload.Wire); err == nil {
+				return resp
+			}
+		}
+		if payload.Msg != nil {
+			return payload.Msg
+		}
+	}
+	return qCtx.R()
 }
 
 func getAuditDomainSet(qCtx *query_context.Context) string {

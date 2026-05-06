@@ -42,8 +42,12 @@ policies:
         exec: ecs __foreign_ecs__
       - matches: switch 'main_cache:on'
         exec: $cache_main
+      - matches: has_resp
+        exec: exit
       - matches: switch 'branch_cache:on'
         exec: $cache_branch_foreign
+      - matches: has_resp
+        exec: exit
       - exec: $sequence_google_raw
 
   # 提供给独立监听端口的国外真实解析入口。
@@ -60,8 +64,12 @@ policies:
         exec: ecs __foreign_ecs__
       - matches: switch 'main_cache:on'
         exec: $cache_main
+      - matches: has_resp
+        exec: exit
       - matches: switch 'branch_cache:on'
         exec: $cache_branch_foreign
+      - matches: has_resp
+        exec: exit
       - exec: $sequence_google_node_raw
 
   # 未命中 noleak 首查走普通国外真实解析；
@@ -83,8 +91,12 @@ policies:
         exec: ecs __domestic_ecs__
       - matches: switch 'main_cache:on'
         exec: $cache_main
+      - matches: has_resp
+        exec: exit
       - matches: switch 'branch_cache:on'
         exec: $cache_branch_domestic
+      - matches: has_resp
+        exec: exit
       - exec: $sequence_local_raw
 
   # 仅负责真正生成国内 fakeip 的链路。

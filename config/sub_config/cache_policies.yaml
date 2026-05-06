@@ -78,8 +78,8 @@ response:
 
   cache_branch_domestic:
     size: 5000
-    lazy_cache_ttl: 120
-    lazy_stale_ttl: 120
+    lazy_cache_ttl: 900
+    lazy_stale_ttl: 900
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
@@ -93,8 +93,8 @@ response:
 
   cache_branch_foreign:
     size: 5000
-    lazy_cache_ttl: 120
-    lazy_stale_ttl: 120
+    lazy_cache_ttl: 900
+    lazy_stale_ttl: 900
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
@@ -108,8 +108,8 @@ response:
 
   cache_branch_foreign_ecs:
     size: 2000
-    lazy_cache_ttl: 120
-    lazy_stale_ttl: 120
+    lazy_cache_ttl: 900
+    lazy_stale_ttl: 900
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 120

@@ -313,6 +313,7 @@ type taskProfile struct {
 	SaveAfter      bool
 	FlushBefore    bool
 	VerifyOnDemand bool
+	PostWarm       bool
 	ProgressMode   string
 }
 
@@ -1001,7 +1002,7 @@ func (p *Requery) resolverAddressesForProfile(profile taskProfile) []string {
 		addresses = append(addresses, splitResolverAddresses(p.config.ExecutionSettings.ResolverAddress)...)
 	}
 	if len(addresses) == 0 {
-		addresses = []string{"127.0.0.1:53"}
+		addresses = []string{defaultResolverAddress}
 	}
 	return uniqueResolverAddresses(addresses)
 }
@@ -1074,7 +1075,7 @@ func (p *Requery) refreshResolverAddress() string {
 	if p.config.ExecutionSettings.RefreshResolverAddress != "" {
 		return p.config.ExecutionSettings.RefreshResolverAddress
 	}
-	return p.config.ExecutionSettings.ResolverAddress
+	return defaultRefreshResolverAddress
 }
 
 func (p *Requery) effectiveQueryMask(observed uint8) uint8 {
@@ -1132,7 +1133,7 @@ func (p *Requery) maxQueueSize() int {
 	if p.config.ExecutionSettings.MaxQueueSize > 0 {
 		return p.config.ExecutionSettings.MaxQueueSize
 	}
-	return 2048
+	return defaultMaxQueueSize
 }
 
 func (p *Requery) enqueueRefreshJob(job refreshJob) bool {
@@ -1308,11 +1309,17 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 			p.mu.Unlock()
 		}
 	}
-	if !p.invalidateCachesAfterPublish(ctx, flattenRefreshJobDomains(jobs)) {
+	changedDomains := flattenRefreshJobDomains(jobs)
+	if !p.invalidateCachesAfterPublish(ctx, changedDomains) {
 		p.mu.Lock()
 		if p.lastError == "" {
 			p.lastError = "runtime cache invalidation failed"
 		}
+		p.mu.Unlock()
+	}
+	if err := p.prewarmChangedDomainsAfterPublish(ctx, candidates); err != nil {
+		p.mu.Lock()
+		p.lastError = fmt.Sprintf("post-publish prewarm failed: %v", err)
 		p.mu.Unlock()
 	}
 
@@ -1594,6 +1601,7 @@ func (p *Requery) profileForMode(mode string, limit int) taskProfile {
 			SaveAfter:      workflowBool(p.config.Workflow.SaveAfterRefresh, true),
 			FlushBefore:    false,
 			VerifyOnDemand: true,
+			PostWarm:       true,
 			ProgressMode:   "批量重建",
 		}
 	case "quick_prewarm":
@@ -1623,6 +1631,7 @@ func (p *Requery) profileForMode(mode string, limit int) taskProfile {
 			SaveAfter:      workflowBool(p.config.Workflow.SaveAfterRefresh, true),
 			FlushBefore:    p.shouldFlushBeforeRefresh(),
 			VerifyOnDemand: true,
+			PostWarm:       true,
 			ProgressMode:   "批量重建",
 		}
 	}
