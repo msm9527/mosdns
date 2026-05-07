@@ -41,6 +41,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/concurrent_map"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
+	_ "github.com/IrineSistiana/mosdns/v5/plugin/matcher/has_resp"
 	"github.com/miekg/dns"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
@@ -138,8 +139,8 @@ func Test_cachePlugin_WALReplayMultipleStores(t *testing.T) {
 	qCtxA := testQueryContext(t, "wal-a.example.", net.IPv4(1, 1, 1, 1))
 	qCtxB := testQueryContext(t, "wal-b.example.", net.IPv4(2, 2, 2, 2))
 
-	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false)
-	keyBBuf, ptrB := getMsgKeyBytes(qCtxB.Q(), qCtxB, false)
+	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false, nil)
+	keyBBuf, ptrB := getMsgKeyBytes(qCtxB.Q(), qCtxB, false, nil)
 	keyA := string(keyABuf)
 	keyB := string(keyBBuf)
 	releaseKeyBuffer(ptrA)
@@ -177,8 +178,8 @@ func Test_cachePlugin_WALReplayDelete(t *testing.T) {
 	qCtxPurge := testQueryContext(t, "wal-purge.example.", net.IPv4(3, 3, 3, 3))
 	qCtxKeep := testQueryContext(t, "wal-keep.example.", net.IPv4(4, 4, 4, 4))
 
-	keyPurgeBuf, ptrPurge := getMsgKeyBytes(qCtxPurge.Q(), qCtxPurge, false)
-	keyKeepBuf, ptrKeep := getMsgKeyBytes(qCtxKeep.Q(), qCtxKeep, false)
+	keyPurgeBuf, ptrPurge := getMsgKeyBytes(qCtxPurge.Q(), qCtxPurge, false, nil)
+	keyKeepBuf, ptrKeep := getMsgKeyBytes(qCtxKeep.Q(), qCtxKeep, false, nil)
 	keyPurge := string(keyPurgeBuf)
 	keyKeep := string(keyKeepBuf)
 	releaseKeyBuffer(ptrPurge)
@@ -224,8 +225,8 @@ func Test_cachePlugin_WALReplayFlush(t *testing.T) {
 	qCtxBefore := testQueryContext(t, "wal-before-flush.example.", net.IPv4(5, 5, 5, 5))
 	qCtxAfter := testQueryContext(t, "wal-after-flush.example.", net.IPv4(6, 6, 6, 6))
 
-	keyBeforeBuf, ptrBefore := getMsgKeyBytes(qCtxBefore.Q(), qCtxBefore, false)
-	keyAfterBuf, ptrAfter := getMsgKeyBytes(qCtxAfter.Q(), qCtxAfter, false)
+	keyBeforeBuf, ptrBefore := getMsgKeyBytes(qCtxBefore.Q(), qCtxBefore, false, nil)
+	keyAfterBuf, ptrAfter := getMsgKeyBytes(qCtxAfter.Q(), qCtxAfter, false, nil)
 	keyBefore := string(keyBeforeBuf)
 	keyAfter := string(keyAfterBuf)
 	releaseKeyBuffer(ptrBefore)
@@ -264,7 +265,7 @@ func Test_cachePlugin_WALOnlyDumpDoesNotResetWAL(t *testing.T) {
 
 	c := NewCache(args, Opts{})
 	qCtx := testQueryContext(t, "wal-only-dump.example.", net.IPv4(7, 7, 7, 7))
-	keyBuf, ptr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
+	keyBuf, ptr := getMsgKeyBytes(qCtx.Q(), qCtx, false, nil)
 	msgKey := string(keyBuf)
 	releaseKeyBuffer(ptr)
 
@@ -398,11 +399,25 @@ func Test_cacheArgs_LazyStaleTTLCompatibility(t *testing.T) {
 }
 
 func Test_shouldBypassForRouteChange(t *testing.T) {
-	if shouldBypassForRouteChange(encodeStoredRouteMetadata("记忆直连|白名单", "记忆直连|白名单", "白名单|记忆直连"), "白名单|记忆直连", nil) {
+	if shouldBypassForRouteChange("", "", "", func(string) any {
+		return &testCacheSwitchProvider{value: "on"}
+	}) {
+		t.Fatal("expected metadata-free cache entry to stay valid across route signature checks")
+	}
+	if !shouldBypassForRouteChange("", "白名单", "", nil) {
+		t.Fatal("expected metadata-free cache entry to be bypassed when current request has an explicit route")
+	}
+	if !shouldBypassForRouteChange("", "", "chain:domestic-real", nil) {
+		t.Fatal("expected metadata-free cache entry to be bypassed when current request has a hidden route dependency")
+	}
+	if shouldBypassForRouteChange(encodeStoredRouteMetadata("记忆直连|白名单", "记忆直连|白名单", "白名单|记忆直连"), "白名单|记忆直连", "", nil) {
 		t.Fatal("expected reordered tags to share the same signature")
 	}
-	if !shouldBypassForRouteChange(encodeStoredRouteMetadata("记忆直连", "记忆直连", "记忆直连"), "未命中", nil) {
+	if !shouldBypassForRouteChange(encodeStoredRouteMetadata("记忆直连", "记忆直连", "记忆直连"), "未命中", "", nil) {
 		t.Fatal("expected route change to bypass cached entry")
+	}
+	if !shouldBypassForRouteChange(encodeStoredRouteMetadata("未命中", "chain:domestic-real", "chain:domestic-real"), "未命中", "chain:foreign-real", nil) {
+		t.Fatal("expected hidden route dependency change to bypass cached entry")
 	}
 }
 
@@ -413,7 +428,7 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 	seedCtx := testQueryContext(t, "route-change.example.", net.IPv4(1, 1, 1, 1))
 	seedCtx.StoreValue(query_context.KeyDomainSet, "记忆直连")
 
-	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
 	msgKey := string(keyBuf)
 	releaseKeyBuffer(bufPtr)
 
@@ -449,10 +464,23 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 
 	updated, _, _ := c.backend.Get(k)
 	if updated == nil {
-		t.Fatal("expected cache entry to be rewritten after bypass")
+		t.Fatal("expected old route cache entry to remain isolated")
 	}
-	if storedDomainSet(updated.domainSet) != "未命中" {
-		t.Fatalf("expected cache entry to be rewritten with current route, got %q", storedDomainSet(updated.domainSet))
+	if storedDomainSet(updated.domainSet) != "记忆直连" {
+		t.Fatalf("expected old route entry to stay unchanged, got %q", storedDomainSet(updated.domainSet))
+	}
+	nextKeyBuf, nextBufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false, c.plugin)
+	nextMsgKey := string(nextKeyBuf)
+	releaseKeyBuffer(nextBufPtr)
+	if nextMsgKey == msgKey {
+		t.Fatal("expected display route to produce a distinct cache key")
+	}
+	nextItem, _, _ := c.backend.Get(key(nextMsgKey))
+	if nextItem == nil {
+		t.Fatal("expected current route cache entry to be written separately")
+	}
+	if storedDomainSet(nextItem.domainSet) != "未命中" {
+		t.Fatalf("expected current route cache entry, got %q", storedDomainSet(nextItem.domainSet))
 	}
 }
 
@@ -471,7 +499,7 @@ func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
 	seedCtx := testQueryContext(t, "route-revision.example.", net.IPv4(1, 1, 1, 1))
 	query_context.AppendDependencyTag(seedCtx, "my_realiplist")
 
-	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
 	msgKey := string(keyBuf)
 	releaseKeyBuffer(bufPtr)
 
@@ -500,9 +528,22 @@ func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
 		t.Fatalf("expected revision mismatch to bypass cached entry, got %s", gotA.A.String())
 	}
 
-	updated, _, _ := c.backend.Get(key(msgKey))
+	oldItem, _, _ := c.backend.Get(key(msgKey))
+	if oldItem == nil {
+		t.Fatal("expected old revision cache entry to remain isolated")
+	}
+	if got := storedRouteSignature(oldItem.domainSet); !strings.Contains(got, "rev1") {
+		t.Fatalf("expected old route signature to keep rev1, got %q", got)
+	}
+	rev2KeyBuf, rev2BufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false, c.plugin)
+	rev2MsgKey := string(rev2KeyBuf)
+	releaseKeyBuffer(rev2BufPtr)
+	if rev2MsgKey == msgKey {
+		t.Fatal("expected revision change to produce a distinct cache key")
+	}
+	updated, _, _ := c.backend.Get(key(rev2MsgKey))
 	if updated == nil {
-		t.Fatal("expected cache entry to be rewritten after revision mismatch")
+		t.Fatal("expected new revision cache entry to be written separately")
 	}
 	if storedDomainSet(updated.domainSet) != "" {
 		t.Fatalf("expected empty display domain set for dependency-only cache, got %q", storedDomainSet(updated.domainSet))
@@ -515,12 +556,144 @@ func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_ExecBypassesSameDisplayRouteWhenDependencyTagChanges(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	seedCtx := testQueryContext(t, "route-dependency.example.", net.IPv4(1, 1, 1, 1))
+	seedCtx.StoreValue(query_context.KeyDomainSet, "未命中")
+	query_context.AppendDependencyTag(seedCtx, "chain:domestic-real")
+
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
+	msgKey := string(keyBuf)
+	releaseKeyBuffer(bufPtr)
+
+	if _, ok := c.saveRespToCache(msgKey, seedCtx); !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	stored, _, _ := c.backend.Get(key(msgKey))
+	if stored == nil {
+		t.Fatal("expected stored cache item")
+	}
+	if got := storedDomainSet(stored.domainSet); got != "未命中" {
+		t.Fatalf("display domain set = %q, want 未命中", got)
+	}
+	if got := storedDependencySet(stored.domainSet); got != "chain:domestic-real" {
+		t.Fatalf("dependency set = %q, want hidden route tag", got)
+	}
+
+	qCtx := testQueryContext(t, "route-dependency.example.", net.IPv4(2, 2, 2, 2))
+	qCtx.StoreValue(query_context.KeyDomainSet, "未命中")
+	query_context.AppendDependencyTag(qCtx, "chain:foreign-real")
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected fresh response after dependency mismatch, got %+v", resp)
+	}
+	gotA, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A response, got %T", resp.Answer[0])
+	}
+	if !gotA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected dependency mismatch to bypass cached entry, got %s", gotA.A.String())
+	}
+	oldItem, _, _ := c.backend.Get(key(msgKey))
+	if oldItem == nil {
+		t.Fatal("expected old route cache entry to remain isolated")
+	}
+	if got := storedDependencySet(oldItem.domainSet); got != "chain:domestic-real" {
+		t.Fatalf("old dependency set = %q, want domestic hidden route tag", got)
+	}
+
+	foreignKeyBuf, foreignBufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false, c.plugin)
+	foreignMsgKey := string(foreignKeyBuf)
+	releaseKeyBuffer(foreignBufPtr)
+	if foreignMsgKey == msgKey {
+		t.Fatal("expected route dependency to produce a distinct cache key")
+	}
+	updated, _, _ := c.backend.Get(key(foreignMsgKey))
+	if updated == nil {
+		t.Fatal("expected foreign route cache entry to be written separately")
+	}
+	if got := storedDomainSet(updated.domainSet); got != "未命中" {
+		t.Fatalf("updated display domain set = %q, want 未命中", got)
+	}
+	if got := storedDependencySet(updated.domainSet); got != "chain:foreign-real" {
+		t.Fatalf("updated dependency set = %q, want foreign hidden route tag", got)
+	}
+}
+
+func Test_cachePlugin_ExecBypassesSameRouteWhenSwitchChanges(t *testing.T) {
+	answerMode := &testCacheSwitchProvider{value: "realip"}
+	c := NewCache(&Args{Size: 64}, Opts{
+		Plugin: func(tag string) any {
+			if tag == "cn_answer_mode" {
+				return answerMode
+			}
+			return nil
+		},
+	})
+	defer c.Close()
+
+	seedCtx := testQueryContext(t, "switch-route.example.", net.IPv4(1, 1, 1, 1))
+	seedCtx.StoreValue(query_context.KeyDomainSet, "记忆直连")
+
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
+	msgKey := string(keyBuf)
+	releaseKeyBuffer(bufPtr)
+
+	if _, ok := c.saveRespToCache(msgKey, seedCtx); !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	stored, _, _ := c.backend.Get(key(msgKey))
+	if stored == nil || !strings.Contains(storedRouteSignature(stored.domainSet), "switch:cn_answer_mode@realip") {
+		t.Fatalf("expected stored signature to include realip switch, got %+v", stored)
+	}
+
+	answerMode.value = "fakeip"
+	qCtx := testQueryContext(t, "switch-route.example.", net.IPv4(2, 2, 2, 2))
+	qCtx.StoreValue(query_context.KeyDomainSet, "记忆直连")
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected response after switch change, got %+v", resp)
+	}
+	gotA, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("expected A response, got %T", resp.Answer[0])
+	}
+	if !gotA.A.Equal(net.IPv4(2, 2, 2, 2)) {
+		t.Fatalf("expected switch change to bypass cached entry, got %s", gotA.A.String())
+	}
+	oldItem, _, _ := c.backend.Get(key(msgKey))
+	if oldItem == nil || !strings.Contains(storedRouteSignature(oldItem.domainSet), "switch:cn_answer_mode@realip") {
+		t.Fatalf("expected old signature to stay realip, got %+v", oldItem)
+	}
+	fakeipKeyBuf, fakeipBufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false, c.plugin)
+	fakeipMsgKey := string(fakeipKeyBuf)
+	releaseKeyBuffer(fakeipBufPtr)
+	if fakeipMsgKey == msgKey {
+		t.Fatal("expected switch change to produce a distinct cache key")
+	}
+	updated, _, _ := c.backend.Get(key(fakeipMsgKey))
+	if updated == nil || !strings.Contains(storedRouteSignature(updated.domainSet), "switch:cn_answer_mode@fakeip") {
+		t.Fatalf("expected new signature to include fakeip switch, got %+v", updated)
+	}
+}
+
 func Test_cachePlugin_ExecBypassesCachedResponseDuringRefresh(t *testing.T) {
 	c := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
 	defer c.Close()
 
 	seedCtx := testQueryContext(t, "refresh-bypass.example.", net.IPv4(1, 1, 1, 1))
-	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
 	msgKey := string(keyBuf)
 	releaseKeyBuffer(bufPtr)
 
@@ -910,6 +1083,60 @@ func Test_cachePlugin_CachedUDPHitSkipsWirePayloadWhenTooLargeForPlainUDP(t *tes
 	}
 }
 
+func Test_cachePlugin_CachedUDPLargeHitUsesEDNSPayload(t *testing.T) {
+	c := NewCache(&Args{Size: 64}, Opts{})
+	defer c.Close()
+
+	qCtx := testQueryContext(t, "large-edns-wire-hit.example.", net.IPv4(10, 0, 0, 1))
+	resp := qCtx.R()
+	for i := 0; i < 11; i++ {
+		resp.Answer = append(resp.Answer, &dns.TXT{
+			Hdr: dns.RR_Header{
+				Name:   fmt.Sprintf("txt-%02d.large-edns-wire-hit.example.", i),
+				Rrtype: dns.TypeTXT,
+				Class:  dns.ClassINET,
+				Ttl:    60,
+			},
+			Txt: []string{"0123456789abcdef0123456789abcdef0123456789abcdef"},
+		})
+	}
+	msgKey := cacheKeyForQuery(t, "large-edns-wire-hit.example.")
+	cachedItem, ok := c.saveRespToCache(msgKey, qCtx)
+	if !ok {
+		t.Fatal("expected seed response to be cached")
+	}
+	if len(cachedItem.resp) <= dns.MinMsgSize || len(cachedItem.resp) >= 1232 {
+		t.Fatalf("test response should require EDNS UDP payload path, got %d bytes", len(cachedItem.resp))
+	}
+	k := key(msgKey)
+	c.backend.Store(k, cachedItem, time.Now().Add(time.Hour))
+	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
+
+	q := new(dns.Msg)
+	q.SetQuestion("large-edns-wire-hit.example.", dns.TypeA)
+	q.SetEdns0(1232, false)
+	qCtx = query_context.NewContext(q)
+	qCtx.ServerMeta.FromUDP = true
+
+	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil && !errors.Is(err, sequence.ErrExit) {
+		t.Fatal(err)
+	}
+	payload := qCtx.ResponsePayload()
+	if payload == nil || len(payload.Wire) == 0 {
+		t.Fatal("expected EDNS UDP cache hit to use pre-packed payload")
+	}
+	if len(payload.Wire) <= dns.MinMsgSize {
+		t.Fatalf("expected payload to stay above plain UDP size, got %d bytes", len(payload.Wire))
+	}
+	var wire dns.Msg
+	if err := wire.Unpack(payload.Wire); err != nil {
+		t.Fatalf("unpack payload: %v", err)
+	}
+	if opt := wire.IsEdns0(); opt == nil || opt.UDPSize() != 1200 {
+		t.Fatalf("expected response OPT to be preserved with server udp size 1200, got %+v", opt)
+	}
+}
+
 func Test_cachePlugin_CachedHitStopsFollowingExecutors(t *testing.T) {
 	c := NewCache(&Args{Size: 64, ExitOnHit: true}, Opts{})
 	defer c.Close()
@@ -1108,6 +1335,128 @@ func Test_cachePlugin_ColdMissSingleflightFallsBackWhenUncacheable(t *testing.T)
 	}
 }
 
+func Test_cachePlugin_ReadDumpSkipsExcludedResponses(t *testing.T) {
+	src := NewCache(&Args{Size: 64}, Opts{})
+	t.Cleanup(func() { _ = src.Close() })
+	if _, ok := src.saveRespToCache("fake-key", testQueryContext(t, "fake.example.", net.IPv4(28, 0, 1, 2))); !ok {
+		t.Fatal("expected fake response to be cached in source")
+	}
+	if _, ok := src.saveRespToCache("real-key", testQueryContext(t, "real.example.", net.IPv4(1, 1, 1, 1))); !ok {
+		t.Fatal("expected real response to be cached in source")
+	}
+
+	buf := new(bytes.Buffer)
+	if _, err := src.writeDump(buf); err != nil {
+		t.Fatalf("writeDump: %v", err)
+	}
+
+	dst := NewCache(&Args{Size: 64, ExcludeIPs: []string{"28.0.0.0/8"}}, Opts{})
+	t.Cleanup(func() { _ = dst.Close() })
+	restored, err := dst.readDump(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatalf("readDump: %v", err)
+	}
+	if restored != 1 {
+		t.Fatalf("restored entries = %d, want 1", restored)
+	}
+	if _, _, ok := dst.backend.Get(key("fake-key")); ok {
+		t.Fatal("expected fakeip response to be skipped when loading dump")
+	}
+	if _, _, ok := dst.backend.Get(key("real-key")); !ok {
+		t.Fatal("expected real response to be restored from dump")
+	}
+}
+
+func Test_cachePlugin_SaveResponseSkipsExcludedResponses(t *testing.T) {
+	c := NewCache(&Args{Size: 64, ExcludeIPs: []string{"28.0.0.0/8", "f2b0::/18"}}, Opts{})
+	t.Cleanup(func() { _ = c.Close() })
+
+	if _, ok := c.saveRespToCache("fake-v4-key", testQueryContext(t, "fake-v4.example.", net.IPv4(28, 0, 1, 2))); ok {
+		t.Fatal("expected fake IPv4 response to be skipped")
+	}
+	if _, _, ok := c.backend.Get(key("fake-v4-key")); ok {
+		t.Fatal("expected fake IPv4 response not to enter backend cache")
+	}
+
+	if _, ok := c.saveRespToCache("real-key", testQueryContext(t, "real.example.", net.IPv4(223, 5, 5, 5))); !ok {
+		t.Fatal("expected real response to be cached")
+	}
+	if _, _, ok := c.backend.Get(key("real-key")); !ok {
+		t.Fatal("expected real response to enter backend cache")
+	}
+}
+
+func Test_cachePlugin_ProbeSequenceHitsPayloadCache(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 600, ClientTTLMin: 120, ClientTTLMax: 900}, Opts{})
+	defer c.Close()
+
+	raw := &testResponseExec{ip: net.IPv4(8, 8, 8, 8)}
+	plugins := map[string]any{
+		"cache_probe": c,
+		"raw":         raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("probe_seq", m)), []sequence.RuleArgs{
+		{Exec: "$cache_probe"},
+		{Matches: []string{"has_resp"}, Exec: "exit"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	qname := "probe-payload.example."
+	first := queryThroughSequence(t, s, qname)
+	if !responseHasA(first.ResponseMsg(), net.IPv4(8, 8, 8, 8)) {
+		t.Fatalf("expected first response from raw executor, got %+v", first.ResponseMsg())
+	}
+	second := queryThroughSequence(t, s, qname)
+	if !responseHasA(second.ResponseMsg(), net.IPv4(8, 8, 8, 8)) {
+		t.Fatalf("expected second response from cache payload, got %+v", second.ResponseMsg())
+	}
+	if got := raw.calls.Load(); got != 1 {
+		t.Fatalf("expected raw executor to run once, got %d", got)
+	}
+	if c.hitCount.Load() != 1 {
+		t.Fatalf("expected one cache hit, got %d", c.hitCount.Load())
+	}
+}
+
+func Test_cachePlugin_ProbeSequenceCachesAAAAFallbackResponse(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 600, ClientTTLMin: 120, ClientTTLMax: 900}, Opts{})
+	defer c.Close()
+
+	raw := &testAAAAResponseExec{ip: net.ParseIP("2001:db8::8")}
+	plugins := map[string]any{
+		"cache_probe": c,
+		"raw":         raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("probe_seq", m)), []sequence.RuleArgs{
+		{Exec: "$cache_probe"},
+		{Matches: []string{"has_resp"}, Exec: "exit"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	first := queryThroughSequenceType(t, s, "probe-aaaa.example.", dns.TypeAAAA, true)
+	if !responseHasAAAA(first.ResponseMsg(), net.ParseIP("2001:db8::8")) {
+		t.Fatalf("expected first response from raw executor, got %+v", first.ResponseMsg())
+	}
+	second := queryThroughSequenceType(t, s, "probe-aaaa.example.", dns.TypeAAAA, true)
+	if !responseHasAAAA(second.ResponseMsg(), net.ParseIP("2001:db8::8")) {
+		t.Fatalf("expected second response from cache payload, got %+v", second.ResponseMsg())
+	}
+	if got := raw.calls.Load(); got != 1 {
+		t.Fatalf("expected raw executor to run once, got %d", got)
+	}
+	if c.hitCount.Load() != 1 {
+		t.Fatalf("expected one cache hit, got %d", c.hitCount.Load())
+	}
+}
+
 func Test_cachePlugin_DoesNotPromoteNestedStaleResponse(t *testing.T) {
 	mainCache := NewCache(&Args{Size: 64, LazyCacheTTL: 3600}, Opts{})
 	defer mainCache.Close()
@@ -1227,7 +1576,7 @@ func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
 
 	seedCtx := testQueryContext(t, "domainset-bypass.example.", net.IPv4(1, 1, 1, 1))
 	seedCtx.StoreValue(query_context.KeyDomainSet, "订阅直连|高变CDN")
-	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false)
+	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
 	msgKey := string(keyBuf)
 	releaseKeyBuffer(bufPtr)
 
@@ -1326,9 +1675,9 @@ func Test_cachePlugin_PurgeDomainRuntime(t *testing.T) {
 	qCtxAAAA := testAAAAQueryContext(t, "purge.example.", net.ParseIP("2001:db8::1"))
 	qCtxOther := testQueryContext(t, "keep.example.", net.IPv4(2, 2, 2, 2))
 
-	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false)
-	keyAAAABuf, ptrAAAA := getMsgKeyBytes(qCtxAAAA.Q(), qCtxAAAA, false)
-	keyOtherBuf, ptrOther := getMsgKeyBytes(qCtxOther.Q(), qCtxOther, false)
+	keyABuf, ptrA := getMsgKeyBytes(qCtxA.Q(), qCtxA, false, nil)
+	keyAAAABuf, ptrAAAA := getMsgKeyBytes(qCtxAAAA.Q(), qCtxAAAA, false, nil)
+	keyOtherBuf, ptrOther := getMsgKeyBytes(qCtxOther.Q(), qCtxOther, false, nil)
 	defer releaseKeyBuffer(ptrA)
 	defer releaseKeyBuffer(ptrAAAA)
 	defer releaseKeyBuffer(ptrOther)
@@ -1367,7 +1716,7 @@ func Test_cachePlugin_PurgeDomainAPI(t *testing.T) {
 	defer c.Close()
 
 	qCtx := testQueryContext(t, "api-purge.example.", net.IPv4(3, 3, 3, 3))
-	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
+	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false, nil)
 	defer releaseKeyBuffer(bufPtr)
 	if _, ok := c.saveRespToCache(string(keyBuf), qCtx); !ok {
 		t.Fatal("expected response to be cached")
@@ -1514,6 +1863,35 @@ func Test_cachePlugin_L1Disabled(t *testing.T) {
 	stats := c.snapshotStats()
 	if stats.Config["l1_enabled"] != false {
 		t.Fatalf("expected stats config l1_enabled=false, got %#v", stats.Config["l1_enabled"])
+	}
+}
+
+func TestArgsUnmarshalYAMLNormalizesExcludeIPTokens(t *testing.T) {
+	var args Args
+	err := yaml.Unmarshal([]byte(`
+size: 64
+exclude_ip: "28.0.0.0/8, 30.0.0.0/8|f2b0::/18 127.0.0.0/8"
+`), &args)
+	if err != nil {
+		t.Fatalf("unmarshal scalar exclude_ip: %v", err)
+	}
+	want := []string{"28.0.0.0/8", "30.0.0.0/8", "f2b0::/18", "127.0.0.0/8"}
+	if strings.Join(args.ExcludeIPs, "|") != strings.Join(want, "|") {
+		t.Fatalf("exclude_ip = %+v, want %+v", args.ExcludeIPs, want)
+	}
+
+	err = yaml.Unmarshal([]byte(`
+size: 64
+exclude_ip:
+  - "0.0.0.0/32,127.0.0.0/8"
+  - "::/128|::1/128"
+`), &args)
+	if err != nil {
+		t.Fatalf("unmarshal list exclude_ip: %v", err)
+	}
+	want = []string{"0.0.0.0/32", "127.0.0.0/8", "::/128", "::1/128"}
+	if strings.Join(args.ExcludeIPs, "|") != strings.Join(want, "|") {
+		t.Fatalf("exclude_ip = %+v, want %+v", args.ExcludeIPs, want)
 	}
 }
 
@@ -1697,9 +2075,18 @@ type testCacheRevisionProvider struct {
 	revision string
 }
 
+type testCacheSwitchProvider struct {
+	value string
+}
+
 type testResponseExec struct {
 	ip    net.IP
 	delay time.Duration
+	calls atomic.Uint64
+}
+
+type testAAAAResponseExec struct {
+	ip    net.IP
 	calls atomic.Uint64
 }
 
@@ -1730,14 +2117,36 @@ func (e *testResponseExec) Exec(ctx context.Context, qCtx *query_context.Context
 	return nil
 }
 
+func (e *testAAAAResponseExec) Exec(_ context.Context, qCtx *query_context.Context) error {
+	e.calls.Add(1)
+	q := qCtx.Q()
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = append(resp.Answer, &dns.AAAA{
+		Hdr: dns.RR_Header{
+			Name:   q.Question[0].Name,
+			Rrtype: dns.TypeAAAA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		AAAA: e.ip,
+	})
+	qCtx.SetResponse(resp)
+	return nil
+}
+
 func (p *testCacheRevisionProvider) CacheRevision() string {
 	return p.revision
+}
+
+func (p *testCacheSwitchProvider) GetValue() string {
+	return p.value
 }
 
 func cacheKeyForQuery(t testingHelper, name string) string {
 	t.Helper()
 	qCtx := testQueryContext(t, name, net.IPv4(127, 0, 0, 1))
-	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false)
+	keyBuf, bufPtr := getMsgKeyBytes(qCtx.Q(), qCtx, false, nil)
 	defer releaseKeyBuffer(bufPtr)
 	return string(keyBuf)
 }
@@ -1772,9 +2181,15 @@ func seedLargeCacheSet(t testingHelper, c *Cache, prefix string, entries int) {
 
 func queryThroughSequence(t testingHelper, s *sequence.Sequence, name string) *query_context.Context {
 	t.Helper()
+	return queryThroughSequenceType(t, s, name, dns.TypeA, false)
+}
+
+func queryThroughSequenceType(t testingHelper, s *sequence.Sequence, name string, qtype uint16, fromUDP bool) *query_context.Context {
+	t.Helper()
 	q := new(dns.Msg)
-	q.SetQuestion(name, dns.TypeA)
+	q.SetQuestion(name, qtype)
 	qCtx := query_context.NewContext(q)
+	qCtx.ServerMeta.FromUDP = fromUDP
 	if err := s.Exec(context.Background(), qCtx); err != nil && !errors.Is(err, sequence.ErrExit) {
 		t.Fatal(err)
 	}
@@ -1788,6 +2203,19 @@ func responseHasA(resp *dns.Msg, ip net.IP) bool {
 	for _, answer := range resp.Answer {
 		a, ok := answer.(*dns.A)
 		if ok && a.A.Equal(ip.To4()) {
+			return true
+		}
+	}
+	return false
+}
+
+func responseHasAAAA(resp *dns.Msg, ip net.IP) bool {
+	if resp == nil {
+		return false
+	}
+	for _, answer := range resp.Answer {
+		aaaa, ok := answer.(*dns.AAAA)
+		if ok && aaaa.AAAA.Equal(ip) {
 			return true
 		}
 	}

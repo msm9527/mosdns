@@ -49,6 +49,39 @@ func TestFallbackTreatsErrExitWithResponseAsSuccess(t *testing.T) {
 	}
 }
 
+func TestFallbackTreatsErrExitWithPayloadAsSuccess(t *testing.T) {
+	primary := sequence.ExecutableFunc(func(_ context.Context, qCtx *query_context.Context) error {
+		qCtx.SetResponsePayload(&query_context.ResponsePayload{Wire: []byte{0, 1, 2, 3}})
+		return sequence.ErrExit
+	})
+	secondaryCalled := false
+	secondary := sequence.ExecutableFunc(func(_ context.Context, qCtx *query_context.Context) error {
+		secondaryCalled = true
+		setFallbackTestA(qCtx, net.IPv4(2, 2, 2, 2))
+		return nil
+	})
+	f := &fallback{
+		logger:               zap.NewNop(),
+		primary:              primary,
+		secondary:            secondary,
+		fastFallbackDuration: time.Second,
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion("fallback-payload-hit.example.", dns.TypeA)
+	qCtx := query_context.NewContext(q)
+	if err := f.Exec(context.Background(), qCtx); err != nil {
+		t.Fatalf("fallback Exec: %v", err)
+	}
+	if secondaryCalled {
+		t.Fatal("secondary should not run when primary returns ErrExit with response payload")
+	}
+	payload := qCtx.ResponsePayload()
+	if payload == nil || len(payload.Wire) != 4 {
+		t.Fatalf("unexpected response payload: %+v", payload)
+	}
+}
+
 func setFallbackTestA(qCtx *query_context.Context, ip net.IP) {
 	q := qCtx.Q()
 	resp := new(dns.Msg)

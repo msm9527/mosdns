@@ -48,7 +48,7 @@ func QuickSetup(bq sequence.BQ, s string) (sequence.Matcher, error) {
 }
 
 func matchRespAddr(qCtx *query_context.Context, m netlist.Matcher) (bool, error) {
-	r := qCtx.R()
+	r := qCtx.ResponseMsg()
 	if r == nil {
 		return false, nil
 	}

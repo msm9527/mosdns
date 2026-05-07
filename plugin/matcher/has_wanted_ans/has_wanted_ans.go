@@ -38,7 +38,7 @@ func (h hasQuestionAns) Match(_ context.Context, qCtx *query_context.Context) (b
 	if len(q.Question) == 0 {
 		return false, nil
 	}
-	r := qCtx.R()
+	r := qCtx.ResponseMsg()
 	if r == nil || len(r.Answer) == 0 {
 		return false, nil
 

@@ -282,6 +282,35 @@ func (ctx *Context) ResponsePayload() *ResponsePayload {
 	return ctx.respPayload
 }
 
+// ResponseMsg returns the parsed response from either SetResponse or
+// SetResponsePayload. It is intended for matchers/audit paths that need to
+// inspect a response while still allowing hot paths to keep a pre-packed wire
+// payload for the final write.
+func (ctx *Context) ResponseMsg() *dns.Msg {
+	if ctx == nil {
+		return nil
+	}
+	if ctx.resp != nil {
+		return ctx.resp
+	}
+	payload := ctx.respPayload
+	if payload == nil {
+		return nil
+	}
+	if payload.Msg != nil {
+		return payload.Msg
+	}
+	if len(payload.Wire) == 0 {
+		return nil
+	}
+	msg := new(dns.Msg)
+	if err := msg.Unpack(payload.Wire); err != nil {
+		return nil
+	}
+	payload.Msg = msg
+	return msg
+}
+
 // StoreValue stores any v in to this Context
 // k MUST from RegKey.
 func (ctx *Context) StoreValue(k uint32, v any) {
@@ -340,6 +369,35 @@ func AppendDependencyTag(ctx *Context, tag string) {
 		}
 	}
 	ctx.StoreValue(KeyCacheDependencySet, tag)
+}
+
+func ReplaceDependencyTagPrefix(ctx *Context, tag, prefix string) {
+	if ctx == nil {
+		return
+	}
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return
+	}
+	prefix = strings.TrimSpace(prefix)
+
+	tags := make([]string, 0, 4)
+	if existing, ok := ctx.GetValue(KeyCacheDependencySet); ok {
+		if current, ok := existing.(string); ok {
+			for _, part := range strings.Split(current, "|") {
+				part = strings.TrimSpace(part)
+				if part == "" || part == tag {
+					continue
+				}
+				if prefix != "" && strings.HasPrefix(part, prefix) {
+					continue
+				}
+				tags = append(tags, part)
+			}
+		}
+	}
+	tags = append(tags, tag)
+	ctx.StoreValue(KeyCacheDependencySet, strings.Join(tags, "|"))
 }
 
 // SetMark marks this Context with given mark.

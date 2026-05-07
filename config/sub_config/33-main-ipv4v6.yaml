@@ -29,10 +29,6 @@ policies:
         exec: exit
       - matches: fast_mark 13
         exec: $sequence_local
-      - matches:
-          - fast_mark 13
-          - switch 'cn_answer_mode:fakeip'
-        exec: $sequence_local_fake_exit
       - matches: fast_mark 13
         exec: exit
       - matches: fast_mark 15
@@ -43,10 +39,6 @@ policies:
         exec: $sequence_fakeip_addlist
       - matches: fast_mark 16
         exec: $sequence_local
-      - matches:
-          - fast_mark 16
-          - switch 'cn_answer_mode:fakeip'
-        exec: $sequence_local_fake_exit
       - matches: fast_mark 16
         exec: exit
       - matches:
@@ -108,10 +100,6 @@ policies:
         exec: exit
       - matches: fast_mark 13
         exec: $sequence_local
-      - matches:
-          - fast_mark 13
-          - switch 'cn_answer_mode:fakeip'
-        exec: $sequence_local_fake_exit
       - matches: fast_mark 13
         exec: exit
       - matches: fast_mark 15
@@ -122,10 +110,6 @@ policies:
         exec: $sequence_fakeip_addlist
       - matches: fast_mark 16
         exec: $sequence_local
-      - matches:
-          - fast_mark 16
-          - switch 'cn_answer_mode:fakeip'
-        exec: $sequence_local_fake_exit
       - matches: fast_mark 16
         exec: exit
       - matches:

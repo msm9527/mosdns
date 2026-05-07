@@ -36,8 +36,14 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
 	}
+	if got := cfg.Response["cache_main"].ExcludeIPs; !sameStringSlice(got, defaultRealCacheExcludeIPs()) {
+		t.Fatalf("expected default cache_main fakeip/sinkhole exclusions, got %+v", got)
+	}
 	if cfg.Response["cache_fakeip_proxy"].Persist {
 		t.Fatalf("expected fakeip proxy cache to default to non-persistent, got %+v", cfg.Response["cache_fakeip_proxy"])
+	}
+	if got := cfg.Response["cache_fakeip_proxy"].ExcludeIPs; len(got) != 0 {
+		t.Fatalf("expected fakeip proxy cache not to exclude fakeip ranges, got %+v", got)
 	}
 	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 14400 || cfg.Response["cache_fakeip_proxy"].LazyStaleTTL != 14400 {
 		t.Fatalf("expected fakeip proxy cache to retain backend entries and stale replies, got %+v", cfg.Response["cache_fakeip_proxy"])
@@ -69,8 +75,8 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_branch_foreign"].LazyCacheTTL != 900 {
 		t.Fatalf("cache_branch_foreign lazy cache ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyCacheTTL)
 	}
-	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 900 {
-		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 900", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
+	if cfg.Response["cache_branch_foreign"].LazyStaleTTL != 300 {
+		t.Fatalf("cache_branch_foreign lazy stale ttl = %d, want 300", cfg.Response["cache_branch_foreign"].LazyStaleTTL)
 	}
 	if cfg.Response["cache_branch_foreign"].ClientTTLMin != 120 || cfg.Response["cache_branch_foreign"].ClientTTLMax != 900 {
 		t.Fatalf("cache_branch_foreign client ttl clamp = %+v, want 120-900", cfg.Response["cache_branch_foreign"])
@@ -83,6 +89,9 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	}
 	if cfg.Response["cache_probe"].ClientTTLMin != 120 || cfg.Response["cache_probe"].ClientTTLMax != 900 {
 		t.Fatalf("cache_probe should clamp client ttl, got %+v", cfg.Response["cache_probe"])
+	}
+	if got := cfg.Response["cache_probe"].ExcludeIPs; !sameStringSlice(got, defaultRealCacheExcludeIPs()) {
+		t.Fatalf("cache_probe should exclude fakeip/sinkhole ranges, got %+v", got)
 	}
 	if totalSize > 1200000 {
 		t.Fatalf("default cache total size is too large: %d", totalSize)
@@ -121,6 +130,12 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("template cache_main should bypass DDNS and high-churn domain sets, got %+v", got)
 	}
+	if got := cfg.Response["cache_main"].ExcludeIPs; !sameStringSlice(got, defaultRealCacheExcludeIPs()) {
+		t.Fatalf("template cache_main should exclude fakeip/sinkhole ranges, got %+v", got)
+	}
+	if got := cfg.Response["cache_fakeip_proxy"].ExcludeIPs; len(got) != 0 {
+		t.Fatalf("template fakeip proxy cache should not exclude fakeip ranges, got %+v", got)
+	}
 	if cfg.Response["cache_fakeip_proxy"].LazyCacheTTL != 14400 || cfg.Response["cache_fakeip_proxy"].ClientTTLMin != 600 || cfg.Response["cache_fakeip_proxy"].ClientTTLMax != 600 {
 		t.Fatalf("template fakeip proxy cache should use stable client ttl, got %+v", cfg.Response["cache_fakeip_proxy"])
 	}
@@ -143,11 +158,7 @@ func TestRepoHighChurnTemplateUsesPreciseVideoCDNSeeds(t *testing.T) {
 		"domain:huoshanvideo.net",
 		"regexp:^v[0-9]+-dy-.*\\.zjcdn\\.com$",
 		"domain:bilivideo.com",
-		"domain:hdslb.com",
 		"domain:yximgs.com",
-		"domain:gifshow.com",
-		"domain:kwimgs.com",
-		"domain:xhscdn.com",
 		"full:mpvideo.qpic.cn",
 		"full:finder.video.qq.com",
 		"domain:steamcontent.com",
@@ -160,8 +171,14 @@ func TestRepoHighChurnTemplateUsesPreciseVideoCDNSeeds(t *testing.T) {
 	}
 	for _, broadRule := range []string{
 		"domain:bilibili.com",
+		"domain:hdslb.com",
+		"domain:biliimg.com",
+		"domain:biliapi.net",
 		"domain:kuaishou.com",
+		"domain:gifshow.com",
+		"domain:kwimgs.com",
 		"domain:xiaohongshu.com",
+		"domain:xhscdn.com",
 		"domain:weixin.qq.com",
 		"domain:qpic.cn",
 		"domain:tc.qq.com",
@@ -221,6 +238,122 @@ func TestRepoFakeIPAndProbeCacheHitsExitWithoutExitOnHitArg(t *testing.T) {
 	}
 }
 
+func TestRepoRealResolutionTemplatesTagCacheRouteBeforeMainCache(t *testing.T) {
+	mainResolution, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "31-main-resolution.yaml"))
+	if err != nil {
+		t.Fatalf("read main resolution template: %v", err)
+	}
+	mainBody := string(mainResolution)
+	assertSequenceOrder(t, mainBody, "sequence_local",
+		"exec: cache_route_tag chain:domestic-real",
+		"exec: $cache_main",
+	)
+	assertSequenceOrder(t, mainBody, "sequence_google",
+		"exec: cache_route_tag chain:foreign-real",
+		"exec: $cache_main",
+	)
+	assertSequenceOrder(t, mainBody, "sequence_google_node",
+		"exec: cache_route_tag chain:foreign-real",
+		"exec: $cache_main",
+	)
+
+	refreshResolution, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "40-refresh-resolution.yaml"))
+	if err != nil {
+		t.Fatalf("read refresh resolution template: %v", err)
+	}
+	refreshBody := string(refreshResolution)
+	for _, sequenceName := range []string{"sequence_local_refresh", "sequence_local_exit_refresh"} {
+		assertSequenceOrder(t, refreshBody, sequenceName,
+			"exec: cache_route_tag chain:domestic-real",
+			"exec: $domestic",
+		)
+	}
+	for _, sequenceName := range []string{"sequence_google_refresh", "sequence_google_node_refresh"} {
+		assertSequenceOrder(t, refreshBody, sequenceName,
+			"exec: cache_route_tag chain:foreign-real",
+			"exec: $foreign",
+		)
+	}
+}
+
+func TestRepoFakeIPTemplatesTagCacheRouteBeforeFakeIPCache(t *testing.T) {
+	mainResolution, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "31-main-resolution.yaml"))
+	if err != nil {
+		t.Fatalf("read main resolution template: %v", err)
+	}
+	mainBody := string(mainResolution)
+	assertSequenceOrder(t, mainBody, "sequence_local_fake_generated",
+		"exec: cache_route_tag chain:domestic-fakeip",
+		"exec: $cache_fakeip_domestic",
+	)
+	for _, sequenceName := range []string{"sequence_fakeip_generated", "sequence_fakeip_generated_addlist"} {
+		assertSequenceOrder(t, mainBody, sequenceName,
+			"exec: cache_route_tag chain:proxy-fakeip",
+			"exec: $cache_fakeip_proxy",
+		)
+	}
+
+	refreshResolution, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "40-refresh-resolution.yaml"))
+	if err != nil {
+		t.Fatalf("read refresh resolution template: %v", err)
+	}
+	refreshBody := string(refreshResolution)
+	for _, sequenceName := range []string{"sequence_local_fake_refresh", "sequence_local_fake_exit_refresh"} {
+		assertSequenceOrder(t, refreshBody, sequenceName,
+			"exec: cache_route_tag chain:domestic-fakeip",
+			"exec: $cnfake",
+		)
+	}
+	for _, sequenceName := range []string{"sequence_fakeip_refresh", "sequence_fakeip_addlist_refresh"} {
+		assertSequenceOrder(t, refreshBody, sequenceName,
+			"exec: cache_route_tag chain:proxy-fakeip",
+			"exec: $nocnfake",
+		)
+	}
+}
+
+func TestRepoKnownSubscriptionDirectAlwaysUsesRealIP(t *testing.T) {
+	mainIPv4V6, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "33-main-ipv4v6.yaml"))
+	if err != nil {
+		t.Fatalf("read ipv4/v6 template: %v", err)
+	}
+	mainBody := string(mainIPv4V6)
+	for _, sequenceName := range []string{"sequence_ipv4_known_domain", "sequence_ipv6_known_domain"} {
+		assertSequenceOrder(t, mainBody, sequenceName,
+			"matches: fast_mark 13\n        exec: $sequence_local",
+			"matches: fast_mark 13\n        exec: exit",
+			"matches: fast_mark 15\n        exec: $sequence_fakeip_addlist",
+			"matches: fast_mark 16\n        exec: $sequence_local",
+			"matches: fast_mark 16\n        exec: exit",
+			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n        exec: $sequence_fakeip",
+		)
+		if strings.Contains(mainBody, "fast_mark 13\n          - switch 'cn_answer_mode:fakeip'") ||
+			strings.Contains(mainBody, "fast_mark 16\n          - switch 'cn_answer_mode:fakeip'") {
+			t.Fatalf("%s should not send subscription direct marks through domestic fakeip mode", sequenceName)
+		}
+	}
+
+	refreshIPv4V6, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "42-refresh-ipv4v6.yaml"))
+	if err != nil {
+		t.Fatalf("read refresh ipv4/v6 template: %v", err)
+	}
+	refreshBody := string(refreshIPv4V6)
+	for _, sequenceName := range []string{"sequence_ipv4_known_domain_refresh", "sequence_ipv6_known_domain_refresh"} {
+		assertSequenceOrder(t, refreshBody, sequenceName,
+			"matches: fast_mark 13\n        exec: $sequence_local_refresh",
+			"matches: fast_mark 13\n        exec: exit",
+			"matches: fast_mark 15\n        exec: $sequence_fakeip_addlist_refresh",
+			"matches: fast_mark 16\n        exec: $sequence_local_refresh",
+			"matches: fast_mark 16\n        exec: exit",
+			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n        exec: $sequence_fakeip_refresh",
+		)
+		if strings.Contains(refreshBody, "fast_mark 13\n          - switch 'cn_answer_mode:fakeip'") ||
+			strings.Contains(refreshBody, "fast_mark 16\n          - switch 'cn_answer_mode:fakeip'") {
+			t.Fatalf("%s should not send subscription direct marks through domestic fakeip mode", sequenceName)
+		}
+	}
+}
+
 func TestRepoNoLeakNXDomainExitsBeforeForeignFallback(t *testing.T) {
 	mainNotInList, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "32-main-not-in-list.yaml"))
 	if err != nil {
@@ -262,7 +395,7 @@ func TestRepoNoLeakNXDomainExitsBeforeForeignFallback(t *testing.T) {
 func assertSequenceOrder(t *testing.T, body, sequenceName string, markers ...string) {
 	t.Helper()
 
-	sequenceStart := strings.Index(body, "- name: "+sequenceName)
+	sequenceStart := strings.Index(body, "- name: "+sequenceName+"\n")
 	if sequenceStart < 0 {
 		t.Fatalf("template missing sequence %s", sequenceName)
 	}
@@ -385,6 +518,7 @@ response:
     bypass_domain_sets:
       - 高变CDN
       - DDNS域名
+    exclude_ip: 10.0.0.0/8, 192.168.0.0/16
     persist: false
 udp_fast_path:
   internal_ttl: 3
@@ -418,6 +552,9 @@ udp_fast_path:
 	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变CDN" {
 		t.Fatalf("unexpected cache_main bypass domain sets: %+v", got)
+	}
+	if got := cfg.Response["cache_main"].ExcludeIPs; len(got) != 2 || got[0] != "10.0.0.0/8" || got[1] != "192.168.0.0/16" {
+		t.Fatalf("unexpected cache_main exclude ip list: %+v", got)
 	}
 	if cfg.UDPFastPath.InternalTTL != 3 || cfg.UDPFastPath.StaleRetry != 9 || cfg.UDPFastPath.StaleMax != 33 || cfg.UDPFastPath.TTLMax != 3 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
@@ -502,7 +639,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
 		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, ClientTTLMin: 3, ClientTTLMax: 30, NXDomainTTL: 11, ServfailTTL: 12,
-		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名", "高变化域名"}, Persist: true,
+		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名", "高变化域名"}, ExcludeIPs: []string{"28.0.0.0/8", "f2b0::/18"}, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
 	cfg.UDPFastPath = UDPFastCachePolicy{
@@ -529,6 +666,10 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 	if !ok || len(bypassDomainSets) != 2 || bypassDomainSets[0] != "DDNS域名" || bypassDomainSets[1] != "高变化域名" {
 		t.Fatalf("unexpected bypass domain sets: %+v", args["bypass_domain_sets"])
 	}
+	excludeIPs, ok := args["exclude_ip"].([]string)
+	if !ok || len(excludeIPs) != 2 || excludeIPs[0] != "28.0.0.0/8" || excludeIPs[1] != "f2b0::/18" {
+		t.Fatalf("unexpected exclude ip list: %+v", args["exclude_ip"])
+	}
 
 	udp := PluginConfig{Tag: "udp_main", Type: "udp_server", Args: map[string]any{}}
 	if err := ApplyRuntimeCachePolicy(&udp, cfg); err != nil {
@@ -545,4 +686,16 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 	if !ok || len(udpBypassDomainSets) != 2 || udpBypassDomainSets[0] != "DDNS域名" || udpBypassDomainSets[1] != "高变化域名" {
 		t.Fatalf("unexpected udp bypass domain sets: %+v", udpArgs["fast_cache_bypass_domain_sets"])
 	}
+}
+
+func sameStringSlice(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

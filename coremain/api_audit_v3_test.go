@@ -73,6 +73,7 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	if settings.CurrentStorageBytes != settings.AllocatedStorageBytes {
 		t.Fatalf("current storage = %d, allocated storage = %d, want equal", settings.CurrentStorageBytes, settings.AllocatedStorageBytes)
 	}
+	collector.degraded.Store(true)
 
 	settings.Enabled = false
 	settings.OverviewWindowSeconds = 120
@@ -114,6 +115,9 @@ func TestAuditAPIV3OverviewSettingsAndClear(t *testing.T) {
 	postAuditNoBody(t, router, http.MethodPost, "/api/v3/audit/clear")
 
 	overview = fetchAuditOverview(t, router, "/api/v3/audit/overview?window=3600")
+	if overview.Degraded {
+		t.Fatal("overview.Degraded = true after clear, want false")
+	}
 	for _, item := range overview.PeriodSummaries {
 		assertAuditSummary(t, item, 0, 0)
 	}

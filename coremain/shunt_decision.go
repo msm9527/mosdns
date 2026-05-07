@@ -90,14 +90,6 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 		return shuntDecision{Stage: "precheck", Action: "domestic", Reason: "DDNS 域名直接走国内上游", Matched: 6}, path
 	}
 
-	cnAnswerMode := switches["cn_answer_mode"]
-	localAction := func(reason string) (string, string) {
-		if cnAnswerMode == "fakeip" {
-			return "sequence_local_fake_exit", reason + "，并按 cn_answer_mode:fakeip 返回国内 FakeIP"
-		}
-		return "sequence_local", reason
-	}
-
 	for _, step := range []struct {
 		Mark   uint8
 		Action string
@@ -105,18 +97,15 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 	}{
 		{7, "sequence_fakeip", "灰名单优先走 fakeip/代理"},
 		{8, "sequence_local", "白名单走国内直连链路"},
-		{13, "", "订阅直连补充走国内链路"},
+		{13, "sequence_local", "订阅直连补充走国内真实解析链路"},
 		{15, "sequence_fakeip_addlist", "订阅代理补充走 fakeip/代理并加入清单"},
 		{14, "sequence_fakeip_addlist", "订阅代理走 fakeip/代理并加入清单"},
-		{16, "", "订阅直连走国内链路"},
+		{16, "sequence_local", "订阅直连走国内真实解析链路"},
 		{12, "sequence_fakeip", "记忆代理走 fakeip/代理"},
 		{11, "sequence_local_divert", "记忆直连走国内链路"},
 	} {
 		action := step.Action
 		reason := step.Reason
-		if step.Mark == 13 || step.Mark == 16 {
-			action, reason = localAction(reason)
-		}
 		matched := marks[step.Mark]
 		if step.Mark == 12 && (marks[13] || marks[16]) {
 			skippedBy := "fast_mark 13/16"

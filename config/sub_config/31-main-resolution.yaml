@@ -33,11 +33,12 @@ policies:
       - exec: cname_remover
 
   # 国外普通真实解析链：
-  # - main_cache 负责跨真实链共享
-  # - branch_cache 负责国外分支局部缓存
+  # - main_cache 负责长期持久化，key 按 route tag / 关键开关隔离
+  # - branch_cache 负责国外分支短期去抖
   - name: sequence_google
     type: sequence
     args:
+      - exec: cache_route_tag chain:foreign-real
       - matches: switch 'foreign_ecs:on'
         exec: ecs __foreign_ecs__
       - matches: switch 'main_cache:on'
@@ -60,6 +61,7 @@ policies:
   - name: sequence_google_node
     type: sequence
     args:
+      - exec: cache_route_tag chain:foreign-real
       - matches: switch 'foreign_ecs:on'
         exec: ecs __foreign_ecs__
       - matches: switch 'main_cache:on'
@@ -87,6 +89,7 @@ policies:
   - name: sequence_local
     type: sequence
     args:
+      - exec: cache_route_tag chain:domestic-real
       - matches: switch 'domestic_ecs:on'
         exec: ecs __domestic_ecs__
       - matches: switch 'main_cache:on'
@@ -103,6 +106,7 @@ policies:
   - name: sequence_local_fake_generated
     type: sequence
     args:
+      - exec: cache_route_tag chain:domestic-fakeip
       - exec: drop_resp
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_domestic
@@ -143,6 +147,7 @@ policies:
   - name: sequence_fakeip_generated
     type: sequence
     args:
+      - exec: cache_route_tag chain:proxy-fakeip
       - exec: drop_resp
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_proxy
@@ -156,6 +161,7 @@ policies:
   - name: sequence_fakeip_generated_addlist
     type: sequence
     args:
+      - exec: cache_route_tag chain:proxy-fakeip
       - exec: drop_resp
       - matches: switch 'fakeip_cache:on'
         exec: $cache_fakeip_proxy

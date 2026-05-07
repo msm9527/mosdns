@@ -422,6 +422,10 @@ func (r fastRuleRevision) routeMatches(item *fastCacheItem) bool {
 		item.rewriteRevision.equal(r.rewrite)
 }
 
+func (r fastRuleRevision) routeMismatchOnly(item *fastCacheItem) bool {
+	return r.routeMatches(item) && item != nil && !item.controlRevision.equal(r.control)
+}
+
 func (r fastRuleRevision) String() string {
 	domainMapper := r.domainMapper.String()
 	rewrite := r.rewrite.String()
@@ -1126,10 +1130,13 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		if fc.stats != nil {
 			fc.stats.cacheMiss.AddShard(statKey, 1)
 		}
+		if expectedRuleRevision.routeMismatchOnly(ptr) {
+			return server.FastActionContinue, 0, 0, "", false, fastAuditResponseMeta{}
+		}
 		if expectedRuleRevision.routeMatches(ptr) {
 			return server.FastActionContinue, 0, ptr.ruleFlags, ptr.domainSet, false, fastAuditResponseMeta{}
 		}
-		return server.FastActionContinue, 0, 0, ptr.domainSet, false, fastAuditResponseMeta{}
+		return server.FastActionContinue, 0, 0, "", false, fastAuditResponseMeta{}
 	}
 	if ptr.fakeIP && !allowFakeIP {
 		if fc.stats != nil {
@@ -1254,14 +1261,17 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 }
 
 func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allowFakeIP bool) *[]byte {
-	resp, _ := fc.CopyResponseWithAudit(txid, qname, qtype, allowFakeIP)
+	resp, _ := fc.CopyResponseWithAudit(txid, qname, qtype, allowFakeIP, fastRuleRevision{})
 	return resp
 }
 
-func (fc *fastCache) CopyResponseWithAudit(txid uint16, qname string, qtype uint16, allowFakeIP bool) (*[]byte, fastAuditResponseMeta) {
+func (fc *fastCache) CopyResponseWithAudit(txid uint16, qname string, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (*[]byte, fastAuditResponseMeta) {
 	hash := fastCachePolicyHash(fastQNameHashString(qname, qtype), false)
 	ptr, _ := fc.findItem(hash, qname, qtype)
 	if ptr == nil {
+		return nil, fastAuditResponseMeta{}
+	}
+	if !expectedRuleRevision.empty() && !expectedRuleRevision.matches(ptr) {
 		return nil, fastAuditResponseMeta{}
 	}
 	if ptr.fakeIP && !allowFakeIP {
@@ -1776,7 +1786,7 @@ func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, me
 		return nil
 	}
 	question := q.Question[0]
-	stalePayload, auditMeta := h.fc.CopyResponseWithAudit(q.Id, question.Name, question.Qtype, h.allowFakeIPCache())
+	stalePayload, auditMeta := h.fc.CopyResponseWithAudit(q.Id, question.Name, question.Qtype, h.allowFakeIPCache(), h.runtimeRevision())
 	if stalePayload == nil {
 		if h.fc != nil && h.fc.stats != nil {
 			h.fc.stats.refreshMiss.Add(1)
@@ -1852,6 +1862,10 @@ func (h *fastHandler) fastCacheEnabled() bool {
 
 func (h *fastHandler) allowFakeIPCache() bool {
 	return h.fakeCacheSwitch.isOn()
+}
+
+func (h *fastHandler) runtimeRevision() fastRuleRevision {
+	return fastRuntimeRevisionParts(h.dm, h.rewriteRevision, h.fakeCacheSwitch, h.blockSwitch, h.adBlockSwitch, h.cnAnswerSwitch)
 }
 
 func fastCacheRevisionOf(plugin any) fastRevisionValue {

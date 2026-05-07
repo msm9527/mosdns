@@ -34,7 +34,7 @@ func init() {
 type haveResp struct{}
 
 func (h haveResp) Match(_ context.Context, qCtx *query_context.Context) (bool, error) {
-	return qCtx.R() != nil, nil
+	return qCtx.R() != nil || qCtx.ResponsePayload() != nil, nil
 }
 
 func QuickSetup(_ sequence.BQ, _ string) (sequence.Matcher, error) {

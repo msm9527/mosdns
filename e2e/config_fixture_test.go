@@ -293,7 +293,7 @@ func writeServiceE2ERuleFiles(configDir string) error {
 		filepath.Join(configDir, "rule", "greylist.txt"):            "full:proxy-cache.example\n",
 		filepath.Join(configDir, "rule", "realiplist.txt"):          "full:default.example\nfull:branch.example\nfull:ttl-real.example\n",
 		filepath.Join(configDir, "rule", "rewrite.txt"):             "\n",
-		filepath.Join(configDir, "rule", "whitelist.txt"):           "\n",
+		filepath.Join(configDir, "rule", "whitelist.txt"):           "full:whitelist-cn.example\nfull:ttl-cn-switch.example\n",
 	}
 	for path, content := range files {
 		if err := writeServiceE2EFile(path, content); err != nil {

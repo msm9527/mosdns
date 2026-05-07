@@ -122,8 +122,7 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 			f.logger.Warn("primary error", qCtx.InfoField(), zap.Error(err))
 		}
 
-		r := qCtx.R()
-		if (err != nil && !errors.Is(err, sequence.ErrExit)) || r == nil {
+		if (err != nil && !errors.Is(err, sequence.ErrExit)) || !fallbackHasResponse(qCtx) {
 			close(primFailed)
 			respChan <- nil
 		} else {
@@ -157,8 +156,7 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 			return
 		}
 
-		r := qCtx.R()
-		if r == nil {
+		if !fallbackHasResponse(qCtx) {
 			respChan <- nil
 			return
 		}
@@ -196,6 +194,17 @@ func (f *fallback) doFallback(ctx context.Context, qCtx *query_context.Context) 
 
 	// All goroutines finished but failed.
 	return ErrFailed
+}
+
+func fallbackHasResponse(qCtx *query_context.Context) bool {
+	if qCtx == nil {
+		return false
+	}
+	if qCtx.R() != nil {
+		return true
+	}
+	payload := qCtx.ResponsePayload()
+	return payload != nil && len(payload.Wire) > 0
 }
 
 func makeDdlCtx(ctx context.Context, timeout time.Duration) (context.Context, func()) {

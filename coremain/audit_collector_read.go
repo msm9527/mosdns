@@ -59,9 +59,14 @@ func (c *AuditCollector) ClearLogs() error {
 	defer c.storageMu.Unlock()
 	storage := c.getStorage()
 	if storage == nil {
+		c.degraded.Store(false)
 		return nil
 	}
-	return storage.Clear()
+	if err := storage.Clear(); err != nil {
+		return err
+	}
+	c.degraded.Store(false)
+	return nil
 }
 
 func (c *AuditCollector) GetOverview(windowSeconds int) AuditOverview {

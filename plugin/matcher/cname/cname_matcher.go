@@ -40,7 +40,7 @@ func QuickSetup(bq sequence.BQ, s string) (sequence.Matcher, error) {
 }
 
 func matchCName(qCtx *query_context.Context, m domain.Matcher[struct{}]) (bool, error) {
-	r := qCtx.R()
+	r := qCtx.ResponseMsg()
 	if r == nil {
 		return false, nil
 	}

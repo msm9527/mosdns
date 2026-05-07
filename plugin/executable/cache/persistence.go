@@ -342,6 +342,12 @@ func (c *Cache) replayWAL() error {
 		}
 		switch record.op {
 		case walOpSet:
+			if c.containsExcludedWire(record.cacheItem.resp) {
+				c.backend.Delete(record.key)
+				c.deleteL1Key(record.key)
+				entries++
+				continue
+			}
 			c.prepareCacheItemForStore(record.cacheItem)
 			c.backend.Store(record.key, record.cacheItem, record.cacheExp)
 		case walOpDel:

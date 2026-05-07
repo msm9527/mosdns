@@ -25,6 +25,16 @@ func TestFastCacheItemAtomicFieldAlignment(t *testing.T) {
 	}
 }
 
+func mustFastCacheItem(t testing.TB, fc *fastCache, name string, qtype uint16) *fastCacheItem {
+	t.Helper()
+	hash := fastCachePolicyHash(fastQNameHashString(name, qtype), false)
+	item, _ := fc.findItem(hash, name, qtype)
+	if item == nil {
+		t.Fatalf("expected fast cache item for %s/%d", name, qtype)
+	}
+	return item
+}
+
 func TestInferFastBypassWarmupSec(t *testing.T) {
 	if got := inferFastBypassWarmupSec("sequence_requery", ":53"); got != defaultFastBypassWarmupRequery {
 		t.Fatalf("requery entry warmup = %d, want %d", got, defaultFastBypassWarmupRequery)
@@ -469,10 +479,7 @@ func TestFastCacheStoresAuditMetaOnlyWhenEnabled(t *testing.T) {
 	if !fcNoAudit.Store(name, dns.TypeA, resp, "dset", false) {
 		t.Fatal("expected no-audit cache store")
 	}
-	ptr, _ := fcNoAudit.findItem(fastQNameHashString(name, dns.TypeA), name, dns.TypeA)
-	if ptr == nil {
-		t.Fatal("expected no-audit cache item")
-	}
+	ptr := mustFastCacheItem(t, fcNoAudit, name, dns.TypeA)
 	if ptr.audit.responseCode != "" || ptr.audit.answerCount != 0 || len(ptr.audit.answers) != 0 {
 		t.Fatalf("no-audit cache item should not store audit details: %+v", ptr.audit)
 	}
@@ -485,10 +492,7 @@ func TestFastCacheStoresAuditMetaOnlyWhenEnabled(t *testing.T) {
 	if !fcAudit.Store(name, dns.TypeA, resp, "dset", false) {
 		t.Fatal("expected audit cache store")
 	}
-	ptr, _ = fcAudit.findItem(fastQNameHashString(name, dns.TypeA), name, dns.TypeA)
-	if ptr == nil {
-		t.Fatal("expected audit cache item")
-	}
+	ptr = mustFastCacheItem(t, fcAudit, name, dns.TypeA)
 	if ptr.audit.responseCode != "NOERROR" || ptr.audit.answerCount != 1 {
 		t.Fatalf("unexpected audit header: %+v", ptr.audit)
 	}
@@ -553,7 +557,7 @@ func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
 		staleRetry:  time.Hour,
 	}, &fastStats{})
 	fcSlow.Store(name, qtype, resp, "", false)
-	item, _ := fcSlow.findItem(hash, name, qtype)
+	item := mustFastCacheItem(t, fcSlow, name, qtype)
 	atomic.StoreInt64(&item.expire, time.Now().Add(-30*time.Second).Unix())
 	atomic.StoreUint32(&item.updating, 1)
 
@@ -569,7 +573,7 @@ func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
 		staleRetry:  time.Second,
 	}, &fastStats{})
 	fcFast.Store(name, qtype, resp, "", false)
-	item, _ = fcFast.findItem(hash, name, qtype)
+	item = mustFastCacheItem(t, fcFast, name, qtype)
 	atomic.StoreInt64(&item.expire, time.Now().Add(-30*time.Second).Unix())
 	atomic.StoreUint32(&item.updating, 1)
 
@@ -593,7 +597,7 @@ func TestFastCacheStopsServingStaleAfterMaxWindow(t *testing.T) {
 		staleMax:    5 * time.Second,
 	}, &fastStats{})
 	fc.Store(name, qtype, resp, "", false)
-	item, _ := fc.findItem(hash, name, qtype)
+	item := mustFastCacheItem(t, fc, name, qtype)
 	atomic.StoreInt64(&item.expire, time.Now().Add(-10*time.Second).Unix())
 	atomic.StoreUint32(&item.updating, 1)
 
@@ -1329,6 +1333,57 @@ func TestBuildFastBypassCacheHitRefreshesWhenRevisionChanges(t *testing.T) {
 	}
 }
 
+func TestBuildFastBypassDoesNotReuseStaleDomainSetAfterMapperRevisionChanges(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:      time.Minute,
+		ttlMax:           30,
+		bypassDomainSets: []string{"高变化域名"},
+	}, stats)
+	name := "content.steamcontent.com."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "记忆直连", false, false, 1<<11, fastRuleRevision{
+		domainMapper: fastNumericRevisionValue(1),
+	}) {
+		t.Fatal("expected stale response cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{
+			testDomainMapperPlugin: testDomainMapperPlugin{marks: []uint8{17}, tag: "高变化域名", match: true},
+			revision:               2,
+			calls:                  &calls,
+		},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, marks, dset, matched, staleRefresh := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected stale response to continue after high-churn rematch, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("high-churn rematch must not request stale refresh from stale response cache")
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("expected mapper to rerun after stale domain_mapper revision, got %d calls", calls.Load())
+	}
+	if dset != "高变化域名" || !matched {
+		t.Fatalf("expected high-churn rematch, dset=%q matched=%v", dset, matched)
+	}
+	if (marks & (1 << 17)) == 0 {
+		t.Fatalf("expected high-churn route mark to be set, got %064b", marks)
+	}
+	if stats.bypassCacheReply.Load() != 0 {
+		t.Fatalf("stale high-churn response must not be served as fast hit, got %d", stats.bypassCacheReply.Load())
+	}
+}
+
 func TestBuildFastBypassClientDirectUsesSeparateCacheVariant(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -1444,8 +1499,8 @@ func TestBuildFastBypassCacheHitRefreshesWhenControlSwitchChanges(t *testing.T) 
 	if action != server.FastActionContinue {
 		t.Fatalf("expected control switch mismatch to continue to full chain, got %d", action)
 	}
-	if calls.Load() != 0 {
-		t.Fatalf("expected rule revision match to skip mapper even on control mismatch, got %d calls", calls.Load())
+	if calls.Load() == 0 {
+		t.Fatal("expected mapper to run after control switch mismatch")
 	}
 }
 
@@ -1667,9 +1722,8 @@ func TestBuildFastBypassExpiredCacheRequestsStaleRefresh(t *testing.T) {
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
 	fc.Store(name, dns.TypeA, resp, "stale", false)
 
-	hash := fastQNameHashString(name, dns.TypeA)
-	ptr, _ := fc.findItem(hash, name, dns.TypeA)
-	atomic.StoreInt64(&ptr.expire, time.Now().Add(-time.Second).Unix())
+	ptr := mustFastCacheItem(t, fc, name, dns.TypeA)
+	atomic.StoreInt64(&ptr.expire, fastNowUnix()-1)
 
 	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
 		"udp_fast_path": testSwitchPlugin{value: "on"},
@@ -1707,8 +1761,8 @@ func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
 	fc.Store(name, dns.TypeA, oldResp, "stale", false)
 
 	hash := fastQNameHashString(name, dns.TypeA)
-	ptr, _ := fc.findItem(hash, name, dns.TypeA)
-	atomic.StoreInt64(&ptr.expire, time.Now().Add(-time.Second).Unix())
+	ptr := mustFastCacheItem(t, fc, name, dns.TypeA)
+	atomic.StoreInt64(&ptr.expire, fastNowUnix()-1)
 	atomic.StoreUint32(&ptr.updating, 1)
 
 	called := make(chan struct{}, 1)
@@ -1768,6 +1822,61 @@ func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("expected refreshed cache to replace stale payload")
+}
+
+func TestFastHandlerSkipsStaleWhenControlSwitchChanges(t *testing.T) {
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, &fastStats{})
+	name := "refresh-control-switch.example."
+	oldResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "1.1.1.1")
+	newResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "8.8.8.8")
+	if !fc.storeWithRuleRevision(name, dns.TypeA, oldResp, "stale", false, false, 0, fastRuleRevision{
+		control: fastControlRevisionFromSwitches(fastSwitchValue{}, fastSwitchValue{}, fastSwitchValue{}, newFastSwitchValue(testSwitchPlugin{value: "realip"})),
+	}) {
+		t.Fatal("expected cache store")
+	}
+	ptr := mustFastCacheItem(t, fc, name, dns.TypeA)
+	atomic.StoreInt64(&ptr.expire, fastNowUnix()-1)
+	atomic.StoreUint32(&ptr.updating, 1)
+
+	called := make(chan struct{}, 1)
+	handler := &fastHandler{
+		next:           pooledHandler{payload: newResp, called: called},
+		fc:             fc,
+		sw:             newFastSwitchValue(testSwitchPlugin{value: "on"}),
+		cnAnswerSwitch: newFastSwitchValue(testSwitchPlugin{value: "fakeip"}),
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion(name, dns.TypeA)
+	q.Id = 0x9999
+
+	payload := handler.Handle(context.Background(), q, server.QueryMeta{PreFastStaleRefresh: true}, nil)
+	if payload == nil {
+		t.Fatal("expected payload from next handler")
+	}
+	defer pool.ReleaseBuf(payload)
+
+	select {
+	case <-called:
+	default:
+		t.Fatal("expected next handler to run instead of stale reply")
+	}
+	var got dns.Msg
+	if err := got.Unpack(*payload); err != nil {
+		t.Fatalf("unpack payload: %v", err)
+	}
+	if ip := got.Answer[0].(*dns.A).A.String(); ip != "8.8.8.8" {
+		t.Fatalf("expected fresh IP 8.8.8.8, got %s", ip)
+	}
+	if fc.stats.bypassStaleReply.Load() != 0 {
+		t.Fatal("stale reply metric should not increase on control switch mismatch")
+	}
+	if fc.stats.refreshMiss.Load() == 0 {
+		t.Fatal("expected refresh miss metric to increase")
+	}
 }
 
 func BenchmarkBuildFastBypassColdMiss(b *testing.B) {

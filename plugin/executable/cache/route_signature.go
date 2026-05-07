@@ -1,6 +1,7 @@
 package cache
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -9,6 +10,24 @@ import (
 )
 
 const routeMetadataSeparator = "\x1f"
+
+var cacheRouteSwitchDependencies = []string{
+	"client_proxy_mode",
+	"core_mode",
+	"domestic_ecs",
+	"foreign_ecs",
+	"fakeip_cache",
+	"block_ipv6",
+	"cn_answer_mode",
+}
+
+type cacheSwitchValueProvider interface {
+	GetValue() string
+}
+
+type cacheSwitchRevisionProvider interface {
+	ValueCode() uint64
+}
 
 func normalizeDomainSetSignature(raw string) string {
 	raw = strings.TrimSpace(raw)
@@ -116,22 +135,28 @@ func mergeDependencySets(values ...string) string {
 
 func resolveRouteSignature(raw string, pluginLookup func(string) any) string {
 	raw = normalizeDomainSetSignature(raw)
-	if raw == "" {
+	if raw == "" && pluginLookup == nil {
 		return ""
 	}
 
-	parts := strings.Split(raw, "|")
-	resolved := make([]string, 0, len(parts))
-	for _, part := range parts {
-		tag := strings.TrimSpace(part)
-		if tag == "" {
-			continue
+	var resolved []string
+	if raw != "" {
+		parts := strings.Split(raw, "|")
+		resolved = make([]string, 0, len(parts)+len(cacheRouteSwitchDependencies))
+		for _, part := range parts {
+			tag := strings.TrimSpace(part)
+			if tag == "" {
+				continue
+			}
+			if rev := resolveTagRevision(tag, pluginLookup); rev != "" {
+				resolved = append(resolved, tag+"@"+rev)
+				continue
+			}
+			resolved = append(resolved, tag)
 		}
-		if rev := resolveTagRevision(tag, pluginLookup); rev != "" {
-			resolved = append(resolved, tag+"@"+rev)
-			continue
-		}
-		resolved = append(resolved, tag)
+	}
+	if switchSig := resolveCacheSwitchSignature(pluginLookup); switchSig != "" {
+		resolved = append(resolved, switchSig)
 	}
 	return normalizeDomainSetSignature(strings.Join(resolved, "|"))
 }
@@ -145,6 +170,36 @@ func resolveTagRevision(tag string, pluginLookup func(string) any) string {
 		return ""
 	}
 	return strings.TrimSpace(provider.CacheRevision())
+}
+
+func resolveCacheSwitchSignature(pluginLookup func(string) any) string {
+	if pluginLookup == nil {
+		return ""
+	}
+	parts := make([]string, 0, len(cacheRouteSwitchDependencies))
+	for _, name := range cacheRouteSwitchDependencies {
+		if sig := resolveSwitchRevision(name, pluginLookup(name)); sig != "" {
+			parts = append(parts, sig)
+		}
+	}
+	return strings.Join(parts, "|")
+}
+
+func resolveSwitchRevision(name string, plugin any) string {
+	name = strings.TrimSpace(name)
+	if name == "" || plugin == nil {
+		return ""
+	}
+	if provider, ok := plugin.(cacheSwitchRevisionProvider); ok && provider != nil {
+		return fmt.Sprintf("switch:%s@%d", name, provider.ValueCode())
+	}
+	if provider, ok := plugin.(cacheSwitchValueProvider); ok && provider != nil {
+		value := strings.TrimSpace(provider.GetValue())
+		if value != "" {
+			return "switch:" + name + "@" + value
+		}
+	}
+	return ""
 }
 
 func currentRouteDomainSet(qCtx *query_context.Context) string {
@@ -175,6 +230,28 @@ func currentCacheDependencies(qCtx *query_context.Context) string {
 		return ""
 	}
 	return normalizeDomainSetSignature(dependencies)
+}
+
+func currentCacheRouteDependencySet(qCtx *query_context.Context) string {
+	if dependencies := currentCacheDependencies(qCtx); dependencies != "" {
+		return dependencies
+	}
+	return currentRouteDomainSet(qCtx)
+}
+
+type cacheRouteSnapshot struct {
+	domainSet      string
+	dependencySet  string
+	routeSignature string
+}
+
+func newCacheRouteSnapshot(qCtx *query_context.Context, pluginLookup func(string) any) cacheRouteSnapshot {
+	dependencySet := currentCacheRouteDependencySet(qCtx)
+	return cacheRouteSnapshot{
+		domainSet:      currentRouteDomainSet(qCtx),
+		dependencySet:  dependencySet,
+		routeSignature: resolveRouteSignature(dependencySet, pluginLookup),
+	}
 }
 
 func encodeStoredRouteMetadata(domainSet, dependencySet, routeSignature string) string {
@@ -234,14 +311,26 @@ func storedRouteSignature(stored string) string {
 	return routeSignature
 }
 
-func shouldBypassForRouteChange(cachedStored, currentDomainSet string, pluginLookup func(string) any) bool {
+func shouldBypassForRouteChange(cachedStored, currentDomainSet, currentDependencySet string, pluginLookup func(string) any) bool {
 	cachedDomainSet, dependencySet, cachedSig := decodeStoredRouteMetadata(cachedStored)
-	if normalizeDomainSetSignature(cachedDomainSet) != normalizeDomainSetSignature(currentDomainSet) {
-		return true
-	}
-	currentSig := resolveRouteSignature(dependencySet, pluginLookup)
-	if cachedSig == "" && currentSig == "" {
+	currentDomainSet = normalizeDomainSetSignature(currentDomainSet)
+	currentDependencySet = normalizeDomainSetSignature(currentDependencySet)
+	if cachedDomainSet == "" && dependencySet == "" && cachedSig == "" && currentDomainSet == "" && currentDependencySet == "" {
 		return false
+	}
+
+	cachedScope := normalizeDomainSetSignature(dependencySet)
+	if cachedScope == "" {
+		cachedScope = normalizeDomainSetSignature(cachedDomainSet)
+	}
+	currentScope := currentDependencySet
+	if currentScope == "" {
+		currentScope = currentDomainSet
+	}
+
+	currentSig := resolveRouteSignature(currentScope, pluginLookup)
+	if cachedSig == "" {
+		return normalizeDomainSetSignature(cachedScope) != normalizeDomainSetSignature(currentScope)
 	}
 	return normalizeDomainSetSignature(cachedSig) != normalizeDomainSetSignature(currentSig)
 }

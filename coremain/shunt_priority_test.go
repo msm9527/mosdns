@@ -52,12 +52,12 @@ func TestDecideShuntActionPrefersSubscriptionDirectOverMemoryProxy(t *testing.T)
 	}
 }
 
-func TestDecideShuntActionSubscriptionDirectRespectsDomesticFakeIPMode(t *testing.T) {
+func TestDecideShuntActionSubscriptionDirectIgnoresDomesticFakeIPMode(t *testing.T) {
 	decision, path := decideShuntAction("A", map[uint8]bool{
 		12: true,
 		16: true,
 	}, map[string]string{"cn_answer_mode": "fakeip"}, nil)
-	if decision.Matched != 16 || decision.Action != "sequence_local_fake_exit" {
+	if decision.Matched != 16 || decision.Action != "sequence_local" {
 		t.Fatalf("unexpected decision: %+v path=%+v", decision, path)
 	}
 }

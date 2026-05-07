@@ -52,6 +52,7 @@ import (
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/arbitrary"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/black_hole"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/cache"
+	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/cache_route_tag"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/cname_remover"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/debug_print"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/domain_memory_pool"

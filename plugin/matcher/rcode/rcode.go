@@ -39,7 +39,7 @@ type rcodeMatcher struct {
 }
 
 func (m *rcodeMatcher) Match(_ context.Context, qCtx *query_context.Context) (bool, error) {
-	r := qCtx.R()
+	r := qCtx.ResponseMsg()
 	if r == nil {
 		return false, nil
 	}
@@ -54,7 +54,7 @@ func (m *rcodeMatcher) Match(_ context.Context, qCtx *query_context.Context) (bo
 func (m *rcodeMatcher) GetFastCheck() func(qCtx *query_context.Context) bool {
 	targets := m.codes
 	return func(qCtx *query_context.Context) bool {
-		r := qCtx.R()
+		r := qCtx.ResponseMsg()
 		if r == nil {
 			return false
 		}

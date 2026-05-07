@@ -9,6 +9,7 @@
 | `arbitrary` | `executable` | `plugin/executable/arbitrary/arbitrary.go` |
 | `black_hole` | `executable` | `plugin/executable/black_hole/black_hole.go` |
 | `cache` | `executable` | `plugin/executable/cache/cache.go` |
+| `cache_route_tag` | `executable` | `plugin/executable/cache_route_tag/cache_route_tag.go` |
 | `client_ip` | `matcher` | `plugin/matcher/client_ip/client_ip_matcher.go` |
 | `cname_remover` | `executable` | `plugin/executable/cname_remover/cname_remover.go` |
 | `cname` | `matcher` | `plugin/matcher/cname/cname_matcher.go` |

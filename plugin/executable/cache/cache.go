@@ -222,15 +222,17 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	a.WALSyncInterval = raw.WALSyncInterval
 	a.EnableECS = raw.EnableECS
 	a.ExitOnHit = raw.ExitOnHit
+	a.ExcludeIPs = nil
+	a.BypassDomainSets = nil
 	var err error
 
 	switch v := raw.ExcludeIP.(type) {
 	case string:
-		a.ExcludeIPs = strings.Fields(v)
+		a.ExcludeIPs = splitCacheTokenValue(v)
 	case []interface{}:
 		for _, x := range v {
 			if s, ok := x.(string); ok {
-				a.ExcludeIPs = append(a.ExcludeIPs, s)
+				a.ExcludeIPs = append(a.ExcludeIPs, splitCacheTokenValue(s)...)
 			} else {
 				return fmt.Errorf("exclude_ip list contains non-string: %#v", x)
 			}
@@ -245,6 +247,24 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 		return err
 	}
 	return nil
+}
+
+func splitCacheTokenValue(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	parts := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ' ' || r == '\t' || r == '\n' || r == '\r' || r == ',' || r == '，' || r == '|'
+	})
+	out := make([]string, 0, len(parts))
+	for _, part := range parts {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func parseDomainSetTokenValue(raw interface{}, field string) ([]string, error) {
@@ -589,6 +609,18 @@ func (c *Cache) containsExcluded(msg *dns.Msg) bool {
 	return false
 }
 
+func (c *Cache) containsExcludedWire(wire []byte) bool {
+	if len(c.excludeNets) == 0 || len(wire) == 0 {
+		return false
+	}
+	msg := new(dns.Msg)
+	if err := msg.Unpack(wire); err != nil {
+		c.logger.Debug("skip cache exclusion check for invalid wire response", zap.Error(err))
+		return false
+	}
+	return c.containsExcluded(msg)
+}
+
 func (c *Cache) shouldBypassForCurrentDomainSet(domainSet string) bool {
 	if c == nil || c.args == nil {
 		return false
@@ -645,7 +677,8 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	clearCacheResponseStale(qCtx)
 
 	// 补丁：获取 Key 的字节切片和原始 Pool 指针
-	msgKeyBuf, bufPtr := getMsgKeyBytes(q, qCtx, c.args.EnableECS)
+	routeSnapshot := newCacheRouteSnapshot(qCtx, c.plugin)
+	msgKeyBuf, bufPtr := getMsgKeyBytesWithRouteSnapshot(q, qCtx, c.args.EnableECS, routeSnapshot)
 	if msgKeyBuf == nil {
 		return next.ExecNext(ctx, qCtx)
 	}
@@ -657,7 +690,8 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	h := k.Sum()
 	shard := c.shards[h%shardCount]
-	currentDomainSet := currentRouteDomainSet(qCtx)
+	currentDomainSet := routeSnapshot.domainSet
+	currentDependencySet := routeSnapshot.dependencySet
 	forceRefresh := shouldBypassCacheForRefresh(qCtx)
 	bypassDomainSet := c.shouldBypassForCurrentDomainSet(currentDomainSet)
 
@@ -678,7 +712,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	now := time.Now()
 	nowUnix := now.UnixNano()
-	if ok1 && shouldBypassForRouteChange(v1.domainSet, currentDomainSet, c.plugin) {
+	if ok1 && shouldBypassForRouteChange(v1.domainSet, currentDomainSet, currentDependencySet, c.plugin) {
 		c.deleteL1Key(k)
 		v1 = nil
 		ok1 = false
@@ -693,7 +727,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			if domainSet := storedDomainSet(v1.domainSet); domainSet != "" {
 				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
 			}
-			c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedUnixNano, v1.expireUnixNano, v1.domainSet)
+			c.maybePrefetch(string(msgKeyBuf), routeSnapshot, qCtx, next, now, v1.storedUnixNano, v1.expireUnixNano, v1.domainSet)
 			releaseKeyBuffer(bufPtr)
 			return c.cacheHitReturn()
 		}
@@ -714,7 +748,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			if domainSet != "" {
 				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
 			}
-			c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedUnixNano, v1.expireUnixNano, v1.domainSet)
+			c.maybePrefetch(string(msgKeyBuf), routeSnapshot, qCtx, next, now, v1.storedUnixNano, v1.expireUnixNano, v1.domainSet)
 
 			// 归还 Key 缓冲区
 			releaseKeyBuffer(bufPtr)
@@ -739,7 +773,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		r := qCtx.R()
 
 		if r != nil && !c.containsExcluded(r) {
-			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
+			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx, routeSnapshot); ok {
 				c.updatedKey.Add(1)
 				if c.l1Enabled {
 					shard.updateL1(kReal, cachedItem)
@@ -752,7 +786,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 
 	// --- L2 路径查询 ---
 	cachedItem, _, _ := c.backend.Get(kReal)
-	if cachedItem != nil && shouldBypassForRouteChange(cachedItem.domainSet, currentDomainSet, c.plugin) {
+	if cachedItem != nil && shouldBypassForRouteChange(cachedItem.domainSet, currentDomainSet, currentDependencySet, c.plugin) {
 		c.deleteRuntimeCacheKey(kReal, "route_change")
 		cachedItem = nil
 	}
@@ -765,7 +799,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		domainSet = ""
 	}
 	if lazyHit {
-		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
+		state, _ := c.ensureLazyUpdate(msgKey, routeSnapshot, qCtx, next)
 		if state.staleServed.CompareAndSwap(false, true) {
 			c.lazyHitTotal.Inc()
 			c.lazyHitCount.Add(1)
@@ -788,7 +822,7 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 			}
 			if c.l1Enabled && !lazyHit && cachedItem != nil {
 				shard.updateL1(kReal, cachedItem)
-				c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
+				c.maybePrefetch(msgKey, routeSnapshot, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
 			}
 			return c.cacheHitReturn()
 		}
@@ -802,16 +836,16 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		// 命中 L2 且未过期：晋升到 L1
 		if c.l1Enabled && !lazyHit && cachedItem != nil {
 			shard.updateL1(kReal, cachedItem)
-			c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
+			c.maybePrefetch(msgKey, routeSnapshot, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
 		}
 		return c.cacheHitReturn()
 	}
 
 	if cachedItem != nil && nowUnix >= cachedItem.expireUnixNano && c.shouldBypassForStoredDomainSet(cachedItem.domainSet) {
-		state, _ := c.ensureLazyUpdate(msgKey, qCtx, next)
+		state, _ := c.ensureLazyUpdate(msgKey, routeSnapshot, qCtx, next)
 		if c.waitForLazyRefresh(state, defaultLazyWaitTimeout) {
 			refreshedItem, _, _ := c.backend.Get(kReal)
-			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, c.plugin) {
+			if refreshedItem != nil && shouldBypassForRouteChange(refreshedItem.domainSet, currentDomainSet, currentDependencySet, c.plugin) {
 				c.deleteRuntimeCacheKey(kReal, "bypass_refresh_route_change")
 				refreshedItem = nil
 			}
@@ -840,16 +874,16 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	}
 
 	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
-	return c.execColdMiss(ctx, msgKey, kReal, shard, qCtx, next)
+	return c.execColdMiss(ctx, msgKey, kReal, shard, routeSnapshot, qCtx, next)
 }
 
-func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l1Shard, qCtx *query_context.Context, next sequence.ChainWalker) error {
-	sfKey := c.coldQuerySingleflightKey(msgKey, qCtx)
+func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l1Shard, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) error {
+	sfKey := c.coldQuerySingleflightKey(msgKey, route)
 	result, err, shared := c.coldQuerySF.Do(sfKey, func() (any, error) {
 		err := next.ExecNext(ctx, qCtx)
 		r := qCtx.R()
 		if r != nil && !c.containsExcluded(r) {
-			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
+			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx, route); ok {
 				c.updatedKey.Add(1)
 				if c.l1Enabled && shard != nil {
 					shard.updateL1(k, cachedItem)
@@ -871,9 +905,9 @@ func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l
 	}
 	if cachedItem == nil {
 		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
-		return c.execColdMissDirect(ctx, msgKey, k, shard, qCtx, next)
+		return c.execColdMissDirect(ctx, msgKey, k, shard, route, qCtx, next)
 	}
-	if shouldBypassForRouteChange(cachedItem.domainSet, currentRouteDomainSet(qCtx), c.plugin) {
+	if shouldBypassForRouteChange(cachedItem.domainSet, route.domainSet, route.dependencySet, c.plugin) {
 		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
 		return err
 	}
@@ -915,11 +949,11 @@ func (c *Cache) cacheHitReturn() error {
 	return nil
 }
 
-func (c *Cache) execColdMissDirect(ctx context.Context, msgKey string, k key, shard *l1Shard, qCtx *query_context.Context, next sequence.ChainWalker) error {
+func (c *Cache) execColdMissDirect(ctx context.Context, msgKey string, k key, shard *l1Shard, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) error {
 	err := next.ExecNext(ctx, qCtx)
 	r := qCtx.R()
 	if r != nil && !c.containsExcluded(r) {
-		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
+		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx, route); ok {
 			c.updatedKey.Add(1)
 			if c.l1Enabled && shard != nil {
 				shard.updateL1(k, cachedItem)
@@ -929,14 +963,11 @@ func (c *Cache) execColdMissDirect(ctx context.Context, msgKey string, k key, sh
 	return err
 }
 
-func (c *Cache) coldQuerySingleflightKey(msgKey string, qCtx *query_context.Context) string {
-	domainSet := currentRouteDomainSet(qCtx)
-	dependencies := mergeDependencySets(domainSet, currentCacheDependencies(qCtx))
-	if domainSet == "" && dependencies == "" {
+func (c *Cache) coldQuerySingleflightKey(msgKey string, route cacheRouteSnapshot) string {
+	if route.domainSet == "" && route.dependencySet == "" {
 		return msgKey
 	}
-	signature := resolveRouteSignature(dependencies, c.plugin)
-	return msgKey + "\x00" + domainSet + "\x00" + dependencies + "\x00" + signature
+	return msgKey + "\x00" + route.domainSet + "\x00" + route.dependencySet + "\x00" + route.routeSignature
 }
 
 func (c *Cache) waitForLazyRefresh(state *lazyRefreshState, wait time.Duration) bool {
@@ -978,14 +1009,14 @@ func (c *Cache) shouldPrefetch(now time.Time, storedUnixNano, expireUnixNano int
 	return remaining <= lead
 }
 
-func (c *Cache) maybePrefetch(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker, now time.Time, storedUnixNano, expireUnixNano int64, domainSet string) {
+func (c *Cache) maybePrefetch(msgKey string, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker, now time.Time, storedUnixNano, expireUnixNano int64, domainSet string) {
 	if msgKey == "" || qCtx == nil || !c.shouldPrefetch(now, storedUnixNano, expireUnixNano, domainSet) {
 		return
 	}
 	if c.shouldBypassForStoredDomainSet(domainSet) {
 		return
 	}
-	c.ensureLazyUpdate(msgKey, qCtx, next)
+	c.ensureLazyUpdate(msgKey, route, qCtx, next)
 }
 
 func markCacheRefreshBypass(qCtx *query_context.Context) {
@@ -1030,7 +1061,7 @@ func responseFromStaleCache(qCtx *query_context.Context) bool {
 	return stale
 }
 
-func (c *Cache) ensureLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) (*lazyRefreshState, bool) {
+func (c *Cache) ensureLazyUpdate(msgKey string, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) (*lazyRefreshState, bool) {
 	c.lazyRefreshMu.Lock()
 	if state, ok := c.lazyRefresh[msgKey]; ok {
 		c.lazyRefreshMu.Unlock()
@@ -1048,13 +1079,13 @@ func (c *Cache) ensureLazyUpdate(msgKey string, qCtx *query_context.Context, nex
 			delete(c.lazyRefresh, msgKey)
 			c.lazyRefreshMu.Unlock()
 		}()
-		state.setErr(c.runLazyUpdate(msgKey, qCtxCopy, next))
+		state.setErr(c.runLazyUpdate(msgKey, route, qCtxCopy, next))
 	}()
 
 	return state, true
 }
 
-func (c *Cache) runLazyUpdate(msgKey string, qCtx *query_context.Context, next sequence.ChainWalker) error {
+func (c *Cache) runLazyUpdate(msgKey string, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) error {
 	c.lazyUpdateTotalMetric.Inc()
 	c.lazyUpdateCount.Add(1)
 
@@ -1080,7 +1111,7 @@ func (c *Cache) runLazyUpdate(msgKey string, qCtx *query_context.Context, next s
 
 	r := qCtx.R()
 	if r != nil && !c.containsExcluded(r) {
-		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx); ok {
+		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx, route); ok {
 			c.updatedKey.Add(1)
 			if c.l1Enabled {
 				k := key(msgKey)
@@ -1642,8 +1673,10 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 			return fmt.Errorf("failed to decode block data, %w", err)
 		}
 
-		en += len(block.GetEntries())
 		for _, entry := range block.GetEntries() {
+			if c.containsExcludedWire(entry.GetMsg()) {
+				continue
+			}
 			cacheExpTime := time.Unix(entry.GetCacheExpirationTime(), 0)
 			msgExpTime := time.Unix(entry.GetMsgExpirationTime(), 0)
 			storedTime := time.Unix(entry.GetMsgStoredTime(), 0)
@@ -1657,6 +1690,7 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 			i.refreshTTLOffsets()
 			c.prepareCacheItemForStore(i)
 			c.backend.Store(key(entry.GetKey()), i, cacheExpTime)
+			en++
 		}
 		return nil
 	}
@@ -1688,7 +1722,11 @@ func getECSClient(qCtx *query_context.Context) string {
 }
 
 // 补丁优化：返回字节切片以便执行零拷贝 Lookup
-func getMsgKeyBytes(q *dns.Msg, qCtx *query_context.Context, useECS bool) ([]byte, *[]byte) {
+func getMsgKeyBytes(q *dns.Msg, qCtx *query_context.Context, useECS bool, pluginLookup func(string) any) ([]byte, *[]byte) {
+	return getMsgKeyBytesWithRouteSnapshot(q, qCtx, useECS, newCacheRouteSnapshot(qCtx, pluginLookup))
+}
+
+func getMsgKeyBytesWithRouteSnapshot(q *dns.Msg, qCtx *query_context.Context, useECS bool, route cacheRouteSnapshot) ([]byte, *[]byte) {
 	if q.Response || q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 {
 		return nil, nil
 	}
@@ -1699,6 +1737,10 @@ func getMsgKeyBytes(q *dns.Msg, qCtx *query_context.Context, useECS bool) ([]byt
 	if useECS {
 		ecs = getECSClient(qCtx)
 		totalLen += 1 + len(ecs)
+	}
+	routeSignature := route.routeSignature
+	if routeSignature != "" {
+		totalLen += 3 + len(routeSignature)
 	}
 
 	bufPtr := keyBufferPool.Get().(*[]byte)
@@ -1725,6 +1767,10 @@ func getMsgKeyBytes(q *dns.Msg, qCtx *query_context.Context, useECS bool) ([]byt
 	if len(ecs) > 0 {
 		buf = append(buf, byte(len(ecs)))
 		buf = append(buf, ecs...)
+	}
+	if routeSignature != "" {
+		buf = append(buf, 0xff, byte(len(routeSignature)>>8), byte(len(routeSignature)))
+		buf = append(buf, routeSignature...)
 	}
 
 	*bufPtr = buf
@@ -1899,10 +1945,12 @@ func (v *item) refreshTTLOffsets() {
 }
 
 func (c *Cache) trySetCachedResponsePayload(qCtx *query_context.Context, v *item, msg *dns.Msg, lazy bool, expiredResponseTTL int, nowUnix int64) {
-	if qCtx == nil || v == nil || msg == nil || !qCtx.ServerMeta.FromUDP || qCtx.ClientOpt() != nil {
+	if qCtx == nil || v == nil || msg == nil || !qCtx.ServerMeta.FromUDP {
 		return
 	}
-	wire := buildCachedWirePayload(v, msg.Id, lazy, expiredResponseTTL, nowUnix, c.args.ClientTTLMin, c.args.ClientTTLMax)
+	udpLimit := cachedPayloadUDPLimit(qCtx)
+	wire := buildCachedWirePayload(v, msg.Id, lazy, expiredResponseTTL, nowUnix, c.args.ClientTTLMin, c.args.ClientTTLMax, udpLimit)
+	wire = appendCachedPayloadOPT(wire, qCtx, udpLimit)
 	if wire == nil {
 		return
 	}
@@ -1914,14 +1962,16 @@ func (c *Cache) trySetCachedResponsePayload(qCtx *query_context.Context, v *item
 }
 
 func (c *Cache) trySetCachedResponsePayloadOnly(qCtx *query_context.Context, v *item, lazy bool, expiredResponseTTL int, nowUnix int64) bool {
-	if c == nil || c.args == nil || !c.args.ExitOnHit || qCtx == nil || v == nil || !qCtx.ServerMeta.FromUDP || qCtx.ClientOpt() != nil {
+	if c == nil || c.args == nil || qCtx == nil || v == nil || !qCtx.ServerMeta.FromUDP {
 		return false
 	}
 	q := qCtx.Q()
 	if q == nil || len(q.Question) != 1 {
 		return false
 	}
-	wire := buildCachedWirePayload(v, q.Id, lazy, expiredResponseTTL, nowUnix, c.args.ClientTTLMin, c.args.ClientTTLMax)
+	udpLimit := cachedPayloadUDPLimit(qCtx)
+	wire := buildCachedWirePayload(v, q.Id, lazy, expiredResponseTTL, nowUnix, c.args.ClientTTLMin, c.args.ClientTTLMax, udpLimit)
+	wire = appendCachedPayloadOPT(wire, qCtx, udpLimit)
 	if wire == nil {
 		return false
 	}
@@ -1932,11 +1982,14 @@ func (c *Cache) trySetCachedResponsePayloadOnly(qCtx *query_context.Context, v *
 	return true
 }
 
-func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL int, nowUnix int64, clientTTLMin, clientTTLMax uint32) []byte {
+func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL int, nowUnix int64, clientTTLMin, clientTTLMax uint32, udpLimit int) []byte {
 	if v == nil || len(v.resp) < 12 {
 		return nil
 	}
-	if len(v.resp) > dns.MinMsgSize {
+	if udpLimit < dns.MinMsgSize {
+		udpLimit = dns.MinMsgSize
+	}
+	if len(v.resp) > udpLimit {
 		return nil
 	}
 	if nowUnix <= 0 {
@@ -1978,6 +2031,55 @@ func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL 
 	return wire
 }
 
+func cachedPayloadUDPLimit(qCtx *query_context.Context) int {
+	if qCtx == nil {
+		return dns.MinMsgSize
+	}
+	opt := qCtx.ClientOpt()
+	if opt == nil {
+		return dns.MinMsgSize
+	}
+	size := int(opt.UDPSize())
+	if size < dns.MinMsgSize {
+		return dns.MinMsgSize
+	}
+	if size > dns.MaxMsgSize {
+		return dns.MaxMsgSize
+	}
+	return size
+}
+
+func appendCachedPayloadOPT(wire []byte, qCtx *query_context.Context, udpLimit int) []byte {
+	if len(wire) == 0 || qCtx == nil || qCtx.ClientOpt() == nil {
+		return wire
+	}
+	opt := qCtx.RespOpt()
+	if opt == nil {
+		return wire
+	}
+	const optWireLen = 11
+	if udpLimit < dns.MinMsgSize {
+		udpLimit = dns.MinMsgSize
+	}
+	if len(wire)+optWireLen > udpLimit || len(wire) < 12 {
+		return nil
+	}
+	arCount := binary.BigEndian.Uint16(wire[10:12])
+	if arCount == ^uint16(0) {
+		return nil
+	}
+	out := make([]byte, len(wire)+optWireLen)
+	copy(out, wire)
+	binary.BigEndian.PutUint16(out[10:12], arCount+1)
+	offset := len(wire)
+	out[offset] = 0
+	binary.BigEndian.PutUint16(out[offset+1:offset+3], dns.TypeOPT)
+	binary.BigEndian.PutUint16(out[offset+3:offset+5], opt.UDPSize())
+	binary.BigEndian.PutUint32(out[offset+5:offset+9], opt.Hdr.Ttl)
+	binary.BigEndian.PutUint16(out[offset+9:offset+11], 0)
+	return out
+}
+
 func clampClientTTL(ttl, minTTL, maxTTL uint32) uint32 {
 	if minTTL > 0 && ttl < minTTL {
 		ttl = minTTL
@@ -2003,9 +2105,12 @@ func resetDNSMsg(m *dns.Msg) {
 	*m = dns.Msg{}
 }
 
-func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*item, bool) {
+func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, route ...cacheRouteSnapshot) (*item, bool) {
 	r := qCtx.R()
 	if r == nil || r.Truncated != false {
+		return nil, false
+	}
+	if c.containsExcluded(r) {
 		return nil, false
 	}
 	if responseFromStaleCache(qCtx) {
@@ -2075,10 +2180,14 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context) (*it
 	}
 	v.refreshTTLOffsets()
 
-	domainSet := currentRouteDomainSet(qCtx)
-	dependencySet := mergeDependencySets(domainSet, currentCacheDependencies(qCtx))
+	routeSnapshot := newCacheRouteSnapshot(qCtx, c.plugin)
+	if len(route) > 0 {
+		routeSnapshot = route[0]
+	}
+	domainSet := routeSnapshot.domainSet
+	dependencySet := routeSnapshot.dependencySet
 	if domainSet != "" || dependencySet != "" {
-		v.domainSet = encodeStoredRouteMetadata(domainSet, dependencySet, resolveRouteSignature(dependencySet, c.plugin))
+		v.domainSet = encodeStoredRouteMetadata(domainSet, dependencySet, routeSnapshot.routeSignature)
 	}
 	c.prepareCacheItemForStore(v)
 
