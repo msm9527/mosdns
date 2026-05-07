@@ -37,6 +37,7 @@ func TestServiceE2E(t *testing.T) {
 	report.RunCase(t, "rule apis", fx.testRuleAPIs)
 	report.RunCase(t, "requery cache invalidation", fx.testRequeryCacheInvalidation)
 	report.RunCase(t, "cache stats and stability", fx.testCacheAndStability)
+	report.RunCase(t, "udp fast audit latency", fx.testUDPFastAuditLatency)
 	report.RunCase(t, "cache client ttl governance", fx.testCacheClientTTLGovernance)
 }
 
@@ -402,6 +403,96 @@ func (fx *serviceE2EFixture) testCacheClientTTLGovernance(t *testing.T, rec *e2e
 	rec.AddMetric("foreign upstream delta", fmt.Sprintf("%d", realAfter-realBefore), "A queries for realip cached domain")
 	rec.AddMetric("cnfake upstream delta", fmt.Sprintf("%d", cnFakeAfter-cnFakeBefore), "A queries for domestic fakeip cached domain")
 	rec.AddMetric("nocnfake upstream delta", fmt.Sprintf("%d", proxyAfter-proxyBefore), "A queries for proxy fakeip cached domain")
+}
+
+func (fx *serviceE2EFixture) testUDPFastAuditLatency(t *testing.T, rec *e2eCaseRecorder) {
+	fx.setSwitch(t, "core_mode", "secure")
+	fx.setSwitch(t, "client_proxy_mode", "all")
+	fx.setSwitch(t, "cn_answer_mode", "realip")
+	fx.setSwitch(t, "main_cache", "on")
+	fx.setSwitch(t, "branch_cache", "on")
+	fx.setSwitch(t, "fakeip_cache", "on")
+	fx.setSwitch(t, "block_ipv6", "off")
+	fx.setSwitch(t, "udp_fast_path", "on")
+
+	const domain = "cn.example"
+	for i := 0; i < 8; i++ {
+		resp := fx.queryUDP(t, domain, dns.TypeA)
+		requireServiceE2EARecord(t, resp, "1.1.1.1")
+	}
+	fx.waitForUDPFastCacheHits(t, "udp_all", domain, 1)
+
+	stats := fx.runUDPFastLatencyQueries(t, domain, dns.TypeA, 16, 40)
+	if stats.Successes != stats.Total {
+		t.Fatalf("fast latency load incomplete: %+v", stats)
+	}
+
+	cacheStats := fx.cacheStats(t)
+	udpFast := cacheStats["udp_all"]
+	if udpFast.Counters["hit_total"] == 0 {
+		t.Fatalf("expected udp_all fast cache hits, stats=%+v", udpFast.Counters)
+	}
+	rec.SetDetail("UDP fast path returned hot cached answers under concurrent audit load")
+	rec.AddMetric("fast load total", fmt.Sprintf("%d", stats.Total), "workers x iterations")
+	rec.AddMetric("fast load avg latency", stats.AvgLatency.Round(time.Microsecond).String(), "mean real UDP round trip")
+	rec.AddMetric("fast load p95 latency", stats.P95Latency.Round(time.Microsecond).String(), "95th percentile real UDP round trip")
+	rec.AddMetric("fast load max latency", stats.MaxLatency.Round(time.Microsecond).String(), "slowest real UDP round trip")
+	rec.AddMetric("udp_fast hits", fmt.Sprintf("%d", udpFast.Counters["hit_total"]), "udp_all fast cache hit counter")
+}
+
+func (fx *serviceE2EFixture) waitForUDPFastCacheHits(t *testing.T, tag, domain string, minHits uint64) {
+	t.Helper()
+	if err := waitServiceE2EEventually(10*time.Second, func() bool {
+		resp, err := fx.exchange("udp", fx.dnsAddr, domain, dns.TypeA)
+		if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+			return false
+		}
+		stats := fx.cacheStats(t)
+		return stats[tag].Counters["hit_total"] >= minHits
+	}, "udp fast cache did not warm"); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func (fx *serviceE2EFixture) runUDPFastLatencyQueries(t *testing.T, domain string, qtype uint16, workers, iterations int) serviceE2ELoadStats {
+	t.Helper()
+	var wg sync.WaitGroup
+	startedAt := time.Now()
+	errs := make(chan error, workers*iterations)
+	latencies := make(chan time.Duration, workers*iterations)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			client := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+			for j := 0; j < iterations; j++ {
+				req := new(dns.Msg)
+				req.SetQuestion(dns.Fqdn(domain), qtype)
+				queryStarted := time.Now()
+				resp, _, err := client.Exchange(req, fx.dnsAddr)
+				if err != nil || resp == nil || resp.Rcode != dns.RcodeSuccess || len(resp.Answer) == 0 {
+					if err == nil {
+						err = fmt.Errorf("unexpected response: %+v", resp)
+					}
+					errs <- err
+					continue
+				}
+				latencies <- time.Since(queryStarted)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	close(latencies)
+	failures := len(errs)
+	for err := range errs {
+		t.Fatalf("udp fast latency query failed: %v", err)
+	}
+	values := make([]time.Duration, 0, len(latencies))
+	for latency := range latencies {
+		values = append(values, latency)
+	}
+	return summarizeServiceE2ELoadStats(workers, iterations, values, failures, time.Since(startedAt))
 }
 
 func requireServiceE2ETTL(t *testing.T, resp *dns.Msg, minTTL, maxTTL uint32) {

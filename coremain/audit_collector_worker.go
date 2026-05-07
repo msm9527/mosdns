@@ -9,11 +9,13 @@ import (
 
 type auditQueuedLog struct {
 	generation uint64
+	dropped    bool
+	at         time.Time
 	log        AuditLog
 }
 
-func (c *AuditCollector) runWriter() {
-	defer close(c.workerDone)
+func (c *AuditCollector) runWriter(queue <-chan auditQueuedLog, done chan<- struct{}) {
+	defer close(done)
 	timer := time.NewTimer(c.flushInterval())
 	defer timer.Stop()
 
@@ -32,7 +34,7 @@ func (c *AuditCollector) runWriter() {
 
 	for {
 		select {
-		case item, ok := <-c.queue:
+		case item, ok := <-queue:
 			if !ok {
 				flush()
 				return
@@ -41,6 +43,18 @@ func (c *AuditCollector) runWriter() {
 				flush()
 			}
 			batchGeneration = item.generation
+			currentGeneration := c.generation.Load()
+			if item.generation == currentGeneration && item.dropped {
+				c.realtime.RecordDrop(item.at)
+				continue
+			}
+			if item.generation == currentGeneration {
+				normalizeAuditLog(&item.log)
+				c.realtime.Record(item.log)
+			}
+			if item.dropped {
+				continue
+			}
 			batch = append(batch, item.log)
 			if len(batch) >= c.batchSize() {
 				flush()
@@ -92,6 +106,9 @@ func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
 	defer c.clearMu.RUnlock()
 	if generation != c.generation.Load() {
 		return nil
+	}
+	for i := range batch {
+		normalizeAuditLog(&batch[i])
 	}
 
 	c.storageMu.Lock()

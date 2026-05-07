@@ -723,6 +723,32 @@ func (s testSwitchPlugin) GetValue() string {
 	return s.value
 }
 
+type testRevisionSwitchPlugin struct {
+	value    string
+	revision uint64
+}
+
+func (s testRevisionSwitchPlugin) GetValue() string {
+	return s.value
+}
+
+func (s testRevisionSwitchPlugin) ValueCode() uint64 {
+	switch s.value {
+	case "on":
+		return fastSwitchValueOn
+	case "off":
+		return fastSwitchValueOff
+	case "all":
+		return fastSwitchValueAll
+	case "blacklist":
+		return fastSwitchValueBlacklist
+	case "whitelist":
+		return fastSwitchValueWhitelist
+	default:
+		return fastSwitchValueUnknown
+	}
+}
+
 type testDomainMapperPlugin struct {
 	marks []uint8
 	tag   string
@@ -1122,13 +1148,14 @@ func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
 	}
 
 	start := time.Now().Add(-2 * time.Millisecond)
-	log, ok := buildFastAuditLogFromWire(
+	log, _, ok := buildFastAuditLogFromWire(
 		start,
 		question,
 		resp,
 		netip.MustParseAddrPort("192.0.2.10:5353"),
+		&fastAuditClientIPCache{},
 		"缓存命中",
-		coremain.AuditCacheHit,
+		coremain.AuditCacheFastHit,
 		fastAuditResponseMetaFromPayload("cached.example", resp),
 	)
 	if !ok {
@@ -1146,7 +1173,7 @@ func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
 	if len(log.Answers) != 1 || log.Answers[0].Type != "A" || log.Answers[0].TTL != 30 || log.Answers[0].Data != "1.2.3.4" {
 		t.Fatalf("unexpected answers: %+v", log.Answers)
 	}
-	if log.DomainSetRaw != "缓存命中" || log.CacheStatus != coremain.AuditCacheHit || log.Transport != "udp" {
+	if log.DomainSetRaw != "缓存命中" || log.CacheStatus != coremain.AuditCacheFastHit || log.Transport != "udp" {
 		t.Fatalf("unexpected audit tags: domain_set=%q cache=%q transport=%q", log.DomainSetRaw, log.CacheStatus, log.Transport)
 	}
 	if log.DurationMs <= 0 {
@@ -1157,8 +1184,10 @@ func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
 func TestCollectFastAuditFromWireRecordsRealtimeOverview(t *testing.T) {
 	oldCollector := coremain.GlobalAuditCollector
 	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, t.TempDir())
+	collector.StartWorker()
 	coremain.GlobalAuditCollector = collector
 	t.Cleanup(func() {
+		collector.StopWorker()
 		coremain.GlobalAuditCollector = oldCollector
 	})
 
@@ -1176,12 +1205,21 @@ func TestCollectFastAuditFromWireRecordsRealtimeOverview(t *testing.T) {
 		question,
 		resp,
 		netip.MustParseAddrPort("192.0.2.11:5353"),
+		&fastAuditClientIPCache{},
 		"缓存命中",
-		coremain.AuditCacheHit,
+		coremain.AuditCacheFastHit,
 		fastAuditResponseMetaFromPayload("overview-cache.example", resp),
 	)
 
-	overview := collector.GetOverview(60)
+	var overview coremain.AuditOverview
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		overview = collector.GetOverview(60)
+		if overview.QueryCount == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	if overview.QueryCount != 1 {
 		t.Fatalf("query count = %d, want 1", overview.QueryCount)
 	}
@@ -1201,7 +1239,7 @@ func TestBuildFastBypassCacheHitSkipsMapperWhenRevisionMatches(t *testing.T) {
 	}, stats)
 	name := "revision-hit.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 0, "rev1") {
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, false, 0, "rev1") {
 		t.Fatal("expected cache store")
 	}
 
@@ -1233,7 +1271,7 @@ func TestBuildFastBypassCacheHitUsesNumericRevisionWithoutMapper(t *testing.T) {
 	}, stats)
 	name := "numeric-revision-hit.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "", false, 0, fastRuleRevision{
+	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "", false, false, 0, fastRuleRevision{
 		domainMapper: fastNumericRevisionValue(7),
 	}) {
 		t.Fatal("expected cache store")
@@ -1267,7 +1305,7 @@ func TestBuildFastBypassCacheHitRefreshesWhenRevisionChanges(t *testing.T) {
 	}, stats)
 	name := "revision-miss.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 0, "rev1") {
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, false, 0, "rev1") {
 		t.Fatal("expected cache store")
 	}
 
@@ -1291,6 +1329,57 @@ func TestBuildFastBypassCacheHitRefreshesWhenRevisionChanges(t *testing.T) {
 	}
 }
 
+func TestBuildFastBypassClientDirectUsesSeparateCacheVariant(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "client-direct-cache.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	ruleRevision := fastRuleRevision{
+		domainMapper: fastNumericRevisionValue(7),
+		control:      fastControlRevisionFromSwitches(fastSwitchValue{}, fastSwitchValue{}, fastSwitchValue{}, fastSwitchValue{}),
+	}
+	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "记忆直连", false, true, 1<<39, ruleRevision) {
+		t.Fatal("expected client-direct cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":       testSwitchPlugin{value: "on"},
+		"client_proxy_mode":   testSwitchPlugin{value: "whitelist"},
+		"client_ip_whitelist": testIPSetPlugin{match: false},
+		"unified_matcher1":    testNumericRevisionDomainMapperPlugin{revision: 7, calls: &calls},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	directBuf := make([]byte, len(resp))
+	copy(directBuf, req)
+	action, _, _, dset, _, staleRefresh := fastBypass(len(req), directBuf, netip.MustParseAddrPort("192.168.20.171:5353"))
+	if action != server.FastActionReply {
+		t.Fatalf("expected client-direct cache reply, got %d", action)
+	}
+	if staleRefresh {
+		t.Fatal("client-direct cache hit should not request stale refresh")
+	}
+	if dset != "记忆直连" {
+		t.Fatalf("unexpected domain set: %q", dset)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected client-direct cache hit to skip mapper, got %d calls", calls.Load())
+	}
+
+	loopbackBuf := make([]byte, len(resp))
+	copy(loopbackBuf, req)
+	action, _, _, _, _, _ = fastBypass(len(req), loopbackBuf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action == server.FastActionReply {
+		t.Fatal("ordinary client must not reuse client-direct cache variant")
+	}
+}
+
 func TestBuildFastBypassCacheHitRefreshesWhenRewriteRevisionChanges(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -1299,7 +1388,7 @@ func TestBuildFastBypassCacheHitRefreshesWhenRewriteRevisionChanges(t *testing.T
 	}, stats)
 	name := "rewrite-revision-miss.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 0, "dm1|rewrite1") {
+	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, false, 0, "dm1|rewrite1") {
 		t.Fatal("expected cache store")
 	}
 
@@ -1324,6 +1413,42 @@ func TestBuildFastBypassCacheHitRefreshesWhenRewriteRevisionChanges(t *testing.T
 	}
 }
 
+func TestBuildFastBypassCacheHitRefreshesWhenControlSwitchChanges(t *testing.T) {
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, stats)
+	name := "control-switch-miss.example."
+	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
+	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "direct", false, false, 0, fastRuleRevision{
+		domainMapper: fastNumericRevisionValue(7),
+		control:      fastControlRevisionFromSwitches(fastSwitchValue{}, fastSwitchValue{}, fastSwitchValue{}, newFastSwitchValue(testSwitchPlugin{value: "realip"})),
+	}) {
+		t.Fatal("expected cache store")
+	}
+
+	var calls atomic.Uint64
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path":    testSwitchPlugin{value: "on"},
+		"cn_answer_mode":   testSwitchPlugin{value: "fakeip"},
+		"unified_matcher1": testNumericRevisionDomainMapperPlugin{revision: 7, calls: &calls},
+	})
+	bp := coremain.NewBP("udp_test", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0)
+
+	req := makeQuery(t, name, dns.TypeA, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, req)
+	action, _, _, _, _, _ := fastBypass(len(req), buf, netip.MustParseAddrPort("127.0.0.1:5353"))
+	if action != server.FastActionContinue {
+		t.Fatalf("expected control switch mismatch to continue to full chain, got %d", action)
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("expected rule revision match to skip mapper even on control mismatch, got %d calls", calls.Load())
+	}
+}
+
 func TestBuildFastBypassCachedRuleFlagsHonorSwitches(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -1332,7 +1457,10 @@ func TestBuildFastBypassCachedRuleFlagsHonorSwitches(t *testing.T) {
 	}, stats)
 	name := "cached-block.example."
 	resp := makeAnswer(t, name, dns.TypeA, 0x2222, 30)
-	if !fc.storeWithMeta(name, dns.TypeA, resp, "", false, 1<<1, "rev1") {
+	if !fc.storeWithRuleRevision(name, dns.TypeA, resp, "", false, false, 1<<1, fastRuleRevision{
+		domainMapper: fastTextRevisionValue("rev1"),
+		control:      fastControlRevisionFromSwitches(fastSwitchValue{}, newFastSwitchValue(testSwitchPlugin{value: "on"}), fastSwitchValue{}, fastSwitchValue{}),
+	}) {
 		t.Fatal("expected cache store")
 	}
 
@@ -1587,7 +1715,7 @@ func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
 	handler := &fastHandler{
 		next: pooledHandler{payload: newResp, called: called},
 		fc:   fc,
-		sw:   testSwitchPlugin{value: "on"},
+		sw:   newFastSwitchValue(testSwitchPlugin{value: "on"}),
 	}
 
 	q := new(dns.Msg)
@@ -1689,6 +1817,127 @@ func BenchmarkBuildFastBypassCacheHit(b *testing.B) {
 	}
 }
 
+func BenchmarkBuildFastBypassCacheHitWithAudit(b *testing.B) {
+	oldCollector := coremain.GlobalAuditCollector
+	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, b.TempDir())
+	coremain.GlobalAuditCollector = collector
+	b.Cleanup(func() {
+		coremain.GlobalAuditCollector = oldCollector
+	})
+
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:  time.Minute,
+		ttlMax:       30,
+		auditEnabled: true,
+	}, stats)
+	name := "bench-cache-audit.example."
+	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "bench", false)
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0, true)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+	addr := netip.MustParseAddrPort("127.0.0.1:5353")
+	buf := make([]byte, len(resp))
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		copy(buf, req)
+		_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+	}
+}
+
+func BenchmarkBuildFastBypassCacheHitWithAuditParallel(b *testing.B) {
+	oldCollector := coremain.GlobalAuditCollector
+	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, b.TempDir())
+	coremain.GlobalAuditCollector = collector
+	b.Cleanup(func() {
+		coremain.GlobalAuditCollector = oldCollector
+	})
+
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:  time.Minute,
+		ttlMax:       30,
+		auditEnabled: true,
+	}, stats)
+	name := "bench-cache-audit-parallel.example."
+	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "记忆直连", false)
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testSwitchPlugin{value: "on"},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0, true)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		addr := netip.MustParseAddrPort("192.168.20.171:5353")
+		buf := make([]byte, len(resp))
+		txid := uint16(0)
+		for pb.Next() {
+			copy(buf, req)
+			buf[0], buf[1] = byte(txid>>8), byte(txid)
+			txid++
+			_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+		}
+	})
+}
+
+func BenchmarkBuildFastBypassCacheHitWithAuditWorkerParallel(b *testing.B) {
+	oldCollector := coremain.GlobalAuditCollector
+	collector := coremain.NewAuditCollector(coremain.AuditSettings{
+		Enabled:         true,
+		FlushBatchSize:  4096,
+		FlushIntervalMs: 5000,
+	}, b.TempDir())
+	collector.StartWorker()
+	coremain.GlobalAuditCollector = collector
+	b.Cleanup(func() {
+		collector.StopWorker()
+		coremain.GlobalAuditCollector = oldCollector
+	})
+
+	stats := &fastStats{}
+	fc := newFastCache(fastCacheConfig{
+		internalTTL:  time.Minute,
+		ttlMax:       30,
+		auditEnabled: true,
+	}, stats)
+	name := "bench-cache-audit-worker.example."
+	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
+	fc.Store(name, dns.TypeA, resp, "记忆直连", false)
+
+	m := coremain.NewTestMosdnsWithPlugins(map[string]any{
+		"udp_fast_path": testRevisionSwitchPlugin{value: "on", revision: 1},
+	})
+	bp := coremain.NewBP("udp_bench", m)
+	fastBypass := buildFastBypass(bp, fc, stats, 0, true)
+	req := makeQueryNoTest(name, dns.TypeA, 0x1234)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	b.RunParallel(func(pb *testing.PB) {
+		addr := netip.MustParseAddrPort("192.168.20.171:5353")
+		buf := make([]byte, len(resp))
+		txid := uint16(0)
+		for pb.Next() {
+			copy(buf, req)
+			buf[0], buf[1] = byte(txid>>8), byte(txid)
+			txid++
+			_, _, _, _, _, _ = fastBypass(len(req), buf, addr)
+		}
+	})
+}
+
 func BenchmarkBuildFastBypassCacheHitNumericRevision(b *testing.B) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -1697,7 +1946,7 @@ func BenchmarkBuildFastBypassCacheHitNumericRevision(b *testing.B) {
 	}, stats)
 	name := "bench-numeric-revision.example."
 	resp := makeAnswerNoTest(name, dns.TypeA, 0x2222, 30)
-	fc.storeWithRuleRevision(name, dns.TypeA, resp, "bench", false, 0, fastRuleRevision{
+	fc.storeWithRuleRevision(name, dns.TypeA, resp, "bench", false, false, 0, fastRuleRevision{
 		domainMapper: fastNumericRevisionValue(7),
 	})
 

@@ -37,9 +37,10 @@ type Args struct {
 
 // Switch represents a single, named switch instance.
 type Switch struct {
-	value atomic.Value
-	store *stateStore
-	def   switchmeta.Definition
+	value     atomic.Value
+	valueCode atomic.Uint64
+	store     *stateStore
+	def       switchmeta.Definition
 }
 
 // Register the plugin with mosdns core.
@@ -149,6 +150,10 @@ func (s *Switch) GetValue() string {
 	return s.def.DefaultValue
 }
 
+func (s *Switch) ValueCode() uint64 {
+	return s.valueCode.Load()
+}
+
 func (s *Switch) setValue(value string) (bool, error) {
 	changed, err := s.store.Set(s.def, value)
 	if err != nil {
@@ -156,6 +161,7 @@ func (s *Switch) setValue(value string) (bool, error) {
 	}
 	if changed {
 		s.value.Store(value)
+		s.valueCode.Store(fastSwitchValueCode(value))
 	}
 	return changed, nil
 }
@@ -166,7 +172,29 @@ func (s *Switch) load() error {
 		return err
 	}
 	s.value.Store(value)
+	s.valueCode.Store(fastSwitchValueCode(value))
 	return nil
+}
+
+func fastSwitchValueCode(value string) uint64 {
+	switch value {
+	case "off":
+		return 1
+	case "on":
+		return 2
+	case "all":
+		return 3
+	case "blacklist":
+		return 4
+	case "whitelist":
+		return 5
+	case "realip":
+		return 6
+	case "fakeip":
+		return 7
+	default:
+		return 0
+	}
 }
 
 type stateStore struct {

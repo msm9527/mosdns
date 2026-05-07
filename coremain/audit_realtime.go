@@ -133,7 +133,7 @@ func fillAuditOverviewRates(overview *AuditOverview, windowSeconds int) {
 }
 
 func isAuditCacheHit(status string) bool {
-	return status == AuditCacheHit || status == AuditCacheLazy
+	return status == AuditCacheHit || status == AuditCacheFastHit || status == AuditCacheLazy
 }
 
 func isAuditErrorCode(code string) bool {

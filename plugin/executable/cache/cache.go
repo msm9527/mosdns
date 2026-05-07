@@ -684,6 +684,19 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		ok1 = false
 	}
 	if ok1 && nowUnix < v1.expireUnixNano {
+		if c.trySetCachedResponsePayloadOnly(qCtx, v1, false, expiredMsgTtl, nowUnix) {
+			coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheHit)
+			c.hitTotal.Inc()
+			c.hitCount.Add(1)
+			c.l1HitTotalMetric.Inc()
+			c.l1HitCount.Add(1)
+			if domainSet := storedDomainSet(v1.domainSet); domainSet != "" {
+				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
+			}
+			c.maybePrefetch(string(msgKeyBuf), qCtx, next, now, v1.storedUnixNano, v1.expireUnixNano, v1.domainSet)
+			releaseKeyBuffer(bufPtr)
+			return c.cacheHitReturn()
+		}
 		r, lazy, domainSet, corrupt := c.respFromCacheItem(v1, 0, expiredMsgTtl)
 		if corrupt {
 			c.deleteRuntimeCacheKey(k, "corrupt_l1")
@@ -769,6 +782,16 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 		c.hitCount.Add(1)
 		c.l2HitTotalMetric.Inc()
 		c.l2HitCount.Add(1)
+		if c.trySetCachedResponsePayloadOnly(qCtx, cachedItem, lazyHit, expiredMsgTtl, nowUnix) {
+			if domainSet != "" {
+				qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
+			}
+			if c.l1Enabled && !lazyHit && cachedItem != nil {
+				shard.updateL1(kReal, cachedItem)
+				c.maybePrefetch(msgKey, qCtx, next, now, cachedItem.storedUnixNano, cachedItem.expireUnixNano, cachedItem.domainSet)
+			}
+			return c.cacheHitReturn()
+		}
 		cachedResp.Id = q.Id
 		qCtx.SetResponse(cachedResp)
 		c.trySetCachedResponsePayload(qCtx, cachedItem, cachedResp, lazyHit, expiredMsgTtl, nowUnix)
@@ -1888,6 +1911,25 @@ func (c *Cache) trySetCachedResponsePayload(qCtx *query_context.Context, v *item
 		Msg:   msg,
 		Stale: lazy,
 	})
+}
+
+func (c *Cache) trySetCachedResponsePayloadOnly(qCtx *query_context.Context, v *item, lazy bool, expiredResponseTTL int, nowUnix int64) bool {
+	if c == nil || c.args == nil || !c.args.ExitOnHit || qCtx == nil || v == nil || !qCtx.ServerMeta.FromUDP || qCtx.ClientOpt() != nil {
+		return false
+	}
+	q := qCtx.Q()
+	if q == nil || len(q.Question) != 1 {
+		return false
+	}
+	wire := buildCachedWirePayload(v, q.Id, lazy, expiredResponseTTL, nowUnix, c.args.ClientTTLMin, c.args.ClientTTLMax)
+	if wire == nil {
+		return false
+	}
+	qCtx.SetResponsePayload(&query_context.ResponsePayload{
+		Wire:  wire,
+		Stale: lazy,
+	})
+	return true
 }
 
 func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL int, nowUnix int64, clientTTLMin, clientTTLMax uint32) []byte {

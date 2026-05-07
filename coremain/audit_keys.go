@@ -8,10 +8,11 @@ var (
 )
 
 const (
-	AuditCacheBypass = "bypass"
-	AuditCacheMiss   = "miss"
-	AuditCacheHit    = "hit"
-	AuditCacheLazy   = "lazy_hit"
+	AuditCacheBypass  = "bypass"
+	AuditCacheMiss    = "miss"
+	AuditCacheHit     = "hit"
+	AuditCacheFastHit = "fast_hit"
+	AuditCacheLazy    = "lazy_hit"
 )
 
 func SetAuditCacheStatus(qCtx *query_context.Context, status string) {

@@ -28,6 +28,23 @@ var auditDomainSetPriority = []string{
 }
 
 func normalizeAuditDomainSet(raw, qtype string) string {
+	if raw = strings.TrimSpace(raw); raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "|") {
+		tag := canonicalAuditDomainSetTag(raw)
+		switch normalizeAuditQueryType(qtype) {
+		case "A":
+			if tag == "记忆无V4" {
+				return tag
+			}
+		case "AAAA":
+			if tag == "记忆无V6" {
+				return tag
+			}
+		}
+		return tag
+	}
 	tags := splitAuditDomainSetTags(raw)
 	if len(tags) == 0 {
 		return ""

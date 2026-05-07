@@ -55,6 +55,8 @@ const (
 	ruleSize         = 32768
 	clientPolicyWays = 2
 	clientPolicySize = 4096
+	auditIPWays      = 2
+	auditIPSize      = 4096
 
 	defaultFastBypassWarmupMain    = 3
 	defaultFastBypassWarmupRequery = 1
@@ -65,10 +67,34 @@ const (
 
 	fastQNameHashOffset64 = 1469598103934665603
 	fastQNameHashPrime64  = 1099511628211
+
+	fastSwitchValueUnknown   uint64 = 0
+	fastSwitchValueOff       uint64 = 1
+	fastSwitchValueOn        uint64 = 2
+	fastSwitchValueAll       uint64 = 3
+	fastSwitchValueBlacklist uint64 = 4
+	fastSwitchValueWhitelist uint64 = 5
 )
 
+var fastUnixSecond atomic.Int64
+
 func init() {
+	fastUnixSecond.Store(time.Now().Unix())
+	go func() {
+		ticker := time.NewTicker(time.Second)
+		defer ticker.Stop()
+		for now := range ticker.C {
+			fastUnixSecond.Store(now.Unix())
+		}
+	}()
 	coremain.RegNewPluginFunc(PluginType, Init, func() any { return new(Args) })
+}
+
+func fastNowUnix() int64 {
+	if now := fastUnixSecond.Load(); now > 0 {
+		return now
+	}
+	return time.Now().Unix()
 }
 
 type Args struct {
@@ -310,6 +336,10 @@ func fastStatsCounters(s fastStatsSnapshot) map[string]uint64 {
 }
 
 type SwitchPlugin interface{ GetValue() string }
+type SwitchRevisionPlugin interface {
+	GetValue() string
+	ValueCode() uint64
+}
 type DomainMapperPlugin interface {
 	FastMatch(qname string) ([]uint8, string, bool)
 }
@@ -372,13 +402,21 @@ func fastNumericRevisionValue(number uint64) fastRevisionValue {
 type fastRuleRevision struct {
 	domainMapper fastRevisionValue
 	rewrite      fastRevisionValue
+	control      fastRevisionValue
 }
 
 func (r fastRuleRevision) empty() bool {
-	return r.domainMapper.empty() && r.rewrite.empty()
+	return r.domainMapper.empty() && r.rewrite.empty() && r.control.empty()
 }
 
 func (r fastRuleRevision) matches(item *fastCacheItem) bool {
+	return item != nil &&
+		item.domainMapperRevision.equal(r.domainMapper) &&
+		item.rewriteRevision.equal(r.rewrite) &&
+		item.controlRevision.equal(r.control)
+}
+
+func (r fastRuleRevision) routeMatches(item *fastCacheItem) bool {
 	return item != nil &&
 		item.domainMapperRevision.equal(r.domainMapper) &&
 		item.rewriteRevision.equal(r.rewrite)
@@ -387,26 +425,45 @@ func (r fastRuleRevision) matches(item *fastCacheItem) bool {
 func (r fastRuleRevision) String() string {
 	domainMapper := r.domainMapper.String()
 	rewrite := r.rewrite.String()
-	if domainMapper == "" {
-		return rewrite
+	control := r.control.String()
+	var b strings.Builder
+	if domainMapper != "" {
+		b.WriteString(domainMapper)
 	}
-	if rewrite == "" {
-		return domainMapper
+	b.WriteByte('|')
+	if rewrite != "" {
+		b.WriteString(rewrite)
 	}
-	return domainMapper + "|" + rewrite
+	b.WriteByte('|')
+	if control != "" {
+		b.WriteString(control)
+	}
+	out := b.String()
+	if out == "||" {
+		return ""
+	}
+	return out
 }
 
 func fastRuleRevisionFromJoined(revision string) fastRuleRevision {
 	if revision == "" {
 		return fastRuleRevision{}
 	}
-	dmRevision, rewriteRevision, ok := strings.Cut(revision, "|")
-	if !ok {
+	parts := strings.SplitN(revision, "|", 3)
+	switch len(parts) {
+	case 1:
 		return fastRuleRevision{domainMapper: fastTextRevisionValue(revision)}
-	}
-	return fastRuleRevision{
-		domainMapper: fastTextRevisionValue(dmRevision),
-		rewrite:      fastTextRevisionValue(rewriteRevision),
+	case 2:
+		return fastRuleRevision{
+			domainMapper: fastTextRevisionValue(parts[0]),
+			rewrite:      fastTextRevisionValue(parts[1]),
+		}
+	default:
+		return fastRuleRevision{
+			domainMapper: fastTextRevisionValue(parts[0]),
+			rewrite:      fastTextRevisionValue(parts[1]),
+			control:      fastTextRevisionValue(parts[2]),
+		}
 	}
 }
 
@@ -420,7 +477,9 @@ type fastCacheItem struct {
 	domainSet            string
 	domainMapperRevision fastRevisionValue
 	rewriteRevision      fastRevisionValue
+	controlRevision      fastRevisionValue
 	fakeIP               bool
+	clientDirect         bool
 	hash                 uint64
 	ruleFlags            uint64
 	qname                string
@@ -483,6 +542,30 @@ type clientPolicyCacheTable struct {
 
 type clientPolicyCache struct {
 	table atomic.Pointer[clientPolicyCacheTable]
+	once  sync.Once
+}
+
+type fastSwitchValue struct {
+	plugin SwitchPlugin
+	code   func() uint64
+}
+
+type fastAuditClientIPCacheItem struct {
+	addr netip.Addr
+	text string
+}
+
+type fastAuditClientIPCacheBucket struct {
+	slots [auditIPWays]atomic.Pointer[fastAuditClientIPCacheItem]
+}
+
+type fastAuditClientIPCacheTable struct {
+	buckets []fastAuditClientIPCacheBucket
+	mask    uint64
+}
+
+type fastAuditClientIPCache struct {
+	table atomic.Pointer[fastAuditClientIPCacheTable]
 	once  sync.Once
 }
 
@@ -868,24 +951,157 @@ func fastClientPolicyMarks(cache *clientPolicyCache, addr netip.Addr, mode strin
 	}
 }
 
-func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
-	return fc.getOrUpdating(hash, buf, qname, qtype, allowFakeIP, fastRuleRevision{})
+func newFastSwitchValue(plugin SwitchPlugin) fastSwitchValue {
+	value := fastSwitchValue{plugin: plugin}
+	if revPlugin, ok := plugin.(SwitchRevisionPlugin); ok && revPlugin != nil {
+		value.code = revPlugin.ValueCode
+	}
+	return value
 }
 
-func (fc *fastCache) getOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool) {
+func (v fastSwitchValue) get() string {
+	if v.plugin == nil {
+		return ""
+	}
+	return v.plugin.GetValue()
+}
+
+func (v fastSwitchValue) isOn() bool {
+	if v.code != nil {
+		return v.code() == fastSwitchValueOn
+	}
+	return v.get() == "on"
+}
+
+func (v fastSwitchValue) isOnDefault(defaultValue bool) bool {
+	if v.plugin == nil && v.code == nil {
+		return defaultValue
+	}
+	return v.isOn()
+}
+
+func (v fastSwitchValue) mode(defaultValue string) string {
+	if v.code == nil {
+		value := v.get()
+		if value != "" {
+			return value
+		}
+		return defaultValue
+	}
+	switch v.code() {
+	case fastSwitchValueBlacklist:
+		return "blacklist"
+	case fastSwitchValueWhitelist:
+		return "whitelist"
+	case fastSwitchValueAll:
+		return "all"
+	default:
+		return defaultValue
+	}
+}
+
+func (c *fastAuditClientIPCache) ensureTable() *fastAuditClientIPCacheTable {
+	if c == nil {
+		return nil
+	}
+	c.once.Do(func() {
+		c.table.Store(&fastAuditClientIPCacheTable{
+			buckets: make([]fastAuditClientIPCacheBucket, auditIPSize),
+			mask:    auditIPSize - 1,
+		})
+	})
+	return c.table.Load()
+}
+
+func (c *fastAuditClientIPCache) loadTable() *fastAuditClientIPCacheTable {
+	if c == nil {
+		return nil
+	}
+	return c.table.Load()
+}
+
+func (c *fastAuditClientIPCache) get(addr netip.Addr) (string, bool) {
+	table := c.loadTable()
+	if table == nil || !addr.IsValid() {
+		return "", false
+	}
+	hash := fastAddrHash(addr)
+	bucket := &table.buckets[hash&table.mask]
+	for i := range bucket.slots {
+		item := bucket.slots[i].Load()
+		if item == nil {
+			continue
+		}
+		if item.addr == addr {
+			return item.text, true
+		}
+	}
+	return "", false
+}
+
+func (c *fastAuditClientIPCache) store(addr netip.Addr, text string) {
+	if !addr.IsValid() {
+		return
+	}
+	table := c.ensureTable()
+	if table == nil {
+		return
+	}
+	hash := fastAddrHash(addr)
+	bucket := &table.buckets[hash&table.mask]
+	item := &fastAuditClientIPCacheItem{addr: addr, text: text}
+	var emptySlot *atomic.Pointer[fastAuditClientIPCacheItem]
+	for i := range bucket.slots {
+		slot := &bucket.slots[i]
+		current := slot.Load()
+		if current == nil {
+			if emptySlot == nil {
+				emptySlot = slot
+			}
+			continue
+		}
+		if current.addr == addr {
+			slot.Store(item)
+			return
+		}
+	}
+	if emptySlot != nil {
+		emptySlot.Store(item)
+		return
+	}
+	bucket.slots[(hash>>16)%auditIPWays].Store(item)
+}
+
+func fastAuditClientIPString(addr netip.Addr, cache *fastAuditClientIPCache) string {
+	if !addr.IsValid() {
+		return ""
+	}
+	if cached, ok := cache.get(addr); ok {
+		return cached
+	}
+	text := addr.String()
+	cache.store(addr, text)
+	return text
+}
+
+func (fc *fastCache) GetOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool) (int, int, uint64, string, bool) {
+	return fc.getOrUpdating(hash, buf, qname, qtype, allowFakeIP, false, fastRuleRevision{})
+}
+
+func (fc *fastCache) getOrUpdating(hash uint64, buf []byte, qname string, qtype uint16, allowFakeIP bool, clientDirect bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool) {
 	ptr, occupied := fc.findItem(hash, qname, qtype)
-	action, respLen, ruleFlags, domainSet, staleRefresh, _ := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, expectedRuleRevision, hash, 0)
+	action, respLen, ruleFlags, domainSet, staleRefresh, _ := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, clientDirect, expectedRuleRevision, hash, 0)
 	return action, respLen, ruleFlags, domainSet, staleRefresh
 }
 
 func (fc *fastCache) getOrUpdatingWire(hash uint64, buf []byte, qnameWire []byte, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool) {
-	action, respLen, ruleFlags, domainSet, staleRefresh, _ := fc.getOrUpdatingWireAudit(hash, buf, qnameWire, qtype, allowFakeIP, expectedRuleRevision)
+	action, respLen, ruleFlags, domainSet, staleRefresh, _ := fc.getOrUpdatingWireAudit(hash, buf, qnameWire, qtype, allowFakeIP, false, expectedRuleRevision)
 	return action, respLen, ruleFlags, domainSet, staleRefresh
 }
 
-func (fc *fastCache) getOrUpdatingWireAudit(hash uint64, buf []byte, qnameWire []byte, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool, fastAuditResponseMeta) {
+func (fc *fastCache) getOrUpdatingWireAudit(hash uint64, buf []byte, qnameWire []byte, qtype uint16, allowFakeIP bool, clientDirect bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool, fastAuditResponseMeta) {
 	ptr, occupied := fc.findItemWire(hash, qnameWire, qtype)
-	return fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, expectedRuleRevision, hash, 0)
+	return fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, clientDirect, expectedRuleRevision, hash, 0)
 }
 
 func (fc *fastCache) replyFromItem(ptr *fastCacheItem, occupied bool, buf []byte, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (int, int, uint64, string, bool, fastAuditResponseMeta) {
@@ -893,10 +1109,10 @@ func (fc *fastCache) replyFromItem(ptr *fastCacheItem, occupied bool, buf []byte
 	if ptr != nil {
 		statKey = ptr.hash
 	}
-	return fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, expectedRuleRevision, statKey, 0)
+	return fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, false, expectedRuleRevision, statKey, 0)
 }
 
-func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []byte, allowFakeIP bool, expectedRuleRevision fastRuleRevision, statKey uint64, now int64) (int, int, uint64, string, bool, fastAuditResponseMeta) {
+func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []byte, allowFakeIP bool, clientDirect bool, expectedRuleRevision fastRuleRevision, statKey uint64, now int64) (int, int, uint64, string, bool, fastAuditResponseMeta) {
 	if ptr == nil {
 		if fc.stats != nil {
 			if occupied {
@@ -910,6 +1126,9 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		if fc.stats != nil {
 			fc.stats.cacheMiss.AddShard(statKey, 1)
 		}
+		if expectedRuleRevision.routeMatches(ptr) {
+			return server.FastActionContinue, 0, ptr.ruleFlags, ptr.domainSet, false, fastAuditResponseMeta{}
+		}
 		return server.FastActionContinue, 0, 0, ptr.domainSet, false, fastAuditResponseMeta{}
 	}
 	if ptr.fakeIP && !allowFakeIP {
@@ -918,12 +1137,18 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		}
 		return server.FastActionContinue, 0, 0, "", false, fastAuditResponseMeta{}
 	}
+	if ptr.clientDirect != clientDirect {
+		if fc.stats != nil {
+			fc.stats.cacheMiss.AddShard(statKey, 1)
+		}
+		return server.FastActionContinue, 0, 0, ptr.domainSet, false, fastAuditResponseMeta{}
+	}
 	if fc.shouldBypassDomainSet(ptr.domainSet) {
 		return server.FastActionContinue, 0, 0, ptr.domainSet, false, fastAuditResponseMeta{}
 	}
 
 	if now <= 0 {
-		now = time.Now().Unix()
+		now = fastNowUnix()
 	}
 	expire := atomic.LoadInt64(&ptr.expire)
 	staleAllowed := true
@@ -980,19 +1205,20 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 }
 
 func (fc *fastCache) Store(qname string, qtype uint16, resp []byte, dset string, fakeIP bool) bool {
-	return fc.storeWithMeta(qname, qtype, resp, dset, fakeIP, 0, "")
+	return fc.storeWithMeta(qname, qtype, resp, dset, fakeIP, false, 0, "")
 }
 
-func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, ruleFlags uint64, ruleRevision string) bool {
-	return fc.storeWithRuleRevision(qname, qtype, resp, dset, fakeIP, ruleFlags, fastRuleRevisionFromJoined(ruleRevision))
+func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, clientDirect bool, ruleFlags uint64, ruleRevision string) bool {
+	return fc.storeWithRuleRevision(qname, qtype, resp, dset, fakeIP, clientDirect, ruleFlags, fastRuleRevisionFromJoined(ruleRevision))
 }
 
-func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, ruleFlags uint64, ruleRevision fastRuleRevision) bool {
+func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, clientDirect bool, ruleFlags uint64, ruleRevision fastRuleRevision) bool {
 	if fc.shouldBypassDomainSet(dset) {
 		return false
 	}
 	qname = fastNormalizeQNameString(qname)
-	h := fastQNameHashString(qname, qtype)
+	baseHash := fastQNameHashString(qname, qtype)
+	h := fastCachePolicyHash(baseHash, clientDirect)
 
 	bakedResp := make([]byte, len(resp))
 	copy(bakedResp, resp)
@@ -1012,7 +1238,9 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 		domainSet:            dset,
 		domainMapperRevision: ruleRevision.domainMapper,
 		rewriteRevision:      ruleRevision.rewrite,
+		controlRevision:      ruleRevision.control,
 		fakeIP:               fakeIP,
+		clientDirect:         clientDirect,
 		hash:                 h,
 		ruleFlags:            ruleFlags,
 		qname:                qname,
@@ -1020,7 +1248,7 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 	}
 	fc.storeItem(item)
 	if fc.stats != nil {
-		fc.stats.cacheStore.AddShard(h, 1)
+		fc.stats.cacheStore.AddShard(baseHash, 1)
 	}
 	return true
 }
@@ -1031,7 +1259,7 @@ func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allow
 }
 
 func (fc *fastCache) CopyResponseWithAudit(txid uint16, qname string, qtype uint16, allowFakeIP bool) (*[]byte, fastAuditResponseMeta) {
-	hash := fastQNameHashString(qname, qtype)
+	hash := fastCachePolicyHash(fastQNameHashString(qname, qtype), false)
 	ptr, _ := fc.findItem(hash, qname, qtype)
 	if ptr == nil {
 		return nil, fastAuditResponseMeta{}
@@ -1199,6 +1427,36 @@ func fastCacheBucketIndex(hash uint64, mask uint64) uint64 {
 	hash *= 0xff51afd7ed558ccd
 	hash ^= hash >> 33
 	return hash & mask
+}
+
+func fastStatsKey(hash uint64, remoteAddr netip.AddrPort, buf []byte) uint64 {
+	if len(buf) >= 2 {
+		hash = fastHashRawByte(hash, buf[0])
+		hash = fastHashRawByte(hash, buf[1])
+	}
+	if remoteAddr.IsValid() {
+		addr := remoteAddr.Addr()
+		if addr.Is4() {
+			for _, b := range addr.As4() {
+				hash = fastHashRawByte(hash, b)
+			}
+		} else if addr.IsValid() {
+			for _, b := range addr.As16() {
+				hash = fastHashRawByte(hash, b)
+			}
+		}
+		port := remoteAddr.Port()
+		hash = fastHashRawByte(hash, byte(port>>8))
+		hash = fastHashRawByte(hash, byte(port))
+	}
+	return hash
+}
+
+func fastCachePolicyHash(hash uint64, clientDirect bool) uint64 {
+	if clientDirect {
+		return fastHashRawByte(hash, 0xd1)
+	}
+	return hash
 }
 
 func fastAddrHash(addr netip.Addr) uint64 {
@@ -1486,8 +1744,11 @@ type fastHandler struct {
 	fc              *fastCache
 	dm              DomainMapperPlugin
 	rewriteRevision DomainMapperRevisionPlugin
-	sw              SwitchPlugin
-	fakeCacheSwitch SwitchPlugin
+	sw              fastSwitchValue
+	fakeCacheSwitch fastSwitchValue
+	blockSwitch     fastSwitchValue
+	adBlockSwitch   fastSwitchValue
+	cnAnswerSwitch  fastSwitchValue
 	enableAudit     bool
 }
 
@@ -1553,10 +1814,10 @@ func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta 
 }
 
 func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, payload *[]byte) bool {
-	if h.sw != nil && h.sw.GetValue() != "on" {
+	if !h.sw.isOnDefault(true) {
 		return false
 	}
-	if payload == nil || (meta.PreFastFlags&(1<<39)) != 0 || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
+	if payload == nil || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
 		return false
 	}
 	if !shouldStoreFastResponse(*payload) {
@@ -1579,17 +1840,18 @@ func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, paylo
 		*payload,
 		dsetName,
 		fakeIP,
+		(meta.PreFastFlags&(1<<39)) != 0,
 		meta.PreFastFlags,
-		fastRuntimeRevisionParts(h.dm, h.rewriteRevision),
+		fastRuntimeRevisionParts(h.dm, h.rewriteRevision, h.fakeCacheSwitch, h.blockSwitch, h.adBlockSwitch, h.cnAnswerSwitch),
 	)
 }
 
 func (h *fastHandler) fastCacheEnabled() bool {
-	return h.sw == nil || h.sw.GetValue() == "on"
+	return h.sw.isOnDefault(true)
 }
 
 func (h *fastHandler) allowFakeIPCache() bool {
-	return h.fakeCacheSwitch != nil && h.fakeCacheSwitch.GetValue() == "on"
+	return h.fakeCacheSwitch.isOn()
 }
 
 func fastCacheRevisionOf(plugin any) fastRevisionValue {
@@ -1606,26 +1868,80 @@ func fastCacheRevisionOf(plugin any) fastRevisionValue {
 	return fastTextRevisionValue(provider.CacheRevision())
 }
 
-func fastRuntimeRevisionParts(dm DomainMapperPlugin, rewriteRevision DomainMapperRevisionPlugin) fastRuleRevision {
+func fastControlRevisionFromSwitches(values ...fastSwitchValue) fastRevisionValue {
+	var revision uint64
+	for i, value := range values {
+		var code uint64
+		if value.code != nil {
+			code = value.code()
+		} else {
+			code = fastSwitchValueCodeLocal(value.get())
+		}
+		revision |= (code & 0x0f) << uint(i*4)
+	}
+	if revision == 0 {
+		return fastRevisionValue{}
+	}
+	return fastNumericRevisionValue(revision)
+}
+
+func fastSwitchValueCodeLocal(value string) uint64 {
+	switch value {
+	case "off":
+		return fastSwitchValueOff
+	case "on":
+		return fastSwitchValueOn
+	case "all":
+		return fastSwitchValueAll
+	case "blacklist":
+		return fastSwitchValueBlacklist
+	case "whitelist":
+		return fastSwitchValueWhitelist
+	case "realip":
+		return 6
+	case "fakeip":
+		return 7
+	default:
+		return fastSwitchValueUnknown
+	}
+}
+
+func fastRuntimeRevisionParts(dm DomainMapperPlugin, rewriteRevision DomainMapperRevisionPlugin, control ...fastSwitchValue) fastRuleRevision {
 	dmRevision := fastCacheRevisionOf(dm)
 	rewriteRev := fastCacheRevisionOf(rewriteRevision)
-	return fastRuleRevision{domainMapper: dmRevision, rewrite: rewriteRev}
+	controlRev := fastControlRevisionFromSwitches(control...)
+	return fastRuleRevision{domainMapper: dmRevision, rewrite: rewriteRev, control: controlRev}
 }
 
 func fastRuleReject(reqLen int, buf []byte, qEnd int, qtype uint16, marks uint64, sw1, sw7 SwitchPlugin) (int, bool) {
+	sw1Value := ""
 	if sw1 != nil {
-		sw1Val := sw1.GetValue()
-		if (marks&(1<<1)) != 0 && sw1Val == "on" {
+		sw1Value = sw1.GetValue()
+	}
+	sw7Value := ""
+	if sw7 != nil {
+		sw7Value = sw7.GetValue()
+	}
+	return fastRuleRejectWithValues(reqLen, buf, qEnd, qtype, marks, sw1Value, sw7Value)
+}
+
+func fastRuleRejectWithValues(reqLen int, buf []byte, qEnd int, qtype uint16, marks uint64, sw1Value, sw7Value string) (int, bool) {
+	return fastRuleRejectWithBools(reqLen, buf, qEnd, qtype, marks, sw1Value == "on", sw7Value == "on")
+}
+
+func fastRuleRejectWithBools(reqLen int, buf []byte, qEnd int, qtype uint16, marks uint64, sw1On, sw7On bool) (int, bool) {
+	if sw1On {
+		if (marks & (1 << 1)) != 0 {
 			return makeReject(reqLen, buf, qEnd, 3), true
 		}
-		if (marks&(1<<2)) != 0 && qtype == 1 && sw1Val == "on" {
+		if (marks&(1<<2)) != 0 && qtype == 1 {
 			return makeReject(reqLen, buf, qEnd, 0), true
 		}
-		if (marks&(1<<3)) != 0 && qtype == 28 && sw1Val == "on" {
+		if (marks&(1<<3)) != 0 && qtype == 28 {
 			return makeReject(reqLen, buf, qEnd, 0), true
 		}
 	}
-	if sw7 != nil && (marks&(1<<5)) != 0 && sw7.GetValue() == "on" {
+	if (marks&(1<<5)) != 0 && sw7On {
 		return makeReject(reqLen, buf, qEnd, 3), true
 	}
 	return 0, false
@@ -1665,6 +1981,9 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 	var sw15 SwitchPlugin
 	sw15 = findSwitchPlugin(bp, switchmeta.MustLookup("udp_fast_path"))
 	swFake := findSwitchPlugin(bp, switchmeta.MustLookup("fakeip_cache"))
+	swBlock := findSwitchPlugin(bp, switchmeta.MustLookup("block_response"))
+	swAdBlock := findSwitchPlugin(bp, switchmeta.MustLookup("ad_block"))
+	swCNAnswer := findSwitchPlugin(bp, switchmeta.MustLookup("cn_answer_mode"))
 
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
@@ -1679,7 +1998,18 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		ruleSlots:        args.FastRuleCacheSlots,
 		memoryBudgetMB:   args.FastCacheMemoryBudgetMB,
 	}, stats)
-	wrappedHandler := &fastHandler{next: dh, fc: fc, dm: dm, rewriteRevision: rewriteRevision, sw: sw15, fakeCacheSwitch: swFake, enableAudit: args.EnableAudit}
+	wrappedHandler := &fastHandler{
+		next:            dh,
+		fc:              fc,
+		dm:              dm,
+		rewriteRevision: rewriteRevision,
+		sw:              newFastSwitchValue(sw15),
+		fakeCacheSwitch: newFastSwitchValue(swFake),
+		blockSwitch:     newFastSwitchValue(swBlock),
+		adBlockSwitch:   newFastSwitchValue(swAdBlock),
+		cnAnswerSwitch:  newFastSwitchValue(swCNAnswer),
+		enableAudit:     args.EnableAudit,
+	}
 	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second, args.EnableAudit)
 
 	socketOpt := server_utils.ListenerSocketOpts{
@@ -1764,26 +2094,31 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 
 func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration, enableAuditOpt ...bool) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
 	var once sync.Once
-	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache SwitchPlugin
+	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache, cnAnswerMode SwitchPlugin
+	var sw15Value, sw5Value, sw6Value, sw1Value, sw7Value, clientProxyModeValue, fakeipCacheValue, cnAnswerModeValue fastSwitchValue
 	var dm DomainMapperPlugin
 	var rewriteRevision DomainMapperRevisionPlugin
 	var clientWhitelist, clientBlacklist IPSetPlugin
-	revisionTracked := false
 	readyAt := time.Now().Add(warmup)
+	warmupDone := warmup <= 0
 	enableAudit := len(enableAuditOpt) > 0 && enableAuditOpt[0]
 	clientPolicy := &clientPolicyCache{}
+	clientIPCache := &fastAuditClientIPCache{}
 
 	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
 		var auditStart time.Time
 		if enableAudit {
 			auditStart = time.Now()
 		}
-		if warmup > 0 && time.Now().Before(readyAt) {
-			if stats != nil {
-				stats.bypassRequests.Add(1)
-				stats.bypassWarmupSkip.Add(1)
+		if !warmupDone {
+			if time.Now().Before(readyAt) {
+				if stats != nil {
+					stats.bypassRequests.Add(1)
+					stats.bypassWarmupSkip.Add(1)
+				}
+				return server.FastActionContinue, 0, 0, "", false, false
 			}
-			return server.FastActionContinue, 0, 0, "", false, false
+			warmupDone = true
 		}
 		once.Do(func() {
 			sw15 = findSwitchPlugin(bp, switchmeta.MustLookup("udp_fast_path"))
@@ -1793,22 +2128,30 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			sw7 = findSwitchPlugin(bp, switchmeta.MustLookup("ad_block"))
 			clientProxyMode = findSwitchPlugin(bp, switchmeta.MustLookup("client_proxy_mode"))
 			fakeipCache = findSwitchPlugin(bp, switchmeta.MustLookup("fakeip_cache"))
+			cnAnswerMode = findSwitchPlugin(bp, switchmeta.MustLookup("cn_answer_mode"))
 			if p := bp.Plugin("unified_matcher1"); p != nil {
 				dm, _ = p.(DomainMapperPlugin)
 			}
 			if p := bp.Plugin("rewrite"); p != nil {
 				rewriteRevision, _ = p.(DomainMapperRevisionPlugin)
 			}
-			revisionTracked = dm != nil || rewriteRevision != nil
 			if p := bp.Plugin("client_ip_whitelist"); p != nil {
 				clientWhitelist, _ = p.(IPSetPlugin)
 			}
 			if p := bp.Plugin("client_ip_blacklist"); p != nil {
 				clientBlacklist, _ = p.(IPSetPlugin)
 			}
+			sw15Value = newFastSwitchValue(sw15)
+			sw5Value = newFastSwitchValue(sw5)
+			sw6Value = newFastSwitchValue(sw6)
+			sw1Value = newFastSwitchValue(sw1)
+			sw7Value = newFastSwitchValue(sw7)
+			clientProxyModeValue = newFastSwitchValue(clientProxyMode)
+			fakeipCacheValue = newFastSwitchValue(fakeipCache)
+			cnAnswerModeValue = newFastSwitchValue(cnAnswerMode)
 		})
 
-		if sw15 == nil || sw15.GetValue() != "on" {
+		if sw15 == nil || !sw15Value.isOn() {
 			if stats != nil {
 				stats.bypassRequests.Add(1)
 			}
@@ -1825,71 +2168,77 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		qtype := question.qtype
 		qEnd := question.end
 		hKey := question.hash
+		statKey := fastStatsKey(hKey, remoteAddr, buf)
 
 		if stats != nil {
-			stats.bypassRequests.AddShard(hKey, 1)
+			stats.bypassRequests.AddShard(statKey, 1)
 		}
 
 		if qtype == 6 || qtype == 12 || qtype == 65 {
-			if sw5 != nil && sw5.GetValue() == "on" {
+			if sw5 != nil && sw5Value.isOn() {
 				if stats != nil {
-					stats.bypassRuleReply.AddShard(hKey, 1)
+					stats.bypassRuleReply.AddShard(statKey, 1)
 				}
 				respLen := makeReject(reqLen, buf, qEnd, 0)
-				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, "blocked_query_type", coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:respLen]))
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, "blocked_query_type", coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:respLen]))
 				return server.FastActionReply, respLen, 0, "", false, false
 			}
 		}
 		if qtype == 28 {
-			if sw6 != nil && sw6.GetValue() == "on" {
+			if sw6 != nil && sw6Value.isOn() {
 				if stats != nil {
-					stats.bypassRuleReply.AddShard(hKey, 1)
+					stats.bypassRuleReply.AddShard(statKey, 1)
 				}
 				respLen := makeReject(reqLen, buf, qEnd, 0)
-				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, "blocked_ipv6", coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:respLen]))
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, "blocked_ipv6", coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:respLen]))
 				return server.FastActionReply, respLen, 0, "", false, false
 			}
 		}
 
 		mode := "all"
 		if clientProxyMode != nil {
-			mode = clientProxyMode.GetValue()
+			mode = clientProxyModeValue.mode("all")
 		}
 		marks := fastClientPolicyMarks(clientPolicy, remoteAddr.Addr(), mode, clientWhitelist, clientBlacklist)
+		clientDirect := (marks & (1 << 39)) != 0
 
-		var ruleRevision fastRuleRevision
-		if revisionTracked {
-			ruleRevision = fastRuntimeRevisionParts(dm, rewriteRevision)
-		}
+		ruleRevision := fastRuntimeRevisionParts(dm, rewriteRevision, fakeipCacheValue, sw1Value, sw7Value, cnAnswerModeValue)
 		qnameWire := question.qnameWire(buf)
-		allowFakeIP := fakeipCache != nil && fakeipCache.GetValue() == "on"
+		cacheKey := fastCachePolicyHash(hKey, clientDirect)
+		allowFakeIP := fakeipCache != nil && fakeipCacheValue.isOn()
 		earlyCacheTried := false
 		var dset string
 		var dsetMatched bool
 		ruleMetaHit := false
-		if !ruleRevision.empty() && (marks&(1<<39)) == 0 {
+		if !ruleRevision.empty() {
 			earlyCacheTried = true
 			if stats != nil {
-				stats.cacheLookup.AddShard(hKey, 1)
+				stats.cacheLookup.AddShard(statKey, 1)
 			}
-			ptr, occupied := fc.findItemWire(hKey, qnameWire, qtype)
-			action, rLen, ruleFlags, ds, staleRefresh, auditMeta := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, ruleRevision, hKey, 0)
+			ptr, occupied := fc.findItemWire(cacheKey, qnameWire, qtype)
+			action, rLen, ruleFlags, ds, staleRefresh, auditMeta := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, clientDirect, ruleRevision, statKey, 0)
 			if action == server.FastActionReply {
-				if rejectLen, ok := fastRuleReject(reqLen, buf, qEnd, qtype, ruleFlags, sw1, sw7); ok {
+				if rejectLen, ok := fastRuleRejectWithBools(reqLen, buf, qEnd, qtype, ruleFlags, sw1Value.isOn(), sw7Value.isOn()); ok {
 					if stats != nil {
-						stats.bypassRuleReply.AddShard(hKey, 1)
+						stats.bypassRuleReply.AddShard(statKey, 1)
 					}
-					collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, ds, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
+					collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
 					return server.FastActionReply, rejectLen, 0, "", false, false
 				}
 				if stats != nil {
-					stats.bypassCacheReply.AddShard(hKey, 1)
+					stats.bypassCacheReply.AddShard(statKey, 1)
 				}
-				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, ds, coremain.AuditCacheHit, auditMeta)
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheFastHit, auditMeta)
 				return action, rLen, 0, ds, false, false
 			}
 			if staleRefresh {
 				return server.FastActionContinue, 0, marks | ruleFlags, ds, ds != "", true
+			}
+			if ruleFlags != 0 || ds != "" {
+				marks |= ruleFlags
+				dset = ds
+				dsetMatched = ds != ""
+				ruleMetaHit = true
 			}
 		}
 
@@ -1915,32 +2264,32 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 
-		if rejectLen, ok := fastRuleReject(reqLen, buf, qEnd, qtype, marks, sw1, sw7); ok {
+		if rejectLen, ok := fastRuleRejectWithBools(reqLen, buf, qEnd, qtype, marks, sw1Value.isOn(), sw7Value.isOn()); ok {
 			if stats != nil {
-				stats.bypassRuleReply.AddShard(hKey, 1)
+				stats.bypassRuleReply.AddShard(statKey, 1)
 			}
-			collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, dset, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
+			collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, dset, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
 			return server.FastActionReply, rejectLen, 0, "", false, false
 		}
 
-		if !earlyCacheTried && (marks&(1<<39)) == 0 && !fc.shouldBypassDomainSet(dset) {
+		if !earlyCacheTried && !fc.shouldBypassDomainSet(dset) {
 			if stats != nil {
-				stats.cacheLookup.AddShard(hKey, 1)
+				stats.cacheLookup.AddShard(statKey, 1)
 			}
-			ptr, occupied := fc.findItemWire(hKey, qnameWire, qtype)
-			action, rLen, ruleFlags, ds, staleRefresh, auditMeta := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, ruleRevision, hKey, 0)
+			ptr, occupied := fc.findItemWire(cacheKey, qnameWire, qtype)
+			action, rLen, ruleFlags, ds, staleRefresh, auditMeta := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, clientDirect, ruleRevision, statKey, 0)
 			if action == server.FastActionReply {
-				if rejectLen, ok := fastRuleReject(reqLen, buf, qEnd, qtype, ruleFlags, sw1, sw7); ok {
+				if rejectLen, ok := fastRuleRejectWithBools(reqLen, buf, qEnd, qtype, ruleFlags, sw1Value.isOn(), sw7Value.isOn()); ok {
 					if stats != nil {
-						stats.bypassRuleReply.AddShard(hKey, 1)
+						stats.bypassRuleReply.AddShard(statKey, 1)
 					}
-					collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, ds, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
+					collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
 					return server.FastActionReply, rejectLen, 0, "", false, false
 				}
 				if stats != nil {
-					stats.bypassCacheReply.AddShard(hKey, 1)
+					stats.bypassCacheReply.AddShard(statKey, 1)
 				}
-				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, ds, coremain.AuditCacheHit, auditMeta)
+				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheFastHit, auditMeta)
 				return action, rLen, 0, ds, false, false
 			}
 			if staleRefresh {
@@ -1973,15 +2322,15 @@ func makeReject(reqLen int, buf []byte, offset int, rcode byte) int {
 	return offset
 }
 
-func collectFastAuditFromWire(enable bool, start time.Time, question fastQuestion, buf []byte, remoteAddr netip.AddrPort, domainSet string, cacheStatus string, response fastAuditResponseMeta) {
+func collectFastAuditFromWire(enable bool, start time.Time, question fastQuestion, buf []byte, remoteAddr netip.AddrPort, clientIPs *fastAuditClientIPCache, domainSet string, cacheStatus string, response fastAuditResponseMeta) {
 	if !shouldCollectFastAudit(enable) {
 		return
 	}
-	log, ok := buildFastAuditLogFromWire(start, question, buf, remoteAddr, domainSet, cacheStatus, response)
+	log, shardKey, ok := buildFastAuditLogFromWire(start, question, buf, remoteAddr, clientIPs, domainSet, cacheStatus, response)
 	if !ok {
 		return
 	}
-	coremain.GlobalAuditCollector.CollectLog(log)
+	coremain.GlobalAuditCollector.CollectLogWithShard(log, shardKey)
 }
 
 func collectFastAuditFromMsg(enable bool, start time.Time, q *dns.Msg, meta server.QueryMeta, response fastAuditResponseMeta, cacheStatus string) {
@@ -1999,7 +2348,7 @@ func shouldCollectFastAudit(enable bool) bool {
 	return enable && coremain.GlobalAuditCollector != nil && coremain.GlobalAuditCollector.IsCapturing()
 }
 
-func buildFastAuditLogFromWire(start time.Time, question fastQuestion, buf []byte, remoteAddr netip.AddrPort, domainSet string, cacheStatus string, response fastAuditResponseMeta) (coremain.AuditLog, bool) {
+func buildFastAuditLogFromWire(start time.Time, question fastQuestion, buf []byte, remoteAddr netip.AddrPort, clientIPs *fastAuditClientIPCache, domainSet string, cacheStatus string, response fastAuditResponseMeta) (coremain.AuditLog, uint64, bool) {
 	if start.IsZero() {
 		start = time.Now()
 	}
@@ -2010,7 +2359,7 @@ func buildFastAuditLogFromWire(start time.Time, question fastQuestion, buf []byt
 	}
 	log := coremain.AuditLog{
 		QueryTime:    start,
-		ClientIP:     remoteAddr.Addr().String(),
+		ClientIP:     fastAuditClientIPString(remoteAddr.Addr(), clientIPs),
 		QueryType:    dnsTypeString(question.qtype),
 		QueryName:    queryName,
 		QueryClass:   dnsClassString(question.qclass),
@@ -2020,7 +2369,7 @@ func buildFastAuditLogFromWire(start time.Time, question fastQuestion, buf []byt
 		CacheStatus:  cacheStatus,
 	}
 	applyFastAuditResponseMeta(&log, response)
-	return log, true
+	return log, question.hash, true
 }
 
 func buildFastAuditLogFromMsg(start time.Time, q *dns.Msg, meta server.QueryMeta, response fastAuditResponseMeta, cacheStatus string) (coremain.AuditLog, bool) {
@@ -2203,6 +2552,30 @@ func fastAuditTXTString(rdata []byte) string {
 }
 
 func dnsTypeString(qtype uint16) string {
+	switch qtype {
+	case dns.TypeA:
+		return "A"
+	case dns.TypeAAAA:
+		return "AAAA"
+	case dns.TypeHTTPS:
+		return "HTTPS"
+	case dns.TypeSVCB:
+		return "SVCB"
+	case dns.TypeCNAME:
+		return "CNAME"
+	case dns.TypeNS:
+		return "NS"
+	case dns.TypePTR:
+		return "PTR"
+	case dns.TypeSOA:
+		return "SOA"
+	case dns.TypeTXT:
+		return "TXT"
+	case dns.TypeMX:
+		return "MX"
+	case dns.TypeSRV:
+		return "SRV"
+	}
 	if value := dns.TypeToString[qtype]; value != "" {
 		return value
 	}
@@ -2210,6 +2583,9 @@ func dnsTypeString(qtype uint16) string {
 }
 
 func dnsClassString(qclass uint16) string {
+	if qclass == dns.ClassINET {
+		return "IN"
+	}
 	if value := dns.ClassToString[qclass]; value != "" {
 		return value
 	}

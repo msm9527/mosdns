@@ -3,6 +3,7 @@ package coremain
 import (
 	"fmt"
 	"net"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,8 @@ const (
 	auditQueueCapacityFactor = 32
 	auditMinQueueCapacity    = 512
 	auditMaxQueueCapacity    = 32768
+	auditQueueMaxShards      = 8
+	auditQueueMinShardCap    = 64
 )
 
 type AuditCollector struct {
@@ -28,10 +31,11 @@ type AuditCollector struct {
 	configBaseDir string
 	storage       *SQLiteAuditStorage
 	realtime      *auditRealtimeStore
-	queue         chan auditQueuedLog
-	workerDone    chan struct{}
+	queues        []chan auditQueuedLog
+	workerDone    []chan struct{}
 	maintDone     chan struct{}
 	generation    atomic.Uint64
+	enabled       atomic.Bool
 	closed        atomic.Bool
 	degraded      atomic.Bool
 	opening       atomic.Bool
@@ -46,28 +50,39 @@ func InitializeAuditCollector(configBaseDir string, base *AuditSettings) {
 
 func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditCollector {
 	settings = normalizeAuditSettings(settings)
+	queues := newAuditQueues(settings)
 	collector := &AuditCollector{
 		settings:      settings,
 		configBaseDir: configBaseDir,
 		realtime:      newAuditRealtimeStore(auditRealtimeBucketCount),
-		queue:         make(chan auditQueuedLog, auditQueueCapacity(settings)),
-		workerDone:    make(chan struct{}),
+		queues:        queues,
+		workerDone:    make([]chan struct{}, len(queues)),
 		maintDone:     make(chan struct{}),
 	}
+	for i := range collector.workerDone {
+		collector.workerDone[i] = make(chan struct{})
+	}
+	collector.enabled.Store(settings.Enabled)
 	return collector
 }
 
 func (c *AuditCollector) StartWorker() {
 	c.OpenStorageAsync()
-	go c.runWriter()
+	for i := range c.queues {
+		go c.runWriter(c.queues[i], c.workerDone[i])
+	}
 	go c.runMaintenance()
 }
 
 func (c *AuditCollector) StopWorker() {
 	if c.closed.CompareAndSwap(false, true) {
-		close(c.queue)
+		for _, queue := range c.queues {
+			close(queue)
+		}
 	}
-	<-c.workerDone
+	for _, done := range c.workerDone {
+		<-done
+	}
 	<-c.maintDone
 	c.closeStorage()
 }
@@ -82,10 +97,37 @@ func (c *AuditCollector) Collect(qCtx *query_context.Context) {
 
 // CollectLog records an already-built audit log into realtime and persistent audit stores.
 func (c *AuditCollector) CollectLog(log AuditLog) {
-	c.clearMu.RLock()
-	defer c.clearMu.RUnlock()
+	c.CollectLogWithShard(log, auditLogShardKey(log))
+}
 
-	if !c.IsCapturing() {
+// CollectLogWithShard records an already-built audit log and uses shardKey to
+// distribute hot UDP cache-hit audit events across collector queues.
+func (c *AuditCollector) CollectLogWithShard(log AuditLog, shardKey uint64) {
+	if c == nil || c.closed.Load() || !c.enabled.Load() {
+		return
+	}
+	generation := c.generation.Load()
+	queue := c.queueForShard(shardKey)
+	if queue == nil {
+		return
+	}
+	select {
+	case queue <- auditQueuedLog{generation: generation, log: log}:
+	default:
+		c.degraded.Store(true)
+		at := log.QueryTime
+		if at.IsZero() {
+			at = nowTime()
+		}
+		select {
+		case queue <- auditQueuedLog{generation: generation, dropped: true, at: at}:
+		default:
+		}
+	}
+}
+
+func normalizeAuditLog(log *AuditLog) {
+	if log == nil {
 		return
 	}
 	if log.QueryTime.IsZero() {
@@ -97,31 +139,24 @@ func (c *AuditCollector) CollectLog(log AuditLog) {
 	if log.DomainSetNorm == "" {
 		log.DomainSetNorm = normalizeAuditDomainSet(log.DomainSetRaw, log.QueryType)
 	}
-	c.realtime.Record(log)
-	select {
-	case c.queue <- auditQueuedLog{generation: c.generation.Load(), log: log}:
-	default:
-		c.degraded.Store(true)
-		c.realtime.RecordDrop(log.QueryTime)
-	}
 }
 
 func (c *AuditCollector) Start() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.settings.Enabled = true
+	c.enabled.Store(true)
 }
 
 func (c *AuditCollector) Stop() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.settings.Enabled = false
+	c.enabled.Store(false)
 }
 
 func (c *AuditCollector) IsCapturing() bool {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.settings.Enabled
+	return c != nil && c.enabled.Load()
 }
 
 func (c *AuditCollector) GetSettings() AuditSettings {
@@ -146,6 +181,7 @@ func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) e
 	c.settings = next
 	c.configBaseDir = configBaseDir
 	c.storage = storage
+	c.enabled.Store(next.Enabled)
 	c.mu.Unlock()
 	c.degraded.Store(false)
 	closeAuditStorageAfterSwap(oldStorage)
@@ -162,6 +198,7 @@ func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir str
 	c.mu.Lock()
 	oldStorage := c.storage
 	c.storage = storage
+	c.enabled.Store(settings.Enabled)
 	c.mu.Unlock()
 	c.degraded.Store(false)
 	closeAuditStorageAfterSwap(oldStorage)
@@ -373,4 +410,55 @@ func auditQueueCapacity(settings AuditSettings) int {
 		return auditMaxQueueCapacity
 	}
 	return size
+}
+
+func newAuditQueues(settings AuditSettings) []chan auditQueuedLog {
+	shards := runtime.GOMAXPROCS(0)
+	if shards < 1 {
+		shards = 1
+	}
+	if shards > auditQueueMaxShards {
+		shards = auditQueueMaxShards
+	}
+	total := auditQueueCapacity(settings)
+	perShard := (total + shards - 1) / shards
+	if perShard < auditQueueMinShardCap {
+		perShard = auditQueueMinShardCap
+	}
+	queues := make([]chan auditQueuedLog, shards)
+	for i := range queues {
+		queues[i] = make(chan auditQueuedLog, perShard)
+	}
+	return queues
+}
+
+func (c *AuditCollector) queueForShard(shardKey uint64) chan auditQueuedLog {
+	if c == nil || len(c.queues) == 0 {
+		return nil
+	}
+	return c.queues[shardKey%uint64(len(c.queues))]
+}
+
+func (c *AuditCollector) queueDepth() int {
+	if c == nil {
+		return 0
+	}
+	total := 0
+	for _, queue := range c.queues {
+		total += len(queue)
+	}
+	return total
+}
+
+func auditLogShardKey(log AuditLog) uint64 {
+	hash := uint64(1469598103934665603)
+	for i := 0; i < len(log.ClientIP); i++ {
+		hash ^= uint64(log.ClientIP[i])
+		hash *= 1099511628211
+	}
+	for i := 0; i < len(log.QueryName); i++ {
+		hash ^= uint64(log.QueryName[i])
+		hash *= 1099511628211
+	}
+	return hash
 }

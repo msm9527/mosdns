@@ -116,6 +116,34 @@ func TestCoreSwitchesAPI_Update(t *testing.T) {
 	}
 }
 
+func TestSwitchValueCodeIncludesAnswerModes(t *testing.T) {
+	resetSwitchTestRegistry()
+
+	dir := t.TempDir()
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+	def := switchmeta.MustLookup("cn_answer_mode")
+	sw := &Switch{
+		store: getStateStore(),
+		def:   def,
+	}
+	if err := sw.load(); err != nil {
+		t.Fatalf("load switch: %v", err)
+	}
+	if got := sw.ValueCode(); got != fastSwitchValueCode("realip") {
+		t.Fatalf("initial value code = %d, want realip code", got)
+	}
+	if changed, err := sw.setValue("fakeip"); err != nil || !changed {
+		t.Fatalf("set fakeip changed=%v err=%v", changed, err)
+	}
+	if got := sw.ValueCode(); got != fastSwitchValueCode("fakeip") {
+		t.Fatalf("updated value code = %d, want fakeip code", got)
+	}
+}
+
 func TestCoreSwitchesAPI_UpdateSameValueDoesNotRewriteFile(t *testing.T) {
 	resetSwitchTestRegistry()
 

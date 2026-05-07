@@ -80,7 +80,7 @@ func TestFastHandlerSkipsCachingServerFailure(t *testing.T) {
 	handler := &fastHandler{
 		next: staticHandler{payload: resp},
 		fc:   fc,
-		sw:   testSwitchPlugin{value: "on"},
+		sw:   newFastSwitchValue(testSwitchPlugin{value: "on"}),
 	}
 
 	q := new(dns.Msg)
@@ -138,7 +138,7 @@ func TestFastHandlerSkipsCachingBypassDomainSet(t *testing.T) {
 	handler := &fastHandler{
 		next: staticHandler{payload: resp},
 		fc:   fc,
-		sw:   testSwitchPlugin{value: "on"},
+		sw:   newFastSwitchValue(testSwitchPlugin{value: "on"}),
 	}
 
 	q := new(dns.Msg)
@@ -148,5 +148,45 @@ func TestFastHandlerSkipsCachingBypassDomainSet(t *testing.T) {
 
 	if got := fc.Len(); got != 0 {
 		t.Fatalf("expected bypassed response not to be stored, got %d entries", got)
+	}
+}
+
+func TestFastHandlerStoresClientDirectCacheVariant(t *testing.T) {
+	name := "client-direct-store.example."
+	qtype := uint16(dns.TypeA)
+	resp := makeAnswer(t, name, qtype, 0x2222, 30)
+
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Minute,
+		ttlMax:      30,
+	}, &fastStats{})
+	handler := &fastHandler{
+		next: staticHandler{payload: resp},
+		fc:   fc,
+		sw:   newFastSwitchValue(testSwitchPlugin{value: "on"}),
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion(name, qtype)
+	q.Id = 0x9999
+	handler.Handle(context.Background(), q, server.QueryMeta{PreFastFlags: 1 << 39, PreFastDomainSet: "记忆直连"}, nil)
+
+	query := makeQuery(t, name, qtype, 0x9999)
+	buf := make([]byte, len(resp))
+	copy(buf, query)
+	hash := fastCachePolicyHash(fastQNameHashString(name, qtype), true)
+	ptr, occupied := fc.findItem(hash, name, qtype)
+	action, _, _, dset, _, _ := fc.replyFromItemAt(ptr, occupied, buf, true, true, fastRuleRevision{}, hash, 0)
+	if action != server.FastActionReply {
+		t.Fatalf("expected client-direct fast cache reply, got %d", action)
+	}
+	if dset != "记忆直连" {
+		t.Fatalf("domain set = %q, want 记忆直连", dset)
+	}
+
+	ordinaryHash := fastQNameHashString(name, qtype)
+	ordinaryPtr, ordinaryOccupied := fc.findItem(ordinaryHash, name, qtype)
+	if ordinaryPtr != nil || ordinaryOccupied {
+		t.Fatal("ordinary cache variant should stay empty for client-direct response")
 	}
 }

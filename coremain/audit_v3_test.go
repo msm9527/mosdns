@@ -18,7 +18,7 @@ func TestAuditRealtimeOverviewSnapshot(t *testing.T) {
 		QueryTime:    now.Add(-2 * time.Second),
 		DurationMs:   4,
 		ResponseCode: "NOERROR",
-		CacheStatus:  AuditCacheHit,
+		CacheStatus:  AuditCacheFastHit,
 	})
 	store.Record(AuditLog{
 		QueryTime:    now.Add(-time.Second),

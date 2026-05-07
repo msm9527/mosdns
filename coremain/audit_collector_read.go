@@ -39,36 +39,35 @@ func (c *AuditCollector) ClearLogs() error {
 	defer c.clearMu.Unlock()
 
 	c.generation.Add(1)
-	for {
-		select {
-		case _, ok := <-c.queue:
-			if !ok {
-				c.realtime.Reset()
-				c.storageMu.Lock()
-				defer c.storageMu.Unlock()
-				storage := c.getStorage()
-				if storage == nil {
-					return nil
+	for _, queue := range c.queues {
+		for {
+			select {
+			case _, ok := <-queue:
+				if !ok {
+					queue = nil
 				}
-				return storage.Clear()
+			default:
+				queue = nil
 			}
-		default:
-			c.realtime.Reset()
-			c.storageMu.Lock()
-			defer c.storageMu.Unlock()
-			storage := c.getStorage()
-			if storage == nil {
-				return nil
+			if queue == nil {
+				break
 			}
-			return storage.Clear()
 		}
 	}
+	c.realtime.Reset()
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
+	storage := c.getStorage()
+	if storage == nil {
+		return nil
+	}
+	return storage.Clear()
 }
 
 func (c *AuditCollector) GetOverview(windowSeconds int) AuditOverview {
 	overview := c.realtime.Snapshot(windowSeconds)
 	overview.Enabled = c.IsCapturing()
-	overview.QueueDepth = len(c.queue)
+	overview.QueueDepth = c.queueDepth()
 	overview.Degraded = c.degraded.Load()
 	overview.CurrentStorageBytes = c.GetDiskUsageBytes()
 	c.fillOverviewTotals(&overview)
