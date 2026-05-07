@@ -47,6 +47,14 @@ func (s *ruleSourceService) List() ([]RuleSourceItem, error) {
 }
 
 func (s *ruleSourceService) Create(item RuleSourceItem) (RuleSourceItem, error) {
+	return s.create(item, false)
+}
+
+func (s *ruleSourceService) RestoreCreate(item RuleSourceItem) (RuleSourceItem, error) {
+	return s.create(item, true)
+}
+
+func (s *ruleSourceService) create(item RuleSourceItem, definitionsOnly bool) (RuleSourceItem, error) {
 	cfg, err := s.loadConfig()
 	if err != nil {
 		return RuleSourceItem{}, err
@@ -64,13 +72,21 @@ func (s *ruleSourceService) Create(item RuleSourceItem) (RuleSourceItem, error) 
 	if err := s.saveConfig(cfg); err != nil {
 		return RuleSourceItem{}, err
 	}
-	if err := s.reload(); err != nil {
+	if err := s.reload(definitionsOnly); err != nil {
 		return RuleSourceItem{}, err
 	}
 	return s.Get(source.ID)
 }
 
 func (s *ruleSourceService) Update(id string, item RuleSourceItem) (RuleSourceItem, error) {
+	return s.update(id, item, false)
+}
+
+func (s *ruleSourceService) RestoreUpdate(id string, item RuleSourceItem) (RuleSourceItem, error) {
+	return s.update(id, item, true)
+}
+
+func (s *ruleSourceService) update(id string, item RuleSourceItem, definitionsOnly bool) (RuleSourceItem, error) {
 	cfg, err := s.loadConfig()
 	if err != nil {
 		return RuleSourceItem{}, err
@@ -98,7 +114,7 @@ func (s *ruleSourceService) Update(id string, item RuleSourceItem) (RuleSourceIt
 	}
 	cleanup := s.cleanupUpdatedSourceFile(previous, source, cfg)
 	logRuleSourceFileCleanup("update", s.scope, source.ID, cleanup)
-	if err := s.reload(); err != nil {
+	if err := s.reload(definitionsOnly); err != nil {
 		return RuleSourceItem{}, err
 	}
 	return s.Get(source.ID)
@@ -123,7 +139,7 @@ func (s *ruleSourceService) Delete(id string) (RuleSourceDeleteResponse, error) 
 	if err := DeleteRuleSourceStatus(s.controlDBPath(), s.scope, id); err != nil {
 		return RuleSourceDeleteResponse{}, err
 	}
-	if err := s.reload(); err != nil {
+	if err := s.reload(false); err != nil {
 		return RuleSourceDeleteResponse{}, err
 	}
 	return RuleSourceDeleteResponse{
@@ -157,7 +173,7 @@ func (s *ruleSourceService) RefreshAll() ([]RuleSourceItem, error) {
 			return nil, err
 		}
 	}
-	if err := s.reload(); err != nil {
+	if err := s.reload(false); err != nil {
 		return nil, err
 	}
 	return s.List()
@@ -174,7 +190,7 @@ func (s *ruleSourceService) RefreshOne(id string) (RuleSourceItem, error) {
 	if err := s.refreshSource(source); err != nil {
 		return RuleSourceItem{}, err
 	}
-	if err := s.reload(); err != nil {
+	if err := s.reload(false); err != nil {
 		return RuleSourceItem{}, err
 	}
 	return s.Get(id)
@@ -319,11 +335,17 @@ func (s *ruleSourceService) refreshSource(source rulesource.Source) error {
 	return nil
 }
 
-func (s *ruleSourceService) reload() error {
+func (s *ruleSourceService) reload(definitionsOnly bool) error {
 	if s.manager == nil {
 		return nil
 	}
-	if err := s.manager.ReloadControlConfig(""); err != nil {
+	var err error
+	if definitionsOnly {
+		err = s.manager.ReloadRuleSourceDefinitions("")
+	} else {
+		err = s.manager.ReloadControlConfig("")
+	}
+	if err != nil {
 		return NewRuleAPIError(http.StatusInternalServerError, "RULE_SOURCE_RELOAD_FAILED", err.Error())
 	}
 	return nil

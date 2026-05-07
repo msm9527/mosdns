@@ -48,9 +48,10 @@ type UpstreamOverrideConfig struct {
 type GlobalUpstreamOverrides map[string][]UpstreamOverrideConfig
 
 var (
-	upstreamOverridesLock sync.RWMutex
-	upstreamOverrides     GlobalUpstreamOverrides
-	upstreamOverridesDir  string
+	upstreamOverridesLock    sync.RWMutex
+	upstreamOverrides        GlobalUpstreamOverrides
+	upstreamOverridesDir     string
+	upstreamOverridesLoadDir string
 )
 
 // RegisterUpstreamAPI 注册路由
@@ -136,12 +137,14 @@ func loadUpstreamOverridesLocked() error {
 		}
 		mlog.L().Info("[Debug UpstreamAPI] Loaded success from custom config", zap.Int("groups", len(cfg)), zap.Int("total_items", count))
 		upstreamOverrides = cfg
+		upstreamOverridesLoadDir = baseDir
 		return nil
 	} else if err != nil {
 		mlog.L().Warn("[Debug UpstreamAPI] Custom config load failed", zap.Error(err))
 	}
 	mlog.L().Info("[Debug UpstreamAPI] Custom config empty, creating new map", zap.String("path", upstreamOverridesConfigPathForBaseDir(baseDir)))
 	upstreamOverrides = make(GlobalUpstreamOverrides)
+	upstreamOverridesLoadDir = baseDir
 	return nil
 }
 
@@ -158,6 +161,7 @@ func saveUpstreamOverridesLocked() error {
 		mlog.L().Error("[Debug UpstreamAPI] Custom config save failed", zap.Error(err))
 		return err
 	}
+	upstreamOverridesLoadDir = baseDir
 	mlog.L().Info("[Debug UpstreamAPI] Saved upstream overrides to custom config",
 		zap.String("path", upstreamOverridesConfigPathForBaseDir(baseDir)),
 	)
@@ -180,6 +184,7 @@ func setUpstreamOverridesBaseDir(baseDir string) {
 	if upstreamOverridesDir != nextDir {
 		upstreamOverridesDir = nextDir
 		upstreamOverrides = nil
+		upstreamOverridesLoadDir = ""
 	}
 }
 
@@ -191,8 +196,9 @@ func currentUpstreamOverridesBaseDir() string {
 }
 
 func ensureUpstreamOverridesLoaded() error {
+	baseDir := currentUpstreamOverridesBaseDir()
 	upstreamOverridesLock.RLock()
-	loaded := upstreamOverrides != nil
+	loaded := upstreamOverrides != nil && upstreamOverridesLoadDir == baseDir
 	upstreamOverridesLock.RUnlock()
 	if loaded {
 		return nil
@@ -200,7 +206,7 @@ func ensureUpstreamOverridesLoaded() error {
 
 	upstreamOverridesLock.Lock()
 	defer upstreamOverridesLock.Unlock()
-	if upstreamOverrides != nil {
+	if upstreamOverrides != nil && upstreamOverridesLoadDir == baseDir {
 		return nil
 	}
 	return loadUpstreamOverridesLocked()

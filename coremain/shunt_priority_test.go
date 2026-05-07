@@ -41,3 +41,23 @@ func TestDecideShuntActionPrefersGeositeNoCnOverMemoryDirect(t *testing.T) {
 		t.Fatalf("unexpected decision: %+v path=%+v", decision, path)
 	}
 }
+
+func TestDecideShuntActionPrefersSubscriptionDirectOverMemoryProxy(t *testing.T) {
+	decision, path := decideShuntAction("A", map[uint8]bool{
+		12: true,
+		16: true,
+	}, map[string]string{"cn_answer_mode": "realip"}, nil)
+	if decision.Matched != 16 || decision.Action != "sequence_local" {
+		t.Fatalf("unexpected decision: %+v path=%+v", decision, path)
+	}
+}
+
+func TestDecideShuntActionSubscriptionDirectRespectsDomesticFakeIPMode(t *testing.T) {
+	decision, path := decideShuntAction("A", map[uint8]bool{
+		12: true,
+		16: true,
+	}, map[string]string{"cn_answer_mode": "fakeip"}, nil)
+	if decision.Matched != 16 || decision.Action != "sequence_local_fake_exit" {
+		t.Fatalf("unexpected decision: %+v path=%+v", decision, path)
+	}
+}

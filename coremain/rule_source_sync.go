@@ -15,18 +15,20 @@ import (
 )
 
 type RuleSourceSyncResult struct {
-	Data        []byte
-	LocalPath   string
-	RuleCount   int
-	LastUpdated time.Time
-	FileSize    int64
-	FileModTime time.Time
+	Data         []byte
+	LocalPath    string
+	RuleCount    int
+	LastUpdated  time.Time
+	FileSize     int64
+	FileModTime  time.Time
+	MissingCache bool
 }
 
 type RuleSourceSyncOptions struct {
-	ForceRemote  bool
-	PreferCache  bool
-	MetadataOnly bool
+	ForceRemote       bool
+	PreferCache       bool
+	MetadataOnly      bool
+	AllowMissingCache bool
 }
 
 type RuleSourceVersion struct {
@@ -80,6 +82,9 @@ func SyncRuleSource(
 			}
 			return loadExistingRuleSource(dbPath, scope, source, localPath)
 		}
+		if options.AllowMissingCache && !options.ForceRemote && !localRuleSourceExists(localPath) {
+			return markMissingRuleSourceCache(dbPath, scope, source, localPath)
+		}
 		if shouldDownloadRuleSource(dbPath, scope, source, localPath, options) {
 			return downloadRuleSource(ctx, client, dbPath, scope, source, localPath)
 		}
@@ -88,6 +93,20 @@ func SyncRuleSource(
 		return inspectExistingRuleSource(dbPath, scope, source, localPath)
 	}
 	return loadExistingRuleSource(dbPath, scope, source, localPath)
+}
+
+func markMissingRuleSourceCache(
+	dbPath string,
+	scope rulesource.Scope,
+	source rulesource.Source,
+	localPath string,
+) (*RuleSourceSyncResult, error) {
+	err := fmt.Errorf("rule source cache %s unavailable; remote download deferred", localPath)
+	saveRuleSourceError(dbPath, scope, source.ID, err)
+	return &RuleSourceSyncResult{
+		LocalPath:    localPath,
+		MissingCache: true,
+	}, nil
 }
 
 func localRuleSourceExists(localPath string) bool {

@@ -69,6 +69,48 @@ policies:
 	}
 }
 
+func TestRulesAPI_RestoreCreateUsesDefinitionOnlyReload(t *testing.T) {
+	baseDir := t.TempDir()
+
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: adguard
+    type: adguard_rule
+    args:
+      config_file: custom_config/adguard_sources.yaml
+`)
+	mustWriteRuleTestFile(t, filepath.Join(baseDir, "custom_config", "adguard_sources.yaml"), `
+# restore should be able to create the first item
+`)
+
+	recorder := &ruleSourceReloadModeRecorder{}
+	m := NewTestMosdnsWithPluginsAndEnv(map[string]any{"recorder": recorder}, RuntimeEnv{BaseDir: baseDir})
+	RegisterRulesAPI(m.httpMux, m)
+
+	body := bytes.NewBufferString(`{
+		"id":"httpdns",
+		"name":"HttpDNS",
+		"enabled":true,
+		"match_mode":"adguard_native",
+		"format":"rules",
+		"source_kind":"remote",
+		"url":"https://example.com/httpdns.rules",
+		"auto_update":true,
+		"update_interval_hours":24
+	}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/rules/adguard?restore=1", body)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	m.httpMux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("unexpected status: %d, body=%s", w.Code, w.Body.String())
+	}
+	if len(recorder.modes) != 1 || recorder.modes[0] != "definitions" {
+		t.Fatalf("expected definitions reload mode, got %+v", recorder.modes)
+	}
+}
+
 func TestRulesAPI_CreateAndListDiversionRules(t *testing.T) {
 	baseDir := t.TempDir()
 	oldBaseDir := MainConfigBaseDir
@@ -343,4 +385,13 @@ func mustWriteRuleTestFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile(%s): %v", path, err)
 	}
+}
+
+type ruleSourceReloadModeRecorder struct {
+	modes []string
+}
+
+func (r *ruleSourceReloadModeRecorder) ReloadControlConfig(global *GlobalOverrides, _ []UpstreamOverrideConfig) error {
+	r.modes = append(r.modes, RuleSourceReloadMode(global))
+	return nil
 }

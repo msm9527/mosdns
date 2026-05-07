@@ -42,6 +42,10 @@ type GlobalOverrides struct {
 	// lookupMap is used for fast lookup during application.
 	// Key is the "Original" string.
 	lookupMap map[string]*ReplacementRule
+
+	// Extra carries transient in-process reload options. It is intentionally
+	// excluded from persisted config files and public API payloads.
+	Extra map[any]any `json:"-" yaml:"-"`
 }
 
 var (

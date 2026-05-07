@@ -150,6 +150,53 @@ func TestSyncRuleSource_PreferCacheSkipsRemoteOnStartup(t *testing.T) {
 	}
 }
 
+func TestSyncRuleSource_AllowMissingCacheDefersRemoteDownload(t *testing.T) {
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, "runtime.db")
+	source := rulesource.Source{
+		ID:                  "missing-cache",
+		Name:                "missing-cache",
+		Behavior:            rulesource.BehaviorAdguard,
+		MatchMode:           rulesource.MatchModeAdguardNative,
+		Format:              rulesource.FormatRules,
+		SourceKind:          rulesource.SourceKindRemote,
+		Path:                "adguard/missing-cache.rules",
+		URL:                 "https://example.invalid/rules.txt",
+		AutoUpdate:          true,
+		UpdateIntervalHours: 24,
+	}
+	called := false
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		called = true
+		return nil, errors.New("should not be called")
+	})}
+	result, err := SyncRuleSource(
+		context.Background(),
+		client,
+		dbPath,
+		baseDir,
+		rulesource.ScopeAdguard,
+		source,
+		RuleSourceSyncOptions{PreferCache: true, AllowMissingCache: true},
+	)
+	if err != nil {
+		t.Fatalf("SyncRuleSource: %v", err)
+	}
+	if called {
+		t.Fatal("expected missing-cache restore path to skip remote download")
+	}
+	if !result.MissingCache {
+		t.Fatalf("expected missing cache result, got %+v", result)
+	}
+	statuses, err := ListRuleSourceStatusByScope(dbPath, rulesource.ScopeAdguard)
+	if err != nil {
+		t.Fatalf("ListRuleSourceStatusByScope: %v", err)
+	}
+	if status := statuses[source.ID]; !strings.Contains(status.LastError, "download deferred") {
+		t.Fatalf("expected deferred last_error, got %+v", status)
+	}
+}
+
 func TestSyncRuleSource_MetadataOnlyUsesCachedFileMetadata(t *testing.T) {
 	baseDir := t.TempDir()
 	dbPath := filepath.Join(baseDir, "runtime.db")

@@ -166,7 +166,7 @@ func (p *SdSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []c
 	if err := p.loadSources(); err != nil {
 		return err
 	}
-	return p.reloadAllRules(coremain.RuleSourceSyncOptions{})
+	return p.reloadAllRules(ruleSourceReloadOptions(global))
 }
 
 func (p *SdSetLight) loadSources() error {
@@ -221,6 +221,9 @@ func (p *SdSetLight) reloadAllRules(options coremain.RuleSourceSyncOptions) erro
 	for _, plan := range plans {
 		source := plan.source
 		result := plan.result
+		if result.MissingCache {
+			continue
+		}
 		if result.Data == nil {
 			ctx, cancel := context.WithTimeout(p.ctx, syncTimeout)
 			loaded, err := coremain.SyncRuleSource(ctx, p.httpClient, p.runtimeDBPath(), p.currentBaseDir(), scope, source, options)
@@ -241,6 +244,16 @@ func (p *SdSetLight) reloadAllRules(options coremain.RuleSourceSyncOptions) erro
 	p.setRules(rules, nextSyncState)
 	p.notifySubscribers()
 	return nil
+}
+
+func ruleSourceReloadOptions(global *coremain.GlobalOverrides) coremain.RuleSourceSyncOptions {
+	if coremain.RuleSourceReloadMode(global) == "definitions" {
+		return coremain.RuleSourceSyncOptions{
+			PreferCache:       true,
+			AllowMissingCache: true,
+		}
+	}
+	return coremain.RuleSourceSyncOptions{}
 }
 
 func (p *SdSetLight) setRules(rules []string, syncState []coremain.RuleSourceVersion) {

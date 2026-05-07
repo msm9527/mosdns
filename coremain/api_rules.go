@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/rulesource"
 	"github.com/go-chi/chi/v5"
@@ -33,6 +34,15 @@ func registerRuleScopeRoutes(r chi.Router, m *Mosdns, path string, scope rulesou
 				writeAPIError(w, http.StatusBadRequest, "RULE_SOURCE_INVALID_BODY", "invalid request body")
 				return
 			}
+			if ruleSourceRestoreMode(r) {
+				created, err := service.RestoreCreate(item)
+				if err != nil {
+					writeRuleError(w, "RULE_SOURCE_CREATE_FAILED", err)
+					return
+				}
+				writeJSON(w, http.StatusCreated, created)
+				return
+			}
 			created, err := service.Create(item)
 			if err != nil {
 				writeRuleError(w, "RULE_SOURCE_CREATE_FAILED", err)
@@ -44,6 +54,15 @@ func registerRuleScopeRoutes(r chi.Router, m *Mosdns, path string, scope rulesou
 			item, err := decodeRuleSourceItem(r)
 			if err != nil {
 				writeAPIError(w, http.StatusBadRequest, "RULE_SOURCE_INVALID_BODY", "invalid request body")
+				return
+			}
+			if ruleSourceRestoreMode(r) {
+				updated, err := service.RestoreUpdate(chi.URLParam(r, "id"), item)
+				if err != nil {
+					writeRuleError(w, "RULE_SOURCE_UPDATE_FAILED", err)
+					return
+				}
+				writeJSON(w, http.StatusOK, updated)
 				return
 			}
 			updated, err := service.Update(chi.URLParam(r, "id"), item)
@@ -78,6 +97,14 @@ func registerRuleScopeRoutes(r chi.Router, m *Mosdns, path string, scope rulesou
 			writeJSON(w, http.StatusOK, item)
 		}))
 	})
+}
+
+func ruleSourceRestoreMode(r *http.Request) bool {
+	if r == nil {
+		return false
+	}
+	value := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("restore")))
+	return value == "1" || value == "true" || value == "yes"
 }
 
 func decodeRuleSourceItem(r *http.Request) (RuleSourceItem, error) {

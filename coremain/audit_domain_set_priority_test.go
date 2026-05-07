@@ -9,9 +9,9 @@ func TestNormalizeAuditDomainSetPrefersCusnocnOverGeositeNoCn(t *testing.T) {
 	}
 }
 
-func TestNormalizeAuditDomainSetPrefersProxyOverMemoryDirect(t *testing.T) {
-	got := normalizeAuditDomainSet("订阅代理|记忆直连|记忆代理", "A")
-	if got != "记忆代理" {
+func TestNormalizeAuditDomainSetPrefersSubscriptionDirectOverMemoryProxy(t *testing.T) {
+	got := normalizeAuditDomainSet("订阅直连|记忆代理", "A")
+	if got != "订阅直连" {
 		t.Fatalf("unexpected normalized domain set: %q", got)
 	}
 }
