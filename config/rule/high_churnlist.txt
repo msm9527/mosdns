@@ -7,8 +7,8 @@ domain:bsccdn.net
 domain:xycdn.com
 domain:douyucdn.cn
 domain:bilivideo.cn
-domain:iqiyi.com
-domain:xmcdn.com
+domain:bilivideo.com
+domain:bilivideo.net
 domain:yximgs.com
 keyword:pcdn
 keyword:p2p
@@ -21,13 +21,56 @@ domain:cdnhwc2.com
 domain:cdnhwc5.com
 domain:tbcache.com
 
-# 短视频高频调度
-domain:douyin.com
+# 抖音 / 字节短视频 CDN 与调度
+domain:douyincdn.com
+domain:douyinpic.com
+domain:douyinstatic.com
 domain:douyinvod.com
-domain:snssdk.com
+domain:huoshancdn.com
+domain:huoshanimg.com
+domain:huoshanstatic.com
+domain:huoshanvideo.cn
+domain:huoshanvideo.net
+domain:ihuoshanimg.com
+domain:ihuoshanstatic.com
+domain:ihuoshanvod.com
+domain:ixiguavideo.com
 domain:bytecdn.cn
-domain:byteimg.com
-domain:bytedance.com
+domain:bytecdn.com
+domain:bytecdn.net
+domain:bytedcdn.com
+domain:bytedancevod.com
+domain:volcfcdn.com
+domain:volcvideo.com
+domain:volcvod.com
+regexp:^v[0-9]+-dy-.*\.zjcdn\.com$
+
+# B 站视频 / 图片 CDN 与调度
+domain:hdslb.com
+domain:hdslb.org
+domain:biliimg.com
+domain:biliapi.net
+
+# 快手 CDN / 视频调度
+domain:gifshow.com
+domain:kuaishouzt.com
+domain:kwaicdn.com
+domain:kwimgs.com
+domain:kuaishouapp.net
+
+# 小红书 CDN / 跳转调度
+domain:xhscdn.com
+domain:xhscdn.net
+domain:xhslink.com
+domain:xiaohongshu-mycdn.com
+
+# 微信视频号 / 图片与小程序 CDN
+full:mpvideo.qpic.cn
+domain:mmsns.qpic.cn
+domain:mmbiz.qpic.cn
+full:wxapp.tc.qq.com
+full:socwxsns.video.qq.com
+full:finder.video.qq.com
 
 # 游戏下载/CDN 调度
 domain:steamcontent.com

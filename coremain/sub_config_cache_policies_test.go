@@ -132,6 +132,52 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	}
 }
 
+func TestRepoHighChurnTemplateUsesPreciseVideoCDNSeeds(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "config", "rule", "high_churnlist.txt"))
+	if err != nil {
+		t.Fatalf("read high churn template: %v", err)
+	}
+	body := string(data)
+	for _, rule := range []string{
+		"domain:douyinvod.com",
+		"domain:huoshanvideo.net",
+		"regexp:^v[0-9]+-dy-.*\\.zjcdn\\.com$",
+		"domain:bilivideo.com",
+		"domain:hdslb.com",
+		"domain:yximgs.com",
+		"domain:gifshow.com",
+		"domain:kwimgs.com",
+		"domain:xhscdn.com",
+		"full:mpvideo.qpic.cn",
+		"full:finder.video.qq.com",
+		"domain:steamcontent.com",
+		"keyword:httpdns",
+		"keyword:pcdn",
+	} {
+		if !strings.Contains(body, rule+"\n") {
+			t.Fatalf("high churn template missing precise seed %q", rule)
+		}
+	}
+	for _, broadRule := range []string{
+		"domain:bilibili.com",
+		"domain:kuaishou.com",
+		"domain:xiaohongshu.com",
+		"domain:weixin.qq.com",
+		"domain:qpic.cn",
+		"domain:tc.qq.com",
+		"domain:bytedance.com",
+		"domain:douyin.com",
+		"domain:iqiyi.com",
+		"domain:xmcdn.com",
+		"domain:snssdk.com",
+		"domain:byteimg.com",
+	} {
+		if strings.Contains(body, broadRule+"\n") {
+			t.Fatalf("high churn template must not include broad/stable rule %q", broadRule)
+		}
+	}
+}
+
 func TestRepoCacheUpstreamTemplateUsesCompatibleCacheArgs(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("..", "config", "sub_config", "21-data-cache-upstreams.yaml"))
 	if err != nil {
