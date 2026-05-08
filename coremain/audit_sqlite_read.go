@@ -248,7 +248,17 @@ func scanAuditLogRow(scanner scanner) (AuditLog, error) {
 			return AuditLog{}, fmt.Errorf("unmarshal sqlite audit answers: %w", err)
 		}
 	}
+	log.DomainSetNorm = normalizeAuditDomainSet(firstNonEmptyAuditValue(log.DomainSetNorm, log.DomainSetRaw), log.QueryType)
 	return log, nil
+}
+
+func firstNonEmptyAuditValue(values ...string) string {
+	for _, value := range values {
+		if trimmed := strings.TrimSpace(value); trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
 }
 
 func joinAuditWhere(where []string, args []any) (string, []any) {

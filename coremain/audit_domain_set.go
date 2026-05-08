@@ -18,10 +18,10 @@ var auditDomainSetPriority = []string{
 	"高变化域名",
 	"灰名单",
 	"白名单",
-	"订阅直连补充",
-	"订阅代理补充",
-	"订阅代理",
-	"订阅直连",
+	"直连补充",
+	"代理补充",
+	"国外分流",
+	"国内分流",
 	"记忆代理",
 	"记忆直连",
 	unmatchedAuditDomainSet,
@@ -79,8 +79,17 @@ func splitAuditDomainSetTags(raw string) []string {
 
 func canonicalAuditDomainSetTag(tag string) string {
 	tag = strings.TrimSpace(tag)
-	if tag == "unmatched_rule" {
+	switch tag {
+	case "unmatched_rule":
 		return unmatchedAuditDomainSet
+	case "订阅直连补充":
+		return "直连补充"
+	case "订阅代理补充":
+		return "代理补充"
+	case "订阅代理":
+		return "国外分流"
+	case "订阅直连":
+		return "国内分流"
 	}
 	return tag
 }

@@ -74,10 +74,10 @@
 | 10 | CN fakeip filter | `unified_matcher1` |
 | 11 | 记忆直连 | `unified_matcher1` |
 | 12 | 记忆代理 | `unified_matcher1` |
-| 13 | 订阅直连补充 | `unified_matcher1` |
-| 14 | 订阅代理 | `unified_matcher1` |
-| 15 | 订阅代理补充 | `unified_matcher1` |
-| 16 | 订阅直连 | `unified_matcher1` |
+| 13 | 直连补充 | `unified_matcher1` |
+| 14 | 国外分流 | `unified_matcher1` |
+| 15 | 代理补充 | `unified_matcher1` |
+| 16 | 国内分流 | `unified_matcher1` |
 | 17 | 默认未命中 | `unified_matcher1.default_mark` |
 | 18 | 命中直连 IP | `process_v4/v6` |
 | 19 | IPv4 有效无污染 | `process_v4` |

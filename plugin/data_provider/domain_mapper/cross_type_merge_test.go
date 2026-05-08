@@ -28,8 +28,8 @@ func TestDomainMapperFastMatchMergesKeywordAndFullRules(t *testing.T) {
 	})
 	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
 		Rules: []RuleConfig{
-			{Tag: "cusnocn", Mark: 15, OutputTag: "订阅代理补充"},
-			{Tag: "geosite_cn", Mark: 16, OutputTag: "订阅直连"},
+			{Tag: "cusnocn", Mark: 15, OutputTag: "代理补充"},
+			{Tag: "geosite_cn", Mark: 16, OutputTag: "国内分流"},
 		},
 	})
 	if err != nil {
@@ -43,7 +43,7 @@ func TestDomainMapperFastMatchMergesKeywordAndFullRules(t *testing.T) {
 	if len(marks) != 2 || marks[0] != 15 || marks[1] != 16 {
 		t.Fatalf("unexpected combined marks: %v", marks)
 	}
-	if tags != "订阅代理补充|订阅直连" && tags != "订阅直连|订阅代理补充" {
+	if tags != "代理补充|国内分流" && tags != "国内分流|代理补充" {
 		t.Fatalf("unexpected combined tags: %q", tags)
 	}
 }
@@ -55,8 +55,8 @@ func TestDomainMapperFastMatchMergesRegexpAndDomainRules(t *testing.T) {
 	})
 	dmAny, err := NewMapper(coremain.NewBP("unified_matcher1", m), &Args{
 		Rules: []RuleConfig{
-			{Tag: "cusnocn", Mark: 15, OutputTag: "订阅代理补充"},
-			{Tag: "geosite_cn", Mark: 16, OutputTag: "订阅直连"},
+			{Tag: "cusnocn", Mark: 15, OutputTag: "代理补充"},
+			{Tag: "geosite_cn", Mark: 16, OutputTag: "国内分流"},
 		},
 	})
 	if err != nil {
@@ -70,7 +70,7 @@ func TestDomainMapperFastMatchMergesRegexpAndDomainRules(t *testing.T) {
 	if len(marks) != 2 || marks[0] != 15 || marks[1] != 16 {
 		t.Fatalf("unexpected combined marks: %v", marks)
 	}
-	if tags != "订阅代理补充|订阅直连" && tags != "订阅直连|订阅代理补充" {
+	if tags != "代理补充|国内分流" && tags != "国内分流|代理补充" {
 		t.Fatalf("unexpected combined tags: %q", tags)
 	}
 }
@@ -78,7 +78,7 @@ func TestDomainMapperFastMatchMergesRegexpAndDomainRules(t *testing.T) {
 func TestDomainMapperFastMatchStaticHitWithoutHotRules(t *testing.T) {
 	dm := newTestMapper(17, "未命中", &MatchResult{
 		Marks:      []uint8{11},
-		JoinedTags: "订阅直连",
+		JoinedTags: "国内分流",
 	}, "Example.Org.")
 
 	marks, tags, ok := dm.FastMatch("example.org.")
@@ -88,7 +88,7 @@ func TestDomainMapperFastMatchStaticHitWithoutHotRules(t *testing.T) {
 	if len(marks) != 1 || marks[0] != 11 {
 		t.Fatalf("unexpected marks: %v", marks)
 	}
-	if tags != "订阅直连" {
+	if tags != "国内分流" {
 		t.Fatalf("unexpected tags: %q", tags)
 	}
 }

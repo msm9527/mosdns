@@ -97,10 +97,10 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 	}{
 		{7, "sequence_fakeip", "灰名单优先走 fakeip/代理"},
 		{8, "sequence_local", "白名单走国内直连链路"},
-		{13, "sequence_local", "订阅直连补充走国内真实解析链路"},
-		{15, "sequence_fakeip_addlist", "订阅代理补充走 fakeip/代理并加入清单"},
-		{14, "sequence_fakeip_addlist", "订阅代理走 fakeip/代理并加入清单"},
-		{16, "sequence_local", "订阅直连走国内真实解析链路"},
+		{13, "sequence_local", "直连补充走国内真实解析链路"},
+		{15, "sequence_fakeip_addlist", "代理补充走 fakeip/代理并加入清单"},
+		{14, "sequence_fakeip_addlist", "国外分流走 fakeip/代理并加入清单"},
+		{16, "sequence_local", "国内分流走国内真实解析链路"},
 		{12, "sequence_fakeip", "记忆代理走 fakeip/代理"},
 		{11, "sequence_local_divert", "记忆直连走国内链路"},
 	} {

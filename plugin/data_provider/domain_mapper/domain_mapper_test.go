@@ -366,7 +366,7 @@ func newBenchmarkMapper(ruleCount int) *DomainMapper {
 		rule := fmt.Sprintf("domain:bench-%d.example.org", i)
 		res := &MatchResult{
 			Marks:      []uint8{11},
-			JoinedTags: "订阅直连",
+			JoinedTags: "国内分流",
 		}
 		if err := m.Add(rule, &compiledMatch{
 			staticResult: res,

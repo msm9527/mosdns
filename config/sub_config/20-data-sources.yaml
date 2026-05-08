@@ -77,7 +77,7 @@ policies:
         - rule/rewrite.txt
       dns: 127.0.0.1:2222
 
-  # 订阅补充：代理补充规则。
+  # 分流补充：代理补充规则。
   - name: cusnocn
     type: sd_set_light
     args:
@@ -85,7 +85,7 @@ policies:
       config_file: custom_config/diversion_sources.yaml
       bind_to: cusnocn
 
-  # 订阅补充：直连补充规则。
+  # 分流补充：直连补充规则。
   - name: cuscn
     type: sd_set_light
     args:
@@ -236,16 +236,16 @@ policies:
           output_tag: 记忆代理
         - tag: cuscn
           mark: 13
-          output_tag: 订阅直连补充
+          output_tag: 直连补充
         - tag: geosite_no_cn
           mark: 14
-          output_tag: 订阅代理
+          output_tag: 国外分流
         - tag: cusnocn
           mark: 15
-          output_tag: 订阅代理补充
+          output_tag: 代理补充
         - tag: geosite_cn
           mark: 16
-          output_tag: 订阅直连
+          output_tag: 国内分流
         - tag: high_churnlist
           mark: 17
           output_tag: 高变化域名

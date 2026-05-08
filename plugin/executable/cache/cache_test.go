@@ -1575,7 +1575,7 @@ func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
 	defer c.Close()
 
 	seedCtx := testQueryContext(t, "domainset-bypass.example.", net.IPv4(1, 1, 1, 1))
-	seedCtx.StoreValue(query_context.KeyDomainSet, "订阅直连|高变CDN")
+	seedCtx.StoreValue(query_context.KeyDomainSet, "国内分流|高变CDN")
 	keyBuf, bufPtr := getMsgKeyBytes(seedCtx.Q(), seedCtx, false, nil)
 	msgKey := string(keyBuf)
 	releaseKeyBuffer(bufPtr)
@@ -1590,7 +1590,7 @@ func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
 		resp:           packedMsg,
 		storedUnixNano: now.UnixNano(),
 		expireUnixNano: now.Add(time.Minute).UnixNano(),
-		domainSet:      encodeStoredRouteMetadata("订阅直连|高变CDN", "订阅直连|高变CDN", ""),
+		domainSet:      encodeStoredRouteMetadata("国内分流|高变CDN", "国内分流|高变CDN", ""),
 	}
 	c.prepareCacheItemForStore(cachedItem)
 	k := key(msgKey)
@@ -1598,7 +1598,7 @@ func Test_cachePlugin_ExecBypassesConfiguredDomainSet(t *testing.T) {
 	c.shards[k.Sum()%shardCount].updateL1(k, cachedItem)
 
 	qCtx := testQueryContext(t, "domainset-bypass.example.", net.IPv4(2, 2, 2, 2))
-	qCtx.StoreValue(query_context.KeyDomainSet, "订阅直连|高变CDN")
+	qCtx.StoreValue(query_context.KeyDomainSet, "国内分流|高变CDN")
 	if err := c.Exec(context.Background(), qCtx, sequence.ChainWalker{}); err != nil {
 		t.Fatalf("Exec: %v", err)
 	}

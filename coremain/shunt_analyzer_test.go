@@ -270,7 +270,7 @@ policies:
       rules:
         - tag: geosite_no_cn
           mark: 14
-          output_tag: 订阅代理
+          output_tag: 国外分流
 `)
 	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
 sources:
