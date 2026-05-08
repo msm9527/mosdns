@@ -20,11 +20,27 @@ import (
 )
 
 func TestParseDomainFormats(t *testing.T) {
-	textRules, err := ParseDomainBytes(FormatList, []byte("+.example.com\nDOMAIN,exact.example\n"))
+	textRules, err := ParseDomainBytes(FormatList, []byte(strings.Join([]string{
+		"+.example.com",
+		"DOMAIN,exact.example",
+		"DOMAIN-SUFFIX,upper.example:@cn",
+		"domain:aliyun.com:@cn",
+		"full:mtalk.google.com:@!cn",
+		"regexp:^.+-mihayo\\.akamaized\\.net$:@cn",
+		"plain.example:@cn",
+	}, "\n")))
 	if err != nil {
 		t.Fatalf("ParseDomainBytes list: %v", err)
 	}
-	expectDomainRules(t, textRules, []string{"domain:example.com", "full:exact.example"})
+	expectDomainRules(t, textRules, []string{
+		"domain:aliyun.com",
+		"domain:example.com",
+		"domain:plain.example",
+		"domain:upper.example",
+		"full:exact.example",
+		"full:mtalk.google.com",
+		"regexp:^.+-mihayo\\.akamaized\\.net$",
+	})
 
 	jsonData := []byte(`{"rules":[{"domain_suffix":["json.example"],"domain_keyword":"keyword"}]}`)
 	jsonRules, err := ParseDomainBytes(FormatJSON, jsonData)

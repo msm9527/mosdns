@@ -18,8 +18,32 @@
 # - path: 原始文件相对 config 根目录的路径，建议放在 diversion/ 目录下。
 # - url: 仅 remote 源需要填写。
 # - auto_update / update_interval_hours: 仅 remote 源有效。
+#
+# 补充入口说明：
+# - cuscn: 直连补充，适合放“非 .cn 但在国内应真实解析/直连”的域名。
+# - cusnocn: 代理补充，适合放“.cn 或中国站点外观但应继续走代理/FakeIP”的域名。
+# - Loyalsoldier/domain-list-custom 的 geolocation-cn.txt / geolocation-!cn.txt 可作为
+#   人工筛选参考源，但默认不全量启用，避免大规则源误伤和增加启动内存。
 
 sources:
+    - id: cuscn_local
+      name: 直连补充（本地）
+      bind_to: cuscn
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: list
+      source_kind: local
+      path: diversion/cuscn.list
+    - id: cusnocn_local
+      name: 代理补充（本地）
+      bind_to: cusnocn
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: list
+      source_kind: local
+      path: diversion/cusnocn.list
     - id: geoip_cn
       name: 国内 IP 集
       bind_to: geoip_cn

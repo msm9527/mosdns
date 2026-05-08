@@ -299,6 +299,136 @@ sources:
 	}
 }
 
+func TestShuntAnalyzerPrefersCuscnSupplementOverGeositeNoCn(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: cuscn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: cuscn
+  - name: geosite_no_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_no_cn
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: cuscn
+          mark: 13
+          output_tag: 直连补充
+        - tag: geosite_no_cn
+          mark: 14
+          output_tag: 国外分流
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: cuscn_local
+    name: cuscn local
+    bind_to: cuscn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/cuscn.list
+  - id: geosite_no_cn
+    name: geosite no cn
+    bind_to: geosite_no_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/geosite-no-cn.list
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "cuscn.list"), "domain:logitech.com\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "geosite-no-cn.list"), "domain:logitech.com\n")
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("www.logitech.com", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 13 || result.Decision.Action != "sequence_local" {
+		t.Fatalf("unexpected decision: %+v matches=%+v", result.Decision, result.Matches)
+	}
+}
+
+func TestShuntAnalyzerPrefersCusnocnSupplementOverGeositeCn(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: cusnocn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: cusnocn
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_cn
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: cusnocn
+          mark: 15
+          output_tag: 代理补充
+        - tag: geosite_cn
+          mark: 16
+          output_tag: 国内分流
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: cusnocn_local
+    name: cusnocn local
+    bind_to: cusnocn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/cusnocn.list
+  - id: geosite_cn
+    name: geosite cn
+    bind_to: geosite_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/geosite-cn.list
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "cusnocn.list"), "domain:googleapis.cn\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "geosite-cn.list"), "domain:googleapis.cn\n")
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("translate.googleapis.cn", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 15 || result.Decision.Action != "sequence_fakeip_addlist" {
+		t.Fatalf("unexpected decision: %+v matches=%+v", result.Decision, result.Matches)
+	}
+}
+
 func TestRuntimeShuntConflictsCmd(t *testing.T) {
 	baseDir := t.TempDir()
 	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)

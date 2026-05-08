@@ -1,2 +1,10 @@
 # 自定义代理补充规则。
 # 一行一条，支持纯域名、+.suffix、full:、domain:、keyword:、regexp: 等常见写法。
+#
+# 用途：.cn 或中国站点外观但应继续走代理/FakeIP 的域名补充（!cn@cn）。
+# 参考源：
+# - https://github.com/Loyalsoldier/domain-list-custom/blob/release/geolocation-!cn.txt
+#
+# 默认只放非常明确的 Google 中国域名反例，避免误伤真实国内服务。
+full:scholar.google.cn
+domain:googleapis.cn

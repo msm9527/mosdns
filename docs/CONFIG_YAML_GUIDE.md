@@ -93,6 +93,12 @@
 | 39 | 指定客户端直连 | `sequence_common_precheck` / refresh |
 | 48 | 快路径已做 client_ip 白/黑名单判定 | UDP 快路径（代码侧） |
 
+`13/15` 对应 `custom_config/diversion_sources.yaml` 里的补充入口：
+
+- `cuscn` / 直连补充：放“非 .cn 但国内应真实解析/直连”的域名，默认本地文件为 `diversion/cuscn.list`。
+- `cusnocn` / 代理补充：放“.cn 或中国站点外观但应继续走代理/FakeIP”的域名，默认本地文件为 `diversion/cusnocn.list`。
+- `Loyalsoldier/domain-list-custom` 的 `geolocation-cn.txt` 与 `geolocation-!cn.txt` 可以作为人工筛选参考源；默认不全量启用，避免误伤和增加启动内存。
+
 ## 5. 端口清单（默认）
 
 | 端口 | 用途 |
