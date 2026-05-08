@@ -31,6 +31,14 @@ type RuleSourceSyncOptions struct {
 	AllowMissingCache bool
 }
 
+func StartupRuleSourceSyncOptions() RuleSourceSyncOptions {
+	return RuleSourceSyncOptions{PreferCache: true, AllowMissingCache: true}
+}
+
+func BackgroundRuleSourceSyncOptions() RuleSourceSyncOptions {
+	return RuleSourceSyncOptions{AllowMissingCache: true}
+}
+
 type RuleSourceVersion struct {
 	SourceID          string
 	LocalPath         string
@@ -82,11 +90,11 @@ func SyncRuleSource(
 			}
 			return loadExistingRuleSource(dbPath, scope, source, localPath)
 		}
-		if options.AllowMissingCache && !options.ForceRemote && !localRuleSourceExists(localPath) {
+		if options.AllowMissingCache && options.PreferCache && !options.ForceRemote && !localRuleSourceExists(localPath) {
 			return markMissingRuleSourceCache(dbPath, scope, source, localPath)
 		}
 		if shouldDownloadRuleSource(dbPath, scope, source, localPath, options) {
-			return downloadRuleSource(ctx, client, dbPath, scope, source, localPath)
+			return downloadRuleSource(ctx, client, dbPath, scope, source, localPath, options.AllowMissingCache)
 		}
 	}
 	if options.MetadataOnly {
@@ -100,8 +108,12 @@ func markMissingRuleSourceCache(
 	scope rulesource.Scope,
 	source rulesource.Source,
 	localPath string,
+	cause ...error,
 ) (*RuleSourceSyncResult, error) {
 	err := fmt.Errorf("rule source cache %s unavailable; remote download deferred", localPath)
+	if len(cause) > 0 && cause[0] != nil {
+		err = fmt.Errorf("%w; %v", err, cause[0])
+	}
 	saveRuleSourceError(dbPath, scope, source.ID, err)
 	return &RuleSourceSyncResult{
 		LocalPath:    localPath,
@@ -149,6 +161,7 @@ func downloadRuleSource(
 	scope rulesource.Scope,
 	source rulesource.Source,
 	localPath string,
+	allowMissingCache bool,
 ) (*RuleSourceSyncResult, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, source.URL, nil)
 	if err != nil {
@@ -156,23 +169,23 @@ func downloadRuleSource(
 	}
 	resp, err := client.Do(req)
 	if err != nil {
-		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err, allowMissingCache)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		err := fmt.Errorf("download %s failed with status %d", source.ID, resp.StatusCode)
-		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err, allowMissingCache)
 	}
 	data, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err, allowMissingCache)
 	}
 	count, err := parseRuleSourceCount(source, data)
 	if err != nil {
-		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err, allowMissingCache)
 	}
 	if err := writeRuleSourceFile(localPath, data); err != nil {
-		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err)
+		return fallbackToExistingRuleSource(dbPath, scope, source, localPath, err, allowMissingCache)
 	}
 	result := &RuleSourceSyncResult{
 		Data:        data,
@@ -239,6 +252,7 @@ func fallbackToExistingRuleSource(
 	source rulesource.Source,
 	localPath string,
 	cause error,
+	allowMissingCache bool,
 ) (*RuleSourceSyncResult, error) {
 	result, err := readExistingRuleSource(dbPath, scope, source, localPath)
 	if err != nil {
@@ -250,6 +264,9 @@ func fallbackToExistingRuleSource(
 			localPath,
 			err,
 		)
+		if allowMissingCache {
+			return markMissingRuleSourceCache(dbPath, scope, source, localPath, combinedErr)
+		}
 		saveRuleSourceError(dbPath, scope, source.ID, combinedErr)
 		return nil, combinedErr
 	}

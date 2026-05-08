@@ -79,7 +79,7 @@ func newSiSet(bp *coremain.BP, args any) (any, error) {
 	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
-	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{PreferCache: true}); err != nil {
+	if err := p.reloadAllRules(coremain.StartupRuleSourceSyncOptions()); err != nil {
 		return nil, err
 	}
 	go p.backgroundSync()
@@ -234,12 +234,9 @@ func (p *SiSet) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
 
 func ruleSourceReloadOptions(global *coremain.GlobalOverrides) coremain.RuleSourceSyncOptions {
 	if coremain.RuleSourceReloadMode(global) == "definitions" {
-		return coremain.RuleSourceSyncOptions{
-			PreferCache:       true,
-			AllowMissingCache: true,
-		}
+		return coremain.StartupRuleSourceSyncOptions()
 	}
-	return coremain.RuleSourceSyncOptions{}
+	return coremain.BackgroundRuleSourceSyncOptions()
 }
 
 func (p *SiSet) backgroundSync() {
@@ -249,7 +246,7 @@ func (p *SiSet) backgroundSync() {
 		select {
 		case <-ticker.C:
 			if err := p.loadSources(); err == nil {
-				_ = p.reloadAllRules(coremain.RuleSourceSyncOptions{})
+				_ = p.reloadAllRules(coremain.BackgroundRuleSourceSyncOptions())
 			}
 		case <-p.ctx.Done():
 			return

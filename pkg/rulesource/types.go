@@ -65,7 +65,7 @@ type Source struct {
 	SourceKind          SourceKind `yaml:"source_kind" json:"source_kind"`
 	Path                string     `yaml:"path,omitempty" json:"path,omitempty"`
 	URL                 string     `yaml:"url,omitempty" json:"url,omitempty"`
-	AutoUpdate          bool       `yaml:"auto_update,omitempty" json:"auto_update,omitempty"`
+	AutoUpdate          bool       `yaml:"auto_update" json:"auto_update,omitempty"`
 	UpdateIntervalHours int        `yaml:"update_interval_hours,omitempty" json:"update_interval_hours,omitempty"`
 }
 

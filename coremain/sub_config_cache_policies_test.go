@@ -475,6 +475,42 @@ func TestRepoBattleNetRulesUseDomesticDirectAndForeignFakeIP(t *testing.T) {
 	}
 }
 
+func TestRepoWhitelistKeepsGlobalBrandDirectPriorityGaps(t *testing.T) {
+	whitelist, err := os.ReadFile(filepath.Join("..", "config", "rule", "whitelist.txt"))
+	if err != nil {
+		t.Fatalf("read whitelist template: %v", err)
+	}
+	whitelistBody := string(whitelist)
+
+	for _, rule := range []string{
+		"domain:logi.com",
+		"domain:logitech.com",
+		"domain:dell.com",
+		"domain:hp.com",
+		"domain:intel.com",
+		"domain:amd.com",
+		"domain:nvidia.com",
+		"domain:adobe.com",
+		"domain:oracle.com",
+		"domain:sony.com",
+	} {
+		if !strings.Contains(whitelistBody, rule) {
+			t.Fatalf("whitelist template missing global brand direct-priority rule %q", rule)
+		}
+	}
+
+	for _, rule := range []string{
+		"domain:lenovo.com",
+		"domain:cloudflare-cn.com",
+		"domain:amazonaws.cn",
+		"full:time.amazonaws.cn",
+	} {
+		if strings.Contains(whitelistBody, rule) {
+			t.Fatalf("whitelist template duplicates CN source covered rule %q", rule)
+		}
+	}
+}
+
 func TestRepoRequeryUIDefaultsMatchSchedulerDefaults(t *testing.T) {
 	indexHTML, err := os.ReadFile(filepath.Join("..", "config", "ui", "index.html"))
 	if err != nil {

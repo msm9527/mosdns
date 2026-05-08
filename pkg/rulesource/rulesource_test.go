@@ -223,6 +223,37 @@ func TestValidateConfig(t *testing.T) {
 	}
 }
 
+func TestMarshalConfigPreservesDisabledRemoteAutoUpdate(t *testing.T) {
+	cfg := Config{
+		Sources: []Source{{
+			ID:                  "cusnocn_loyalsoldier",
+			Name:                "国外专属补充",
+			BindTo:              "cusnocn",
+			Enabled:             false,
+			Behavior:            BehaviorDomain,
+			MatchMode:           MatchModeDomainSet,
+			Format:              FormatList,
+			SourceKind:          SourceKindRemote,
+			Path:                "diversion/geolocation-not-cn.list",
+			URL:                 "https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/geolocation-!cn.txt",
+			AutoUpdate:          false,
+			UpdateIntervalHours: 24,
+		}},
+	}
+
+	body, err := MarshalConfig(cfg, ScopeDiversion)
+	if err != nil {
+		t.Fatalf("MarshalConfig: %v", err)
+	}
+	text := string(body)
+	if !strings.Contains(text, "enabled: false") {
+		t.Fatalf("expected disabled source to be explicit, got:\n%s", text)
+	}
+	if !strings.Contains(text, "auto_update: false") {
+		t.Fatalf("expected disabled remote auto_update to be explicit, got:\n%s", text)
+	}
+}
+
 func TestValidateConfigRequiresBindToForDiversion(t *testing.T) {
 	cfg := Config{
 		Sources: []Source{{

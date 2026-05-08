@@ -2,9 +2,12 @@ package si_set
 
 import (
 	"context"
+	"errors"
 	"net/http"
+	"net/netip"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
@@ -94,4 +97,69 @@ func TestSiSetReloadAllRulesSkipsUnchangedSources(t *testing.T) {
 	if second := p.matcher.Load(); first != second {
 		t.Fatal("expected unchanged source reload to keep existing matcher instance")
 	}
+}
+
+func TestSiSetAllowsMissingRemoteCacheOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
+
+	cfg := rulesource.Config{
+		Sources: []rulesource.Source{{
+			ID:                  "remote",
+			Name:                "remote",
+			BindTo:              "geoip_cn",
+			Enabled:             true,
+			Behavior:            rulesource.BehaviorIPCIDR,
+			MatchMode:           rulesource.MatchModeIPCIDRSet,
+			Format:              rulesource.FormatList,
+			SourceKind:          rulesource.SourceKindRemote,
+			Path:                "diversion/remote.list",
+			URL:                 "https://example.invalid/remote.list",
+			AutoUpdate:          true,
+			UpdateIntervalHours: 24,
+		}},
+	}
+	if err := coremain.SaveDiversionSourcesToCustomConfig(cfg); err != nil {
+		t.Fatalf("SaveDiversionSourcesToCustomConfig: %v", err)
+	}
+
+	p := &SiSet{
+		baseDir:    dir,
+		configFile: filepath.Join("custom_config", "diversion_sources.yaml"),
+		bindTo:     "geoip_cn",
+		httpClient: &http.Client{Transport: failingRoundTripper{}},
+		ctx:        context.Background(),
+	}
+	p.matcher.Store(netlist.NewList())
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	if err := p.reloadAllRules(coremain.StartupRuleSourceSyncOptions()); err != nil {
+		t.Fatalf("startup reloadAllRules: %v", err)
+	}
+	if p.Match(netipMustParse("1.1.1.1")) {
+		t.Fatal("missing remote cache should start as an empty matcher")
+	}
+	statuses, err := coremain.ListRuleSourceStatusByScope(p.runtimeDBPath(), rulesource.ScopeDiversion)
+	if err != nil {
+		t.Fatalf("ListRuleSourceStatusByScope: %v", err)
+	}
+	if status := statuses["remote"]; !strings.Contains(status.LastError, "download deferred") {
+		t.Fatalf("expected deferred remote status, got %+v", status)
+	}
+}
+
+type failingRoundTripper struct{}
+
+func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("network unavailable")
+}
+
+func netipMustParse(s string) netip.Addr {
+	addr, err := netip.ParseAddr(s)
+	if err != nil {
+		panic(err)
+	}
+	return addr
 }

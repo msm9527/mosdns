@@ -1,18 +1,5 @@
 # 自定义直连补充规则。
 # 一行一条，支持纯域名、+.suffix、full:、domain:、keyword:、regexp: 等常见写法。
 #
-# 用途：非 .cn 但国内应真实解析/直连的域名补充（cn@!cn）。
-# 参考源：
-# - https://github.com/Loyalsoldier/domain-list-custom/blob/release/geolocation-cn.txt
-# - https://github.com/Loyalsoldier/domain-list-custom/blob/release/geolocation-!cn.txt
-full:license.19930520.xyz
-full:license.msmbox.net
-
-# Logitech / 罗技中国站点。上游 geolocation-!cn 会把这些归到代理侧，
-# 但 www.logitech.com/zh-cn、logi.com 等国内访问应走真实解析。
-domain:logi.com
-domain:logitech.com
-domain:logitechg.com
-domain:logitech.com.cn
-domain:logitechg.com.cn
-domain:logitechio.com.cn
+# 用途：用户手动追加“非 .cn 但国内应真实解析/直连”的域名。
+# 默认国内加速补充源见 custom_config/diversion_sources.yaml。

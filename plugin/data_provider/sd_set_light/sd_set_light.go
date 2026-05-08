@@ -79,7 +79,7 @@ func newSdSetLight(bp *coremain.BP, args any) (any, error) {
 	if err := p.loadSources(); err != nil {
 		return nil, err
 	}
-	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{PreferCache: true}); err != nil {
+	if err := p.reloadAllRules(coremain.StartupRuleSourceSyncOptions()); err != nil {
 		return nil, err
 	}
 	go p.backgroundSync()
@@ -248,12 +248,9 @@ func (p *SdSetLight) reloadAllRules(options coremain.RuleSourceSyncOptions) erro
 
 func ruleSourceReloadOptions(global *coremain.GlobalOverrides) coremain.RuleSourceSyncOptions {
 	if coremain.RuleSourceReloadMode(global) == "definitions" {
-		return coremain.RuleSourceSyncOptions{
-			PreferCache:       true,
-			AllowMissingCache: true,
-		}
+		return coremain.StartupRuleSourceSyncOptions()
 	}
-	return coremain.RuleSourceSyncOptions{}
+	return coremain.BackgroundRuleSourceSyncOptions()
 }
 
 func (p *SdSetLight) setRules(rules []string, syncState []coremain.RuleSourceVersion) {
@@ -270,7 +267,7 @@ func (p *SdSetLight) backgroundSync() {
 		select {
 		case <-ticker.C:
 			if err := p.loadSources(); err == nil {
-				_ = p.reloadAllRules(coremain.RuleSourceSyncOptions{})
+				_ = p.reloadAllRules(coremain.BackgroundRuleSourceSyncOptions())
 			}
 		case <-p.ctx.Done():
 			return

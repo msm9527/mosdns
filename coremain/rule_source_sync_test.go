@@ -197,6 +197,52 @@ func TestSyncRuleSource_AllowMissingCacheDefersRemoteDownload(t *testing.T) {
 	}
 }
 
+func TestSyncRuleSource_RemoteFailureWithAllowMissingCacheKeepsStartupAlive(t *testing.T) {
+	baseDir := t.TempDir()
+	dbPath := filepath.Join(baseDir, "runtime.db")
+	source := rulesource.Source{
+		ID:                  "missing-cache-download",
+		Name:                "missing-cache-download",
+		Behavior:            rulesource.BehaviorDomain,
+		MatchMode:           rulesource.MatchModeDomainSet,
+		Format:              rulesource.FormatList,
+		SourceKind:          rulesource.SourceKindRemote,
+		Path:                "diversion/missing-cache-download.list",
+		URL:                 "https://example.invalid/domains.txt",
+		AutoUpdate:          true,
+		UpdateIntervalHours: 24,
+	}
+	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return nil, errors.New("network unavailable")
+	})}
+	result, err := SyncRuleSource(
+		context.Background(),
+		client,
+		dbPath,
+		baseDir,
+		rulesource.ScopeDiversion,
+		source,
+		RuleSourceSyncOptions{AllowMissingCache: true},
+	)
+	if err != nil {
+		t.Fatalf("SyncRuleSource: %v", err)
+	}
+	if !result.MissingCache {
+		t.Fatalf("expected missing cache result, got %+v", result)
+	}
+	statuses, err := ListRuleSourceStatusByScope(dbPath, rulesource.ScopeDiversion)
+	if err != nil {
+		t.Fatalf("ListRuleSourceStatusByScope: %v", err)
+	}
+	status := statuses[source.ID]
+	if !strings.Contains(status.LastError, "network unavailable") || !strings.Contains(status.LastError, "download deferred") {
+		t.Fatalf("expected remote failure and deferred status, got %+v", status)
+	}
+	if !status.LastUpdated.IsZero() {
+		t.Fatalf("missing cache must not be marked as successfully updated: %+v", status)
+	}
+}
+
 func TestSyncRuleSource_MetadataOnlyUsesCachedFileMetadata(t *testing.T) {
 	baseDir := t.TempDir()
 	dbPath := filepath.Join(baseDir, "runtime.db")

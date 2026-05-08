@@ -2,9 +2,11 @@ package sd_set
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,6 +116,64 @@ func TestSdSetReloadAllRulesSkipsUnchangedSources(t *testing.T) {
 		t.Fatal("expected unchanged source reload to be skipped")
 	case <-time.After(200 * time.Millisecond):
 	}
+}
+
+func TestNewSdSetAllowsMissingRemoteCacheOnStartup(t *testing.T) {
+	dir := t.TempDir()
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
+
+	cfg := rulesource.Config{
+		Sources: []rulesource.Source{{
+			ID:                  "remote",
+			Name:                "remote",
+			BindTo:              "geosite_cn",
+			Enabled:             true,
+			Behavior:            rulesource.BehaviorDomain,
+			MatchMode:           rulesource.MatchModeDomainSet,
+			Format:              rulesource.FormatList,
+			SourceKind:          rulesource.SourceKindRemote,
+			Path:                "diversion/remote.list",
+			URL:                 "https://example.invalid/remote.list",
+			AutoUpdate:          true,
+			UpdateIntervalHours: 24,
+		}},
+	}
+	if err := coremain.SaveDiversionSourcesToCustomConfig(cfg); err != nil {
+		t.Fatalf("SaveDiversionSourcesToCustomConfig: %v", err)
+	}
+
+	p := &SdSet{
+		baseDir:     dir,
+		configFile:  filepath.Join("custom_config", "diversion_sources.yaml"),
+		bindTo:      "geosite_cn",
+		httpClient:  &http.Client{Transport: failingRoundTripper{}},
+		ctx:         context.Background(),
+		subscribers: make([]func(), 0),
+	}
+	p.matcher.Store(domain.NewDomainMixMatcher())
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	if err := p.reloadAllRules(coremain.StartupRuleSourceSyncOptions()); err != nil {
+		t.Fatalf("startup reloadAllRules: %v", err)
+	}
+	if _, matched := p.Match("example.com"); matched {
+		t.Fatal("missing remote cache should start as an empty matcher")
+	}
+	statuses, err := coremain.ListRuleSourceStatusByScope(p.runtimeDBPath(), rulesource.ScopeDiversion)
+	if err != nil {
+		t.Fatalf("ListRuleSourceStatusByScope: %v", err)
+	}
+	if status := statuses["remote"]; !strings.Contains(status.LastError, "download deferred") {
+		t.Fatalf("expected deferred remote status, got %+v", status)
+	}
+}
+
+type failingRoundTripper struct{}
+
+func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("network unavailable")
 }
 
 func waitForSdSetNotify(t *testing.T, ch <-chan struct{}) {
