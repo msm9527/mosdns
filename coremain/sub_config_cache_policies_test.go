@@ -33,6 +33,9 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
 		t.Fatalf("expected default cache_main client ttl clamp 120-900, got %+v", cfg.Response["cache_main"])
 	}
+	if cfg.Response["cache_main"].ServfailTTL != 1 || cfg.Response["cache_main"].ColdQueryWaitMs != 80 {
+		t.Fatalf("expected default cache_main short servfail ttl and bounded cold query wait, got %+v", cfg.Response["cache_main"])
+	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
 	}
@@ -81,6 +84,9 @@ func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *tes
 	if cfg.Response["cache_branch_foreign"].ClientTTLMin != 120 || cfg.Response["cache_branch_foreign"].ClientTTLMax != 900 {
 		t.Fatalf("cache_branch_foreign client ttl clamp = %+v, want 120-900", cfg.Response["cache_branch_foreign"])
 	}
+	if cfg.Response["cache_branch_foreign"].ServfailTTL != 1 || cfg.Response["cache_branch_foreign"].ColdQueryWaitMs != 80 {
+		t.Fatalf("cache_branch_foreign should use short servfail ttl and bounded cold query wait, got %+v", cfg.Response["cache_branch_foreign"])
+	}
 	if cfg.Response["cache_branch_foreign"].Persist {
 		t.Fatal("cache_branch_foreign should be short-term only")
 	}
@@ -126,6 +132,9 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	}
 	if cfg.Response["cache_main"].ClientTTLMin != 120 || cfg.Response["cache_main"].ClientTTLMax != 900 {
 		t.Fatalf("template cache_main should clamp client ttl 120-900, got %+v", cfg.Response["cache_main"])
+	}
+	if cfg.Response["cache_main"].ServfailTTL != 1 || cfg.Response["cache_main"].ColdQueryWaitMs != 80 {
+		t.Fatalf("template cache_main should use short servfail ttl and bounded cold query wait, got %+v", cfg.Response["cache_main"])
 	}
 	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
 		t.Fatalf("template cache_main should bypass DDNS and high-churn domain sets, got %+v", got)
@@ -206,6 +215,9 @@ func TestRepoCacheUpstreamTemplateUsesCompatibleCacheArgs(t *testing.T) {
 	}
 	if strings.Contains(body, "default_upstream_query_timeout") {
 		t.Fatalf("repo cache upstream template must not use legacy aliapi default_upstream_query_timeout")
+	}
+	if strings.Contains(body, "failure_suppress_ttl: 5") || strings.Contains(body, "persistent_servfail_ttl: 15") {
+		t.Fatalf("repo cache upstream template should keep transient SERVFAIL suppression short")
 	}
 }
 
@@ -638,7 +650,7 @@ response:
 func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
-		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, ClientTTLMin: 3, ClientTTLMax: 30, NXDomainTTL: 11, ServfailTTL: 12,
+		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, ClientTTLMin: 3, ClientTTLMax: 30, NXDomainTTL: 11, ServfailTTL: 12, ColdQueryWaitMs: 34,
 		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名", "高变化域名"}, ExcludeIPs: []string{"28.0.0.0/8", "f2b0::/18"}, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
@@ -659,7 +671,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("ApplyRuntimeCachePolicy(cache): %v", err)
 	}
 	args := pc.Args.(map[string]any)
-	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 || args["client_ttl_min"] != uint32(3) || args["client_ttl_max"] != uint32(30) {
+	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 || args["client_ttl_min"] != uint32(3) || args["client_ttl_max"] != uint32(30) || args["cold_query_wait_ms"] != 34 {
 		t.Fatalf("unexpected cache args: %+v", args)
 	}
 	bypassDomainSets, ok := args["bypass_domain_sets"].([]string)

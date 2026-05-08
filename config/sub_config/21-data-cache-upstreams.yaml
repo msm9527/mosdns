@@ -63,9 +63,9 @@ policies:
     args:
       concurrent: 3
       negative_response_grace_ms: 50
-      failure_suppress_ttl: 5
+      failure_suppress_ttl: 1
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 15
+      persistent_servfail_ttl: 5
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 60
       upstreams:
@@ -80,9 +80,9 @@ policies:
     args:
       concurrent: 2
       negative_response_grace_ms: 50
-      failure_suppress_ttl: 5
+      failure_suppress_ttl: 1
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 15
+      persistent_servfail_ttl: 5
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 60
       upstreams:
@@ -99,9 +99,9 @@ policies:
     args:
       concurrent: 1
       negative_response_grace_ms: 50
-      failure_suppress_ttl: 5
+      failure_suppress_ttl: 1
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 15
+      persistent_servfail_ttl: 5
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 60
       upstreams:
@@ -114,9 +114,9 @@ policies:
     type: aliapi
     args:
       concurrent: 1
-      failure_suppress_ttl: 5
+      failure_suppress_ttl: 1
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 15
+      persistent_servfail_ttl: 5
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 30
       upstreams:
@@ -128,9 +128,9 @@ policies:
     type: aliapi
     args:
       concurrent: 1
-      failure_suppress_ttl: 5
+      failure_suppress_ttl: 1
       persistent_servfail_threshold: 3
-      persistent_servfail_ttl: 15
+      persistent_servfail_ttl: 5
       upstream_failure_threshold: 2
       upstream_circuit_break_seconds: 30
       upstreams:

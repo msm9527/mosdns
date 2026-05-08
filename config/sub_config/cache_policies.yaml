@@ -68,7 +68,8 @@ response:
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 300
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 8192
     bypass_domain_sets:
@@ -95,7 +96,8 @@ response:
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 256
     bypass_domain_sets:
@@ -119,7 +121,8 @@ response:
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 180
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 256
     bypass_domain_sets:
@@ -143,7 +146,8 @@ response:
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 120
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 128
     bypass_domain_sets:
@@ -167,7 +171,8 @@ response:
     client_ttl_min: 600
     client_ttl_max: 600
     nxdomain_ttl: 60
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:
@@ -182,7 +187,8 @@ response:
     client_ttl_min: 600
     client_ttl_max: 600
     nxdomain_ttl: 60
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:
@@ -197,7 +203,8 @@ response:
     client_ttl_min: 120
     client_ttl_max: 900
     nxdomain_ttl: 60
-    servfail_ttl: 5
+    servfail_ttl: 1
+    cold_query_wait_ms: 80
     l1_enabled: true
     l1_total_cap: 2048
     bypass_domain_sets:

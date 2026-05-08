@@ -98,6 +98,12 @@ type AuditLogSearchTimeRange struct {
 type AuditLogSearchPage struct {
 	Limit  int    `json:"limit,omitempty"`
 	Cursor string `json:"cursor,omitempty"`
+	Offset int    `json:"offset,omitempty"`
+}
+
+type AuditLogSearchSort struct {
+	Field string `json:"field,omitempty"`
+	Order string `json:"order,omitempty"`
 }
 
 type AuditLogSearchFilters struct {
@@ -122,6 +128,7 @@ type AuditLogSearchFilters struct {
 type AuditLogSearchRequest struct {
 	TimeRange AuditLogSearchTimeRange `json:"time_range,omitempty"`
 	Page      AuditLogSearchPage      `json:"page,omitempty"`
+	Sort      AuditLogSearchSort      `json:"sort,omitempty"`
 	Keyword   *AuditLogKeywordSearch  `json:"keyword,omitempty"`
 	Filters   AuditLogSearchFilters   `json:"filters,omitempty"`
 }
@@ -131,6 +138,8 @@ type AuditLogsQuery struct {
 	To      time.Time
 	Limit   int
 	Cursor  string
+	Offset  int
+	Sort    AuditLogSearchSort
 	Keyword AuditLogKeywordSearch
 	Filters AuditLogSearchFilters
 }
@@ -260,6 +269,28 @@ func normalizeAuditSearchFilters(filters AuditLogSearchFilters) (AuditLogSearchF
 		return AuditLogSearchFilters{}, fmt.Errorf("duration_ms_min must be less than or equal to duration_ms_max")
 	}
 	return filters, nil
+}
+
+func normalizeAuditSearchSort(sort AuditLogSearchSort) (AuditLogSearchSort, error) {
+	field := strings.TrimSpace(strings.ToLower(sort.Field))
+	if field == "" {
+		field = "time"
+	}
+	switch field {
+	case "time", "duration":
+	default:
+		return AuditLogSearchSort{}, fmt.Errorf("unsupported sort field: %s", sort.Field)
+	}
+	order := strings.TrimSpace(strings.ToLower(sort.Order))
+	if order == "" {
+		order = "desc"
+	}
+	switch order {
+	case "asc", "desc":
+	default:
+		return AuditLogSearchSort{}, fmt.Errorf("unsupported sort order: %s", sort.Order)
+	}
+	return AuditLogSearchSort{Field: field, Order: order}, nil
 }
 
 func allAuditSearchFields() []AuditSearchField {

@@ -70,11 +70,49 @@ func TestAuditSearchSQLiteKeywordAndFilters(t *testing.T) {
 			t.Fatalf("unexpected logs = %+v", resp.Logs)
 		}
 	})
+
+	t.Run("offset pagination", func(t *testing.T) {
+		resp := mustQueryAuditLogs(t, storage, AuditLogsQuery{
+			From:   base,
+			To:     base.Add(3 * time.Minute),
+			Limit:  1,
+			Offset: 1,
+		})
+		if resp.Summary.MatchedCount != 4 {
+			t.Fatalf("MatchedCount = %d, want 4", resp.Summary.MatchedCount)
+		}
+		if len(resp.Logs) != 1 || resp.Logs[0].QueryName != "alpha.example" {
+			t.Fatalf("unexpected logs = %+v", resp.Logs)
+		}
+		if resp.NextCursor == "" {
+			t.Fatal("NextCursor is empty")
+		}
+	})
+
+	t.Run("duration sort", func(t *testing.T) {
+		resp := mustQueryAuditLogs(t, storage, AuditLogsQuery{
+			From:  base,
+			To:    base.Add(3 * time.Minute),
+			Limit: 2,
+			Sort:  AuditLogSearchSort{Field: "duration", Order: "desc"},
+		})
+		if resp.Summary.MatchedCount != 4 {
+			t.Fatalf("MatchedCount = %d, want 4", resp.Summary.MatchedCount)
+		}
+		if len(resp.Logs) != 2 {
+			t.Fatalf("len(resp.Logs) = %d, want 2", len(resp.Logs))
+		}
+		if resp.Logs[0].QueryName != "alpha.example" || resp.Logs[1].QueryName != "two.example" {
+			t.Fatalf("unexpected logs = %+v", resp.Logs)
+		}
+	})
 }
 
 func mustQueryAuditLogs(t *testing.T, storage *SQLiteAuditStorage, query AuditLogsQuery) AuditLogsResponse {
 	t.Helper()
-	query.Limit = 20
+	if query.Limit <= 0 {
+		query.Limit = 20
+	}
 	resp, err := storage.QueryLogs(query)
 	if err != nil {
 		t.Fatalf("QueryLogs() error = %v", err)

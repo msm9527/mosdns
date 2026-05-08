@@ -39,6 +39,7 @@ type CachePolicy struct {
 	ClientTTLMax     uint32
 	NXDomainTTL      int
 	ServfailTTL      int
+	ColdQueryWaitMs  int
 	L1Enabled        bool
 	L1TotalCap       int
 	L1ShardCap       int
@@ -59,6 +60,7 @@ type cachePolicyFile struct {
 	ClientTTLMax     *uint32               `yaml:"client_ttl_max,omitempty"`
 	NXDomainTTL      *int                  `yaml:"nxdomain_ttl,omitempty"`
 	ServfailTTL      *int                  `yaml:"servfail_ttl,omitempty"`
+	ColdQueryWaitMs  *int                  `yaml:"cold_query_wait_ms,omitempty"`
 	L1Enabled        *bool                 `yaml:"l1_enabled,omitempty"`
 	L1TotalCap       *int                  `yaml:"l1_total_cap,omitempty"`
 	L1ShardCap       *int                  `yaml:"l1_shard_cap,omitempty"`
@@ -144,42 +146,42 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 	return &CachePolicyConfig{
 		Response: map[string]CachePolicy{
 			"cache_main": {
-				Size: defaultCacheMainSize, LazyCacheTTL: 2592000, LazyStaleTTL: 2592000, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 300, ServfailTTL: 5,
+				Size: defaultCacheMainSize, LazyCacheTTL: 2592000, LazyStaleTTL: 2592000, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 300, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				ExcludeIPs:       realCacheExcludeIPs,
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
 			"cache_branch_domestic": {
-				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 			"cache_branch_foreign": {
-				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 			"cache_branch_foreign_ecs": {
-				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 120, ServfailTTL: 5,
+				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 120, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 			"cache_fakeip_domestic": {
-				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_fakeip_proxy": {
-				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 			},
 			"cache_probe": {
-				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 60, ServfailTTL: 5,
+				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 60, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheProbeL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				ExcludeIPs:       realCacheExcludeIPs,
@@ -333,6 +335,9 @@ func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) {
 	if src.ServfailTTL != nil {
 		dst.ServfailTTL = *src.ServfailTTL
 	}
+	if src.ColdQueryWaitMs != nil {
+		dst.ColdQueryWaitMs = *src.ColdQueryWaitMs
+	}
 	if src.L1Enabled != nil {
 		dst.L1Enabled = *src.L1Enabled
 	}
@@ -421,6 +426,9 @@ func validateCachePolicy(tag string, policy CachePolicy) error {
 	if policy.NXDomainTTL <= 0 || policy.ServfailTTL <= 0 {
 		return fmt.Errorf("%s negative ttl requires > 0", tag)
 	}
+	if policy.ColdQueryWaitMs < 0 {
+		return fmt.Errorf("%s cold_query_wait_ms cannot be negative", tag)
+	}
 	if policy.LazyCacheTTL < 0 || policy.LazyStaleTTL < 0 {
 		return fmt.Errorf("%s lazy ttl cannot be negative", tag)
 	}
@@ -463,6 +471,7 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		args["client_ttl_max"] = policy.ClientTTLMax
 		args["nxdomain_ttl"] = policy.NXDomainTTL
 		args["servfail_ttl"] = policy.ServfailTTL
+		args["cold_query_wait_ms"] = policy.ColdQueryWaitMs
 		args["l1_enabled"] = policy.L1Enabled
 		args["l1_total_cap"] = policy.L1TotalCap
 		args["l1_shard_cap"] = policy.L1ShardCap

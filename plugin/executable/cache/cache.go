@@ -54,6 +54,7 @@ const (
 	prefetchMinLead          = 3 * time.Second
 	prefetchMaxLead          = 30 * time.Second
 	prefetchLeadDivisor      = 5
+	defaultColdQueryWait     = 80 * time.Millisecond
 
 	minimumChangesToDump   = 1024
 	dumpHeader             = "mosdns_cache_v2"
@@ -145,6 +146,12 @@ type lazyRefreshState struct {
 	err error
 }
 
+type coldQueryFlight struct {
+	done chan struct{}
+	item *item
+	err  error
+}
+
 func (s *lazyRefreshState) setErr(err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -159,6 +166,7 @@ type Args struct {
 	ClientTTLMax     uint32   `yaml:"client_ttl_max"`
 	NXDomainTTL      int      `yaml:"nxdomain_ttl"`
 	ServfailTTL      int      `yaml:"servfail_ttl"`
+	ColdQueryWaitMs  int      `yaml:"cold_query_wait_ms"`
 	L1Enabled        *bool    `yaml:"l1_enabled"`
 	L1TotalCap       int      `yaml:"l1_total_cap"`
 	L1ShardCap       int      `yaml:"l1_shard_cap"`
@@ -182,6 +190,7 @@ type argsRaw struct {
 	ClientTTLMax     uint32      `yaml:"client_ttl_max"`
 	NXDomainTTL      int         `yaml:"nxdomain_ttl"`
 	ServfailTTL      int         `yaml:"servfail_ttl"`
+	ColdQueryWaitMs  int         `yaml:"cold_query_wait_ms"`
 	L1Enabled        *bool       `yaml:"l1_enabled"`
 	L1TotalCap       int         `yaml:"l1_total_cap"`
 	L1ShardCap       int         `yaml:"l1_shard_cap"`
@@ -213,6 +222,7 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	a.ClientTTLMax = raw.ClientTTLMax
 	a.NXDomainTTL = raw.NXDomainTTL
 	a.ServfailTTL = raw.ServfailTTL
+	a.ColdQueryWaitMs = raw.ColdQueryWaitMs
 	a.L1Enabled = raw.L1Enabled
 	a.L1TotalCap = raw.L1TotalCap
 	a.L1ShardCap = raw.L1ShardCap
@@ -308,6 +318,7 @@ func (a *Args) init() {
 	utils.SetDefaultUnsignNum(&a.WALSyncInterval, 1)
 	utils.SetDefaultUnsignNum(&a.NXDomainTTL, 60)
 	utils.SetDefaultUnsignNum(&a.ServfailTTL, 15)
+	utils.SetDefaultUnsignNum(&a.ColdQueryWaitMs, int(defaultColdQueryWait/time.Millisecond))
 	if a.L1Enabled == nil {
 		defaultEnabled := true
 		a.L1Enabled = &defaultEnabled
@@ -349,7 +360,6 @@ type Cache struct {
 	plugin       func(string) any
 	backend      *cache.Cache[key, *item]
 	lazyUpdateSF singleflight.Group
-	coldQuerySF  singleflight.Group
 	closeOnce    sync.Once
 	closeNotify  chan struct{}
 	updatedKey   atomic.Uint64
@@ -402,6 +412,9 @@ type Cache struct {
 
 	lazyRefreshMu sync.Mutex
 	lazyRefresh   map[string]*lazyRefreshState
+
+	coldFlightMu sync.Mutex
+	coldFlights  map[string]*coldQueryFlight
 }
 
 type Opts struct {
@@ -473,6 +486,7 @@ func NewCache(args *Args, opts Opts) *Cache {
 		l1Enabled:       l1Enabled,
 		l1ShardCap:      l1ShardCap,
 		lazyRefresh:     make(map[string]*lazyRefreshState),
+		coldFlights:     make(map[string]*coldQueryFlight),
 		domainSets:      stringintern.New(),
 	}
 	p.persistence = newPersistenceManager(args, logger)
@@ -878,30 +892,58 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 }
 
 func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l1Shard, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) error {
-	sfKey := c.coldQuerySingleflightKey(msgKey, route)
-	result, err, shared := c.coldQuerySF.Do(sfKey, func() (any, error) {
-		err := next.ExecNext(ctx, qCtx)
-		r := qCtx.R()
-		if r != nil && !c.containsExcluded(r) {
-			if cachedItem, ok := c.saveRespToCache(msgKey, qCtx, route); ok {
-				c.updatedKey.Add(1)
-				if c.l1Enabled && shard != nil {
-					shard.updateL1(k, cachedItem)
-				}
-				return cachedItem, err
-			}
-		}
-		return nil, err
-	})
-	if !shared {
-		return err
+	flightKey := c.coldQuerySingleflightKey(msgKey, route)
+	flight, leader := c.acquireColdQueryFlight(flightKey)
+	if leader {
+		flight.item, flight.err = c.runColdMissLeader(ctx, msgKey, k, shard, route, qCtx, next)
+		c.finishColdQueryFlight(flightKey, flight)
+		return flight.err
 	}
-	if err != nil && !errors.Is(err, sequence.ErrExit) {
-		return err
+
+	wait := c.coldQueryWait()
+	if wait <= 0 {
+		return c.execColdMissDirect(ctx, msgKey, k, shard, route, qCtx, next)
 	}
-	cachedItem, _ := result.(*item)
+
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-flight.done:
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
+		return c.execColdMissDirect(ctx, msgKey, k, shard, route, qCtx, next)
+	}
+
+	if flight.err != nil && !errors.Is(flight.err, sequence.ErrExit) {
+		return flight.err
+	}
+	cachedItem := flight.item
 	if cachedItem == nil {
 		cachedItem, _, _ = c.backend.Get(k)
+	}
+	return c.applyColdSharedCacheResult(ctx, msgKey, k, shard, route, qCtx, next, cachedItem, flight.err)
+}
+
+func (c *Cache) runColdMissLeader(ctx context.Context, msgKey string, k key, shard *l1Shard, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) (*item, error) {
+	err := next.ExecNext(ctx, qCtx)
+	r := qCtx.R()
+	if r != nil && !c.containsExcluded(r) {
+		if cachedItem, ok := c.saveRespToCache(msgKey, qCtx, route); ok {
+			c.updatedKey.Add(1)
+			if c.l1Enabled && shard != nil {
+				shard.updateL1(k, cachedItem)
+			}
+			return cachedItem, err
+		}
+	}
+	return nil, err
+}
+
+func (c *Cache) applyColdSharedCacheResult(ctx context.Context, msgKey string, k key, shard *l1Shard, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker, cachedItem *item, err error) error {
+	if err != nil && !errors.Is(err, sequence.ErrExit) {
+		return err
 	}
 	if cachedItem == nil {
 		coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheMiss)
@@ -940,6 +982,33 @@ func (c *Cache) execColdMiss(ctx context.Context, msgKey string, k key, shard *l
 		shard.updateL1(k, cachedItem)
 	}
 	return c.cacheHitReturn()
+}
+
+func (c *Cache) acquireColdQueryFlight(flightKey string) (*coldQueryFlight, bool) {
+	c.coldFlightMu.Lock()
+	defer c.coldFlightMu.Unlock()
+	if flight, ok := c.coldFlights[flightKey]; ok {
+		return flight, false
+	}
+	flight := &coldQueryFlight{done: make(chan struct{})}
+	c.coldFlights[flightKey] = flight
+	return flight, true
+}
+
+func (c *Cache) finishColdQueryFlight(flightKey string, flight *coldQueryFlight) {
+	c.coldFlightMu.Lock()
+	if current := c.coldFlights[flightKey]; current == flight {
+		delete(c.coldFlights, flightKey)
+	}
+	close(flight.done)
+	c.coldFlightMu.Unlock()
+}
+
+func (c *Cache) coldQueryWait() time.Duration {
+	if c == nil || c.args == nil || c.args.ColdQueryWaitMs <= 0 {
+		return defaultColdQueryWait
+	}
+	return time.Duration(c.args.ColdQueryWaitMs) * time.Millisecond
 }
 
 func (c *Cache) cacheHitReturn() error {
@@ -1908,6 +1977,9 @@ func (c *Cache) applyClientTTL(msg *dns.Msg) {
 	if c == nil || c.args == nil || msg == nil {
 		return
 	}
+	if msg.Rcode != dns.RcodeSuccess {
+		return
+	}
 	applyClientTTL(msg, c.args.ClientTTLMin, c.args.ClientTTLMax)
 }
 
@@ -1999,6 +2071,11 @@ func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL 
 	copy(wire, v.resp)
 	binary.BigEndian.PutUint16(wire[:2], txid)
 	wire[3] |= 0x80 // RecursionAvailable; matches EntryHandler's normal response path.
+	rcode := int(wire[3] & 0x0f)
+	if rcode != dns.RcodeSuccess {
+		clientTTLMin = 0
+		clientTTLMax = 0
+	}
 
 	var subtract uint32
 	if !lazy && nowUnix > v.storedUnixNano {
@@ -2122,6 +2199,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 
 	var msgTtl time.Duration
 	var cacheTtl time.Duration
+	var successfulResponse bool
 	switch r.Rcode {
 	case dns.RcodeNameError:
 		msgTtl = time.Duration(c.args.NXDomainTTL) * time.Second
@@ -2130,6 +2208,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 		msgTtl = time.Duration(c.args.ServfailTTL) * time.Second
 		cacheTtl = msgTtl
 	case dns.RcodeSuccess:
+		successfulResponse = true
 		minTTL := dnsutils.GetMinimalTTL(r)
 		if len(r.Answer) == 0 { // Empty answer. Set ttl between 0~300.
 			const maxEmtpyAnswerTtl = 300
@@ -2153,7 +2232,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	if msgTtl <= 0 {
 		msgTtl = minCacheableTTL
 	}
-	if c.args.ClientTTLMin > 0 {
+	if successfulResponse && c.args.ClientTTLMin > 0 {
 		clientMinTTL := time.Duration(c.args.ClientTTLMin) * time.Second
 		if msgTtl < clientMinTTL {
 			msgTtl = clientMinTTL

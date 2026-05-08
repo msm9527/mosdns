@@ -43,6 +43,61 @@ func TestAuditAPIV3SearchLogs(t *testing.T) {
 	}
 }
 
+func TestAuditAPIV3SearchLogsSupportsOffset(t *testing.T) {
+	router, _, base := newAuditSearchAPITestHarness(t)
+	body := map[string]any{
+		"time_range": map[string]any{
+			"from": base.UnixMilli(),
+			"to":   base.Add(3 * time.Minute).UnixMilli(),
+		},
+		"page": map[string]any{
+			"limit":  1,
+			"offset": 1,
+		},
+	}
+
+	var resp AuditLogsResponse
+	postAuditJSON(t, router, "/api/v3/audit/logs/search", body, http.StatusOK, &resp)
+	if resp.Summary.MatchedCount != 4 {
+		t.Fatalf("MatchedCount = %d, want 4", resp.Summary.MatchedCount)
+	}
+	if len(resp.Logs) != 1 || resp.Logs[0].QueryName != "alpha.example" {
+		t.Fatalf("unexpected logs = %+v", resp.Logs)
+	}
+	if resp.NextCursor == "" {
+		t.Fatal("NextCursor is empty")
+	}
+}
+
+func TestAuditAPIV3SearchLogsSupportsDurationSort(t *testing.T) {
+	router, _, base := newAuditSearchAPITestHarness(t)
+	body := map[string]any{
+		"time_range": map[string]any{
+			"from": base.UnixMilli(),
+			"to":   base.Add(3 * time.Minute).UnixMilli(),
+		},
+		"page": map[string]any{
+			"limit": 2,
+		},
+		"sort": map[string]any{
+			"field": "duration",
+			"order": "desc",
+		},
+	}
+
+	var resp AuditLogsResponse
+	postAuditJSON(t, router, "/api/v3/audit/logs/search", body, http.StatusOK, &resp)
+	if resp.Summary.MatchedCount != 4 {
+		t.Fatalf("MatchedCount = %d, want 4", resp.Summary.MatchedCount)
+	}
+	if len(resp.Logs) != 2 {
+		t.Fatalf("len(resp.Logs) = %d, want 2", len(resp.Logs))
+	}
+	if resp.Logs[0].QueryName != "alpha.example" || resp.Logs[1].QueryName != "two.example" {
+		t.Fatalf("unexpected logs = %+v", resp.Logs)
+	}
+}
+
 func TestAuditAPIV3SearchLogsRejectInvalidMode(t *testing.T) {
 	router, _, _ := newAuditSearchAPITestHarness(t)
 	body := map[string]any{

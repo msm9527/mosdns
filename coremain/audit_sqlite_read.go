@@ -143,7 +143,12 @@ func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse
 		args = append(args, cursorArgs...)
 	}
 	limit := clampAuditLimit(params.Limit)
+	offset := params.Offset
+	if cursorWhere != "" || offset < 0 {
+		offset = 0
+	}
 	baseWhere, baseArgs := joinAuditWhere(where, args)
+	orderBy := buildAuditLogOrderBy(params.Sort)
 	rows, err := db.Query(`
 		SELECT
 			id, query_time_unix_ms, client_ip, query_type, query_name, query_class, duration_ms,
@@ -152,9 +157,10 @@ func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse
 			transport, server_name, url_path, cache_status
 		FROM audit_log
 		`+baseWhere+`
-		ORDER BY query_time_unix_ms DESC, id DESC
+		`+orderBy+`
 		LIMIT ?
-	`, append(baseArgs, limit+1)...)
+		OFFSET ?
+	`, append(baseArgs, limit+1, offset)...)
 	if err != nil {
 		return AuditLogsResponse{}, fmt.Errorf("query sqlite audit logs: %w", err)
 	}
@@ -173,6 +179,20 @@ func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse
 		Logs:       logs,
 		NextCursor: nextCursor,
 	}, nil
+}
+
+func buildAuditLogOrderBy(sort AuditLogSearchSort) string {
+	field := strings.TrimSpace(strings.ToLower(sort.Field))
+	order := strings.TrimSpace(strings.ToUpper(sort.Order))
+	if order != "ASC" {
+		order = "DESC"
+	}
+	switch field {
+	case "duration":
+		return "ORDER BY duration_ms " + order + ", query_time_unix_ms DESC, id DESC"
+	default:
+		return "ORDER BY query_time_unix_ms " + order + ", id " + order
+	}
 }
 
 func (s *SQLiteAuditStorage) queryLogsSummary(where []string, args []any) (AuditLogsSummary, error) {

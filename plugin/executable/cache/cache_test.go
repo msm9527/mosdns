@@ -398,6 +398,14 @@ func Test_cacheArgs_LazyStaleTTLCompatibility(t *testing.T) {
 	}
 }
 
+func Test_cacheArgs_ColdQueryWaitDefault(t *testing.T) {
+	var args Args
+	args.init()
+	if got := time.Duration(args.ColdQueryWaitMs) * time.Millisecond; got != defaultColdQueryWait {
+		t.Fatalf("default cold query wait = %s, want %s", got, defaultColdQueryWait)
+	}
+}
+
 func Test_shouldBypassForRouteChange(t *testing.T) {
 	if shouldBypassForRouteChange("", "", "", func(string) any {
 		return &testCacheSwitchProvider{value: "on"}
@@ -1242,7 +1250,7 @@ func Test_cachePlugin_DefaultCachedHitAllowsParentSequenceToContinue(t *testing.
 }
 
 func Test_cachePlugin_ColdMissSingleflightSharesResponse(t *testing.T) {
-	c := NewCache(&Args{Size: 64}, Opts{})
+	c := NewCache(&Args{Size: 64, ColdQueryWaitMs: 250}, Opts{})
 	defer c.Close()
 
 	const qname = "cold-share.example."
@@ -1285,6 +1293,56 @@ func Test_cachePlugin_ColdMissSingleflightSharesResponse(t *testing.T) {
 	}
 	if got := raw.calls.Load(); got != 1 {
 		t.Fatalf("raw calls = %d, want 1", got)
+	}
+}
+
+func Test_cachePlugin_ColdMissSharedWaitTimeoutFallsBackDirect(t *testing.T) {
+	c := NewCache(&Args{Size: 64, ColdQueryWaitMs: 25}, Opts{})
+	defer c.Close()
+
+	const qname = "cold-share-timeout.example."
+	raw := &testColdFallbackExec{
+		ip:          net.IPv4(10, 0, 0, 4),
+		leaderDelay: 180 * time.Millisecond,
+	}
+	plugins := map[string]any{
+		"cache": c,
+		"raw":   raw,
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	errCh := make(chan error, 1)
+	go func() {
+		qCtx := queryThroughSequence(t, s, qname)
+		if !responseHasA(qCtx.R(), net.IPv4(10, 0, 0, 4)) {
+			errCh <- fmt.Errorf("leader unexpected response: %+v", qCtx.R())
+			return
+		}
+		errCh <- nil
+	}()
+	waitForColdFallbackCalls(t, raw, 1, 100*time.Millisecond)
+
+	start := time.Now()
+	qCtx := queryThroughSequence(t, s, qname)
+	elapsed := time.Since(start)
+	if !responseHasA(qCtx.R(), net.IPv4(10, 0, 0, 4)) {
+		t.Fatalf("waiter unexpected response: %+v", qCtx.R())
+	}
+	if elapsed >= 120*time.Millisecond {
+		t.Fatalf("expected waiter to bypass blocked leader quickly, elapsed=%s", elapsed)
+	}
+	if got := raw.calls.Load(); got < 2 {
+		t.Fatalf("raw calls = %d, want direct fallback call", got)
+	}
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
 	}
 }
 
@@ -1818,7 +1876,7 @@ func TestCacheDomainSetInterningReleasesOnDeleteAndFlush(t *testing.T) {
 }
 
 func Test_cachePlugin_ServfailTTL(t *testing.T) {
-	c := NewCache(&Args{Size: 64, ServfailTTL: 42}, Opts{})
+	c := NewCache(&Args{Size: 64, ServfailTTL: 42, ClientTTLMin: 120, ClientTTLMax: 900}, Opts{})
 	defer c.Close()
 
 	q := new(dns.Msg)
@@ -1826,6 +1884,21 @@ func Test_cachePlugin_ServfailTTL(t *testing.T) {
 	qCtx := query_context.NewContext(q)
 	r := new(dns.Msg)
 	r.SetRcode(q, dns.RcodeServerFailure)
+	r.Ns = append(r.Ns, &dns.SOA{
+		Hdr: dns.RR_Header{
+			Name:   "example.",
+			Rrtype: dns.TypeSOA,
+			Class:  dns.ClassINET,
+			Ttl:    42,
+		},
+		Ns:      "ns.example.",
+		Mbox:    "hostmaster.example.",
+		Serial:  1,
+		Refresh: 60,
+		Retry:   60,
+		Expire:  60,
+		Minttl:  42,
+	})
 	qCtx.SetResponse(r)
 
 	if _, ok := c.saveRespToCache("servfail-key", qCtx); !ok {
@@ -1839,6 +1912,19 @@ func Test_cachePlugin_ServfailTTL(t *testing.T) {
 	remaining := time.Duration(stored.expireUnixNano - stored.storedUnixNano)
 	if remaining < 40*time.Second || remaining > 43*time.Second {
 		t.Fatalf("unexpected servfail ttl %s", remaining)
+	}
+	cachedResp, lazy, _, corrupt := c.respFromCacheItem(stored, 0, expiredMsgTtl)
+	if corrupt || lazy || cachedResp == nil {
+		t.Fatalf("expected fresh cached servfail response, lazy=%v corrupt=%v resp=%+v", lazy, corrupt, cachedResp)
+	}
+	if cachedResp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("expected SERVFAIL response, got %s", dns.RcodeToString[cachedResp.Rcode])
+	}
+	if len(cachedResp.Ns) != 1 {
+		t.Fatalf("expected cached authority SOA, got %+v", cachedResp.Ns)
+	}
+	if cachedResp.Ns[0].Header().Ttl > 42 {
+		t.Fatalf("negative response TTL was clamped by client_ttl_min: %d", cachedResp.Ns[0].Header().Ttl)
 	}
 }
 
@@ -2085,6 +2171,12 @@ type testResponseExec struct {
 	calls atomic.Uint64
 }
 
+type testColdFallbackExec struct {
+	ip          net.IP
+	leaderDelay time.Duration
+	calls       atomic.Uint64
+}
+
 type testAAAAResponseExec struct {
 	ip    net.IP
 	calls atomic.Uint64
@@ -2094,6 +2186,33 @@ func (e *testResponseExec) Exec(ctx context.Context, qCtx *query_context.Context
 	e.calls.Add(1)
 	if e.delay > 0 {
 		timer := time.NewTimer(e.delay)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+	q := qCtx.Q()
+	resp := new(dns.Msg)
+	resp.SetReply(q)
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{
+			Name:   q.Question[0].Name,
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		A: e.ip.To4(),
+	})
+	qCtx.SetResponse(resp)
+	return nil
+}
+
+func (e *testColdFallbackExec) Exec(ctx context.Context, qCtx *query_context.Context) error {
+	call := e.calls.Add(1)
+	if call == 1 && e.leaderDelay > 0 {
+		timer := time.NewTimer(e.leaderDelay)
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -2232,6 +2351,18 @@ func counterValue(t *testing.T, counter prometheus.Counter) float64 {
 }
 
 func waitForRawCalls(t *testing.T, exec *testResponseExec, want uint64, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if got := exec.calls.Load(); got >= want {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("expected raw calls >= %d within %s, got %d", want, timeout, exec.calls.Load())
+}
+
+func waitForColdFallbackCalls(t *testing.T, exec *testColdFallbackExec, want uint64, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {

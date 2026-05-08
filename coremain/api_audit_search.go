@@ -55,14 +55,27 @@ func buildAuditLogSearchQuery(req AuditLogSearchRequest) (AuditLogsQuery, error)
 	if err != nil {
 		return AuditLogsQuery{}, err
 	}
+	sort, err := normalizeAuditSearchSort(req.Sort)
+	if err != nil {
+		return AuditLogsQuery{}, err
+	}
 	return AuditLogsQuery{
 		From:    from,
 		To:      to,
 		Limit:   req.Page.Limit,
 		Cursor:  strings.TrimSpace(req.Page.Cursor),
+		Offset:  normalizeAuditSearchOffset(req.Page.Offset),
+		Sort:    sort,
 		Keyword: keyword,
 		Filters: filters,
 	}, nil
+}
+
+func normalizeAuditSearchOffset(offset int) int {
+	if offset < 0 {
+		return 0
+	}
+	return offset
 }
 
 func resolveAuditTimeRangeValues(from, to time.Time, defaultWindow time.Duration) (time.Time, time.Time, error) {

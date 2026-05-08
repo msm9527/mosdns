@@ -24,6 +24,9 @@ func TestSnapshotConfigReflectsPersistenceState(t *testing.T) {
 	if persistentConfig["dump_interval"] != 30 || persistentConfig["wal_sync_interval"] != 2 {
 		t.Fatalf("expected persistent cache to expose persistence intervals, got %+v", persistentConfig)
 	}
+	if persistentConfig["nxdomain_ttl"] != 60 || persistentConfig["servfail_ttl"] != 15 || persistentConfig["cold_query_wait_ms"] != 80 {
+		t.Fatalf("expected cache to expose negative/cache wait settings, got %+v", persistentConfig)
+	}
 	excludeIPs, ok := persistentConfig["exclude_ip"].([]string)
 	if !ok || len(excludeIPs) != 2 || excludeIPs[0] != "28.0.0.0/8" || excludeIPs[1] != "f2b0::/18" {
 		t.Fatalf("expected persistent cache to expose exclude_ip, got %+v", persistentConfig)
