@@ -98,21 +98,22 @@ func fastNowUnix() int64 {
 }
 
 type Args struct {
-	Entry                     string   `yaml:"entry"`
-	Listen                    string   `yaml:"listen"`
-	EnableAudit               bool     `yaml:"enable_audit"`
-	FastCacheInternalTTL      int      `yaml:"fast_cache_internal_ttl"`
-	FastCacheStaleRetrySec    int      `yaml:"fast_cache_stale_retry_seconds"`
-	FastCacheStaleMaxSec      int      `yaml:"fast_cache_stale_max_seconds"`
-	FastCacheTTLMin           uint32   `yaml:"fast_cache_ttl_min"`
-	FastCacheTTLMax           uint32   `yaml:"fast_cache_ttl_max"`
-	FastCacheBypassDomainSets []string `yaml:"fast_cache_bypass_domain_sets"`
-	FastMetricsLogInterval    int      `yaml:"fast_metrics_log_interval"`
-	FastBypassWarmupSec       int      `yaml:"fast_bypass_warmup_seconds"`
-	FastListenerWorkers       int      `yaml:"fast_listener_workers"`
-	FastCacheSlots            int      `yaml:"fast_cache_slots"`
-	FastRuleCacheSlots        int      `yaml:"fast_rule_cache_slots"`
-	FastCacheMemoryBudgetMB   int      `yaml:"fast_cache_memory_budget_mb"`
+	Entry                     string                   `yaml:"entry"`
+	Listen                    string                   `yaml:"listen"`
+	EnableAudit               bool                     `yaml:"enable_audit"`
+	FastCacheInternalTTL      int                      `yaml:"fast_cache_internal_ttl"`
+	FastCacheStaleRetrySec    int                      `yaml:"fast_cache_stale_retry_seconds"`
+	FastCacheStaleMaxSec      int                      `yaml:"fast_cache_stale_max_seconds"`
+	FastCacheDomainSetTTL     []fastDomainSetTTLPolicy `yaml:"fast_cache_domain_set_ttl"`
+	FastCacheTTLMin           uint32                   `yaml:"fast_cache_ttl_min"`
+	FastCacheTTLMax           uint32                   `yaml:"fast_cache_ttl_max"`
+	FastCacheBypassDomainSets []string                 `yaml:"fast_cache_bypass_domain_sets"`
+	FastMetricsLogInterval    int                      `yaml:"fast_metrics_log_interval"`
+	FastBypassWarmupSec       int                      `yaml:"fast_bypass_warmup_seconds"`
+	FastListenerWorkers       int                      `yaml:"fast_listener_workers"`
+	FastCacheSlots            int                      `yaml:"fast_cache_slots"`
+	FastRuleCacheSlots        int                      `yaml:"fast_rule_cache_slots"`
+	FastCacheMemoryBudgetMB   int                      `yaml:"fast_cache_memory_budget_mb"`
 }
 
 func (a *Args) init() {
@@ -146,6 +147,13 @@ func (a *Args) init() {
 	a.FastCacheSlots = normalizeFastSlotCount(a.FastCacheSlots, cacheWays, cacheSize*cacheWays)
 	a.FastRuleCacheSlots = normalizeFastSlotCount(a.FastRuleCacheSlots, ruleWays, ruleSize*ruleWays)
 	a.FastCacheBypassDomainSets = normalizeFastCacheDomainSetTokens(a.FastCacheBypassDomainSets)
+	a.FastCacheDomainSetTTL = normalizeFastDomainSetTTLPolicies(a.FastCacheDomainSetTTL)
+}
+
+type fastDomainSetTTLPolicy struct {
+	Sets        []string `yaml:"sets"`
+	InternalTTL int      `yaml:"internal_ttl"`
+	StaleMax    int      `yaml:"stale_max_seconds"`
 }
 
 func inferFastBypassWarmupSec(entry, listen string) int {
@@ -194,6 +202,30 @@ func normalizeFastCacheDomainSetTokens(values []string) []string {
 		}
 	}
 	sort.Strings(out)
+	return out
+}
+
+func normalizeFastDomainSetTTLPolicies(values []fastDomainSetTTLPolicy) []fastDomainSetTTLPolicy {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]fastDomainSetTTLPolicy, 0, len(values))
+	for _, value := range values {
+		value.Sets = normalizeFastCacheDomainSetTokens(value.Sets)
+		if len(value.Sets) == 0 {
+			continue
+		}
+		if value.InternalTTL <= 0 && value.StaleMax <= 0 {
+			continue
+		}
+		if value.InternalTTL < 0 {
+			value.InternalTTL = 0
+		}
+		if value.StaleMax < 0 {
+			value.StaleMax = 0
+		}
+		out = append(out, value)
+	}
 	return out
 }
 
@@ -296,6 +328,7 @@ func (s *UdpServer) SnapshotCacheStats() coremain.CacheStatsSnapshot {
 			"internal_ttl":                int(cfg.internalTTL / time.Second),
 			"stale_retry_seconds":         int(cfg.staleRetry / time.Second),
 			"stale_max_seconds":           int(cfg.staleMax / time.Second),
+			"domain_set_ttl":              append([]fastDomainSetTTLPolicy(nil), cfg.domainSetTTL...),
 			"ttl_min":                     cfg.ttlMin,
 			"ttl_max":                     cfg.ttlMax,
 			"bypass_domain_sets":          append([]string(nil), cfg.bypassDomainSets...),
@@ -586,6 +619,7 @@ type fastCacheConfig struct {
 	internalTTL      time.Duration
 	staleRetry       time.Duration
 	staleMax         time.Duration
+	domainSetTTL     []fastDomainSetTTLPolicy
 	ttlMin           uint32
 	ttlMax           uint32
 	bypassDomainSets []string
@@ -706,6 +740,7 @@ func newFastCache(cfg fastCacheConfig, stats *fastStats) *fastCache {
 	}
 	cfg.responseSlots, cfg.ruleSlots = resolveFastCacheSlots(cfg)
 	cfg.bypassDomainSets = normalizeFastCacheDomainSetTokens(cfg.bypassDomainSets)
+	cfg.domainSetTTL = normalizeFastDomainSetTTLPolicies(cfg.domainSetTTL)
 	return &fastCache{cfg: cfg, stats: stats}
 }
 
@@ -783,6 +818,24 @@ func (fc *fastCache) shouldBypassDomainSet(domainSet string) bool {
 		return false
 	}
 	return fastCacheDomainSetContainsAny(domainSet, fc.cfg.bypassDomainSets)
+}
+
+func (fc *fastCache) domainSetTTLOverride(domainSet string) (internalTTL, staleMax time.Duration, ok bool) {
+	if fc == nil || len(fc.cfg.domainSetTTL) == 0 {
+		return 0, 0, false
+	}
+	for _, policy := range fc.cfg.domainSetTTL {
+		if fastCacheDomainSetContainsAny(domainSet, policy.Sets) {
+			if policy.InternalTTL > 0 {
+				internalTTL = time.Duration(policy.InternalTTL) * time.Second
+			}
+			if policy.StaleMax > 0 {
+				staleMax = time.Duration(policy.StaleMax) * time.Second
+			}
+			return internalTTL, staleMax, true
+		}
+	}
+	return 0, 0, false
 }
 
 func (fc *fastCache) loadTable() *fastCacheTable {
@@ -1158,12 +1211,16 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		now = fastNowUnix()
 	}
 	expire := atomic.LoadInt64(&ptr.expire)
+	staleMax := fc.cfg.staleMax
+	if _, overrideStaleMax, ok := fc.domainSetTTLOverride(ptr.domainSet); ok && overrideStaleMax > 0 {
+		staleMax = overrideStaleMax
+	}
 	staleAllowed := true
 	if now > expire {
 		if fc.stats != nil {
 			fc.stats.cacheExpired.AddShard(statKey, 1)
 		}
-		if fc.cfg.staleMax > 0 && now-expire > int64(fc.cfg.staleMax/time.Second) {
+		if staleMax > 0 && now-expire > int64(staleMax/time.Second) {
 			staleAllowed = false
 		}
 		if atomic.CompareAndSwapUint32(&ptr.updating, 0, 1) {
@@ -1236,11 +1293,15 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 			binary.BigEndian.PutUint32(bakedResp[off:off+4], clampTTL(ttl, fc.cfg.ttlMin, fc.cfg.ttlMax))
 		}
 	}
+	internalTTL := fc.cfg.internalTTL
+	if overrideTTL, _, ok := fc.domainSetTTLOverride(dset); ok && overrideTTL > 0 {
+		internalTTL = overrideTTL
+	}
 
 	item := &fastCacheItem{
 		resp:                 bakedResp,
 		audit:                fastAuditResponseMetaFromPayloadIfEnabled(fc.cfg.auditEnabled, strings.TrimSuffix(qname, "."), bakedResp),
-		expire:               time.Now().Add(fc.cfg.internalTTL).Unix(),
+		expire:               time.Now().Add(internalTTL).Unix(),
 		updating:             0,
 		domainSet:            dset,
 		domainMapperRevision: ruleRevision.domainMapper,
@@ -2004,6 +2065,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		internalTTL:      time.Duration(args.FastCacheInternalTTL) * time.Second,
 		staleRetry:       time.Duration(args.FastCacheStaleRetrySec) * time.Second,
 		staleMax:         time.Duration(args.FastCacheStaleMaxSec) * time.Second,
+		domainSetTTL:     args.FastCacheDomainSetTTL,
 		ttlMin:           args.FastCacheTTLMin,
 		ttlMax:           args.FastCacheTTLMax,
 		bypassDomainSets: args.FastCacheBypassDomainSets,

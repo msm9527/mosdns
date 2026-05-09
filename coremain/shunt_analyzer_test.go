@@ -429,6 +429,190 @@ sources:
 	}
 }
 
+func TestShuntAnalyzerAutoConfirmDirectOverridesGeositeAndMemory(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: auto_confirm_direct
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: auto_confirm_direct
+  - name: geosite_no_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_no_cn
+  - name: my_fakeiprule
+    type: domain_set_light
+    args:
+      generated_from: my_fakeiplist
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: auto_confirm_direct
+          mark: 30
+          output_tag: 自动确认直连
+        - tag: geosite_no_cn
+          mark: 14
+          output_tag: 国外分流
+        - tag: my_fakeiprule
+          mark: 12
+          output_tag: 记忆代理
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: auto_confirm_direct_local
+    name: 自动确认直连
+    bind_to: auto_confirm_direct
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/auto_confirm_direct.list
+  - id: geosite_no_cn
+    name: geosite no cn
+    bind_to: geosite_no_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/geosite-no-cn.list
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "auto_confirm_direct.list"), "domain:logitech.com\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "geosite-no-cn.list"), "domain:logitech.com\n")
+	if err := SaveDomainPoolStateToPath(runtimeStateDBPathForBaseDir(baseDir), DomainPoolState{
+		Meta: DomainPoolMeta{
+			PoolTag:              "my_fakeiplist",
+			PoolKind:             DomainPoolKindMemory,
+			MemoryID:             "fakeip",
+			Policy:               DefaultDomainPoolPolicy("my_fakeiplist"),
+			DomainCount:          1,
+			PromotedDomainCount:  1,
+			PublishedDomainCount: 1,
+		},
+		Domains: []DomainPoolDomain{{
+			PoolTag:    "my_fakeiplist",
+			Domain:     "logitech.com",
+			TotalCount: 3,
+			Score:      3,
+			Promoted:   true,
+		}},
+	}); err != nil {
+		t.Fatalf("SaveDomainPoolStateToPath: %v", err)
+	}
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("www.logitech.com", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 30 || result.Decision.Action != "sequence_local" {
+		t.Fatalf("unexpected decision: %+v matches=%+v", result.Decision, result.Matches)
+	}
+}
+
+func TestShuntAnalyzerAutoConfirmProxyOverridesGeositeAndMemory(t *testing.T) {
+	baseDir := t.TempDir()
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, dataSourcePolicyConfigRelPath), `
+policies:
+  - name: auto_confirm_proxy
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: auto_confirm_proxy
+  - name: geosite_cn
+    type: sd_set_light
+    args:
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: geosite_cn
+  - name: my_realiprule
+    type: domain_set_light
+    args:
+      generated_from: my_realiplist
+  - name: unified_matcher1
+    type: domain_mapper
+    args:
+      default_mark: 17
+      default_tag: 未命中
+      rules:
+        - tag: auto_confirm_proxy
+          mark: 31
+          output_tag: 自动确认代理
+        - tag: geosite_cn
+          mark: 16
+          output_tag: 国内分流
+        - tag: my_realiprule
+          mark: 11
+          output_tag: 记忆直连
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "diversion_sources.yaml"), `
+sources:
+  - id: auto_confirm_proxy_local
+    name: 自动确认代理
+    bind_to: auto_confirm_proxy
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/auto_confirm_proxy.list
+  - id: geosite_cn
+    name: geosite cn
+    bind_to: geosite_cn
+    enabled: true
+    behavior: domain
+    match_mode: domain_set
+    format: list
+    source_kind: local
+    path: diversion/geosite-cn.list
+`)
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "auto_confirm_proxy.list"), "domain:example.cn\n")
+	mustWriteShuntFile(t, filepath.Join(baseDir, "diversion", "geosite-cn.list"), "domain:example.cn\n")
+	if err := SaveDomainPoolStateToPath(runtimeStateDBPathForBaseDir(baseDir), DomainPoolState{
+		Meta: DomainPoolMeta{
+			PoolTag:              "my_realiplist",
+			PoolKind:             DomainPoolKindMemory,
+			MemoryID:             "realip",
+			Policy:               DefaultDomainPoolPolicy("my_realiplist"),
+			DomainCount:          1,
+			PromotedDomainCount:  1,
+			PublishedDomainCount: 1,
+		},
+		Domains: []DomainPoolDomain{{
+			PoolTag:    "my_realiplist",
+			Domain:     "example.cn",
+			TotalCount: 3,
+			Score:      3,
+			Promoted:   true,
+		}},
+	}); err != nil {
+		t.Fatalf("SaveDomainPoolStateToPath: %v", err)
+	}
+
+	analyzer, err := newShuntAnalyzer(baseDir)
+	if err != nil {
+		t.Fatalf("newShuntAnalyzer: %v", err)
+	}
+	result, err := analyzer.Explain("media.example.cn", "A")
+	if err != nil {
+		t.Fatalf("Explain: %v", err)
+	}
+	if result.Decision.Matched != 31 || result.Decision.Action != "sequence_fakeip" {
+		t.Fatalf("unexpected decision: %+v matches=%+v", result.Decision, result.Matches)
+	}
+}
+
 func TestRuntimeShuntConflictsCmd(t *testing.T) {
 	baseDir := t.TempDir()
 	mustWriteShuntFile(t, filepath.Join(baseDir, "custom_config", "switches.yaml"), `{}`)

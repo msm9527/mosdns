@@ -33,9 +33,16 @@ policies:
         exec: exit
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 30
+        exec: $sequence_local
+      - matches: fast_mark 30
+        exec: exit
+      - matches: fast_mark 31
+        exec: $sequence_fakeip
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
+          - '!fast_mark 30'
         exec: $sequence_fakeip_addlist
       - matches: fast_mark 16
         exec: $sequence_local
@@ -45,8 +52,13 @@ policies:
           - fast_mark 12
           - '!fast_mark 13'
           - '!fast_mark 16'
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_fakeip
-      - matches: fast_mark 11
+      - matches:
+          - fast_mark 11
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_local_divert
       - matches: fast_mark 11
         exec: exit
@@ -104,9 +116,16 @@ policies:
         exec: exit
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist
+      - matches: fast_mark 30
+        exec: $sequence_local
+      - matches: fast_mark 30
+        exec: exit
+      - matches: fast_mark 31
+        exec: $sequence_fakeip
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
+          - '!fast_mark 30'
         exec: $sequence_fakeip_addlist
       - matches: fast_mark 16
         exec: $sequence_local
@@ -116,8 +135,13 @@ policies:
           - fast_mark 12
           - '!fast_mark 13'
           - '!fast_mark 16'
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_fakeip
-      - matches: fast_mark 11
+      - matches:
+          - fast_mark 11
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_local_divert
       - matches: fast_mark 11
         exec: exit

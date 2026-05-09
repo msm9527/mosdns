@@ -99,6 +99,8 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 		{8, "sequence_local", "白名单走国内直连链路"},
 		{13, "sequence_local", "直连补充走国内真实解析链路"},
 		{15, "sequence_fakeip_addlist", "代理补充走 fakeip/代理并加入清单"},
+		{30, "sequence_local", "自动确认直连走国内真实解析链路"},
+		{31, "sequence_fakeip", "自动确认代理走 fakeip/代理"},
 		{14, "sequence_fakeip_addlist", "国外分流走 fakeip/代理并加入清单"},
 		{16, "sequence_local", "国内分流走国内真实解析链路"},
 		{12, "sequence_fakeip", "记忆代理走 fakeip/代理"},
@@ -107,6 +109,36 @@ func decideShuntAction(qtype string, marks map[uint8]bool, switches map[string]s
 		action := step.Action
 		reason := step.Reason
 		matched := marks[step.Mark]
+		if (step.Mark == 12 || step.Mark == 11 || step.Mark == 14) && marks[30] {
+			skippedBy := "fast_mark 30"
+			path = append(path, shuntDecisionStep{
+				Order:     len(path) + 1,
+				Stage:     "sequence_known_domain",
+				Mark:      step.Mark,
+				Action:    action,
+				Reason:    reason,
+				Matched:   matched,
+				RuleTag:   tagByMark[step.Mark],
+				OutputTag: outputTagByMark[step.Mark],
+				SkippedBy: skippedBy,
+			})
+			continue
+		}
+		if (step.Mark == 12 || step.Mark == 11) && marks[31] {
+			skippedBy := "fast_mark 31"
+			path = append(path, shuntDecisionStep{
+				Order:     len(path) + 1,
+				Stage:     "sequence_known_domain",
+				Mark:      step.Mark,
+				Action:    action,
+				Reason:    reason,
+				Matched:   matched,
+				RuleTag:   tagByMark[step.Mark],
+				OutputTag: outputTagByMark[step.Mark],
+				SkippedBy: skippedBy,
+			})
+			continue
+		}
 		if step.Mark == 12 && (marks[13] || marks[16]) {
 			skippedBy := "fast_mark 13/16"
 			path = append(path, shuntDecisionStep{

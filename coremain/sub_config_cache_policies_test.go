@@ -36,9 +36,10 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.Response["cache_main"].ServfailTTL != 1 || cfg.Response["cache_main"].ColdQueryWaitMs != 80 {
 		t.Fatalf("expected default cache_main short servfail ttl and bounded cold query wait, got %+v", cfg.Response["cache_main"])
 	}
-	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
+	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
 		t.Fatalf("expected default cache_main bypass domain sets, got %+v", got)
 	}
+	assertHighChurnTTLPolicy(t, cfg.Response["cache_main"].DomainSetTTL, 43200, 43200)
 	if got := cfg.Response["cache_main"].ExcludeIPs; !sameStringSlice(got, defaultRealCacheExcludeIPs()) {
 		t.Fatalf("expected default cache_main fakeip/sinkhole exclusions, got %+v", got)
 	}
@@ -57,9 +58,10 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if cfg.UDPFastPath.InternalTTL != 7200 || cfg.UDPFastPath.StaleRetry != 30 || cfg.UDPFastPath.StaleMax != 7200 || cfg.UDPFastPath.TTLMin != 120 || cfg.UDPFastPath.TTLMax != 900 {
 		t.Fatalf("unexpected udp fast policy: %+v", cfg.UDPFastPath)
 	}
-	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
+	if got := cfg.UDPFastPath.BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
 		t.Fatalf("expected default udp fast bypass domain sets, got %+v", got)
 	}
+	assertHighChurnTTLPolicy(t, cfg.UDPFastPath.DomainSetTTL, 43200, 43200)
 }
 
 func TestDefaultCachePolicyConfigUsesMainPersistentBranchShortTermProfile(t *testing.T) {
@@ -136,9 +138,11 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	if cfg.Response["cache_main"].ServfailTTL != 1 || cfg.Response["cache_main"].ColdQueryWaitMs != 80 {
 		t.Fatalf("template cache_main should use short servfail ttl and bounded cold query wait, got %+v", cfg.Response["cache_main"])
 	}
-	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 2 || got[0] != "DDNS域名" || got[1] != "高变化域名" {
-		t.Fatalf("template cache_main should bypass DDNS and high-churn domain sets, got %+v", got)
+	if got := cfg.Response["cache_main"].BypassDomainSets; len(got) != 1 || got[0] != "DDNS域名" {
+		t.Fatalf("template cache_main should bypass only DDNS domain set, got %+v", got)
 	}
+	assertHighChurnTTLPolicy(t, cfg.Response["cache_main"].DomainSetTTL, 43200, 43200)
+	assertHighChurnTTLPolicy(t, cfg.UDPFastPath.DomainSetTTL, 43200, 43200)
 	if got := cfg.Response["cache_main"].ExcludeIPs; !sameStringSlice(got, defaultRealCacheExcludeIPs()) {
 		t.Fatalf("template cache_main should exclude fakeip/sinkhole ranges, got %+v", got)
 	}
@@ -172,7 +176,6 @@ func TestRepoHighChurnTemplateUsesPreciseVideoCDNSeeds(t *testing.T) {
 		"full:finder.video.qq.com",
 		"domain:steamcontent.com",
 		"keyword:httpdns",
-		"keyword:pcdn",
 	} {
 		if !strings.Contains(body, rule+"\n") {
 			t.Fatalf("high churn template missing precise seed %q", rule)
@@ -197,6 +200,9 @@ func TestRepoHighChurnTemplateUsesPreciseVideoCDNSeeds(t *testing.T) {
 		"domain:xmcdn.com",
 		"domain:snssdk.com",
 		"domain:byteimg.com",
+		"keyword:pcdn",
+		"keyword:p2p",
+		"keyword:stun",
 	} {
 		if strings.Contains(body, broadRule+"\n") {
 			t.Fatalf("high churn template must not include broad/stable rule %q", broadRule)
@@ -335,9 +341,13 @@ func TestRepoKnownSubscriptionDirectAlwaysUsesRealIP(t *testing.T) {
 			"matches: fast_mark 13\n        exec: $sequence_local",
 			"matches: fast_mark 13\n        exec: exit",
 			"matches: fast_mark 15\n        exec: $sequence_fakeip_addlist",
+			"matches: fast_mark 30\n        exec: $sequence_local",
+			"matches: fast_mark 30\n        exec: exit",
+			"matches: fast_mark 31\n        exec: $sequence_fakeip",
 			"matches: fast_mark 16\n        exec: $sequence_local",
 			"matches: fast_mark 16\n        exec: exit",
-			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n        exec: $sequence_fakeip",
+			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_fakeip",
+			"matches:\n          - fast_mark 11\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_local_divert",
 		)
 		if strings.Contains(mainBody, "fast_mark 13\n          - switch 'cn_answer_mode:fakeip'") ||
 			strings.Contains(mainBody, "fast_mark 16\n          - switch 'cn_answer_mode:fakeip'") {
@@ -355,9 +365,13 @@ func TestRepoKnownSubscriptionDirectAlwaysUsesRealIP(t *testing.T) {
 			"matches: fast_mark 13\n        exec: $sequence_local_refresh",
 			"matches: fast_mark 13\n        exec: exit",
 			"matches: fast_mark 15\n        exec: $sequence_fakeip_addlist_refresh",
+			"matches: fast_mark 30\n        exec: $sequence_local_refresh",
+			"matches: fast_mark 30\n        exec: exit",
+			"matches: fast_mark 31\n        exec: $sequence_fakeip_refresh",
 			"matches: fast_mark 16\n        exec: $sequence_local_refresh",
 			"matches: fast_mark 16\n        exec: exit",
-			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n        exec: $sequence_fakeip_refresh",
+			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_fakeip_refresh",
+			"matches:\n          - fast_mark 11\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_local_divert_refresh",
 		)
 		if strings.Contains(refreshBody, "fast_mark 13\n          - switch 'cn_answer_mode:fakeip'") ||
 			strings.Contains(refreshBody, "fast_mark 16\n          - switch 'cn_answer_mode:fakeip'") {
@@ -687,19 +701,29 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 	cfg := defaultCachePolicyConfig()
 	cfg.Response["cache_main"] = CachePolicy{
 		Size: 123, LazyCacheTTL: 45, LazyStaleTTL: 30, ClientTTLMin: 3, ClientTTLMax: 30, NXDomainTTL: 11, ServfailTTL: 12, ColdQueryWaitMs: 34,
-		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名", "高变化域名"}, ExcludeIPs: []string{"28.0.0.0/8", "f2b0::/18"}, Persist: true,
+		DomainSetTTL: []DomainSetTTLPolicy{{
+			Sets:         []string{"高变化域名"},
+			LazyCacheTTL: 43200,
+			LazyStaleTTL: 43200,
+		}},
+		L1Enabled: true, L1TotalCap: 22, BypassDomainSets: []string{"DDNS域名"}, ExcludeIPs: []string{"28.0.0.0/8", "f2b0::/18"}, Persist: true,
 		DumpFile: "db/cache/custom.dump", DumpInterval: 99, WALSyncInterval: 7,
 	}
 	cfg.UDPFastPath = UDPFastCachePolicy{
-		InternalTTL:      9,
-		StaleRetry:       12,
-		StaleMax:         60,
-		TTLMin:           2,
-		TTLMax:           4,
-		MemoryBudgetMB:   6,
-		ResponseSlots:    1024,
-		RuleSlots:        512,
-		BypassDomainSets: []string{"DDNS域名", "高变化域名"},
+		InternalTTL:    9,
+		StaleRetry:     12,
+		StaleMax:       60,
+		TTLMin:         2,
+		TTLMax:         4,
+		MemoryBudgetMB: 6,
+		ResponseSlots:  1024,
+		RuleSlots:      512,
+		DomainSetTTL: []DomainSetTTLPolicy{{
+			Sets:         []string{"高变化域名"},
+			LazyCacheTTL: 43200,
+			LazyStaleTTL: 43200,
+		}},
+		BypassDomainSets: []string{"DDNS域名"},
 	}
 
 	pc := PluginConfig{Tag: "cache_main", Type: "cache", Args: map[string]any{"size": 1}}
@@ -711,8 +735,12 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("unexpected cache args: %+v", args)
 	}
 	bypassDomainSets, ok := args["bypass_domain_sets"].([]string)
-	if !ok || len(bypassDomainSets) != 2 || bypassDomainSets[0] != "DDNS域名" || bypassDomainSets[1] != "高变化域名" {
+	if !ok || len(bypassDomainSets) != 1 || bypassDomainSets[0] != "DDNS域名" {
 		t.Fatalf("unexpected bypass domain sets: %+v", args["bypass_domain_sets"])
+	}
+	domainSetTTL, ok := args["domain_set_ttl"].([]map[string]any)
+	if !ok || len(domainSetTTL) != 1 || domainSetTTL[0]["lazy_cache_ttl"] != 43200 || domainSetTTL[0]["lazy_stale_ttl"] != 43200 {
+		t.Fatalf("unexpected cache domain set ttl: %+v", args["domain_set_ttl"])
 	}
 	excludeIPs, ok := args["exclude_ip"].([]string)
 	if !ok || len(excludeIPs) != 2 || excludeIPs[0] != "28.0.0.0/8" || excludeIPs[1] != "f2b0::/18" {
@@ -731,8 +759,25 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("unexpected udp slot args: %+v", udpArgs)
 	}
 	udpBypassDomainSets, ok := udpArgs["fast_cache_bypass_domain_sets"].([]string)
-	if !ok || len(udpBypassDomainSets) != 2 || udpBypassDomainSets[0] != "DDNS域名" || udpBypassDomainSets[1] != "高变化域名" {
+	if !ok || len(udpBypassDomainSets) != 1 || udpBypassDomainSets[0] != "DDNS域名" {
 		t.Fatalf("unexpected udp bypass domain sets: %+v", udpArgs["fast_cache_bypass_domain_sets"])
+	}
+	udpDomainSetTTL, ok := udpArgs["fast_cache_domain_set_ttl"].([]map[string]any)
+	if !ok || len(udpDomainSetTTL) != 1 || udpDomainSetTTL[0]["internal_ttl"] != 43200 || udpDomainSetTTL[0]["stale_max_seconds"] != 43200 {
+		t.Fatalf("unexpected udp domain set ttl: %+v", udpArgs["fast_cache_domain_set_ttl"])
+	}
+}
+
+func assertHighChurnTTLPolicy(t *testing.T, got []DomainSetTTLPolicy, wantCacheTTL, wantStaleTTL int) {
+	t.Helper()
+	if len(got) != 1 {
+		t.Fatalf("expected one high-churn ttl policy, got %+v", got)
+	}
+	if !sameStringSlice(got[0].Sets, []string{"高变化域名"}) {
+		t.Fatalf("expected high-churn ttl policy sets, got %+v", got[0].Sets)
+	}
+	if got[0].LazyCacheTTL != wantCacheTTL || got[0].LazyStaleTTL != wantStaleTTL {
+		t.Fatalf("expected high-churn ttl policy %d/%d, got %+v", wantCacheTTL, wantStaleTTL, got[0])
 	}
 }
 

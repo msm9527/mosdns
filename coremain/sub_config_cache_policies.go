@@ -29,12 +29,16 @@ const (
 	defaultCacheProbeL1TotalCap      = 2048
 )
 
-var defaultResponseCacheBypassDomainSets = []string{"DDNS域名", "高变化域名"}
+var (
+	defaultResponseCacheBypassDomainSets = []string{"DDNS域名"}
+	defaultHighChurnDomainSets           = []string{"高变化域名"}
+)
 
 type CachePolicy struct {
 	Size             int
 	LazyCacheTTL     int
 	LazyStaleTTL     int
+	DomainSetTTL     []DomainSetTTLPolicy
 	ClientTTLMin     uint32
 	ClientTTLMax     uint32
 	NXDomainTTL      int
@@ -56,6 +60,7 @@ type cachePolicyFile struct {
 	Size             *int                  `yaml:"size,omitempty"`
 	LazyCacheTTL     *int                  `yaml:"lazy_cache_ttl,omitempty"`
 	LazyStaleTTL     *int                  `yaml:"lazy_stale_ttl,omitempty"`
+	DomainSetTTL     *[]domainSetTTLFile   `yaml:"domain_set_ttl,omitempty"`
 	ClientTTLMin     *uint32               `yaml:"client_ttl_min,omitempty"`
 	ClientTTLMax     *uint32               `yaml:"client_ttl_max,omitempty"`
 	NXDomainTTL      *int                  `yaml:"nxdomain_ttl,omitempty"`
@@ -71,6 +76,20 @@ type cachePolicyFile struct {
 	DumpInterval     *int                  `yaml:"dump_interval,omitempty"`
 	WALFile          *string               `yaml:"wal_file,omitempty"`
 	WALSyncInterval  *int                  `yaml:"wal_sync_interval,omitempty"`
+}
+
+type DomainSetTTLPolicy struct {
+	Sets         []string
+	LazyCacheTTL int
+	LazyStaleTTL int
+}
+
+type domainSetTTLFile struct {
+	Sets         cachePolicyStringSet `yaml:"sets,omitempty"`
+	LazyCacheTTL *int                 `yaml:"lazy_cache_ttl,omitempty"`
+	LazyStaleTTL *int                 `yaml:"lazy_stale_ttl,omitempty"`
+	InternalTTL  *int                 `yaml:"internal_ttl,omitempty"`
+	StaleMax     *int                 `yaml:"stale_max_seconds,omitempty"`
 }
 
 type cachePolicyStringSet []string
@@ -96,27 +115,29 @@ func (s *cachePolicyStringSet) UnmarshalYAML(node *yaml.Node) error {
 }
 
 type UDPFastCachePolicy struct {
-	InternalTTL      int      `yaml:"internal_ttl"`
-	StaleRetry       int      `yaml:"stale_retry_seconds"`
-	StaleMax         int      `yaml:"stale_max_seconds"`
-	TTLMin           uint32   `yaml:"ttl_min"`
-	TTLMax           uint32   `yaml:"ttl_max"`
-	MemoryBudgetMB   int      `yaml:"memory_budget_mb"`
-	ResponseSlots    int      `yaml:"response_slots"`
-	RuleSlots        int      `yaml:"rule_slots"`
-	BypassDomainSets []string `yaml:"bypass_domain_sets"`
+	InternalTTL      int                  `yaml:"internal_ttl"`
+	StaleRetry       int                  `yaml:"stale_retry_seconds"`
+	StaleMax         int                  `yaml:"stale_max_seconds"`
+	DomainSetTTL     []DomainSetTTLPolicy `yaml:"domain_set_ttl"`
+	TTLMin           uint32               `yaml:"ttl_min"`
+	TTLMax           uint32               `yaml:"ttl_max"`
+	MemoryBudgetMB   int                  `yaml:"memory_budget_mb"`
+	ResponseSlots    int                  `yaml:"response_slots"`
+	RuleSlots        int                  `yaml:"rule_slots"`
+	BypassDomainSets []string             `yaml:"bypass_domain_sets"`
 }
 
 type udpFastCachePolicyFile struct {
-	InternalTTL      *int      `yaml:"internal_ttl,omitempty"`
-	StaleRetry       *int      `yaml:"stale_retry_seconds,omitempty"`
-	StaleMax         *int      `yaml:"stale_max_seconds,omitempty"`
-	TTLMin           *uint32   `yaml:"ttl_min,omitempty"`
-	TTLMax           *uint32   `yaml:"ttl_max,omitempty"`
-	MemoryBudgetMB   *int      `yaml:"memory_budget_mb,omitempty"`
-	ResponseSlots    *int      `yaml:"response_slots,omitempty"`
-	RuleSlots        *int      `yaml:"rule_slots,omitempty"`
-	BypassDomainSets *[]string `yaml:"bypass_domain_sets,omitempty"`
+	InternalTTL      *int                `yaml:"internal_ttl,omitempty"`
+	StaleRetry       *int                `yaml:"stale_retry_seconds,omitempty"`
+	StaleMax         *int                `yaml:"stale_max_seconds,omitempty"`
+	DomainSetTTL     *[]domainSetTTLFile `yaml:"domain_set_ttl,omitempty"`
+	TTLMin           *uint32             `yaml:"ttl_min,omitempty"`
+	TTLMax           *uint32             `yaml:"ttl_max,omitempty"`
+	MemoryBudgetMB   *int                `yaml:"memory_budget_mb,omitempty"`
+	ResponseSlots    *int                `yaml:"response_slots,omitempty"`
+	RuleSlots        *int                `yaml:"rule_slots,omitempty"`
+	BypassDomainSets *[]string           `yaml:"bypass_domain_sets,omitempty"`
 }
 
 type CachePolicyConfig struct {
@@ -149,6 +170,7 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 				Size: defaultCacheMainSize, LazyCacheTTL: 2592000, LazyStaleTTL: 2592000, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 300, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheMainL1TotalCap, Persist: true,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 				ExcludeIPs:       realCacheExcludeIPs,
 				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
 			},
@@ -156,34 +178,40 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 			"cache_branch_foreign": {
 				Size: defaultCacheBranchForeignSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheBranchL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 			"cache_branch_foreign_ecs": {
 				Size: defaultCacheBranchForeignECSSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 120, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheForeignECSL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 			"cache_fakeip_domestic": {
 				Size: defaultCacheFakeIPDomesticSize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 			},
 			"cache_fakeip_proxy": {
 				Size: defaultCacheFakeIPProxySize, LazyCacheTTL: 14400, LazyStaleTTL: 14400, ClientTTLMin: 600, ClientTTLMax: 600, NXDomainTTL: 60, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheFakeIPL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 			},
 			"cache_probe": {
 				Size: defaultCacheProbeSize, LazyCacheTTL: 600, LazyStaleTTL: 600, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 60, ServfailTTL: 1, ColdQueryWaitMs: 80,
 				L1Enabled: true, L1TotalCap: defaultCacheProbeL1TotalCap, Persist: false,
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
+				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 				ExcludeIPs:       realCacheExcludeIPs,
 			},
 		},
@@ -191,6 +219,7 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 			InternalTTL:      7200,
 			StaleRetry:       30,
 			StaleMax:         7200,
+			DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 			TTLMin:           120,
 			TTLMax:           900,
 			MemoryBudgetMB:   8,
@@ -201,6 +230,14 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 
 func defaultResponseCacheBypassDomains() []string {
 	return normalizeCachePolicyDomainSets(defaultResponseCacheBypassDomainSets)
+}
+
+func defaultHighChurnTTLPolicy(lazyCacheTTL, lazyStaleTTL int) []DomainSetTTLPolicy {
+	return []DomainSetTTLPolicy{{
+		Sets:         normalizeCachePolicyDomainSets(defaultHighChurnDomainSets),
+		LazyCacheTTL: lazyCacheTTL,
+		LazyStaleTTL: lazyStaleTTL,
+	}}
 }
 
 func defaultRealCacheExcludeIPs() []string {
@@ -255,7 +292,9 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 			ignored = append(ignored, tag)
 			continue
 		}
-		mergeOneCachePolicy(&policy, item)
+		if err := mergeOneCachePolicy(&policy, item); err != nil {
+			return nil, fmt.Errorf("%s.domain_set_ttl: %w", tag, err)
+		}
 		if err := validateCachePolicy(tag, policy); err != nil {
 			return nil, err
 		}
@@ -269,6 +308,13 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	}
 	if raw.UDPFastPath.StaleMax != nil {
 		cfg.UDPFastPath.StaleMax = *raw.UDPFastPath.StaleMax
+	}
+	if raw.UDPFastPath.DomainSetTTL != nil {
+		policies, err := normalizeCacheDomainSetTTLFiles(*raw.UDPFastPath.DomainSetTTL)
+		if err != nil {
+			return nil, fmt.Errorf("udp_fast_path.domain_set_ttl: %w", err)
+		}
+		cfg.UDPFastPath.DomainSetTTL = policies
 	}
 	if raw.UDPFastPath.TTLMin != nil {
 		cfg.UDPFastPath.TTLMin = *raw.UDPFastPath.TTLMin
@@ -297,6 +343,11 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	if cfg.UDPFastPath.StaleMax <= 0 {
 		return nil, fmt.Errorf("udp_fast_path.stale_max_seconds requires > 0")
 	}
+	for _, policy := range cfg.UDPFastPath.DomainSetTTL {
+		if policy.LazyCacheTTL < 0 || policy.LazyStaleTTL < 0 {
+			return nil, fmt.Errorf("udp_fast_path.domain_set_ttl lazy ttl cannot be negative")
+		}
+	}
 	if cfg.UDPFastPath.TTLMax > 0 && cfg.UDPFastPath.TTLMin > cfg.UDPFastPath.TTLMax {
 		return nil, fmt.Errorf("udp_fast_path.ttl_min cannot exceed ttl_max")
 	}
@@ -310,7 +361,7 @@ func mergeCachePolicyFile(cfg *CachePolicyConfig, raw cachePoliciesFile) ([]stri
 	return ignored, nil
 }
 
-func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) {
+func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) error {
 	if src.Size != nil {
 		dst.Size = *src.Size
 	}
@@ -322,6 +373,13 @@ func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) {
 	}
 	if src.LazyStaleTTL != nil {
 		dst.LazyStaleTTL = *src.LazyStaleTTL
+	}
+	if src.DomainSetTTL != nil {
+		policies, err := normalizeCacheDomainSetTTLFiles(*src.DomainSetTTL)
+		if err != nil {
+			return err
+		}
+		dst.DomainSetTTL = policies
 	}
 	if src.ClientTTLMin != nil {
 		dst.ClientTTLMin = *src.ClientTTLMin
@@ -368,6 +426,7 @@ func mergeOneCachePolicy(dst *CachePolicy, src cachePolicyFile) {
 	if src.WALSyncInterval != nil {
 		dst.WALSyncInterval = *src.WALSyncInterval
 	}
+	return nil
 }
 
 func normalizeCachePolicyDomainSets(values []string) []string {
@@ -393,6 +452,42 @@ func normalizeCachePolicyDomainSets(values []string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func normalizeCacheDomainSetTTLFiles(values []domainSetTTLFile) ([]DomainSetTTLPolicy, error) {
+	if len(values) == 0 {
+		return nil, nil
+	}
+	out := make([]DomainSetTTLPolicy, 0, len(values))
+	for _, value := range values {
+		sets := normalizeCachePolicyDomainSets([]string(value.Sets))
+		if len(sets) == 0 {
+			return nil, fmt.Errorf("sets is required")
+		}
+		policy := DomainSetTTLPolicy{
+			Sets: sets,
+		}
+		if value.LazyCacheTTL != nil {
+			policy.LazyCacheTTL = *value.LazyCacheTTL
+		} else if value.InternalTTL != nil {
+			policy.LazyCacheTTL = *value.InternalTTL
+		}
+		if value.LazyStaleTTL != nil {
+			policy.LazyStaleTTL = *value.LazyStaleTTL
+		} else if value.StaleMax != nil {
+			policy.LazyStaleTTL = *value.StaleMax
+		} else {
+			policy.LazyStaleTTL = policy.LazyCacheTTL
+		}
+		if policy.LazyCacheTTL < 0 || policy.LazyStaleTTL < 0 {
+			return nil, fmt.Errorf("lazy ttl cannot be negative")
+		}
+		if policy.LazyCacheTTL == 0 && policy.LazyStaleTTL == 0 {
+			continue
+		}
+		out = append(out, policy)
+	}
+	return out, nil
 }
 
 func normalizeCachePolicyExcludeIPs(values []string) []string {
@@ -432,6 +527,14 @@ func validateCachePolicy(tag string, policy CachePolicy) error {
 	if policy.LazyCacheTTL < 0 || policy.LazyStaleTTL < 0 {
 		return fmt.Errorf("%s lazy ttl cannot be negative", tag)
 	}
+	for _, domainPolicy := range policy.DomainSetTTL {
+		if len(domainPolicy.Sets) == 0 {
+			return fmt.Errorf("%s.domain_set_ttl sets is required", tag)
+		}
+		if domainPolicy.LazyCacheTTL < 0 || domainPolicy.LazyStaleTTL < 0 {
+			return fmt.Errorf("%s.domain_set_ttl lazy ttl cannot be negative", tag)
+		}
+	}
 	if policy.ClientTTLMax > 0 && policy.ClientTTLMin > policy.ClientTTLMax {
 		return fmt.Errorf("%s client_ttl_min cannot exceed client_ttl_max", tag)
 	}
@@ -467,6 +570,11 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		args["size"] = policy.Size
 		args["lazy_cache_ttl"] = policy.LazyCacheTTL
 		args["lazy_stale_ttl"] = policy.LazyStaleTTL
+		if len(policy.DomainSetTTL) > 0 {
+			args["domain_set_ttl"] = cacheDomainSetTTLPolicyArgs(policy.DomainSetTTL)
+		} else {
+			delete(args, "domain_set_ttl")
+		}
 		args["client_ttl_min"] = policy.ClientTTLMin
 		args["client_ttl_max"] = policy.ClientTTLMax
 		args["nxdomain_ttl"] = policy.NXDomainTTL
@@ -509,6 +617,11 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		args["fast_cache_internal_ttl"] = cfg.UDPFastPath.InternalTTL
 		args["fast_cache_stale_retry_seconds"] = cfg.UDPFastPath.StaleRetry
 		args["fast_cache_stale_max_seconds"] = cfg.UDPFastPath.StaleMax
+		if len(cfg.UDPFastPath.DomainSetTTL) > 0 {
+			args["fast_cache_domain_set_ttl"] = udpFastDomainSetTTLPolicyArgs(cfg.UDPFastPath.DomainSetTTL)
+		} else {
+			delete(args, "fast_cache_domain_set_ttl")
+		}
 		args["fast_cache_ttl_min"] = cfg.UDPFastPath.TTLMin
 		args["fast_cache_ttl_max"] = cfg.UDPFastPath.TTLMax
 		args["fast_cache_memory_budget_mb"] = cfg.UDPFastPath.MemoryBudgetMB
@@ -530,6 +643,32 @@ func ApplyRuntimeCachePolicy(pluginConf *PluginConfig, cfg *CachePolicyConfig) e
 		pluginConf.Args = args
 	}
 	return nil
+}
+
+func cacheDomainSetTTLPolicyArgs(values []DomainSetTTLPolicy) []map[string]any {
+	out := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		item := map[string]any{
+			"sets":           append([]string(nil), value.Sets...),
+			"lazy_cache_ttl": value.LazyCacheTTL,
+			"lazy_stale_ttl": value.LazyStaleTTL,
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func udpFastDomainSetTTLPolicyArgs(values []DomainSetTTLPolicy) []map[string]any {
+	out := make([]map[string]any, 0, len(values))
+	for _, value := range values {
+		item := map[string]any{
+			"sets":              append([]string(nil), value.Sets...),
+			"internal_ttl":      value.LazyCacheTTL,
+			"stale_max_seconds": value.LazyStaleTTL,
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 func pluginArgsMap(raw any) (map[string]any, error) {

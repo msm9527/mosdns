@@ -339,6 +339,20 @@ func Test_cachePlugin_NoLazyStaleForConfiguredBypassDomainSet(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_RespFromNilCacheItemIsMiss(t *testing.T) {
+	c := NewCache(&Args{Size: 64, DomainSetTTL: []DomainSetTTLPolicy{{
+		Sets:         []string{"高变化域名"},
+		LazyCacheTTL: 43200,
+		LazyStaleTTL: 43200,
+	}}}, Opts{})
+	defer c.Close()
+
+	resp, lazy, domainSet, corrupt := c.respFromCacheItem(nil, 3600, expiredMsgTtl)
+	if resp != nil || lazy || domainSet != "" || corrupt {
+		t.Fatalf("expected nil item to be cache miss, resp=%v lazy=%v domainSet=%q corrupt=%v", resp != nil, lazy, domainSet, corrupt)
+	}
+}
+
 func Test_getRespFromCache_LazyStaleWindow(t *testing.T) {
 	backend := pcache.New[key, *item](pcache.Opts{Size: 64})
 	defer backend.Close()
@@ -1701,17 +1715,37 @@ func Test_cachePlugin_SaveSkipsConfiguredDomainSet(t *testing.T) {
 	}
 }
 
-func Test_cachePlugin_SaveSkipsHighChurnDomainSet(t *testing.T) {
-	c := NewCache(&Args{Size: 64, BypassDomainSets: []string{"高变化域名"}}, Opts{})
+func Test_cachePlugin_SaveCachesHighChurnDomainSetWithTTLOverride(t *testing.T) {
+	c := NewCache(&Args{
+		Size:         64,
+		LazyCacheTTL: 1,
+		LazyStaleTTL: 1,
+		DomainSetTTL: []DomainSetTTLPolicy{{
+			Sets:         []string{"高变化域名"},
+			LazyCacheTTL: 43200,
+			LazyStaleTTL: 43200,
+		}},
+	}, Opts{})
 	defer c.Close()
 
 	qCtx := testQueryContext(t, "steamcontent.com.", net.IPv4(5, 5, 5, 5))
 	qCtx.StoreValue(query_context.KeyDomainSet, "白名单|高变化域名")
-	if _, ok := c.saveRespToCache("high-churn-save-bypass-key", qCtx); ok {
-		t.Fatal("expected high-churn response not to be cached")
+	cachedItem, ok := c.saveRespToCache("high-churn-save-key", qCtx)
+	if !ok {
+		t.Fatal("expected high-churn response to be cached")
 	}
-	if got := c.backend.Len(); got != 0 {
-		t.Fatalf("expected cache to remain empty, got %d entries", got)
+	if got := c.backend.Len(); got != 1 {
+		t.Fatalf("expected cache to store high-churn response, got %d entries", got)
+	}
+	now := time.Now()
+	cachedItem.storedUnixNano = now.Add(-2 * time.Second).UnixNano()
+	cachedItem.expireUnixNano = now.Add(-time.Second).UnixNano()
+	resp, lazy, domainSet, corrupt := c.respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
+	if corrupt || resp == nil || !lazy {
+		t.Fatalf("expected high-churn stale response inside domain-set ttl window, resp=%v lazy=%v corrupt=%v", resp != nil, lazy, corrupt)
+	}
+	if domainSet != "白名单|高变化域名" {
+		t.Fatalf("expected high-churn domain set metadata, got %q", domainSet)
 	}
 }
 

@@ -612,6 +612,44 @@ func TestFastCacheStopsServingStaleAfterMaxWindow(t *testing.T) {
 	}
 }
 
+func TestFastCacheDomainSetTTLOverrideKeepsHighChurnHot(t *testing.T) {
+	name := "content.steamcontent.com."
+	qtype := uint16(dns.TypeA)
+	hash := fastQNameHashString(name, qtype)
+	resp := makeAnswer(t, name, qtype, 0x1111, 30)
+
+	fc := newFastCache(fastCacheConfig{
+		internalTTL: time.Second,
+		staleRetry:  time.Hour,
+		staleMax:    time.Second,
+		domainSetTTL: []fastDomainSetTTLPolicy{{
+			Sets:        []string{"高变化域名"},
+			InternalTTL: 43200,
+			StaleMax:    43200,
+		}},
+	}, &fastStats{})
+	if !fc.storeWithRuleRevision(name, qtype, resp, "国外分流|高变化域名", false, false, 0, fastRuleRevision{}) {
+		t.Fatal("expected high-churn response to be stored")
+	}
+
+	item := mustFastCacheItem(t, fc, name, qtype)
+	if remaining := time.Until(time.Unix(atomic.LoadInt64(&item.expire), 0)); remaining < 11*time.Hour {
+		t.Fatalf("expected high-churn internal ttl override around 12h, remaining=%s", remaining)
+	}
+
+	atomic.StoreInt64(&item.expire, time.Now().Add(-10*time.Second).Unix())
+	atomic.StoreUint32(&item.updating, 1)
+	buf := make([]byte, len(resp))
+	copy(buf, makeQuery(t, name, qtype, 0x9999))
+	action, _, _, _, staleRefresh := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionReply {
+		t.Fatalf("expected high-churn stale response within domain-set stale window, got action=%d", action)
+	}
+	if staleRefresh {
+		t.Fatal("expected stale refresh flag to stay false while another refresh is updating")
+	}
+}
+
 func TestFastCachePurgeDomainsAndFlush(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{

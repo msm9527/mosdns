@@ -1,11 +1,14 @@
 package sd_set_light
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +59,7 @@ type SdSetLight struct {
 var _ data_provider.DomainMatcherProvider = (*SdSetLight)(nil)
 var _ data_provider.RuleExporter = (*SdSetLight)(nil)
 var _ coremain.ControlConfigReloader = (*SdSetLight)(nil)
+var _ coremain.ListContentController = (*SdSetLight)(nil)
 var _ io.Closer = (*SdSetLight)(nil)
 
 func newSdSetLight(bp *coremain.BP, args any) (any, error) {
@@ -169,6 +173,58 @@ func (p *SdSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []c
 	return p.reloadAllRules(ruleSourceReloadOptions(global))
 }
 
+func (p *SdSetLight) ListEntries(query string, offset, limit int) ([]coremain.ListEntry, int, error) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	query = strings.ToLower(strings.TrimSpace(query))
+	if offset < 0 {
+		offset = 0
+	}
+	if limit <= 0 {
+		limit = len(p.rules)
+		if limit <= 0 {
+			limit = 1
+		}
+	}
+
+	items := make([]coremain.ListEntry, 0, min(limit, len(p.rules)))
+	matchedCount := 0
+	for _, rule := range p.rules {
+		if query != "" && !strings.Contains(strings.ToLower(rule), query) {
+			continue
+		}
+		matchedCount++
+		if matchedCount <= offset {
+			continue
+		}
+		items = append(items, coremain.ListEntry{Value: rule})
+		if len(items) >= limit {
+			break
+		}
+	}
+	return items, matchedCount, nil
+}
+
+func (p *SdSetLight) ReplaceListRuntime(_ context.Context, values []string) (int, error) {
+	source, localPath, err := p.writableLocalSource()
+	if err != nil {
+		return 0, err
+	}
+	normalized, err := normalizeWritableDomainRules(source, values)
+	if err != nil {
+		return 0, err
+	}
+	if err := writeSdSetLightRulesFile(localPath, normalized); err != nil {
+		return 0, err
+	}
+	p.resetSyncState()
+	if err := p.reloadAllRules(coremain.RuleSourceSyncOptions{}); err != nil {
+		return 0, err
+	}
+	return len(normalized), nil
+}
+
 func (p *SdSetLight) loadSources() error {
 	configFile, bindTo := p.currentBinding()
 	if strings.TrimSpace(configFile) == "" || strings.TrimSpace(bindTo) == "" {
@@ -187,6 +243,68 @@ func (p *SdSetLight) loadSources() error {
 	p.sources = append([]rulesource.Source(nil), sources...)
 	p.mu.Unlock()
 	return nil
+}
+
+func (p *SdSetLight) writableLocalSource() (rulesource.Source, string, error) {
+	sources := p.sourceSnapshot()
+	enabled := make([]rulesource.Source, 0, 1)
+	for _, source := range sources {
+		if source.Enabled {
+			enabled = append(enabled, source)
+		}
+	}
+	if len(enabled) != 1 {
+		return rulesource.Source{}, "", fmt.Errorf("list %s is backed by %d enabled sources and is read-only", p.pluginTag, len(enabled))
+	}
+	source := enabled[0]
+	if source.SourceKind != rulesource.SourceKindLocal {
+		return rulesource.Source{}, "", fmt.Errorf("list %s source %s is %s and is read-only", p.pluginTag, source.ID, source.SourceKind)
+	}
+	switch source.Format {
+	case rulesource.FormatTXT, rulesource.FormatList, rulesource.FormatRules:
+	default:
+		return rulesource.Source{}, "", fmt.Errorf("list %s source %s format %s is read-only", p.pluginTag, source.ID, source.Format)
+	}
+	localPath, err := rulesource.ResolveLocalPath(p.currentBaseDir(), scope, source)
+	if err != nil {
+		return rulesource.Source{}, "", err
+	}
+	return source, localPath, nil
+}
+
+func normalizeWritableDomainRules(source rulesource.Source, values []string) ([]string, error) {
+	var builder strings.Builder
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		builder.WriteString(value)
+		builder.WriteByte('\n')
+	}
+	rules, err := rulesource.ParseDomainBytes(source.Format, []byte(builder.String()))
+	if err != nil {
+		return nil, err
+	}
+	return rules, nil
+}
+
+func writeSdSetLightRulesFile(path string, rules []string) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	writer := bufio.NewWriter(f)
+	for _, rule := range rules {
+		if _, err := writer.WriteString(rule + "\n"); err != nil {
+			return err
+		}
+	}
+	return writer.Flush()
 }
 
 func (p *SdSetLight) reloadAllRules(options coremain.RuleSourceSyncOptions) error {
@@ -294,6 +412,12 @@ func (p *SdSetLight) currentSyncState() []coremain.RuleSourceVersion {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return append([]coremain.RuleSourceVersion(nil), p.syncState...)
+}
+
+func (p *SdSetLight) resetSyncState() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.syncState = nil
 }
 
 func (p *SdSetLight) sourceSnapshot() []rulesource.Source {

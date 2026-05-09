@@ -159,25 +159,26 @@ func (s *lazyRefreshState) setErr(err error) {
 }
 
 type Args struct {
-	Size             int      `yaml:"size"`
-	LazyCacheTTL     int      `yaml:"lazy_cache_ttl"`
-	LazyStaleTTL     int      `yaml:"lazy_stale_ttl"`
-	ClientTTLMin     uint32   `yaml:"client_ttl_min"`
-	ClientTTLMax     uint32   `yaml:"client_ttl_max"`
-	NXDomainTTL      int      `yaml:"nxdomain_ttl"`
-	ServfailTTL      int      `yaml:"servfail_ttl"`
-	ColdQueryWaitMs  int      `yaml:"cold_query_wait_ms"`
-	L1Enabled        *bool    `yaml:"l1_enabled"`
-	L1TotalCap       int      `yaml:"l1_total_cap"`
-	L1ShardCap       int      `yaml:"l1_shard_cap"`
-	EnableECS        bool     `yaml:"enable_ecs"`
-	ExitOnHit        bool     `yaml:"exit_on_hit"`
-	ExcludeIPs       []string `yaml:"exclude_ip"`
-	BypassDomainSets []string `yaml:"bypass_domain_sets"`
-	DumpFile         string   `yaml:"dump_file"`
-	DumpInterval     int      `yaml:"dump_interval"`
-	WALFile          string   `yaml:"wal_file"`
-	WALSyncInterval  int      `yaml:"wal_sync_interval"`
+	Size             int                  `yaml:"size"`
+	LazyCacheTTL     int                  `yaml:"lazy_cache_ttl"`
+	LazyStaleTTL     int                  `yaml:"lazy_stale_ttl"`
+	DomainSetTTL     []DomainSetTTLPolicy `yaml:"domain_set_ttl"`
+	ClientTTLMin     uint32               `yaml:"client_ttl_min"`
+	ClientTTLMax     uint32               `yaml:"client_ttl_max"`
+	NXDomainTTL      int                  `yaml:"nxdomain_ttl"`
+	ServfailTTL      int                  `yaml:"servfail_ttl"`
+	ColdQueryWaitMs  int                  `yaml:"cold_query_wait_ms"`
+	L1Enabled        *bool                `yaml:"l1_enabled"`
+	L1TotalCap       int                  `yaml:"l1_total_cap"`
+	L1ShardCap       int                  `yaml:"l1_shard_cap"`
+	EnableECS        bool                 `yaml:"enable_ecs"`
+	ExitOnHit        bool                 `yaml:"exit_on_hit"`
+	ExcludeIPs       []string             `yaml:"exclude_ip"`
+	BypassDomainSets []string             `yaml:"bypass_domain_sets"`
+	DumpFile         string               `yaml:"dump_file"`
+	DumpInterval     int                  `yaml:"dump_interval"`
+	WALFile          string               `yaml:"wal_file"`
+	WALSyncInterval  int                  `yaml:"wal_sync_interval"`
 
 	lazyStaleTTLConfigured bool
 }
@@ -186,6 +187,7 @@ type argsRaw struct {
 	Size             int         `yaml:"size"`
 	LazyCacheTTL     int         `yaml:"lazy_cache_ttl"`
 	LazyStaleTTL     *int        `yaml:"lazy_stale_ttl"`
+	DomainSetTTL     interface{} `yaml:"domain_set_ttl"`
 	ClientTTLMin     uint32      `yaml:"client_ttl_min"`
 	ClientTTLMax     uint32      `yaml:"client_ttl_max"`
 	NXDomainTTL      int         `yaml:"nxdomain_ttl"`
@@ -218,6 +220,7 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	} else {
 		a.LazyStaleTTL = raw.LazyCacheTTL
 	}
+	a.DomainSetTTL = nil
 	a.ClientTTLMin = raw.ClientTTLMin
 	a.ClientTTLMax = raw.ClientTTLMax
 	a.NXDomainTTL = raw.NXDomainTTL
@@ -256,7 +259,23 @@ func (a *Args) UnmarshalYAML(node *yaml.Node) error {
 	if err != nil {
 		return err
 	}
+	a.DomainSetTTL, err = parseDomainSetTTLPolicies(raw.DomainSetTTL)
+	if err != nil {
+		return err
+	}
 	return nil
+}
+
+type DomainSetTTLPolicy struct {
+	Sets         []string `yaml:"sets"`
+	LazyCacheTTL int      `yaml:"lazy_cache_ttl"`
+	LazyStaleTTL int      `yaml:"lazy_stale_ttl"`
+}
+
+type domainSetTTLPolicyRaw struct {
+	Sets         interface{} `yaml:"sets"`
+	LazyCacheTTL int         `yaml:"lazy_cache_ttl"`
+	LazyStaleTTL *int        `yaml:"lazy_stale_ttl"`
 }
 
 func splitCacheTokenValue(value string) []string {
@@ -300,6 +319,60 @@ func parseDomainSetTokenValue(raw interface{}, field string) ([]string, error) {
 	}
 }
 
+func parseDomainSetTTLPolicies(raw interface{}) ([]DomainSetTTLPolicy, error) {
+	switch v := raw.(type) {
+	case nil:
+		return nil, nil
+	case []interface{}:
+		out := make([]DomainSetTTLPolicy, 0, len(v))
+		for i, item := range v {
+			data, err := yaml.Marshal(item)
+			if err != nil {
+				return nil, fmt.Errorf("domain_set_ttl[%d] encode: %w", i, err)
+			}
+			var one domainSetTTLPolicyRaw
+			if err := yaml.Unmarshal(data, &one); err != nil {
+				return nil, fmt.Errorf("domain_set_ttl[%d] decode: %w", i, err)
+			}
+			policy, ok, err := normalizeDomainSetTTLPolicy(one)
+			if err != nil {
+				return nil, fmt.Errorf("domain_set_ttl[%d]: %w", i, err)
+			}
+			if ok {
+				out = append(out, policy)
+			}
+		}
+		return out, nil
+	default:
+		return nil, fmt.Errorf("domain_set_ttl must be list, got %T", v)
+	}
+}
+
+func normalizeDomainSetTTLPolicy(raw domainSetTTLPolicyRaw) (DomainSetTTLPolicy, bool, error) {
+	sets, err := parseDomainSetTokenValue(raw.Sets, "sets")
+	if err != nil {
+		return DomainSetTTLPolicy{}, false, err
+	}
+	if len(sets) == 0 {
+		return DomainSetTTLPolicy{}, false, fmt.Errorf("sets is required")
+	}
+	policy := DomainSetTTLPolicy{
+		Sets:         sets,
+		LazyCacheTTL: raw.LazyCacheTTL,
+		LazyStaleTTL: raw.LazyCacheTTL,
+	}
+	if raw.LazyStaleTTL != nil {
+		policy.LazyStaleTTL = *raw.LazyStaleTTL
+	}
+	if policy.LazyCacheTTL < 0 || policy.LazyStaleTTL < 0 {
+		return DomainSetTTLPolicy{}, false, fmt.Errorf("lazy ttl cannot be negative")
+	}
+	if policy.LazyCacheTTL == 0 && policy.LazyStaleTTL == 0 {
+		return DomainSetTTLPolicy{}, false, nil
+	}
+	return policy, true, nil
+}
+
 func (a *Args) init() {
 	if a.LazyCacheTTL < 0 {
 		a.LazyCacheTTL = 0
@@ -333,6 +406,31 @@ func (a *Args) init() {
 		a.WALFile = inferWALFileFromDump(a.DumpFile)
 	}
 	a.BypassDomainSets = normalizeDomainSetTokens(a.BypassDomainSets)
+	a.DomainSetTTL = normalizeDomainSetTTLPolicies(a.DomainSetTTL)
+}
+
+func normalizeDomainSetTTLPolicies(values []DomainSetTTLPolicy) []DomainSetTTLPolicy {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]DomainSetTTLPolicy, 0, len(values))
+	for _, value := range values {
+		value.Sets = normalizeDomainSetTokens(value.Sets)
+		if len(value.Sets) == 0 {
+			continue
+		}
+		if value.LazyCacheTTL < 0 {
+			value.LazyCacheTTL = 0
+		}
+		if value.LazyStaleTTL < 0 {
+			value.LazyStaleTTL = 0
+		}
+		if value.LazyCacheTTL == 0 && value.LazyStaleTTL == 0 {
+			continue
+		}
+		out = append(out, value)
+	}
+	return out
 }
 
 func inferDefaultL1TotalCap(size int) int {
@@ -651,6 +749,18 @@ func (c *Cache) shouldBypassForStoredDomainSet(domainSet string) bool {
 
 func (c *Cache) shouldServeLazyStale(domainSet string) bool {
 	return !c.shouldBypassForStoredDomainSet(domainSet)
+}
+
+func (c *Cache) domainSetTTLOverride(domainSet string) (lazyCacheTTL, lazyStaleTTL int, ok bool) {
+	if c == nil || c.args == nil || len(c.args.DomainSetTTL) == 0 {
+		return 0, 0, false
+	}
+	for _, policy := range c.args.DomainSetTTL {
+		if domainSetContainsAnyToken(domainSet, policy.Sets) {
+			return policy.LazyCacheTTL, policy.LazyStaleTTL, true
+		}
+	}
+	return 0, 0, false
 }
 
 func (c *Cache) RegMetricsTo(r prometheus.Registerer) error {
@@ -1921,6 +2031,11 @@ func getRespFromCache(msgKey string, backend *cache.Cache[key, *item], lazyStale
 }
 
 func (c *Cache) respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL int) (*dns.Msg, bool, string, bool) {
+	if v != nil {
+		if _, overrideStaleTTL, ok := c.domainSetTTLOverride(v.domainSet); ok {
+			lazyStaleTTL = overrideStaleTTL
+		}
+	}
 	resp, lazy, domainSet, corrupt := respFromCacheItemWithLazyPolicy(v, lazyStaleTTL, expiredResponseTTL, c.shouldServeLazyStale)
 	if corrupt || resp == nil {
 		return resp, lazy, domainSet, corrupt
@@ -2193,7 +2308,13 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	if responseFromStaleCache(qCtx) {
 		return nil, false
 	}
-	if c.shouldBypassForCurrentDomainSet(currentRouteDomainSet(qCtx)) {
+	routeSnapshot := newCacheRouteSnapshot(qCtx, c.plugin)
+	if len(route) > 0 {
+		routeSnapshot = route[0]
+	}
+	domainSet := routeSnapshot.domainSet
+	dependencySet := routeSnapshot.dependencySet
+	if c.shouldBypassForCurrentDomainSet(domainSet) {
 		return nil, false
 	}
 
@@ -2244,6 +2365,20 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	if cacheTtl < msgTtl {
 		cacheTtl = msgTtl
 	}
+	if overrideCacheTTL, overrideStaleTTL, ok := c.domainSetTTLOverride(domainSet); ok {
+		if overrideCacheTTL > 0 {
+			cacheTtl = time.Duration(overrideCacheTTL) * time.Second
+		}
+		if overrideStaleTTL > 0 {
+			staleCacheTTL := msgTtl + time.Duration(overrideStaleTTL)*time.Second
+			if cacheTtl < staleCacheTTL {
+				cacheTtl = staleCacheTTL
+			}
+		}
+		if cacheTtl < msgTtl {
+			cacheTtl = msgTtl
+		}
+	}
 
 	msgToCache := copyNoOpt(r)
 	packedMsg, err := msgToCache.Pack()
@@ -2259,12 +2394,6 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	}
 	v.refreshTTLOffsets()
 
-	routeSnapshot := newCacheRouteSnapshot(qCtx, c.plugin)
-	if len(route) > 0 {
-		routeSnapshot = route[0]
-	}
-	domainSet := routeSnapshot.domainSet
-	dependencySet := routeSnapshot.dependencySet
 	if domainSet != "" || dependencySet != "" {
 		v.domainSet = encodeStoredRouteMetadata(domainSet, dependencySet, routeSnapshot.routeSignature)
 	}

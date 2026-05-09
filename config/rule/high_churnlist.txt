@@ -1,8 +1,8 @@
 # 高变化域名
-# 命中后绕过响应缓存和 UDP 快路径缓存，避免 PCDN、HTTPDNS、STUN、
-# 游戏下载调度等短周期域名被长 stale 缓存拖住。
+# 命中后进入受控缓存治理，默认后端保留与 stale 窗口为 12 小时。
+# 这里仅放明确的短视频、HTTPDNS、游戏下载和 CDN 调度域名，避免粗粒度 keyword 误伤。
 
-# PCDN / P2P / STUN
+# 视频 CDN / 下载调度
 domain:bsccdn.net
 domain:xycdn.com
 domain:douyucdn.cn
@@ -10,9 +10,6 @@ domain:bilivideo.cn
 domain:bilivideo.com
 domain:bilivideo.net
 domain:yximgs.com
-keyword:pcdn
-keyword:p2p
-keyword:stun
 
 # HTTPDNS
 keyword:httpdns

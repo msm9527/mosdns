@@ -22,6 +22,8 @@
 # 补充入口说明：
 # - cuscn: 直连补充，适合放“非 .cn 但在国内应真实解析/直连”的域名。
 # - cusnocn: 代理补充，适合放“.cn 或中国站点外观但应继续走代理/FakeIP”的域名。
+# - auto_confirm_direct: 自动判定后由用户确认的长期直连域名。
+# - auto_confirm_proxy: 自动判定后由用户确认的长期代理/FakeIP 域名。
 # - 默认启用 geolocation-cn.txt 作为“全球品牌国内站点”等直连补充。
 # - geolocation-!cn.txt 默认关闭；主国外分流已由 geosite_no_cn.srs 承担，
 #   需要额外代理补充时可在规则管理页手动启用。
@@ -51,6 +53,24 @@ sources:
       url: https://raw.githubusercontent.com/Loyalsoldier/domain-list-custom/release/geolocation-!cn.txt
       auto_update: false
       update_interval_hours: 24
+    - id: auto_confirm_direct_local
+      name: 自动确认直连
+      bind_to: auto_confirm_direct
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: list
+      source_kind: local
+      path: diversion/auto_confirm_direct.list
+    - id: auto_confirm_proxy_local
+      name: 自动确认代理
+      bind_to: auto_confirm_proxy
+      enabled: true
+      behavior: domain
+      match_mode: domain_set
+      format: list
+      source_kind: local
+      path: diversion/auto_confirm_proxy.list
     - id: geoip_cn
       name: 国内 IP 集
       bind_to: geoip_cn

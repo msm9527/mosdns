@@ -93,6 +93,25 @@ policies:
       config_file: custom_config/diversion_sources.yaml
       bind_to: cuscn
 
+  # 自动判定确认：长期直连规则。
+  # 说明：
+  # - 用户可把记忆直连候选确认到这里
+  # - 优先级高于订阅大规则集和记忆池，低于显式黑白/灰名单与手动补充
+  - name: auto_confirm_direct
+    type: sd_set_light
+    args:
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: auto_confirm_direct
+
+  # 自动判定确认：长期代理规则。
+  - name: auto_confirm_proxy
+    type: sd_set_light
+    args:
+      socks5: ""
+      config_file: custom_config/diversion_sources.yaml
+      bind_to: auto_confirm_proxy
+
   # 记忆类规则 provider。
   # 说明：
   # - `generated_from` 表示直接订阅对应 memory pool 插件的规则导出接口
@@ -243,6 +262,12 @@ policies:
         - tag: cusnocn
           mark: 15
           output_tag: 代理补充
+        - tag: auto_confirm_proxy
+          mark: 31
+          output_tag: 自动确认代理
+        - tag: auto_confirm_direct
+          mark: 30
+          output_tag: 自动确认直连
         - tag: geosite_cn
           mark: 16
           output_tag: 国内分流

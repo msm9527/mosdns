@@ -137,6 +137,7 @@ func (c *Cache) snapshotConfig(snapshotPath, walPath string) map[string]interfac
 		"nxdomain_ttl":       c.args.NXDomainTTL,
 		"servfail_ttl":       c.args.ServfailTTL,
 		"cold_query_wait_ms": c.args.ColdQueryWaitMs,
+		"domain_set_ttl":     append([]DomainSetTTLPolicy(nil), c.args.DomainSetTTL...),
 		"l1_enabled":         c.l1Enabled,
 		"l1_total_cap":       c.args.L1TotalCap,
 		"l1_shard_cap":       c.l1ShardCap,

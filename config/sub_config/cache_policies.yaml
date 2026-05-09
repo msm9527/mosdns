@@ -20,6 +20,7 @@
 # - l1_enabled: 是否启用进程内 L1 热缓存。
 # - l1_total_cap / l1_shard_cap: L1 热缓存容量上限；不设 shard 时按实现自动分配。
 # - bypass_domain_sets: 命中这些域名集时完全绕过该响应缓存，不读 L1/L2，也不写入。
+# - domain_set_ttl: 命中特定域名集时覆盖后端缓存保留与 stale 窗口，用于高变化域名的速度/时效折中。
 # - exclude_ip: 命中这些 IP/CIDR 的响应不写入该缓存；真实缓存默认排除 FakeIP 段，
 #   用于防止旧版本或异常链路把 28.x / f2b0:: 这类 FakeIP 污染真实直连缓存。
 # - persist: 是否启用 dump + WAL 持久化。
@@ -43,8 +44,8 @@
 # - probe 缓存默认不持久化，避免跨重启保留旧探测结果。
 # - 真实解析主缓存采用 30 天治理保留 + stale-while-revalidate：
 #   后端保留期内优先返回缓存并后台刷新。
-# - 这样查询过的普通域名不会在保留期内退回冷查询，DDNS/高变化域名通过绕过名单保证时效。
-# - DDNS 域名默认完全不走响应缓存，避免短 TTL / 高变化域名被旧记录拖住。
+# - 这样查询过的普通域名不会在保留期内退回冷查询；高变化域名使用独立 12 小时缓存窗口保证速度和时效平衡。
+# - DDNS 域名默认完全不走响应缓存；高变化域名不再绕过缓存，而是用 domain_set_ttl 限制为 12 小时后端保留和 stale 窗口。
 # - UDP 快路径默认保留热点结果，并允许 FakeIP / 热点缓存向客户端返回更长 TTL。
 # - `size` 是“条目上限”不是“文件大小上限”；dump/wal 文件会随实际内容周期更新。
 # - 真实解析以 cache_main 作为长期持久化真源，并按国内/国外/关键开关隔离；
@@ -57,6 +58,7 @@
 # - stale_max_seconds: 过期后最多允许返回 stale 结果多久；超过后强制回落完整解析。
 # - ttl_min / ttl_max: 返回给客户端的 TTL 裁剪范围；0 表示不限制该边界。
 # - bypass_domain_sets: 命中这些域名集时完全绕过 UDP 快路径缓存。
+# - domain_set_ttl: 命中特定域名集时覆盖快路径内部缓存和 stale 窗口。
 # - memory_budget_mb: 快路径表自动容量预算；0 表示按 Go 内存限制推断。
 # - response_slots / rule_slots: 手动固定快路径响应/规则槽位；0 表示自动。
 
@@ -74,7 +76,11 @@ response:
     l1_total_cap: 8192
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     exclude_ip:
       - 0.0.0.0/32
       - 127.0.0.0/8
@@ -102,7 +108,11 @@ response:
     l1_total_cap: 256
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     exclude_ip:
       - 0.0.0.0/32
       - 127.0.0.0/8
@@ -127,7 +137,11 @@ response:
     l1_total_cap: 256
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     exclude_ip:
       - 0.0.0.0/32
       - 127.0.0.0/8
@@ -152,7 +166,11 @@ response:
     l1_total_cap: 128
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     exclude_ip:
       - 0.0.0.0/32
       - 127.0.0.0/8
@@ -177,7 +195,11 @@ response:
     l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     persist: false
 
   cache_fakeip_proxy:
@@ -193,7 +215,11 @@ response:
     l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     persist: false
 
   cache_probe:
@@ -209,7 +235,11 @@ response:
     l1_total_cap: 2048
     bypass_domain_sets:
       - DDNS域名
-      - 高变化域名
+    domain_set_ttl:
+      - sets:
+          - 高变化域名
+        lazy_cache_ttl: 43200
+        lazy_stale_ttl: 43200
     exclude_ip:
       - 0.0.0.0/32
       - 127.0.0.0/8
@@ -232,4 +262,8 @@ udp_fast_path:
   rule_slots: 0
   bypass_domain_sets:
     - DDNS域名
-    - 高变化域名
+  domain_set_ttl:
+    - sets:
+        - 高变化域名
+      internal_ttl: 43200
+      stale_max_seconds: 43200

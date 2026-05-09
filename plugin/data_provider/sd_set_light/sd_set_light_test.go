@@ -153,6 +153,164 @@ func TestSdSetLightAllowsMissingRemoteCacheOnStartup(t *testing.T) {
 	}
 }
 
+func TestSdSetLightListEntriesSupportsQueryAndPaging(t *testing.T) {
+	p := &SdSetLight{
+		pluginTag: "auto_confirm_direct",
+		rules: []string{
+			"domain:example.com",
+			"full:api.example.com",
+			"domain:google.com",
+		},
+	}
+
+	items, total, err := p.ListEntries("example", 1, 1)
+	if err != nil {
+		t.Fatalf("ListEntries: %v", err)
+	}
+	if total != 2 {
+		t.Fatalf("expected total=2, got %d", total)
+	}
+	if len(items) != 1 || items[0].Value != "full:api.example.com" {
+		t.Fatalf("unexpected items: %+v", items)
+	}
+}
+
+func TestSdSetLightReplaceListRuntimeWritesSingleLocalSource(t *testing.T) {
+	dir := t.TempDir()
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
+
+	cfg := rulesource.Config{
+		Sources: []rulesource.Source{{
+			ID:         "auto_confirm_direct_local",
+			Name:       "auto",
+			BindTo:     "auto_confirm_direct",
+			Enabled:    true,
+			Behavior:   rulesource.BehaviorDomain,
+			MatchMode:  rulesource.MatchModeDomainSet,
+			Format:     rulesource.FormatList,
+			SourceKind: rulesource.SourceKindLocal,
+			Path:       "diversion/auto_confirm_direct.list",
+		}},
+	}
+	if err := coremain.SaveDiversionSourcesToCustomConfig(cfg); err != nil {
+		t.Fatalf("SaveDiversionSourcesToCustomConfig: %v", err)
+	}
+
+	p := &SdSetLight{
+		baseDir:     dir,
+		configFile:  filepath.Join("custom_config", "diversion_sources.yaml"),
+		bindTo:      "auto_confirm_direct",
+		httpClient:  &http.Client{},
+		ctx:         context.Background(),
+		subscribers: make([]func(), 0),
+	}
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+
+	notifyCh := make(chan struct{}, 1)
+	p.Subscribe(func() { notifyCh <- struct{}{} })
+
+	replaced, err := p.ReplaceListRuntime(context.Background(), []string{
+		"domain:example.com",
+		"",
+		"full:api.example.com",
+	})
+	if err != nil {
+		t.Fatalf("ReplaceListRuntime: %v", err)
+	}
+	if replaced != 2 {
+		t.Fatalf("expected replaced=2, got %d", replaced)
+	}
+	waitForSdSetLightNotify(t, notifyCh)
+
+	rules, err := p.GetRules()
+	if err != nil {
+		t.Fatalf("GetRules: %v", err)
+	}
+	if strings.Join(rules, ",") != "domain:example.com,full:api.example.com" {
+		t.Fatalf("unexpected rules: %#v", rules)
+	}
+	body, err := os.ReadFile(filepath.Join(dir, "diversion", "auto_confirm_direct.list"))
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if got := string(body); got != "domain:example.com\nfull:api.example.com\n" {
+		t.Fatalf("unexpected file content: %q", got)
+	}
+}
+
+func TestSdSetLightReplaceListRuntimeRejectsMultiSourceBinding(t *testing.T) {
+	dir := t.TempDir()
+	coremain.MainConfigBaseDir = dir
+	t.Cleanup(func() { coremain.MainConfigBaseDir = "" })
+
+	cfg := rulesource.Config{
+		Sources: []rulesource.Source{
+			{
+				ID:         "one",
+				Name:       "one",
+				BindTo:     "auto_confirm_direct",
+				Enabled:    true,
+				Behavior:   rulesource.BehaviorDomain,
+				MatchMode:  rulesource.MatchModeDomainSet,
+				Format:     rulesource.FormatList,
+				SourceKind: rulesource.SourceKindLocal,
+				Path:       "diversion/one.list",
+			},
+			{
+				ID:         "two",
+				Name:       "two",
+				BindTo:     "auto_confirm_direct",
+				Enabled:    true,
+				Behavior:   rulesource.BehaviorDomain,
+				MatchMode:  rulesource.MatchModeDomainSet,
+				Format:     rulesource.FormatList,
+				SourceKind: rulesource.SourceKindLocal,
+				Path:       "diversion/two.list",
+			},
+		},
+	}
+	if err := coremain.SaveDiversionSourcesToCustomConfig(cfg); err != nil {
+		t.Fatalf("SaveDiversionSourcesToCustomConfig: %v", err)
+	}
+
+	p := &SdSetLight{
+		baseDir:    dir,
+		configFile: filepath.Join("custom_config", "diversion_sources.yaml"),
+		bindTo:     "auto_confirm_direct",
+	}
+	if err := p.loadSources(); err != nil {
+		t.Fatalf("loadSources: %v", err)
+	}
+	if _, err := p.ReplaceListRuntime(context.Background(), []string{"domain:example.com"}); err == nil {
+		t.Fatal("expected multi-source binding to be read-only")
+	}
+}
+
+func TestSdSetLightReplaceListRuntimeRejectsRemoteSource(t *testing.T) {
+	p := &SdSetLight{
+		pluginTag: "geosite_cn",
+		baseDir:   t.TempDir(),
+		sources: []rulesource.Source{{
+			ID:         "geosite_cn",
+			Name:       "geo",
+			BindTo:     "geosite_cn",
+			Enabled:    true,
+			Behavior:   rulesource.BehaviorDomain,
+			MatchMode:  rulesource.MatchModeDomainSet,
+			Format:     rulesource.FormatSRS,
+			SourceKind: rulesource.SourceKindRemote,
+			Path:       "diversion/geosite-cn.srs",
+			URL:        "https://example.invalid/geosite-cn.srs",
+		}},
+	}
+	if _, err := p.ReplaceListRuntime(context.Background(), []string{"domain:example.com"}); err == nil {
+		t.Fatal("expected remote source to be read-only")
+	}
+}
+
 type failingRoundTripper struct{}
 
 func (failingRoundTripper) RoundTrip(*http.Request) (*http.Response, error) {

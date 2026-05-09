@@ -30,9 +30,16 @@ policies:
         exec: exit
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 30
+        exec: $sequence_local_refresh
+      - matches: fast_mark 30
+        exec: exit
+      - matches: fast_mark 31
+        exec: $sequence_fakeip_refresh
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
+          - '!fast_mark 30'
         exec: $sequence_fakeip_addlist_refresh
       - matches: fast_mark 16
         exec: $sequence_local_refresh
@@ -42,8 +49,13 @@ policies:
           - fast_mark 12
           - '!fast_mark 13'
           - '!fast_mark 16'
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_fakeip_refresh
-      - matches: fast_mark 11
+      - matches:
+          - fast_mark 11
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_local_divert_refresh
 
   - name: sequence_ipv4_realip_finalize_refresh
@@ -80,9 +92,16 @@ policies:
         exec: exit
       - matches: fast_mark 15
         exec: $sequence_fakeip_addlist_refresh
+      - matches: fast_mark 30
+        exec: $sequence_local_refresh
+      - matches: fast_mark 30
+        exec: exit
+      - matches: fast_mark 31
+        exec: $sequence_fakeip_refresh
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
+          - '!fast_mark 30'
         exec: $sequence_fakeip_addlist_refresh
       - matches: fast_mark 16
         exec: $sequence_local_refresh
@@ -92,8 +111,13 @@ policies:
           - fast_mark 12
           - '!fast_mark 13'
           - '!fast_mark 16'
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_fakeip_refresh
-      - matches: fast_mark 11
+      - matches:
+          - fast_mark 11
+          - '!fast_mark 30'
+          - '!fast_mark 31'
         exec: $sequence_local_divert_refresh
 
   - name: sequence_ipv6_realip_finalize_refresh

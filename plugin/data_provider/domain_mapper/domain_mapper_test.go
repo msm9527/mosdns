@@ -433,6 +433,9 @@ func BenchmarkDomainMapperExecMiss(b *testing.B) {
 }
 
 func TestValidateDomainMapperMarkRejectsReservedBits(t *testing.T) {
+	if err := validateDomainMapperMark("default_mark", 29); err == nil {
+		t.Fatal("expected reserved fast_mark 29 to be rejected")
+	}
 	if err := validateDomainMapperMark("default_mark", 39); err == nil {
 		t.Fatal("expected reserved fast_mark 39 to be rejected")
 	}
