@@ -1,0 +1,18 @@
+# Loyalsoldier geolocation-cn.txt 本地缓存
+# 说明：启动阶段优先作为远程源的 fallback cache。
+# 这里保留少量稳定直连样本，升级后会自动与用户新增内容合并。
+battlenet.com.cn
+blizzard.cn
+blzstatic.cn
+cn.battle.net
+logi.com
+logitech.com
+lenovo.com
+dell.com
+hp.com
+intel.com
+amd.com
+nvidia.com
+adobe.com
+oracle.com
+sony.com

@@ -1,0 +1,13 @@
+# Loyalsoldier geolocation-!cn.txt 本地缓存
+# 说明：默认不作为独立入口启用，仅作为远程源 fallback cache。
+# 保留少量稳定国外样本即可，避免默认模板过大。
+blizzard.com
+battle.net
+akamaized.net
+cloudfront.net
+geo.battle.net
+navbar.blizzard.com
+rum.battle.net
+www.blizzard.com
+google.com
+youtube.com

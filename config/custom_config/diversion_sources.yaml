@@ -27,6 +27,8 @@
 # - 默认启用 geolocation-cn.txt 作为“全球品牌国内站点”等直连补充。
 # - geolocation-!cn.txt 默认关闭；主国外分流已由 geosite_no_cn.srs 承担，
 #   需要额外代理补充时可在规则管理页手动启用。
+# - geolocation-cn.list / geolocation-not-cn.list 是远程规则源的本地缓存，
+#   不作为独立默认入口展示，只用于保证远程源在启动阶段有 fallback cache。
 
 sources:
     - id: cuscn_loyalsoldier
