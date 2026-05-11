@@ -45,6 +45,30 @@ func TestPreferredReleaseTagUsesCanonicalTag(t *testing.T) {
 	}
 }
 
+func TestUpdateAvailableLockedComparesVersionOrder(t *testing.T) {
+	tests := []struct {
+		name    string
+		current string
+		latest  string
+		want    bool
+	}{
+		{name: "newer latest", current: "msm-v5.3.18", latest: "msm-v5.4.0", want: true},
+		{name: "equal stable", current: "msm-v5.4.0", latest: "msm-v5.4.0", want: false},
+		{name: "older latest ignored", current: "msm-v5.4.0", latest: "msm-v5.3.18", want: false},
+		{name: "stable newer than beta", current: "msm-v5.4.0-beta", latest: "msm-v5.4.0", want: true},
+		{name: "older beta ignored", current: "msm-v5.4.0", latest: "msm-v5.4.0-beta", want: false},
+		{name: "build metadata ignored", current: "msm-v5.4.0+local", latest: "msm-v5.4.0", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := &UpdateManager{currentVersion: tt.current}
+			if got := m.updateAvailableLocked(tt.latest, ""); got != tt.want {
+				t.Fatalf("updateAvailableLocked(%q, %q) = %v, want %v", tt.latest, tt.current, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestGetHttpClientForUpdatePrefersCustomConfig(t *testing.T) {
 	oldBaseDir := MainConfigBaseDir
 	MainConfigBaseDir = t.TempDir()

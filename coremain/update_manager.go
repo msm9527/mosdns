@@ -16,6 +16,7 @@ import (
 	"regexp"
 	"runtime"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -553,8 +554,13 @@ func (m *UpdateManager) isUpdateNeeded(latest, signature string) bool {
 func (m *UpdateManager) updateAvailableLocked(latest, signature string) bool {
 	latestNorm := normalizeVersion(latest)
 	currentNorm := normalizeVersion(m.currentVersion)
-	if latestNorm != "" && currentNorm != "" && latestNorm == currentNorm {
-		return false
+	if latestNorm != "" && currentNorm != "" {
+		if cmp, ok := compareNormalizedVersions(latestNorm, currentNorm); ok && cmp <= 0 {
+			return false
+		}
+		if latestNorm == currentNorm {
+			return false
+		}
 	}
 	if signature != "" {
 		if signature == m.currentAssetSignature || signature == m.pendingSignature {
@@ -569,6 +575,72 @@ func (m *UpdateManager) updateAvailableLocked(latest, signature string) bool {
 		return true
 	}
 	return latestNorm != currentNorm
+}
+
+func compareNormalizedVersions(a, b string) (int, bool) {
+	av, okA := parseVersionForCompare(a)
+	bv, okB := parseVersionForCompare(b)
+	if !okA || !okB {
+		return 0, false
+	}
+	for i := range av.nums {
+		if av.nums[i] > bv.nums[i] {
+			return 1, true
+		}
+		if av.nums[i] < bv.nums[i] {
+			return -1, true
+		}
+	}
+	if av.pre == bv.pre {
+		return 0, true
+	}
+	if av.pre == "" {
+		return 1, true
+	}
+	if bv.pre == "" {
+		return -1, true
+	}
+	if av.pre > bv.pre {
+		return 1, true
+	}
+	if av.pre < bv.pre {
+		return -1, true
+	}
+	return 0, true
+}
+
+type comparableVersion struct {
+	nums [3]int
+	pre  string
+}
+
+func parseVersionForCompare(v string) (comparableVersion, bool) {
+	core := strings.TrimSpace(strings.ToLower(v))
+	if core == "" || core == "dev" {
+		return comparableVersion{}, false
+	}
+	if idx := strings.IndexByte(core, '+'); idx >= 0 {
+		core = core[:idx]
+	}
+	pre := ""
+	if idx := strings.IndexByte(core, '-'); idx >= 0 {
+		pre = core[idx+1:]
+		core = core[:idx]
+	}
+	parts := strings.Split(core, ".")
+	if len(parts) != 3 {
+		return comparableVersion{}, false
+	}
+	var parsed comparableVersion
+	parsed.pre = pre
+	for i, part := range parts {
+		n, err := strconv.Atoi(part)
+		if err != nil {
+			return comparableVersion{}, false
+		}
+		parsed.nums[i] = n
+	}
+	return parsed, true
 }
 
 func normalizeVersion(v string) string {
