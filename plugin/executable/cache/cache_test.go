@@ -1060,6 +1060,60 @@ func Test_cachePlugin_ClientTTLMinExtendsFreshWindow(t *testing.T) {
 	}
 }
 
+func Test_cachePlugin_ColdMissReturnsGovernedTTL(t *testing.T) {
+	c := NewCache(&Args{Size: 64, LazyCacheTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900}, Opts{})
+	defer c.Close()
+
+	plugins := map[string]any{
+		"cache": c,
+		"raw": sequence.ExecutableFunc(func(_ context.Context, qCtx *query_context.Context) error {
+			q := qCtx.Q()
+			resp := new(dns.Msg)
+			resp.SetReply(q)
+			resp.Answer = append(resp.Answer, &dns.A{
+				Hdr: dns.RR_Header{
+					Name:   q.Question[0].Name,
+					Rrtype: dns.TypeA,
+					Class:  dns.ClassINET,
+					Ttl:    5,
+				},
+				A: net.IPv4(10, 0, 0, 7),
+			})
+			qCtx.SetResponse(resp)
+			return nil
+		}),
+	}
+	m := coremain.NewTestMosdnsWithPlugins(plugins)
+	s, err := sequence.NewSequence(sequence.NewBQFromBP(coremain.NewBP("test", m)), []sequence.RuleArgs{
+		{Exec: "$cache"},
+		{Exec: "$raw"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	qCtx := queryThroughSequenceType(t, s, "cold-governed.example.", dns.TypeA, true)
+	resp := qCtx.R()
+	if resp == nil || len(resp.Answer) != 1 {
+		t.Fatalf("expected cold response, got %+v", resp)
+	}
+	if got := resp.Answer[0].Header().Ttl; got != 120 {
+		t.Fatalf("expected cold response TTL to be governed to 120, got %d", got)
+	}
+
+	payload := qCtx.ResponsePayload()
+	if payload == nil || len(payload.Wire) == 0 {
+		t.Fatal("expected cold response to expose governed UDP payload")
+	}
+	var wire dns.Msg
+	if err := wire.Unpack(payload.Wire); err != nil {
+		t.Fatalf("unpack payload: %v", err)
+	}
+	if len(wire.Answer) != 1 || wire.Answer[0].Header().Ttl != 120 {
+		t.Fatalf("expected cold wire TTL to be governed to 120, got %+v", wire.Answer)
+	}
+}
+
 func Test_cachePlugin_CachedUDPHitSkipsWirePayloadWhenTooLargeForPlainUDP(t *testing.T) {
 	c := NewCache(&Args{Size: 64}, Opts{})
 	defer c.Close()

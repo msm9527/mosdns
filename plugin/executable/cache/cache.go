@@ -1045,6 +1045,7 @@ func (c *Cache) runColdMissLeader(ctx context.Context, msgKey string, k key, sha
 			if c.l1Enabled && shard != nil {
 				shard.updateL1(k, cachedItem)
 			}
+			c.applyStoredCacheResultToCurrentQuery(k, shard, qCtx, cachedItem, false)
 			return cachedItem, err
 		}
 	}
@@ -1137,9 +1138,34 @@ func (c *Cache) execColdMissDirect(ctx context.Context, msgKey string, k key, sh
 			if c.l1Enabled && shard != nil {
 				shard.updateL1(k, cachedItem)
 			}
+			c.applyStoredCacheResultToCurrentQuery(k, shard, qCtx, cachedItem, false)
 		}
 	}
 	return err
+}
+
+func (c *Cache) applyStoredCacheResultToCurrentQuery(k key, shard *l1Shard, qCtx *query_context.Context, cachedItem *item, lazyHit bool) bool {
+	if c == nil || qCtx == nil || cachedItem == nil {
+		return false
+	}
+	nowUnix := time.Now().UnixNano()
+	cachedResp, lazy, domainSet, corrupt := c.respFromCacheItem(cachedItem, c.args.LazyStaleTTL, expiredMsgTtl)
+	if corrupt || cachedResp == nil {
+		return false
+	}
+	if !lazyHit {
+		lazyHit = lazy
+	}
+	cachedResp.Id = qCtx.Q().Id
+	qCtx.SetResponse(cachedResp)
+	c.trySetCachedResponsePayload(qCtx, cachedItem, cachedResp, lazyHit, expiredMsgTtl, nowUnix)
+	if domainSet != "" {
+		qCtx.StoreValue(query_context.KeyDomainSet, domainSet)
+	}
+	if c.l1Enabled && !lazyHit && shard != nil {
+		shard.updateL1(k, cachedItem)
+	}
+	return true
 }
 
 func (c *Cache) coldQuerySingleflightKey(msgKey string, route cacheRouteSnapshot) string {
