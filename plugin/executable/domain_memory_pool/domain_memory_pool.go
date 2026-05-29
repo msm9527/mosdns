@@ -346,10 +346,8 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	d.mu.Lock()
 	entry, exists := d.stats[lookupKey]
 	if !exists {
-		if !d.canCreateEntryLocked(bareDomain) {
+		if !d.ensureCapacityForNewEntryLocked(bareDomain) {
 			d.mu.Unlock()
-			atomic.AddInt64(&d.droppedByCapCount, 1)
-			atomic.AddInt64(&d.droppedCount, 1)
 			return
 		}
 		canonicalDomain, canonicalKey := d.acquireEntryKey(bareDomain, flagsMask)
@@ -414,6 +412,82 @@ func (d *domainMemoryPool) canCreateEntryLocked(domain string) bool {
 		return false
 	}
 	return true
+}
+
+
+// ensureCapacityForNewEntryLocked ensures there is capacity for a new entry.
+// If the pool is full, it evicts the least recently used entries to make room.
+// Returns true if capacity is available or was freed, false if eviction failed.
+func (d *domainMemoryPool) ensureCapacityForNewEntryLocked(domain string) bool {
+	if d.canCreateEntryLocked(domain) {
+		return true
+	}
+
+	// Variant limit reached for this domain - cannot evict
+	variants := int(d.domainVariantCount[domain])
+	if d.policy.maxVariantsPerDomain > 0 && variants >= d.policy.maxVariantsPerDomain {
+		atomic.AddInt64(&d.droppedByCapCount, 1)
+		atomic.AddInt64(&d.droppedCount, 1)
+		return false
+	}
+
+	// Pool is full - evict LRU entries
+	if d.policy.maxDomains > 0 && d.domainCount >= d.policy.maxDomains {
+		evicted := d.evictLRUEntriesLocked(1)
+		if evicted == 0 {
+			atomic.AddInt64(&d.droppedByCapCount, 1)
+			atomic.AddInt64(&d.droppedCount, 1)
+			return false
+		}
+	}
+
+	return true
+}
+
+// evictLRUEntriesLocked evicts the least recently used domains to free capacity.
+// Returns the number of domains evicted.
+func (d *domainMemoryPool) evictLRUEntriesLocked(count int) int {
+	if count <= 0 {
+		return 0
+	}
+
+	// Collect oldest LastSeen timestamp per domain
+	seenDomains := make(map[string]int64)
+	for key, entry := range d.stats {
+		if oldestSeen, exists := seenDomains[key.domain]; !exists || entry.LastSeenAtUnixMS < oldestSeen {
+			seenDomains[key.domain] = entry.LastSeenAtUnixMS
+		}
+	}
+
+	// Sort domains by oldest LastSeen timestamp (LRU)
+	type domainCandidate struct {
+		domain       string
+		lastSeenAtMS int64
+	}
+	domainCandidates := make([]domainCandidate, 0, len(seenDomains))
+	for domain, lastSeen := range seenDomains {
+		domainCandidates = append(domainCandidates, domainCandidate{domain: domain, lastSeenAtMS: lastSeen})
+	}
+	sort.Slice(domainCandidates, func(i, j int) bool {
+		return domainCandidates[i].lastSeenAtMS < domainCandidates[j].lastSeenAtMS
+	})
+
+	// Evict oldest domains (delete all variants of each domain)
+	evicted := 0
+	for _, dc := range domainCandidates {
+		if evicted >= count {
+			break
+		}
+		// Delete all variants of this domain
+		for key := range d.stats {
+			if key.domain == dc.domain {
+				d.deleteEntryLocked(key)
+			}
+		}
+		evicted++
+	}
+
+	return evicted
 }
 
 func (d *domainMemoryPool) trackEntryCreatedLocked(domain string) {
