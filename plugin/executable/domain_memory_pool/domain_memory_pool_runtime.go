@@ -46,6 +46,38 @@ func (d *domainMemoryPool) loadFromStore() error {
 	atomicStoreIfGreater(&d.promotedCount, int64(state.Meta.PromotedDomainCount))
 	atomicStoreIfGreater(&d.publishedCount, int64(len(rules)))
 	atomicStoreIfGreater(&d.lastHotSyncAtUnixMS, state.Meta.LastPublishAtUnixMS)
+
+	// 加载后强制裁剪到 max_domains。
+	// cap 仅在新条目写入时强制（ensureCapacityForNewEntryLocked），加载路径原本不裁剪，
+	// 因此旧版本（缺写入期 cap enforcement）遗留的超限持久化数据会跨重启长期残留
+	// （实测 realiplist 8167 / cap 6000）。这里按 LRU 淘汰最旧域名，使超限池在重启后自愈。
+	if d.policy.maxDomains > 0 && d.domainCount > d.policy.maxDomains {
+		excess := d.domainCount - d.policy.maxDomains
+		evicted := d.evictLRUEntriesLocked(excess)
+		// 淘汰可能移除了已 promoted 域名，按裁剪后的存活集合重建活跃热规则。
+		// 已持有 d.mu，使用 *Locked 变体（与上方 replaceActiveHotRulesLocked 一致），不可自锁。
+		promoted := make(map[string]struct{}, d.domainCount)
+		for key, entry := range d.stats {
+			if entry.Promoted && key.domain != "" {
+				promoted[key.domain] = struct{}{}
+			}
+		}
+		rules := make([]string, 0, len(promoted))
+		for domain := range promoted {
+			rules = append(rules, "full:"+domain)
+		}
+		d.replaceActiveHotRulesLocked(rules)
+		d.lastRulesHash = hashPromotedDomains(state.Domains)
+		atomic.StoreInt64(&d.publishedCount, int64(len(d.hotActiveRules)))
+		if d.logger != nil {
+			d.logger.Info("加载后裁剪超限记忆池",
+				zap.String("pool", d.pluginTag),
+				zap.Int("max_domains", d.policy.maxDomains),
+				zap.Int("excess", excess),
+				zap.Int("evicted", evicted),
+				zap.Int("remaining", d.domainCount))
+		}
+	}
 	return nil
 }
 

@@ -158,6 +158,54 @@ func TestMemoryPoolSaveAndReload(t *testing.T) {
 	}
 }
 
+// TestMemoryPoolLoadTrimsOverCap 验证加载时把超限的持久化数据裁剪到 max_domains。
+// 复现场景：旧版本缺写入期 cap enforcement，DB 堆积超过 cap（实测 realiplist 8167/6000）。
+// 新版本应在 loadFromStore 后按 LRU 裁剪到 cap，使超限池跨重启自愈。
+func TestMemoryPoolLoadTrimsOverCap(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	pool, err := newDomainMemoryPool("my_realiplist", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+	// 注入 50 个域名，时间戳递增（LRU 顺序明确）。
+	base := time.Now().UTC().UnixMilli()
+	pool.mu.Lock()
+	for i := 0; i < 50; i++ {
+		domain := fmt.Sprintf("d-%03d.example", i)
+		pool.stats[entryKey{domain: domain}] = &statEntry{LastSeenAtUnixMS: base + int64(i)*1000}
+		pool.trackEntryCreatedLocked(domain)
+	}
+	pool.mu.Unlock()
+	if err := pool.performWrite(WriteModeSave); err != nil {
+		t.Fatalf("performWrite: %v", err)
+	}
+
+	// 以 max_domains=30 重载，应裁剪到 30，保留最近的（d-020..d-049）。
+	loaded, err := newDomainMemoryPool("my_realiplist", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool reload: %v", err)
+	}
+	loaded.policy.maxDomains = 30
+	if err := loaded.loadFromStore(); err != nil {
+		t.Fatalf("loadFromStore: %v", err)
+	}
+	if loaded.domainCount != 30 {
+		t.Fatalf("加载后 domainCount = %d, want 30 (应裁剪到 cap)", loaded.domainCount)
+	}
+	// 最旧的 d-000 应被淘汰，最新的 d-049 应保留。
+	if _, ok := loaded.stats[entryKey{domain: "d-000.example"}]; ok {
+		t.Fatal("最旧域名 d-000 应被 LRU 淘汰，但仍存在")
+	}
+	if _, ok := loaded.stats[entryKey{domain: "d-049.example"}]; !ok {
+		t.Fatal("最新域名 d-049 应保留，但被淘汰了")
+	}
+}
+
 func TestMemoryPoolPruneCompactsSparseState(t *testing.T) {
 	oldBaseDir := coremain.MainConfigBaseDir
 	coremain.MainConfigBaseDir = t.TempDir()
