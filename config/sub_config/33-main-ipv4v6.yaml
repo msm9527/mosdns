@@ -168,7 +168,7 @@ policies:
       - matches: fast_mark 18
         exec: $sequence_ipv6_realip_finalize
       - matches:
-          - rcode 0 3
+          - rcode 3
           - '!resp_ip 2000::/3'
           - '!resp_ip ::1 ::2 ::3'
         exec: fast_mark 20

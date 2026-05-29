@@ -2360,11 +2360,10 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 		if len(r.Answer) == 0 { // Empty answer. Set ttl between 0~300.
 			const maxEmtpyAnswerTtl = 300
 			msgTtl = time.Duration(min(minTTL, maxEmtpyAnswerTtl)) * time.Second
-			if c.args.LazyCacheTTL > 0 {
-				cacheTtl = time.Duration(c.args.LazyCacheTTL) * time.Second
-			} else {
-				cacheTtl = msgTtl
-			}
+			// 空答案（NOERROR 无记录）不应套用 lazy_cache_ttl（cache_main 高达 30 天）。
+			// 否则上游一次瞬时空响应会被长期 lazy 复用，表现为"时好时坏、过段时间才恢复"。
+			// 这类近似 negative 的结果只做短时后端缓存，让其尽快重新查询真实记录。
+			cacheTtl = msgTtl
 		} else {
 			msgTtl = time.Duration(minTTL) * time.Second
 			if c.args.LazyCacheTTL > 0 {
