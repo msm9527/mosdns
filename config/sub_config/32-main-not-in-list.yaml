@@ -50,8 +50,9 @@ policies:
         exec: fast_mark 22
       - matches: fast_mark 22
         exec: $sequence_google
+      # 修复：只在 NXDOMAIN (rcode 3) 时加入无V4池
       - matches:
-          - rcode 0 3
+          - rcode 3
           - '!resp_ip 0.0.0.0/0'
         exec: $my_nov4list
       - matches: '!resp_ip 0.0.0.0/0'
@@ -64,8 +65,9 @@ policies:
     type: sequence
     args:
       - exec: $sequence_local
+      # 修复：只在 NXDOMAIN (rcode 3) 时加入无V6池
       - matches:
-          - rcode 0 3
+          - rcode 3
           - '!resp_ip 2000::/3'
           - '!resp_ip ::1'
         exec: $my_nov6list
@@ -96,8 +98,9 @@ policies:
         exec: $sequence_local
       - matches: '!resp_ip 0.0.0.0/0'
         exec: fast_mark 27
+      # 修复：只在 NXDOMAIN (rcode 3) 时加入无V4池
       - matches:
-          - rcode 0 3
+          - rcode 3
           - fast_mark 27
         exec: $my_nov4list
       - matches: rcode 2 3 5
@@ -120,8 +123,9 @@ policies:
         exec: $sequence_local
       - matches: '!resp_ip 2000::/3'
         exec: fast_mark 28
+      # 修复：只在 NXDOMAIN (rcode 3) 时加入无V6池
       - matches:
-          - rcode 0 3
+          - rcode 3
           - fast_mark 28
         exec: $my_nov6list
       - matches: rcode 2 3 5

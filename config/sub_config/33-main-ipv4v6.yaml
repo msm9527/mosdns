@@ -16,9 +16,11 @@ policies:
         exec: $sequence_fakeip
       - matches: fast_mark 8
         exec: $sequence_local
+      # 修复：只在明确的 NXDOMAIN (rcode 3) 时才加入无V4池
+      # 移除 rcode 0 (NOERROR) 避免误判空响应为"无V4"
       - matches:
           - fast_mark 8
-          - rcode 0 3
+          - rcode 3
           - '!resp_ip 0.0.0.0/0'
         exec: $my_nov4list
       - matches:
@@ -99,9 +101,11 @@ policies:
         exec: $sequence_fakeip
       - matches: fast_mark 8
         exec: $sequence_local
+      # 修复：只在明确的 NXDOMAIN (rcode 3) 时才加入无V6池
+      # 移除 rcode 0 (NOERROR) 避免误判空响应为"无V6"
       - matches:
           - fast_mark 8
-          - rcode 0 3
+          - rcode 3
           - '!resp_ip 2000::/3'
         exec: $my_nov6list
       - matches:
@@ -218,15 +222,17 @@ policies:
         exec: exit
       - exec: sleep 1000
       - exec: $sbnodefallback
+      # 修复：节点模式只在明确的 NXDOMAIN (rcode 3) 时才加入无V4/V6池
+      # 移除 rcode 0 (NOERROR) 避免误判空响应
       - matches:
           - qtype 1
-          - rcode 0 2 3 5
+          - rcode 3
           - '!resp_ip 0.0.0.0/0'
           - '!cname keyword:.'
         exec: $my_nodenov4list
       - matches:
           - qtype 28
-          - rcode 0 2 3 5
+          - rcode 3
           - '!resp_ip 2000::/3'
           - '!cname keyword:.'
         exec: $my_nodenov6list
