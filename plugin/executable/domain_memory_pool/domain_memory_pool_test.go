@@ -529,3 +529,121 @@ func TestMemoryPoolSkipsUnchangedHotRuleReplace(t *testing.T) {
 	}
 	assertNoHotRuleCall(t, consumer.replaceCh, 150*time.Millisecond)
 }
+
+func TestMemoryPoolLRUEvictionOnCapacity(t *testing.T) {
+	oldBaseDir := coremain.MainConfigBaseDir
+	coremain.MainConfigBaseDir = t.TempDir()
+	t.Cleanup(func() {
+		coremain.MainConfigBaseDir = oldBaseDir
+	})
+
+	// Create a pool with very small capacity (3 domains)
+	saveMemoryPoolPolicyForTest(t, "test_lru_pool", coremain.DomainPoolPolicy{
+		Kind:                   coremain.DomainPoolKindMemory,
+		PublishTo:              "",
+		RequeryTag:             "",
+		PromoteAfter:           1,
+		TrackQType:             false,
+		TrackFlags:             false,
+		MaxDomains:             3,
+		MaxVariantsPerDomain:   4,
+		EvictionPolicy:         "lru",
+		StaleAfterMinutes:      360,
+		RefreshCooldownMinutes: 0,
+		FlushIntervalMS:        1000,
+		PublishDebounceMS:      0,
+		PruneIntervalSec:       600,
+	})
+
+	pool, err := newDomainMemoryPool("test_lru_pool", nil, nil)
+	if err != nil {
+		t.Fatalf("newDomainMemoryPool: %v", err)
+	}
+
+	// Fill the pool with 3 domains
+	pool.processRecord(&logItem{name: "domain1.com.", qtype: 1})
+	time.Sleep(10 * time.Millisecond) // Ensure different timestamps
+	pool.processRecord(&logItem{name: "domain2.com.", qtype: 1})
+	time.Sleep(10 * time.Millisecond)
+	pool.processRecord(&logItem{name: "domain3.com.", qtype: 1})
+
+	// Verify pool is full
+	pool.mu.Lock()
+	if pool.domainCount != 3 {
+		t.Fatalf("expected domainCount=3, got %d", pool.domainCount)
+	}
+	pool.mu.Unlock()
+
+	// Add a 4th domain - should evict domain1 (oldest)
+	time.Sleep(10 * time.Millisecond)
+	pool.processRecord(&logItem{name: "domain4.com.", qtype: 1})
+
+	// Verify domain1 was evicted and domain4 was added
+	pool.mu.Lock()
+	if pool.domainCount != 3 {
+		t.Fatalf("expected domainCount=3 after eviction, got %d", pool.domainCount)
+	}
+
+	// Check that domain1 is gone
+	found1 := false
+	for key := range pool.stats {
+		if key.domain == "domain1.com" {
+			found1 = true
+			break
+		}
+	}
+	if found1 {
+		t.Fatal("domain1.com should have been evicted but still exists")
+	}
+
+	// Check that domain4 exists
+	found4 := false
+	for key := range pool.stats {
+		if key.domain == "domain4.com" {
+			found4 = true
+			break
+		}
+	}
+	if !found4 {
+		t.Fatal("domain4.com should exist but was not found")
+	}
+
+	// Verify droppedByCapCount did not increase (successful eviction)
+	droppedByCap := pool.droppedByCapCount
+	pool.mu.Unlock()
+
+	if droppedByCap != 0 {
+		t.Fatalf("expected droppedByCapCount=0 (LRU eviction should prevent drops), got %d", droppedByCap)
+	}
+
+	// Access domain2 to make it more recent
+	pool.processRecord(&logItem{name: "domain2.com.", qtype: 1})
+	time.Sleep(10 * time.Millisecond)
+
+	// Add domain5 - should evict domain3 (now oldest)
+	pool.processRecord(&logItem{name: "domain5.com.", qtype: 1})
+
+	pool.mu.Lock()
+	found3 := false
+	for key := range pool.stats {
+		if key.domain == "domain3.com" {
+			found3 = true
+			break
+		}
+	}
+	if found3 {
+		t.Fatal("domain3.com should have been evicted but still exists")
+	}
+
+	found5 := false
+	for key := range pool.stats {
+		if key.domain == "domain5.com" {
+			found5 = true
+			break
+		}
+	}
+	if !found5 {
+		t.Fatal("domain5.com should exist but was not found")
+	}
+	pool.mu.Unlock()
+}

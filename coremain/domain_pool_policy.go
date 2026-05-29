@@ -15,7 +15,7 @@ const (
 
 	defaultTopDomainsMaxDomains   = 8000
 	defaultRealIPPoolMaxDomains   = 6000
-	defaultFakeIPPoolMaxDomains   = 6000
+	defaultFakeIPPoolMaxDomains   = 12000
 	defaultNoV6PoolMaxDomains     = 8000
 	defaultNoV4PoolMaxDomains     = 6000
 	defaultNodeNoV6PoolMaxDomains = 3000
