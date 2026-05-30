@@ -184,8 +184,12 @@ response:
 
   cache_fakeip_domestic:
     size: 100000
+    # fakeip 是 mosdns 与 mihomo 之间的内部握手映射。mihomo 有 store-fake-ip 持久化，
+    # 正常运行映射稳定，lazy_cache_ttl(新鲜窗口)保持 4h 不影响命中。
+    # 但 lazy_stale_ttl(过期后陈旧服务窗口)缩短到 10 分钟：mihomo 池翻动/缓存重建时
+    # 陈旧 域名→fakeip 不会再被持续 4h 复用，避免连错目标导致"过段时间失效要重启"。
     lazy_cache_ttl: 14400
-    lazy_stale_ttl: 14400
+    lazy_stale_ttl: 600
     client_ttl_min: 600
     client_ttl_max: 600
     nxdomain_ttl: 60
@@ -199,13 +203,15 @@ response:
       - sets:
           - 高变化域名
         lazy_cache_ttl: 43200
-        lazy_stale_ttl: 43200
+        lazy_stale_ttl: 600
     persist: false
 
   cache_fakeip_proxy:
     size: 120000
+    # 同 cache_fakeip_domestic：lazy_cache_ttl 维持 4h 保命中率，
+    # 仅缩短 lazy_stale_ttl 让陈旧窗口从 4h 降到 10 分钟。
     lazy_cache_ttl: 14400
-    lazy_stale_ttl: 14400
+    lazy_stale_ttl: 600
     client_ttl_min: 600
     client_ttl_max: 600
     nxdomain_ttl: 60
@@ -219,7 +225,7 @@ response:
       - sets:
           - 高变化域名
         lazy_cache_ttl: 43200
-        lazy_stale_ttl: 43200
+        lazy_stale_ttl: 600
     persist: false
 
   cache_probe:
