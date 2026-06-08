@@ -338,15 +338,17 @@ func TestRepoKnownSubscriptionDirectAlwaysUsesRealIP(t *testing.T) {
 	mainBody := string(mainIPv4V6)
 	for _, sequenceName := range []string{"sequence_ipv4_known_domain", "sequence_ipv6_known_domain"} {
 		assertSequenceOrder(t, mainBody, sequenceName,
+			"matches: fast_mark 7\n        exec:\n          - $sequence_fakeip\n          - exit",
 			"matches: fast_mark 13\n        exec: $sequence_local",
 			"matches: fast_mark 13\n        exec: exit",
-			"matches: fast_mark 15\n        exec: $sequence_fakeip_addlist",
+			"matches: fast_mark 15\n        exec:\n          - $sequence_fakeip_addlist\n          - exit",
 			"matches: fast_mark 30\n        exec: $sequence_local",
 			"matches: fast_mark 30\n        exec: exit",
-			"matches: fast_mark 31\n        exec: $sequence_fakeip",
+			"matches: fast_mark 31\n        exec:\n          - $sequence_fakeip\n          - exit",
+			"matches:\n          - fast_mark 14\n          - '!fast_mark 13'\n          - '!fast_mark 30'\n        exec:\n          - $sequence_fakeip_addlist\n          - exit",
 			"matches: fast_mark 16\n        exec: $sequence_local",
 			"matches: fast_mark 16\n        exec: exit",
-			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_fakeip",
+			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec:\n          - $sequence_fakeip\n          - exit",
 			"matches:\n          - fast_mark 11\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_local_divert",
 		)
 		if strings.Contains(mainBody, "fast_mark 13\n          - switch 'cn_answer_mode:fakeip'") ||
@@ -362,15 +364,17 @@ func TestRepoKnownSubscriptionDirectAlwaysUsesRealIP(t *testing.T) {
 	refreshBody := string(refreshIPv4V6)
 	for _, sequenceName := range []string{"sequence_ipv4_known_domain_refresh", "sequence_ipv6_known_domain_refresh"} {
 		assertSequenceOrder(t, refreshBody, sequenceName,
+			"matches: fast_mark 7\n        exec:\n          - $sequence_fakeip_refresh\n          - exit",
 			"matches: fast_mark 13\n        exec: $sequence_local_refresh",
 			"matches: fast_mark 13\n        exec: exit",
-			"matches: fast_mark 15\n        exec: $sequence_fakeip_addlist_refresh",
+			"matches: fast_mark 15\n        exec:\n          - $sequence_fakeip_addlist_refresh\n          - exit",
 			"matches: fast_mark 30\n        exec: $sequence_local_refresh",
 			"matches: fast_mark 30\n        exec: exit",
-			"matches: fast_mark 31\n        exec: $sequence_fakeip_refresh",
+			"matches: fast_mark 31\n        exec:\n          - $sequence_fakeip_refresh\n          - exit",
+			"matches:\n          - fast_mark 14\n          - '!fast_mark 13'\n          - '!fast_mark 30'\n        exec:\n          - $sequence_fakeip_addlist_refresh\n          - exit",
 			"matches: fast_mark 16\n        exec: $sequence_local_refresh",
 			"matches: fast_mark 16\n        exec: exit",
-			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_fakeip_refresh",
+			"matches:\n          - fast_mark 12\n          - '!fast_mark 13'\n          - '!fast_mark 16'\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec:\n          - $sequence_fakeip_refresh\n          - exit",
 			"matches:\n          - fast_mark 11\n          - '!fast_mark 30'\n          - '!fast_mark 31'\n        exec: $sequence_local_divert_refresh",
 		)
 		if strings.Contains(refreshBody, "fast_mark 13\n          - switch 'cn_answer_mode:fakeip'") ||

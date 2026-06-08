@@ -13,7 +13,9 @@ policies:
     type: sequence
     args:
       - matches: fast_mark 7
-        exec: $sequence_fakeip
+        exec:
+          - $sequence_fakeip
+          - exit
       - matches: fast_mark 8
         exec: $sequence_local
       # 修复：只在明确的 NXDOMAIN (rcode 3) 时才加入无V4池
@@ -34,18 +36,24 @@ policies:
       - matches: fast_mark 13
         exec: exit
       - matches: fast_mark 15
-        exec: $sequence_fakeip_addlist
+        exec:
+          - $sequence_fakeip_addlist
+          - exit
       - matches: fast_mark 30
         exec: $sequence_local
       - matches: fast_mark 30
         exec: exit
       - matches: fast_mark 31
-        exec: $sequence_fakeip
+        exec:
+          - $sequence_fakeip
+          - exit
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
           - '!fast_mark 30'
-        exec: $sequence_fakeip_addlist
+        exec:
+          - $sequence_fakeip_addlist
+          - exit
       - matches: fast_mark 16
         exec: $sequence_local
       - matches: fast_mark 16
@@ -56,7 +64,9 @@ policies:
           - '!fast_mark 16'
           - '!fast_mark 30'
           - '!fast_mark 31'
-        exec: $sequence_fakeip
+        exec:
+          - $sequence_fakeip
+          - exit
       - matches:
           - fast_mark 11
           - '!fast_mark 30'
@@ -98,7 +108,9 @@ policies:
     type: sequence
     args:
       - matches: fast_mark 7
-        exec: $sequence_fakeip
+        exec:
+          - $sequence_fakeip
+          - exit
       - matches: fast_mark 8
         exec: $sequence_local
       # 修复：只在明确的 NXDOMAIN (rcode 3) 时才加入无V6池
@@ -119,18 +131,24 @@ policies:
       - matches: fast_mark 13
         exec: exit
       - matches: fast_mark 15
-        exec: $sequence_fakeip_addlist
+        exec:
+          - $sequence_fakeip_addlist
+          - exit
       - matches: fast_mark 30
         exec: $sequence_local
       - matches: fast_mark 30
         exec: exit
       - matches: fast_mark 31
-        exec: $sequence_fakeip
+        exec:
+          - $sequence_fakeip
+          - exit
       - matches:
           - fast_mark 14
           - '!fast_mark 13'
           - '!fast_mark 30'
-        exec: $sequence_fakeip_addlist
+        exec:
+          - $sequence_fakeip_addlist
+          - exit
       - matches: fast_mark 16
         exec: $sequence_local
       - matches: fast_mark 16
@@ -141,7 +159,9 @@ policies:
           - '!fast_mark 16'
           - '!fast_mark 30'
           - '!fast_mark 31'
-        exec: $sequence_fakeip
+        exec:
+          - $sequence_fakeip
+          - exit
       - matches:
           - fast_mark 11
           - '!fast_mark 30'
