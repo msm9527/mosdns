@@ -50,8 +50,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version-file: 'go.mod'
-          check-latest: false
+          go-version: stable
+          check-latest: true
 
       - name: Set up Python
         uses: actions/setup-python@v6
@@ -100,9 +100,13 @@ jobs:
           echo "BUILD_VERSION=${BASE}-beta" >> $GITHUB_ENV
           echo "TAG_NAME=${BETA_TAG_NAME}" >> $GITHUB_ENV
 
-      - name: Read Go version from go.mod
+      - name: Resolve latest stable Go version
         run: |
-          GOV=$(awk '/^go / {print $2}' go.mod)
+          GOV=$(curl -fsSL 'https://go.dev/dl/?mode=json' | jq -r '.[0].version | ltrimstr("go")')
+          if [ -z "$GOV" ] || [ "$GOV" = "null" ]; then
+            echo "failed to resolve latest stable Go version" >&2
+            exit 1
+          fi
           echo "GO_VERSION=$GOV" >> $GITHUB_ENV
 
       - name: Download artifacts
