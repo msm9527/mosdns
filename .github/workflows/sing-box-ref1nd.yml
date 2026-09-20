@@ -15,10 +15,8 @@ permissions:
 
 env:
   TZ: Asia/Shanghai
-  SINGBOX_RELEASE_TAG: sing-box-reF1nd
   SINGBOX_SERVER_PATH: /root/dufs/data/sing-box
   SINGBOX_SOURCE_REPOSITORY: reF1nd/sing-box
-  SINGBOX_SOURCE_REF: reF1nd
   SINGBOX_BUILD_TAGS_FILE: release/DEFAULT_BUILD_TAGS_OTHERS
 
 concurrency:
@@ -26,20 +24,73 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  metadata:
-    name: Resolve reF1nd version
+  prepare-matrix:
+    name: Prepare stable/testing build matrix
     runs-on: ubuntu-latest
     outputs:
-      version: ${{ steps.meta.outputs.version }}
-      commit: ${{ steps.meta.outputs.commit }}
-      commit_short: ${{ steps.meta.outputs.commit_short }}
+      matrix: ${{ steps.matrix.outputs.matrix }}
     steps:
-      - name: Checkout reF1nd source
+      - name: Generate build matrix
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          matrix="$(python3 - <<'PY'
+          import json
+
+          targets = [
+              {"name": "linux-amd64", "goos": "linux", "goarch": "amd64", "goamd64": "v1", "package": "tar.gz", "asset_suffix": "linux-amd64"},
+              {"name": "linux-amd64-v3", "goos": "linux", "goarch": "amd64", "goamd64": "v3", "package": "tar.gz", "asset_suffix": "linux-amd64v3"},
+              {"name": "linux-armv5", "goos": "linux", "goarch": "arm", "goarm": "5", "package": "tar.gz", "asset_suffix": "linux-armv5"},
+              {"name": "linux-armv6", "goos": "linux", "goarch": "arm", "goarm": "6", "package": "tar.gz", "asset_suffix": "linux-armv6"},
+              {"name": "linux-armv7", "goos": "linux", "goarch": "arm", "goarm": "7", "package": "tar.gz", "asset_suffix": "linux-armv7"},
+              {"name": "linux-arm64", "goos": "linux", "goarch": "arm64", "package": "tar.gz", "asset_suffix": "linux-arm64"},
+              {"name": "linux-mips-softfloat", "goos": "linux", "goarch": "mips", "gomips": "softfloat", "package": "tar.gz", "asset_suffix": "linux-mips-softfloat"},
+              {"name": "linux-mipsle-softfloat", "goos": "linux", "goarch": "mipsle", "gomips": "softfloat", "package": "tar.gz", "asset_suffix": "linux-mipsle-softfloat"},
+              {"name": "linux-mipsle-hardfloat", "goos": "linux", "goarch": "mipsle", "gomips": "hardfloat", "package": "tar.gz", "asset_suffix": "linux-mipsle-hardfloat"},
+              {"name": "windows-amd64", "goos": "windows", "goarch": "amd64", "goamd64": "v1", "package": "exe", "asset_suffix": "windows-amd64"},
+              {"name": "windows-amd64-v3", "goos": "windows", "goarch": "amd64", "goamd64": "v3", "package": "exe", "asset_suffix": "windows-amd64v3"},
+              {"name": "windows-arm64", "goos": "windows", "goarch": "arm64", "package": "exe", "asset_suffix": "windows-arm64"},
+              {"name": "darwin-amd64", "goos": "darwin", "goarch": "amd64", "goamd64": "v1", "package": "tar.gz", "asset_suffix": "darwin-amd64"},
+              {"name": "darwin-amd64-v3", "goos": "darwin", "goarch": "amd64", "goamd64": "v3", "package": "tar.gz", "asset_suffix": "darwin-amd64v3"},
+              {"name": "darwin-arm64", "goos": "darwin", "goarch": "arm64", "package": "tar.gz", "asset_suffix": "darwin-arm64"},
+          ]
+          channels = [
+              {"channel": "stable", "source_ref": "reF1nd-stable", "release_tag": "sing-box-reF1nd", "asset_prefix": "sing-box-reF1nd"},
+              {"channel": "testing", "source_ref": "reF1nd-testing", "release_tag": "sing-box-reF1nd-testing", "asset_prefix": "sing-box-testing-reF1nd"},
+          ]
+          print(json.dumps({"include": [{**channel, **target} for channel in channels for target in targets]}, separators=(",", ":")))
+          PY
+          )"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.channel }} / ${{ matrix.name }}
+    runs-on: ubuntu-latest
+    needs: prepare-matrix
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOAMD64: ${{ matrix.goamd64 }}
+      GOARM: ${{ matrix.goarm }}
+      GOMIPS: ${{ matrix.gomips }}
+      CGO_ENABLED: '0'
+    steps:
+      - name: Checkout ${{ matrix.source_ref }} source
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box
-          ref: reF1nd
+          ref: ${{ matrix.source_ref }}
           fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          check-latest: true
 
       - name: Resolve source metadata
         id: meta
@@ -56,53 +107,10 @@ jobs:
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
           echo "commit_short=${commit_short}" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build ${{ matrix.name }}
-    runs-on: ubuntu-latest
-    needs: metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - { name: linux-amd64, goos: linux, goarch: amd64, goamd64: v1, package: tar.gz, asset_suffix: linux-amd64 }
-          - { name: linux-amd64-v3, goos: linux, goarch: amd64, goamd64: v3, package: tar.gz, asset_suffix: linux-amd64v3 }
-          - { name: linux-armv5, goos: linux, goarch: arm, goarm: '5', package: tar.gz, asset_suffix: linux-armv5 }
-          - { name: linux-armv6, goos: linux, goarch: arm, goarm: '6', package: tar.gz, asset_suffix: linux-armv6 }
-          - { name: linux-armv7, goos: linux, goarch: arm, goarm: '7', package: tar.gz, asset_suffix: linux-armv7 }
-          - { name: linux-arm64, goos: linux, goarch: arm64, package: tar.gz, asset_suffix: linux-arm64 }
-          - { name: linux-mips-softfloat, goos: linux, goarch: mips, gomips: softfloat, package: tar.gz, asset_suffix: linux-mips-softfloat }
-          - { name: linux-mipsle-softfloat, goos: linux, goarch: mipsle, gomips: softfloat, package: tar.gz, asset_suffix: linux-mipsle-softfloat }
-          - { name: linux-mipsle-hardfloat, goos: linux, goarch: mipsle, gomips: hardfloat, package: tar.gz, asset_suffix: linux-mipsle-hardfloat }
-          - { name: windows-amd64, goos: windows, goarch: amd64, goamd64: v1, package: exe, asset_suffix: windows-amd64 }
-          - { name: windows-amd64-v3, goos: windows, goarch: amd64, goamd64: v3, package: exe, asset_suffix: windows-amd64v3 }
-          - { name: windows-arm64, goos: windows, goarch: arm64, package: exe, asset_suffix: windows-arm64 }
-          - { name: darwin-amd64, goos: darwin, goarch: amd64, goamd64: v1, package: tar.gz, asset_suffix: darwin-amd64 }
-          - { name: darwin-amd64-v3, goos: darwin, goarch: amd64, goamd64: v3, package: tar.gz, asset_suffix: darwin-amd64v3 }
-          - { name: darwin-arm64, goos: darwin, goarch: arm64, package: tar.gz, asset_suffix: darwin-arm64 }
-    env:
-      GOOS: ${{ matrix.goos }}
-      GOARCH: ${{ matrix.goarch }}
-      GOAMD64: ${{ matrix.goamd64 }}
-      GOARM: ${{ matrix.goarm }}
-      GOMIPS: ${{ matrix.gomips }}
-      CGO_ENABLED: '0'
-      SINGBOX_VERSION: ${{ needs.metadata.outputs.version }}
-    steps:
-      - name: Checkout reF1nd source
-        uses: actions/checkout@v6
-        with:
-          repository: reF1nd/sing-box
-          ref: reF1nd
-          fetch-depth: 0
-
-      - name: Set up Go
-        uses: actions/setup-go@v6
-        with:
-          go-version: stable
-          check-latest: true
-
       - name: Build sing-box
         shell: bash
+        env:
+          SINGBOX_VERSION: ${{ steps.meta.outputs.version }}
         run: |
           set -euo pipefail
           tags="$(tr ',\n' '  ' < "${SINGBOX_BUILD_TAGS_FILE}" | xargs)"
@@ -118,7 +126,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          asset_name="sing-box-reF1nd-${{ matrix.asset_suffix }}"
+          asset_name="${{ matrix.asset_prefix }}-${{ matrix.asset_suffix }}"
           if [ "${{ matrix.package }}" = "tar.gz" ]; then
             chmod +x sing-box
             tar --no-same-owner -czf "${asset_name}.tar.gz" sing-box
@@ -132,20 +140,59 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.asset }}
-          path: ${{ steps.package.outputs.asset }}
+          path: ./${{ steps.package.outputs.asset }}
           if-no-files-found: error
 
   release:
-    name: Publish sing-box release
+    name: Publish ${{ matrix.channel }} release
     runs-on: ubuntu-latest
-    needs: [metadata, build]
+    needs: [build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - channel: stable
+            source_ref: reF1nd-stable
+            release_tag: sing-box-reF1nd
+            asset_prefix: sing-box-reF1nd
+            prerelease: false
+          - channel: testing
+            source_ref: reF1nd-testing
+            release_tag: sing-box-reF1nd-testing
+            asset_prefix: sing-box-testing-reF1nd
+            prerelease: true
     steps:
       - name: Checkout mosdns workflow scripts
         uses: actions/checkout@v6
 
-      - name: Download artifacts
+      - name: Checkout ${{ matrix.source_ref }} source metadata
+        uses: actions/checkout@v6
+        with:
+          repository: reF1nd/sing-box
+          ref: ${{ matrix.source_ref }}
+          fetch-depth: 0
+          path: singbox-source
+
+      - name: Resolve source metadata
+        id: meta
+        shell: bash
+        working-directory: singbox-source
+        run: |
+          set -euo pipefail
+          commit="$(git rev-parse HEAD)"
+          commit_short="$(git rev-parse --short=12 HEAD)"
+          version="$(git describe --tags --always --dirty --match 'v*' | sed 's/^v//')"
+          if [ -z "${version}" ] || [ "${version}" = "unknown" ]; then
+            version="0.0.0-reF1nd-${commit_short}"
+          fi
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
+          echo "commit_short=${commit_short}" >> "$GITHUB_OUTPUT"
+
+      - name: Download ${{ matrix.channel }} artifacts
         uses: actions/download-artifact@v8
         with:
+          pattern: ${{ matrix.asset_prefix }}-*
           path: ./sing-box
           merge-multiple: true
 
@@ -158,7 +205,7 @@ jobs:
       - name: Delete existing fixed release and tag
         uses: actions/github-script@v8
         env:
-          TAG_NAME: ${{ env.SINGBOX_RELEASE_TAG }}
+          TAG_NAME: ${{ matrix.release_tag }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -179,18 +226,19 @@ jobs:
       - name: Publish fixed release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ env.SINGBOX_RELEASE_TAG }}
-          name: ${{ env.SINGBOX_RELEASE_TAG }} ${{ needs.metadata.outputs.version }}
+          tag_name: ${{ matrix.release_tag }}
+          name: ${{ matrix.release_tag }} ${{ steps.meta.outputs.version }}
           target_commitish: ${{ github.sha }}
           files: ./sing-box/*
           make_latest: false
-          prerelease: false
+          prerelease: ${{ matrix.prerelease }}
           generate_release_notes: false
           body: |
-            Version: ${{ needs.metadata.outputs.version }}
-            Source: https://github.com/${{ env.SINGBOX_SOURCE_REPOSITORY }}/tree/${{ env.SINGBOX_SOURCE_REF }}
-            Commit: ${{ needs.metadata.outputs.commit }}
-            Source commit: ${{ needs.metadata.outputs.commit_short }}
+            Version: ${{ steps.meta.outputs.version }}
+            Channel: ${{ matrix.channel }}
+            Source: https://github.com/${{ env.SINGBOX_SOURCE_REPOSITORY }}/tree/${{ matrix.source_ref }}
+            Commit: ${{ steps.meta.outputs.commit }}
+            Source commit: ${{ steps.meta.outputs.commit_short }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -201,12 +249,12 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y sshpass rsync
 
-      - name: Upload sing-box binaries to custom server
+      - name: Upload ${{ matrix.channel }} binaries to custom server
         env:
-          VERSION: ${{ needs.metadata.outputs.version }}
+          VERSION: ${{ steps.meta.outputs.version }}
           ARTIFACT_DIR: ./sing-box
-          ARTIFACT_PATTERN: sing-box-reF1nd*
+          ARTIFACT_PATTERN: ${{ matrix.asset_prefix }}-*
           DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
-          TARGET_PATH_OVERRIDE: ${{ env.SINGBOX_SERVER_PATH }}
+          TARGET_PATH_OVERRIDE: ${{ env.SINGBOX_SERVER_PATH }}/${{ matrix.channel }}
           WRITE_VERSION_FILE: 'true'
         run: ./scripts/upload_release_to_server.sh
