@@ -25,6 +25,7 @@ const (
 
 type AuditCollector struct {
 	mu            sync.RWMutex
+	ingestMu      sync.RWMutex
 	clearMu       sync.RWMutex
 	storageMu     sync.RWMutex
 	settings      AuditSettings
@@ -32,7 +33,7 @@ type AuditCollector struct {
 	storage       *SQLiteAuditStorage
 	realtime      *auditRealtimeStore
 	queues        []chan auditQueuedLog
-	workerDone    []chan struct{}
+	workerDone    chan struct{}
 	maintDone     chan struct{}
 	generation    atomic.Uint64
 	enabled       atomic.Bool
@@ -56,11 +57,8 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 		configBaseDir: configBaseDir,
 		realtime:      newAuditRealtimeStore(auditRealtimeBucketCount),
 		queues:        queues,
-		workerDone:    make([]chan struct{}, len(queues)),
+		workerDone:    make(chan struct{}),
 		maintDone:     make(chan struct{}),
-	}
-	for i := range collector.workerDone {
-		collector.workerDone[i] = make(chan struct{})
 	}
 	collector.enabled.Store(settings.Enabled)
 	return collector
@@ -68,21 +66,20 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 
 func (c *AuditCollector) StartWorker() {
 	c.OpenStorageAsync()
-	for i := range c.queues {
-		go c.runWriter(c.queues[i], c.workerDone[i])
-	}
+	go c.runWriter()
 	go c.runMaintenance()
 }
 
 func (c *AuditCollector) StopWorker() {
+	// Serialize channel closure with nonblocking producers, not with disk I/O.
+	c.ingestMu.Lock()
 	if c.closed.CompareAndSwap(false, true) {
 		for _, queue := range c.queues {
 			close(queue)
 		}
 	}
-	for _, done := range c.workerDone {
-		<-done
-	}
+	c.ingestMu.Unlock()
+	<-c.workerDone
 	<-c.maintDone
 	c.closeStorage()
 }
@@ -103,7 +100,12 @@ func (c *AuditCollector) CollectLog(log AuditLog) {
 // CollectLogWithShard records an already-built audit log and uses shardKey to
 // distribute hot UDP cache-hit audit events across collector queues.
 func (c *AuditCollector) CollectLogWithShard(log AuditLog, shardKey uint64) {
-	if c == nil || c.closed.Load() || !c.enabled.Load() {
+	if c == nil {
+		return
+	}
+	c.ingestMu.RLock()
+	defer c.ingestMu.RUnlock()
+	if c.closed.Load() || !c.enabled.Load() {
 		return
 	}
 	generation := c.generation.Load()

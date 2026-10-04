@@ -38,6 +38,9 @@ func (c *AuditCollector) ClearLogs() error {
 	c.clearMu.Lock()
 	defer c.clearMu.Unlock()
 
+	// Producers resume into the new generation once the old queues and realtime
+	// counters are cleared. They never wait for the SQLite clear below.
+	c.ingestMu.Lock()
 	c.generation.Add(1)
 	for _, queue := range c.queues {
 		for {
@@ -55,6 +58,7 @@ func (c *AuditCollector) ClearLogs() error {
 		}
 	}
 	c.realtime.Reset()
+	c.ingestMu.Unlock()
 	c.storageMu.Lock()
 	defer c.storageMu.Unlock()
 	storage := c.getStorage()
