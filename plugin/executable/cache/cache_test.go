@@ -444,7 +444,7 @@ func Test_shouldBypassForRouteChange(t *testing.T) {
 }
 
 func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
-	c := NewCache(&Args{Size: 64}, Opts{})
+	c := NewCache(&Args{Size: 2 * concurrent_map.MapShardSize}, Opts{})
 	defer c.Close()
 
 	seedCtx := testQueryContext(t, "route-change.example.", net.IPv4(1, 1, 1, 1))
@@ -508,7 +508,8 @@ func Test_cachePlugin_ExecBypassesStaleRouteCache(t *testing.T) {
 
 func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
 	provider := &testCacheRevisionProvider{revision: "rev1"}
-	c := NewCache(&Args{Size: 64}, Opts{
+	// 两个隔离 key 即使落入同一分片，也应有足够容量避免无关淘汰。
+	c := NewCache(&Args{Size: 2 * concurrent_map.MapShardSize}, Opts{
 		Plugin: func(tag string) any {
 			if tag == "my_realiplist" {
 				return provider
@@ -579,7 +580,7 @@ func Test_cachePlugin_ExecBypassesSameRouteWhenRevisionChanges(t *testing.T) {
 }
 
 func Test_cachePlugin_ExecBypassesSameDisplayRouteWhenDependencyTagChanges(t *testing.T) {
-	c := NewCache(&Args{Size: 64}, Opts{})
+	c := NewCache(&Args{Size: 2 * concurrent_map.MapShardSize}, Opts{})
 	defer c.Close()
 
 	seedCtx := testQueryContext(t, "route-dependency.example.", net.IPv4(1, 1, 1, 1))

@@ -115,6 +115,7 @@ func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
 	defer c.storageMu.Unlock()
 	c.mu.RLock()
 	storage := c.storage
+	settings := c.settings
 	c.mu.RUnlock()
 	if storage == nil {
 		return nil
@@ -122,7 +123,16 @@ func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
 	if generation != c.generation.Load() {
 		return nil
 	}
-	return storage.WriteBatch(batch)
+	if err := storage.WriteBatch(batch); err != nil {
+		return err
+	}
+	// Capacity work follows the same serialized writer and can retire more rows
+	// than this batch adds without an unbounded maintenance pause.
+	if err := storage.enforceStorageBudget(int64(settings.MaxStorageMB)*1024*1024, len(batch)*2); err != nil {
+		c.degraded.Store(true)
+		mlog.L().Warn("failed to enforce audit capacity after persisted batch", zap.Error(err))
+	}
+	return nil
 }
 
 func (c *AuditCollector) enforceRetention() error {

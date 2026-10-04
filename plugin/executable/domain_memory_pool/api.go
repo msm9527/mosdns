@@ -3,6 +3,7 @@ package domain_memory_pool
 import (
 	"container/heap"
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -205,21 +206,29 @@ func (d *domainMemoryPool) FlushRuntime(_ context.Context) error {
 	return d.performWrite(WriteModeFlush)
 }
 
-func (d *domainMemoryPool) MarkDomainVerified(_ context.Context, domain, verifiedAt string) (int, error) {
-	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
-	if domain == "" {
-		return 0, fmt.Errorf("domain is empty")
-	}
+func (d *domainMemoryPool) MarkDomainVerified(ctx context.Context, domain, verifiedAt string) (int, error) {
+	return d.MarkDomainsVerified(ctx, []string{domain}, verifiedAt)
+}
+
+func (d *domainMemoryPool) MarkDomainsVerified(_ context.Context, domains []string, verifiedAt string) (int, error) {
 	verifiedAtUnixMS := parseStampUnixMS(verifiedAt)
 	if verifiedAtUnixMS <= 0 {
 		verifiedAtUnixMS = time.Now().UTC().UnixMilli()
 	}
-
+	pending := make(map[string]bool, len(domains))
+	var errs []error
+	for _, domain := range domains {
+		domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
+		if domain == "" {
+			errs = append(errs, fmt.Errorf("domain is empty"))
+			continue
+		}
+		pending[domain] = false
+	}
 	d.mu.Lock()
 	updated := 0
 	for key, entry := range d.stats {
-		bare := key.domain
-		if bare != domain {
+		if _, ok := pending[key.domain]; !ok {
 			continue
 		}
 		entry.LastVerifiedAtUnixMS = verifiedAtUnixMS
@@ -227,13 +236,24 @@ func (d *domainMemoryPool) MarkDomainVerified(_ context.Context, domain, verifie
 		entry.DirtyReason = ""
 		entry.CooldownUntilUnixMS = 0
 		entry.LastDirtyAtUnixMS = verifiedAtUnixMS
+		pending[key.domain] = true
 		updated++
 	}
-	d.mu.Unlock()
-	if updated == 0 {
-		return 0, fmt.Errorf("domain not found")
+	if updated > 0 {
+		d.dirtyPending.Store(true)
 	}
-	return updated, d.performWrite(WriteModeSave)
+	d.mu.Unlock()
+	for domain, found := range pending {
+		if !found {
+			errs = append(errs, fmt.Errorf("domain not found: %s", domain))
+		}
+	}
+	if updated > 0 {
+		if err := d.performWrite(WriteModeSave); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return updated, errors.Join(errs...)
 }
 
 func (d *domainMemoryPool) MemoryEntries(query string, offset, limit int) ([]coremain.MemoryEntry, int, error) {

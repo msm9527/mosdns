@@ -414,7 +414,6 @@ func (d *domainMemoryPool) canCreateEntryLocked(domain string) bool {
 	return true
 }
 
-
 // ensureCapacityForNewEntryLocked ensures there is capacity for a new entry.
 // If the pool is full, it evicts the least recently used entries to make room.
 // Returns true if capacity is available or was freed, false if eviction failed.
@@ -565,8 +564,15 @@ func (d *domainMemoryPool) performWrite(mode WriteMode) error {
 	if d.shouldOnlySyncHotRules(mode) {
 		return d.syncHotRulesOnly()
 	}
+	// Consume before taking the snapshot so observations during persistence
+	// remain pending. A failed save must be retried.
+	d.dirtyPending.Swap(false)
 	snapshot := d.buildSnapshot(mode)
-	return d.persistSnapshot(mode, snapshot)
+	if err := d.persistSnapshot(mode, snapshot); err != nil {
+		d.dirtyPending.Store(true)
+		return err
+	}
+	return nil
 }
 
 func (d *domainMemoryPool) shouldWrite(mode WriteMode) bool {
@@ -610,7 +616,6 @@ func (d *domainMemoryPool) persistSnapshot(mode WriteMode, snapshot writeSnapsho
 
 	d.lastRulesHash = rulesHash
 	d.hasRulesHash = true
-	d.dirtyPending.Store(false)
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
 	if needsHotReplace {
 		rules := buildRulesFromStoredDomains(snapshot.state.Domains)

@@ -41,6 +41,13 @@ type DomainVerifyPlugin interface {
 	MarkDomainVerified(ctx context.Context, domain, verifiedAt string) (int, error)
 }
 
+// DomainBatchVerifyPlugin optionally verifies several domains with one durable
+// pool save. Missing domains must not prevent verification of other domains.
+// The count reports updated entries; an error may accompany partially saved entries.
+type DomainBatchVerifyPlugin interface {
+	MarkDomainsVerified(ctx context.Context, domains []string, verifiedAt string) (int, error)
+}
+
 // DomainRefreshCandidate describes a domain that is worth refreshing.
 type DomainRefreshCandidate struct {
 	Domain         string

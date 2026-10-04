@@ -26,48 +26,71 @@ func (s *SQLiteAuditStorage) EnforceRetention(settings AuditSettings) error {
 }
 
 func (s *SQLiteAuditStorage) enforceMaxStorageBytes(maxBytes int64) error {
+	return s.enforceStorageBudget(maxBytes, 2048)
+}
+
+// enforceStorageBudget reuses free pages instead of rewriting the database.
+// The budget limits live pages, not the retained high-water file size or WAL.
+// A bounded step lets readers and new batches proceed while an old backlog drains.
+func (s *SQLiteAuditStorage) enforceStorageBudget(maxBytes int64, rowBudget int) error {
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
 	if maxBytes <= 0 {
 		return nil
 	}
-	if err := s.checkpointWAL(); err != nil {
-		return err
-	}
-	for {
-		stats, err := s.QueryStorageStats()
+	high := maxBytes * 90 / 100
+	low := maxBytes * 85 / 100
+	for rowBudget > 0 {
+		pages, free, size, err := s.queryPageStats()
 		if err != nil {
 			return err
 		}
-		if stats.AllocatedBytes <= maxBytes {
+		live := (pages - min(pages, free)) * size
+		if live <= low {
+			s.evictionTargetBytes = 0
 			return nil
 		}
-		if stats.LiveBytes <= maxBytes {
-			if err := s.compactDatabase(); err != nil {
-				return err
+		if s.evictionTargetBytes != low {
+			if live < high && s.evictionTargetBytes >= 0 {
+				return nil
 			}
-			if err := s.checkpointWAL(); err != nil {
-				return err
-			}
-			continue
+			s.evictionTargetBytes = low
 		}
-		rowsAffected, err := s.deleteOldestAuditRows(5000)
+		limit := min(rowBudget, 256)
+		rowsAffected, err := s.deleteOldestAuditRows(limit)
 		if err != nil {
-			return err
-		}
-		if err := s.checkpointWAL(); err != nil {
 			return err
 		}
 		if rowsAffected == 0 {
-			if stats.ReclaimableBytes == 0 {
-				return nil
-			}
-			if err := s.compactDatabase(); err != nil {
+			rowsAffected, err = s.deleteOldestAggregateRows(limit)
+			if err != nil {
 				return err
 			}
-			if err := s.checkpointWAL(); err != nil {
-				return err
+			if rowsAffected == 0 {
+				return fmt.Errorf("sqlite audit budget %d bytes is below non-reclaimable live pages %d", maxBytes, live)
 			}
 		}
+		rowBudget -= int(rowsAffected)
 	}
+	return nil
+}
+
+// Aggregates outlive raw logs. If they alone exceed the budget, expire the
+// oldest minute buckets before hour buckets, retaining the longer-term view.
+func (s *SQLiteAuditStorage) deleteOldestAggregateRows(limit int) (int64, error) {
+	for _, table := range []string{"audit_minute", "audit_hour"} {
+		result, err := s.DB().Exec(`DELETE FROM `+table+` WHERE bucket_start_unix IN (
+			SELECT bucket_start_unix FROM `+table+` ORDER BY bucket_start_unix LIMIT ?
+		)`, limit)
+		if err != nil {
+			return 0, fmt.Errorf("trim sqlite audit aggregates: %w", err)
+		}
+		n, err := result.RowsAffected()
+		if err != nil || n > 0 {
+			return n, err
+		}
+	}
+	return 0, nil
 }
 
 func (s *SQLiteAuditStorage) deleteOldestAuditRows(limit int) (int64, error) {
@@ -90,6 +113,9 @@ func (s *SQLiteAuditStorage) deleteOldestAuditRows(limit int) (int64, error) {
 }
 
 func (s *SQLiteAuditStorage) Clear() error {
+	s.capacityMu.Lock()
+	defer s.capacityMu.Unlock()
+	s.evictionTargetBytes = 0
 	db := s.DB()
 	if db == nil {
 		return nil

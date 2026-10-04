@@ -52,9 +52,12 @@ func (c *Cache) deleteL1Key(k key) {
 }
 
 func (c *Cache) deleteRuntimeCacheKey(k key, reason string) {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	c.backend.Delete(k)
 	c.deleteL1Key(k)
 	c.appendRuntimeDelete(k, reason)
+	c.updatedKey.Add(1)
 }
 
 func (c *Cache) appendRuntimeDelete(k key, reason string) {

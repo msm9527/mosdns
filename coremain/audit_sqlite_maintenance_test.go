@@ -1,13 +1,182 @@
 package coremain
 
 import (
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
-func TestSQLiteAuditStorageEnforceMaxStorageBytesCompactsBeforeDeletingLogs(t *testing.T) {
+func TestSQLiteAuditCapacityEvictionIsBoundedAndReusesPages(t *testing.T) {
+	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"))
+	if err := storage.Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	base := time.Now().Add(-time.Hour)
+	logs := make([]AuditLog, 3000)
+	for i := range logs {
+		logs[i] = testAuditLog(fmt.Sprintf("%05d.example", i), base.Add(time.Duration(i)*time.Second), 1, "NOERROR", "foreign", AuditCacheMiss)
+	}
+	if err := storage.WriteBatch(logs); err != nil {
+		t.Fatal(err)
+	}
+	pages, free, size, err := storage.queryPageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := (pages - free) * size * 3 / 4
+	if err := storage.enforceStorageBudget(budget, 100); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := storage.DB().QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != len(logs)-100 {
+		t.Fatalf("bounded step retained %d rows, want %d", count, len(logs)-100)
+	}
+	reopened := false
+	for i := 0; i < 40; i++ {
+		if err := storage.enforceStorageBudget(budget, 100); err != nil {
+			t.Fatal(err)
+		}
+		p, f, z, err := storage.queryPageStats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (p-f)*z <= budget*85/100 {
+			break
+		}
+		if !reopened && (p-f)*z < budget*90/100 {
+			path := storage.Path()
+			if err := storage.Close(); err != nil {
+				t.Fatal(err)
+			}
+			storage = newSQLiteAuditStorage(path)
+			if err := storage.Open(); err != nil {
+				t.Fatal(err)
+			}
+			reopened = true
+		}
+		if i == 39 {
+			t.Fatal("eviction did not converge to low water")
+		}
+	}
+	if !reopened {
+		t.Fatal("fixture did not exercise restart between watermarks")
+	}
+	var oldest string
+	if err := storage.DB().QueryRow(`SELECT query_name FROM audit_log ORDER BY query_time_unix_ms,id LIMIT 1`).Scan(&oldest); err != nil {
+		t.Fatal(err)
+	}
+	if oldest == logs[0].QueryName {
+		t.Fatal("oldest record was not evicted")
+	}
+	p, f, _, err := storage.queryPageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p != pages || f <= free {
+		t.Fatalf("expected reusable free pages, before=%d/%d after=%d/%d", pages, free, p, f)
+	}
+	if err := storage.WriteBatch(logs[:50]); err != nil {
+		t.Fatal(err)
+	}
+	after, _, _, err := storage.queryPageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after != pages {
+		t.Fatalf("small refill grew database instead of reusing pages: %d -> %d", pages, after)
+	}
+}
+
+func TestSQLiteAuditCapacityIgnoresWALAndTerminatesBelowSchemaFloor(t *testing.T) {
+	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"))
+	if err := storage.Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	if _, err := storage.DB().Exec(`PRAGMA wal_autocheckpoint=0`); err != nil {
+		t.Fatal(err)
+	}
+	log := testAuditLog("one.example", time.Now(), 1, "NOERROR", "foreign", AuditCacheMiss)
+	if err := storage.WriteBatch([]AuditLog{log}); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		if _, err := storage.DB().Exec(`UPDATE audit_log SET duration_ms=?`, i); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pages, free, size, err := storage.queryPageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := (pages - free) * size * 2
+	wal, err := fileSizeBytes(storage.path + "-wal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if wal <= budget {
+		t.Fatalf("fixture WAL %d must exceed live budget %d", wal, budget)
+	}
+	if err := storage.enforceStorageBudget(budget, 10); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := storage.DB().QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&count); err != nil {
+		t.Fatal(err)
+	}
+	if count != 1 {
+		t.Fatal("WAL size evicted live history")
+	}
+	// The fixed schema cannot fit in one byte. Exhausting all tables must stop
+	// with an explicit error instead of a checkpoint/VACUUM loop.
+	if err := storage.enforceStorageBudget(1, 20); err == nil {
+		t.Fatal("expected non-reclaimable budget error")
+	}
+}
+
+func TestSQLiteAuditCapacityTrimsAggregateOnlyBacklog(t *testing.T) {
+	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"))
+	if err := storage.Open(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = storage.Close() })
+	tx, err := storage.DB().Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 20000; i++ {
+		if _, err := tx.Exec(`INSERT INTO audit_minute (bucket_start_unix) VALUES (?)`, i*60); err != nil {
+			_ = tx.Rollback()
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	pages, free, size, err := storage.queryPageStats()
+	if err != nil {
+		t.Fatal(err)
+	}
+	budget := (pages - free) * size * 3 / 4
+	if err := storage.enforceStorageBudget(budget, 123); err != nil {
+		t.Fatal(err)
+	}
+	var count, oldest int
+	if err := storage.DB().QueryRow(`SELECT COUNT(*),MIN(bucket_start_unix) FROM audit_minute`).Scan(&count, &oldest); err != nil {
+		t.Fatal(err)
+	}
+	if count != 20000-123 || oldest != 123*60 {
+		t.Fatalf("aggregate budget or oldest-first ordering violated: count=%d oldest=%d", count, oldest)
+	}
+}
+
+func TestSQLiteAuditStorageCapacityReusesFreePagesWithoutDeletingLogs(t *testing.T) {
 	storage := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"))
 	if err := storage.Open(); err != nil {
 		t.Fatalf("storage.Open() error = %v", err)
@@ -69,8 +238,8 @@ func TestSQLiteAuditStorageEnforceMaxStorageBytesCompactsBeforeDeletingLogs(t *t
 	if after.RawLogCount != int64(len(logs)) {
 		t.Fatalf("after.RawLogCount = %d, want %d", after.RawLogCount, len(logs))
 	}
-	if after.AllocatedBytes > maxBytes {
-		t.Fatalf("after.AllocatedBytes = %d, want <= %d", after.AllocatedBytes, maxBytes)
+	if after.AllocatedBytes != before.AllocatedBytes {
+		t.Fatalf("capacity maintenance rewrote or shrank reusable storage: before=%d after=%d", before.AllocatedBytes, after.AllocatedBytes)
 	}
 }
 
