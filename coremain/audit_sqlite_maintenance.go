@@ -1,6 +1,9 @@
 package coremain
 
-import "fmt"
+import (
+	"database/sql"
+	"fmt"
+)
 
 func (s *SQLiteAuditStorage) EnforceRetention(settings AuditSettings) error {
 	db := s.DB()
@@ -35,51 +38,67 @@ func (s *SQLiteAuditStorage) enforceMaxStorageBytes(maxBytes int64) error {
 func (s *SQLiteAuditStorage) enforceStorageBudget(maxBytes int64, rowBudget int) error {
 	s.capacityMu.Lock()
 	defer s.capacityMu.Unlock()
-	if maxBytes <= 0 {
+	db := s.DB()
+	if db == nil {
 		return nil
+	}
+	target, err := enforceAuditStorageBudget(db, maxBytes, rowBudget, s.evictionTargetBytes)
+	s.evictionTargetBytes = target
+	return err
+}
+
+type auditBudgetExecutor interface {
+	auditPageQuerier
+	Exec(query string, args ...any) (sql.Result, error)
+}
+
+// The executor owns every page check and delete so a batch can reclaim pages
+// inside its existing transaction without acquiring the single connection again.
+func enforceAuditStorageBudget(db auditBudgetExecutor, maxBytes int64, rowBudget int, target int64) (int64, error) {
+	if maxBytes <= 0 {
+		return target, nil
 	}
 	high := maxBytes * 90 / 100
 	low := maxBytes * 85 / 100
 	for rowBudget > 0 {
-		pages, free, size, err := s.queryPageStats()
+		pages, free, size, err := queryAuditPageStats(db)
 		if err != nil {
-			return err
+			return target, err
 		}
 		live := (pages - min(pages, free)) * size
 		if live <= low {
-			s.evictionTargetBytes = 0
-			return nil
+			return 0, nil
 		}
-		if s.evictionTargetBytes != low {
-			if live < high && s.evictionTargetBytes >= 0 {
-				return nil
+		if target != low {
+			if live < high && target >= 0 {
+				return target, nil
 			}
-			s.evictionTargetBytes = low
+			target = low
 		}
 		limit := min(rowBudget, 256)
-		rowsAffected, err := s.deleteOldestAuditRows(limit)
+		rowsAffected, err := deleteOldestAuditRows(db, limit)
 		if err != nil {
-			return err
+			return target, err
 		}
 		if rowsAffected == 0 {
-			rowsAffected, err = s.deleteOldestAggregateRows(limit)
+			rowsAffected, err = deleteOldestAggregateRows(db, limit)
 			if err != nil {
-				return err
+				return target, err
 			}
 			if rowsAffected == 0 {
-				return fmt.Errorf("sqlite audit budget %d bytes is below non-reclaimable live pages %d", maxBytes, live)
+				return target, fmt.Errorf("sqlite audit budget %d bytes is below non-reclaimable live pages %d", maxBytes, live)
 			}
 		}
 		rowBudget -= int(rowsAffected)
 	}
-	return nil
+	return target, nil
 }
 
 // Aggregates outlive raw logs. If they alone exceed the budget, expire the
 // oldest minute buckets before hour buckets, retaining the longer-term view.
-func (s *SQLiteAuditStorage) deleteOldestAggregateRows(limit int) (int64, error) {
+func deleteOldestAggregateRows(db auditBudgetExecutor, limit int) (int64, error) {
 	for _, table := range []string{"audit_minute", "audit_hour"} {
-		result, err := s.DB().Exec(`DELETE FROM `+table+` WHERE bucket_start_unix IN (
+		result, err := db.Exec(`DELETE FROM `+table+` WHERE bucket_start_unix IN (
 			SELECT bucket_start_unix FROM `+table+` ORDER BY bucket_start_unix LIMIT ?
 		)`, limit)
 		if err != nil {
@@ -93,8 +112,8 @@ func (s *SQLiteAuditStorage) deleteOldestAggregateRows(limit int) (int64, error)
 	return 0, nil
 }
 
-func (s *SQLiteAuditStorage) deleteOldestAuditRows(limit int) (int64, error) {
-	result, err := s.DB().Exec(`
+func deleteOldestAuditRows(db auditBudgetExecutor, limit int) (int64, error) {
+	result, err := db.Exec(`
 		DELETE FROM audit_log
 		WHERE id IN (
 			SELECT id FROM audit_log

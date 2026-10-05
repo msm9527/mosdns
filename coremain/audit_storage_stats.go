@@ -78,6 +78,14 @@ func (s *SQLiteAuditStorage) queryPageStats() (pageCount, freelistCount, pageSiz
 	if db == nil {
 		return 0, 0, 0, nil
 	}
+	return queryAuditPageStats(db)
+}
+
+type auditPageQuerier interface {
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func queryAuditPageStats(db auditPageQuerier) (pageCount, freelistCount, pageSize int64, err error) {
 	if err := db.QueryRow(`PRAGMA page_count;`).Scan(&pageCount); err != nil {
 		return 0, 0, 0, fmt.Errorf("query sqlite audit page_count: %w", err)
 	}
