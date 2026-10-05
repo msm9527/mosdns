@@ -42,9 +42,22 @@ func (s *SQLiteAuditStorage) enforceStorageBudget(maxBytes int64, rowBudget int)
 	if db == nil {
 		return nil
 	}
-	target, err := enforceAuditStorageBudget(db, maxBytes, rowBudget, s.evictionTargetBytes)
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin sqlite audit capacity tx: %w", err)
+	}
+	defer tx.Rollback()
+	// All bounded steps share one commit. Failed maintenance must restore both
+	// the deleted history and the watermark used by the next capacity check.
+	target, err := enforceAuditStorageBudget(tx, maxBytes, rowBudget, s.evictionTargetBytes)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite audit capacity tx: %w", err)
+	}
 	s.evictionTargetBytes = target
-	return err
+	return nil
 }
 
 type auditBudgetExecutor interface {
