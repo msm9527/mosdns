@@ -248,9 +248,10 @@ func (s *SQLiteAuditStorage) borrowConfiguredAuditConn() (*sql.Conn, error) {
 	if err != nil {
 		return nil, fmt.Errorf("borrow sqlite audit connection: %w", err)
 	}
-	// RuntimeDB can replace its physical connection. Restore these settings
-	// before any write rather than accepting SQLite's FULL default.
-	for _, pragma := range []string{"PRAGMA synchronous = NORMAL", "PRAGMA foreign_keys = ON"} {
+	// RuntimeDB can replace its physical connection. Restore the write policy
+	// before each transaction. A larger checkpoint window lets adjacent audit
+	// batches share page updates instead of repeatedly rewriting the database.
+	for _, pragma := range []string{"PRAGMA synchronous = NORMAL", "PRAGMA foreign_keys = ON", "PRAGMA wal_autocheckpoint = 8192"} {
 		if _, err := conn.ExecContext(context.Background(), pragma); err != nil {
 			_ = conn.Close()
 			return nil, fmt.Errorf("configure sqlite audit connection: %w", err)
