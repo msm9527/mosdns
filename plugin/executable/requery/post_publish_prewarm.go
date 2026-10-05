@@ -6,13 +6,17 @@ import (
 )
 
 func (p *Requery) prewarmChangedDomainsAfterPublish(ctx context.Context, domains []domainCandidate) error {
+	return p.prewarmChangedDomainsWithCompletion(ctx, domains, nil)
+}
+
+func (p *Requery) prewarmChangedDomainsWithCompletion(ctx context.Context, domains []domainCandidate, completed func()) error {
 	if len(domains) == 0 {
 		return nil
 	}
 	profile := p.profileForMode("quick_prewarm", len(domains))
 	profile.ResolverAddr = p.config.ExecutionSettings.ResolverAddress
 	profile.PostWarm = false
-	return p.resendDNSQueries(ctx, domains, false, profile)
+	return p.resendDNSQueriesWithCompletion(ctx, domains, profile, completed)
 }
 
 func domainCandidatesFromNames(domains []string) []domainCandidate {

@@ -60,6 +60,10 @@ func stageLabel(stage string) string {
 		return "长尾补全阶段"
 	case "publish":
 		return "发布阶段"
+	case "cache_invalidation":
+		return "缓存失效阶段"
+	case "postwarm":
+		return "发布后预热阶段"
 	default:
 		return "恢复阶段"
 	}

@@ -626,12 +626,15 @@ func TestFinalizeQuickPrewarmSkipsCacheInvalidation(t *testing.T) {
 
 func TestFinalizeQuickRebuildInvalidatesThenPostWarmsChangedDomains(t *testing.T) {
 	t.Parallel()
+	runtimeKey, dbPath := newTestRequeryStore(t.TempDir())
 
 	prewarmAddr, queries, shutdownDNS := startTestDNSServer(t)
 	defer shutdownDNS()
 
 	response := &mockRuntimeCacheController{kind: "response", entryCount: 8}
 	p := &Requery{
+		runtimeKey: runtimeKey,
+		dbPath:     dbPath,
 		snapshotter: mockSnapshotter{plugins: map[string]any{
 			"cache_main": response,
 		}},

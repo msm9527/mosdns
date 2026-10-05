@@ -290,6 +290,12 @@ func (p *Requery) runPrewarmStage(ctx context.Context, profile taskProfile, doma
 }
 
 func (p *Requery) finalizeTaskExecution(ctx context.Context, profile taskProfile, state *taskExecutionState) bool {
+	if p.stopCancelledTask(ctx) {
+		return false
+	}
+	if profile.Mode != "quick_prewarm" {
+		p.setTaskStage("publish", stageLabel("publish"), 0)
+	}
 	if !p.saveRulesAfterRun(ctx, profile) {
 		return false
 	}
@@ -297,13 +303,29 @@ func (p *Requery) finalizeTaskExecution(ctx context.Context, profile taskProfile
 		p.clearFullRebuildTask()
 		return true
 	}
+	if p.stopCancelledTask(ctx) {
+		return false
+	}
+	p.setTaskStage("cache_invalidation", stageLabel("cache_invalidation"), 0)
 	if !p.invalidateCachesAfterPublish(ctx, state.changedDomain) {
+		p.stopCancelledTask(ctx)
+		return false
+	}
+	if p.stopCancelledTask(ctx) {
 		return false
 	}
 	if !p.runPostPublishPrewarm(ctx, profile, state.changedDomain) {
 		return false
 	}
 	p.clearFullRebuildTask()
+	return true
+}
+
+func (p *Requery) stopCancelledTask(ctx context.Context) bool {
+	if ctx.Err() == nil {
+		return false
+	}
+	p.setCancelledState("task cancelled by user")
 	return true
 }
 
@@ -318,8 +340,16 @@ func (p *Requery) runPostPublishPrewarm(ctx context.Context, profile taskProfile
 	if limit := p.defaultPrewarmLimit(); limit > 0 && len(candidates) > limit {
 		candidates = candidates[:limit]
 	}
+	p.setTaskStage("postwarm", stageLabel("postwarm"), int64(len(candidates)))
 	log.Printf("[requery] Step 8.1: publishing finished; post-warming %d changed domains through main cache...", len(candidates))
-	if err := p.prewarmChangedDomainsAfterPublish(ctx, candidates); err != nil {
+	if err := p.prewarmChangedDomainsWithCompletion(ctx, candidates, func() {
+		p.mu.Lock()
+		p.status.TaskStageProcessed++
+		p.mu.Unlock()
+	}); err != nil {
+		if p.stopCancelledTask(ctx) {
+			return false
+		}
 		p.setFailedState("post-publish prewarm failed: %v", err)
 		return false
 	}
@@ -388,6 +418,9 @@ func (p *Requery) saveRulesAfterRun(ctx context.Context, profile taskProfile) bo
 	}
 	log.Println("[requery] Step 7: Publishing refreshed rule state...")
 	if result := p.callURLs(ctx, "save_rules", p.config.URLActions.SaveRules); result.Failed > 0 {
+		if p.stopCancelledTask(ctx) {
+			return false
+		}
 		p.setFailedState("failed during final save_rules step: %d/%d targets failed", result.Failed, result.Total)
 		return false
 	}
