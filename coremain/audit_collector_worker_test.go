@@ -318,3 +318,77 @@ func TestAuditCollectorWriteBatchWithoutStorageReturnsError(t *testing.T) {
 		t.Fatal("missing storage reported an accepted batch")
 	}
 }
+
+func TestAuditCollectorDelayedStorageOverflowStaysVisibleAfterDrain(t *testing.T) {
+	c, release := newAuditStorageWaitTestCollector(t, false)
+	count := cap(c.queueForShard(0))
+	for i := 0; i <= count; i++ {
+		c.CollectLogWithShard(auditWorkerTestLog(i), 0)
+	}
+	release()
+	waitAuditWorker(t, func() bool { return c.getStorage() != nil })
+	waitAuditWorker(t, func() bool { return c.queueDepth() == 0 && auditWorkerRowCount(t, c) == count })
+	assertAuditWorkerHistoryCount(t, c, count)
+	if got := c.GetOverview(60); got.DroppedEvents != 1 || !got.Degraded || got.QueryCount != uint64(count) {
+		t.Fatalf("overflow after storage readiness and drain = %+v", got)
+	}
+}
+
+func TestAuditCollectorClearPreservesOverflowAfterIngressReset(t *testing.T) {
+	c, release := newAuditStorageWaitTestCollector(t, false)
+	count := cap(c.queueForShard(0))
+	for i := 0; i <= count; i++ {
+		c.CollectLogWithShard(auditWorkerTestLog(i), 0)
+	}
+	if got := c.realtime.Snapshot(60).DroppedEvents; got != 1 {
+		t.Fatalf("first overflow drops = %d, want 1", got)
+	}
+
+	// Pause Clear after its ingress reset, at the disk phase. New producers
+	// must finish without that lock and their losses must survive Clear's return.
+	c.storageMu.Lock()
+	var unlockOnce sync.Once
+	unlock := func() { unlockOnce.Do(c.storageMu.Unlock) }
+	clearDone := make(chan error, 1)
+	clearFinished := make(chan struct{})
+	go func() {
+		clearDone <- c.ClearLogs()
+		close(clearFinished)
+	}()
+	t.Cleanup(func() { unlock(); <-clearFinished })
+	waitAuditWorker(t, func() bool { return c.generation.Load() == 1 })
+	c.ingestMu.RLock()
+	c.ingestMu.RUnlock()
+	producerDone := make(chan struct{})
+	go func() {
+		for i := 0; i < count+2; i++ {
+			c.CollectLogWithShard(auditWorkerTestLog(10000+i), 0)
+		}
+		close(producerDone)
+	}()
+	select {
+	case <-producerDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("producer waited for Clear's storage lock")
+	}
+	unlock()
+	if err := <-clearDone; err != nil {
+		t.Fatal(err)
+	}
+	if got := c.GetOverview(60); got.DroppedEvents != 2 || !got.Degraded {
+		t.Fatalf("new overflow after Clear ingress reset = %+v", got)
+	}
+	release()
+	waitAuditWorker(t, func() bool { return c.getStorage() != nil })
+	waitAuditWorker(t, func() bool { return c.queueDepth() == 0 && auditWorkerRowCount(t, c) == count })
+	assertAuditWorkerHistoryCount(t, c, count)
+	if got := c.GetOverview(60); got.DroppedEvents != 2 || !got.Degraded {
+		t.Fatalf("new overflow after storage readiness = %+v", got)
+	}
+	if err := c.ClearLogs(); err != nil {
+		t.Fatal(err)
+	}
+	if got := c.GetOverview(60); got.DroppedEvents != 0 || got.Degraded || got.QueueDepth != 0 || got.TotalQueryCount != 0 {
+		t.Fatalf("Clear did not reset losses = %+v", got)
+	}
+}

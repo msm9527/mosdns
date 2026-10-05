@@ -39,7 +39,9 @@ type AuditCollector struct {
 	enabled       atomic.Bool
 	closed        atomic.Bool
 	degraded      atomic.Bool
-	opening       atomic.Bool
+	// Ingress losses survive storage recovery until Clear resets the generation.
+	ingressDegraded atomic.Bool
+	opening         atomic.Bool
 }
 
 var GlobalAuditCollector = NewAuditCollector(defaultAuditSettings(), "")
@@ -117,14 +119,14 @@ func (c *AuditCollector) CollectLogWithShard(log AuditLog, shardKey uint64) {
 	case queue <- auditQueuedLog{generation: generation, log: log}:
 	default:
 		c.degraded.Store(true)
+		c.ingressDegraded.Store(true)
 		at := log.QueryTime
 		if at.IsZero() {
 			at = nowTime()
 		}
-		select {
-		case queue <- auditQueuedLog{generation: generation, dropped: true, at: at}:
-		default:
-		}
+		// A full queue cannot reliably carry its own loss marker. The ingress
+		// lock makes this in-memory count part of Clear's generation boundary.
+		c.realtime.RecordDrop(at)
 	}
 }
 
