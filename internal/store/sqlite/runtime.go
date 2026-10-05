@@ -511,6 +511,15 @@ func baseMigrations() []Migration {
 				ON upstream_runtime_stats(plugin_tag, updated_at_unix_ms DESC);
 			`,
 		},
+		{
+			ID: "0020_drop_unused_domain_pool_seen_indexes",
+			// Pool queries rank by score or address rows by their primary key.
+			// Last-seen indexes only amplify observation writes; keep the values.
+			Up: `
+				DROP INDEX IF EXISTS idx_domain_pool_domain_seen;
+				DROP INDEX IF EXISTS idx_domain_pool_variant_seen;
+			`,
+		},
 	}
 }
 
