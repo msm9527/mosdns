@@ -9,7 +9,7 @@ import (
 	"go.uber.org/zap"
 )
 
-const upstreamRuntimeStatsFlushInterval = 5 * time.Second
+const upstreamRuntimeStatsFlushInterval = time.Minute
 
 type UpstreamRuntimeStatsFlusher struct {
 	logger *zap.Logger
@@ -79,12 +79,13 @@ func (f *UpstreamRuntimeStatsFlusher) flushDirty() error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 
-	if !f.dirty.Load() {
+	// Consume the pending snapshot before saving so concurrent changes remain dirty.
+	if !f.dirty.Swap(false) {
 		return nil
 	}
 	if err := f.flush(); err != nil {
+		f.dirty.Store(true)
 		return fmt.Errorf("flush upstream runtime stats: %w", err)
 	}
-	f.dirty.Store(false)
 	return nil
 }

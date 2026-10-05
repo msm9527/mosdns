@@ -29,6 +29,7 @@ func TestServiceE2E(t *testing.T) {
 	defer fx.Close()
 
 	report.RunCase(t, "control api", fx.testControlAPI)
+	report.RunCase(t, "buffered audit history", fx.testBufferedAuditHistory)
 	report.RunCase(t, "udp and tcp dns", fx.testUDPTCPDNS)
 	report.RunCase(t, "specialized listeners", fx.testSpecializedListeners)
 	report.RunCase(t, "block and ad switches", fx.testBlockAndAdSwitches)

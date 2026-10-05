@@ -652,7 +652,8 @@ func Test_cachePlugin_ExecBypassesSameDisplayRouteWhenDependencyTagChanges(t *te
 
 func Test_cachePlugin_ExecBypassesSameRouteWhenSwitchChanges(t *testing.T) {
 	answerMode := &testCacheSwitchProvider{value: "realip"}
-	c := NewCache(&Args{Size: 64}, Opts{
+	// 两个隔离 key 即使落入同一分片，也应有足够容量避免无关淘汰。
+	c := NewCache(&Args{Size: 2 * concurrent_map.MapShardSize}, Opts{
 		Plugin: func(tag string) any {
 			if tag == "cn_answer_mode" {
 				return answerMode

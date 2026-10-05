@@ -30,37 +30,6 @@ func answerSearchText(answers []AnswerDetail) string {
 	return wrapExactSet(values)
 }
 
-func answerIPsText(answers []AnswerDetail) string {
-	if len(answers) == 0 {
-		return ""
-	}
-	values := make([]string, 0, len(answers))
-	for _, answer := range answers {
-		if answer.Type != "A" && answer.Type != "AAAA" {
-			continue
-		}
-		if answer.Data == "" {
-			continue
-		}
-		values = append(values, answer.Data)
-	}
-	return wrapExactSet(values)
-}
-
-func answerCNAMEsText(answers []AnswerDetail) string {
-	if len(answers) == 0 {
-		return ""
-	}
-	values := make([]string, 0, len(answers))
-	for _, answer := range answers {
-		if answer.Type != "CNAME" || answer.Data == "" {
-			continue
-		}
-		values = append(values, answer.Data)
-	}
-	return wrapExactSet(values)
-}
-
 func wrapExactSet(values []string) string {
 	if len(values) == 0 {
 		return ""

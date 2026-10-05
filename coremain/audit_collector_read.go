@@ -45,7 +45,8 @@ func (c *AuditCollector) ClearLogs() error {
 	for _, queue := range c.queues {
 		for {
 			select {
-			case _, ok := <-queue:
+			case item, ok := <-queue:
+				c.releaseIngressBytes(item)
 				if !ok {
 					queue = nil
 				}
@@ -58,6 +59,7 @@ func (c *AuditCollector) ClearLogs() error {
 		}
 	}
 	c.realtime.Reset()
+	c.ingressDegraded.Store(false)
 	c.ingestMu.Unlock()
 	c.storageMu.Lock()
 	defer c.storageMu.Unlock()
@@ -77,7 +79,7 @@ func (c *AuditCollector) GetOverview(windowSeconds int) AuditOverview {
 	overview := c.realtime.Snapshot(windowSeconds)
 	overview.Enabled = c.IsCapturing()
 	overview.QueueDepth = c.queueDepth()
-	overview.Degraded = c.degraded.Load()
+	overview.Degraded = c.degraded.Load() || c.ingressDegraded.Load()
 	overview.CurrentStorageBytes = c.GetDiskUsageBytes()
 	c.fillOverviewTotals(&overview)
 	return overview

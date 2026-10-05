@@ -16,3 +16,16 @@ func TestAuditQueueCapacityUsesConservativeBound(t *testing.T) {
 		t.Fatalf("auditQueueCapacity(max) = %d, want %d", got, auditMaxQueueCapacity)
 	}
 }
+
+func TestAuditLargerBatchesKeepHistoricalIngressAllocation(t *testing.T) {
+	old := newAuditQueues(AuditSettings{FlushBatchSize: 256})
+	candidate := newAuditQueues(defaultAuditSettings())
+	if len(old) != len(candidate) {
+		t.Fatal("batch size changed shard count")
+	}
+	for i := range old {
+		if cap(old[i]) != cap(candidate[i]) {
+			t.Fatalf("shard %d grew from %d to %d", i, cap(old[i]), cap(candidate[i]))
+		}
+	}
+}

@@ -17,10 +17,10 @@ const (
 	auditMaxAggregateRetentionDays         = 365
 	auditDefaultMaxStorageMB               = 128
 	auditMaxStorageMB                      = 10240
-	auditDefaultFlushBatchSize             = 256
+	auditDefaultFlushBatchSize             = 4096
 	auditMaxFlushBatchSize                 = 4096
-	auditDefaultFlushIntervalMs            = 250
-	auditMaxFlushIntervalMs                = 5000
+	auditDefaultFlushIntervalMs            = 300000
+	auditMaxFlushIntervalMs                = 300000
 	auditDefaultMaintenanceIntervalSeconds = 60
 	auditMaxMaintenanceIntervalSeconds     = 3600
 	auditRealtimeBucketCount               = 3600

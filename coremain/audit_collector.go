@@ -3,6 +3,7 @@ package coremain
 import (
 	"fmt"
 	"net"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -16,30 +17,36 @@ import (
 )
 
 const (
-	auditQueueCapacityFactor = 32
-	auditMinQueueCapacity    = 512
-	auditMaxQueueCapacity    = 32768
-	auditQueueMaxShards      = 8
-	auditQueueMinShardCap    = 64
+	auditQueueCapacityFactor       = 32
+	auditMinQueueCapacity          = 512
+	auditMaxQueueCapacity          = 8192
+	auditQueueMaxShards            = 8
+	auditQueueMinShardCap          = 64
+	auditIngressMaxBytes     int64 = 4 * 1024 * 1024
 )
 
 type AuditCollector struct {
-	mu            sync.RWMutex
-	ingestMu      sync.RWMutex
-	clearMu       sync.RWMutex
-	storageMu     sync.RWMutex
-	settings      AuditSettings
-	configBaseDir string
-	storage       *SQLiteAuditStorage
-	realtime      *auditRealtimeStore
-	queues        []chan auditQueuedLog
-	workerDone    chan struct{}
-	maintDone     chan struct{}
-	generation    atomic.Uint64
-	enabled       atomic.Bool
-	closed        atomic.Bool
-	degraded      atomic.Bool
-	opening       atomic.Bool
+	mu              sync.RWMutex
+	ingestMu        sync.RWMutex
+	clearMu         sync.RWMutex
+	storageMu       sync.RWMutex
+	settings        AuditSettings
+	configBaseDir   string
+	storage         *SQLiteAuditStorage
+	realtime        *auditRealtimeStore
+	queues          []chan auditQueuedLog
+	workerDone      chan struct{}
+	maintDone       chan struct{}
+	settingsChanged chan struct{}
+	generation      atomic.Uint64
+	enabled         atomic.Bool
+	closed          atomic.Bool
+	degraded        atomic.Bool
+	// Ingress losses survive storage recovery until Clear resets the generation.
+	ingressDegraded      atomic.Bool
+	ingressBytes         atomic.Int64
+	shutdownLossReported atomic.Bool
+	opening              atomic.Bool
 }
 
 var GlobalAuditCollector = NewAuditCollector(defaultAuditSettings(), "")
@@ -53,12 +60,13 @@ func NewAuditCollector(settings AuditSettings, configBaseDir string) *AuditColle
 	settings = normalizeAuditSettings(settings)
 	queues := newAuditQueues(settings)
 	collector := &AuditCollector{
-		settings:      settings,
-		configBaseDir: configBaseDir,
-		realtime:      newAuditRealtimeStore(auditRealtimeBucketCount),
-		queues:        queues,
-		workerDone:    make(chan struct{}),
-		maintDone:     make(chan struct{}),
+		settings:        settings,
+		configBaseDir:   configBaseDir,
+		realtime:        newAuditRealtimeStore(auditRealtimeBucketCount),
+		queues:          queues,
+		workerDone:      make(chan struct{}),
+		maintDone:       make(chan struct{}),
+		settingsChanged: make(chan struct{}, 1),
 	}
 	collector.enabled.Store(settings.Enabled)
 	return collector
@@ -113,18 +121,17 @@ func (c *AuditCollector) CollectLogWithShard(log AuditLog, shardKey uint64) {
 	if queue == nil {
 		return
 	}
+	size := estimateAuditLogBytes(log)
+	if !c.reserveIngressBytes(size) {
+		c.recordIngressDrop(log)
+		return
+	}
+	cloneAuditLog(&log)
 	select {
-	case queue <- auditQueuedLog{generation: generation, log: log}:
+	case queue <- auditQueuedLog{generation: generation, log: log, estimatedBytes: size}:
 	default:
-		c.degraded.Store(true)
-		at := log.QueryTime
-		if at.IsZero() {
-			at = nowTime()
-		}
-		select {
-		case queue <- auditQueuedLog{generation: generation, dropped: true, at: at}:
-		default:
-		}
+		c.ingressBytes.Add(-size)
+		c.recordIngressDrop(log)
 	}
 }
 
@@ -155,6 +162,7 @@ func (c *AuditCollector) Stop() {
 	defer c.mu.Unlock()
 	c.settings.Enabled = false
 	c.enabled.Store(false)
+	c.notifyAuditSettingsChanged()
 }
 
 func (c *AuditCollector) IsCapturing() bool {
@@ -169,42 +177,58 @@ func (c *AuditCollector) GetSettings() AuditSettings {
 
 func (c *AuditCollector) SetSettings(next AuditSettings, configBaseDir string) error {
 	next = normalizeAuditSettings(next)
+	c.storageMu.Lock()
+	defer c.storageMu.Unlock()
+	if c.closed.Load() {
+		return fmt.Errorf("audit collector is closed")
+	}
+	c.mu.RLock()
 	if configBaseDir == "" {
 		configBaseDir = c.configBaseDir
 	}
-	storage, err := openAuditStorage(next, configBaseDir)
+	oldStorage, oldSettings := c.storage, c.settings
+	c.mu.RUnlock()
+	storage := oldStorage
+	nextPath, err := filepath.Abs(resolveAuditSQLitePath(configBaseDir, next.SQLitePath))
 	if err != nil {
 		return err
 	}
-	c.storageMu.Lock()
-	defer c.storageMu.Unlock()
+	oldPath := ""
+	if oldStorage != nil {
+		oldPath, err = filepath.Abs(oldStorage.Path())
+		if err != nil {
+			return err
+		}
+	}
+	if oldStorage == nil || oldPath != nextPath {
+		// Resolve the old tail before installing a different database. A failed
+		// flush or open leaves the current settings and storage usable for retry.
+		if oldStorage != nil {
+			if err := c.flushStorageBuffered(oldStorage, oldSettings); err != nil {
+				return err
+			}
+		}
+		storage, err = openAuditStorage(next, configBaseDir)
+		if err != nil {
+			return err
+		}
+	}
 	c.mu.Lock()
-	oldStorage := c.storage
 	c.settings = next
 	c.configBaseDir = configBaseDir
 	c.storage = storage
 	c.enabled.Store(next.Enabled)
 	c.mu.Unlock()
+	c.notifyAuditSettingsChanged()
 	c.degraded.Store(false)
-	closeAuditStorageAfterSwap(oldStorage)
+	if oldStorage != storage {
+		closeAuditStorageAfterSwap(oldStorage)
+	}
 	return nil
 }
 
 func (c *AuditCollector) reopenStorage(settings AuditSettings, configBaseDir string) error {
-	storage, err := openAuditStorage(settings, configBaseDir)
-	if err != nil {
-		return err
-	}
-	c.storageMu.Lock()
-	defer c.storageMu.Unlock()
-	c.mu.Lock()
-	oldStorage := c.storage
-	c.storage = storage
-	c.enabled.Store(settings.Enabled)
-	c.mu.Unlock()
-	c.degraded.Store(false)
-	closeAuditStorageAfterSwap(oldStorage)
-	return nil
+	return c.SetSettings(settings, configBaseDir)
 }
 
 func (c *AuditCollector) OpenStorageAsync() {
@@ -245,7 +269,7 @@ func (c *AuditCollector) installStorageIfCurrent(settings AuditSettings, configB
 	c.storageMu.Lock()
 	defer c.storageMu.Unlock()
 	c.mu.Lock()
-	if c.closed.Load() || c.configBaseDir != configBaseDir || c.settings != settings {
+	if c.closed.Load() || c.storage != nil || c.configBaseDir != configBaseDir || c.settings != settings {
 		c.mu.Unlock()
 		return false
 	}
@@ -261,21 +285,35 @@ func closeAuditStorageAfterSwap(storage *SQLiteAuditStorage) {
 	if storage == nil {
 		return
 	}
-	// Grace period: allow in-flight workers that captured oldStorage
-	// before the swap to finish their current operation.
-	time.Sleep(200 * time.Millisecond)
-	_ = storage.Close()
+	// Caller holds storageMu, so every collector operation on the old store
+	// has completed. No time-based grace period is needed.
+	if err := storage.Close(); err != nil {
+		mlog.L().Warn("failed to close replaced audit storage", zap.Error(err))
+	}
 }
 
 func (c *AuditCollector) closeStorage() {
 	c.storageMu.Lock()
 	defer c.storageMu.Unlock()
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.storage != nil {
-		_ = c.storage.Close()
-		c.storage = nil
+	storage := c.getStorage()
+	if storage == nil {
+		return
 	}
+	if err := storage.Close(); err != nil {
+		c.degraded.Store(true)
+		c.ingressDegraded.Store(true)
+		count, _ := storage.BufferedUsage()
+		if c.shutdownLossReported.CompareAndSwap(false, true) {
+			for i := 0; i < count; i++ {
+				c.realtime.RecordDrop(nowTime())
+			}
+		}
+		mlog.L().Error("failed to close audit storage with unpersisted records", zap.Int("unpersisted_events", count), zap.Error(err))
+		return
+	}
+	c.mu.Lock()
+	c.storage = nil
+	c.mu.Unlock()
 }
 
 func buildAuditLog(qCtx *query_context.Context, duration time.Duration) AuditLog {
@@ -403,6 +441,8 @@ func answerDetail(answer dns.RR) AnswerDetail {
 
 var nowTime = time.Now
 
+// Larger disk batches must not expand the ingress allocation on small devices.
+// Keep the historical smaller queues for explicitly configured small batches.
 func auditQueueCapacity(settings AuditSettings) int {
 	size := settings.FlushBatchSize * auditQueueCapacityFactor
 	if size < auditMinQueueCapacity {
@@ -463,4 +503,41 @@ func auditLogShardKey(log AuditLog) uint64 {
 		hash *= 1099511628211
 	}
 	return hash
+}
+
+func (c *AuditCollector) reserveIngressBytes(size int64) bool {
+	for {
+		used := c.ingressBytes.Load()
+		if size > auditIngressMaxBytes-used {
+			return false
+		}
+		if c.ingressBytes.CompareAndSwap(used, used+size) {
+			return true
+		}
+	}
+}
+
+func (c *AuditCollector) releaseIngressBytes(item auditQueuedLog) {
+	if item.estimatedBytes > 0 {
+		c.ingressBytes.Add(-item.estimatedBytes)
+	}
+}
+
+// DNS producers never wait for disk I/O. Both capacity limits report overflow
+// through the same persistent degraded flag and explicit dropped-event counter.
+func (c *AuditCollector) recordIngressDrop(log AuditLog) {
+	c.degraded.Store(true)
+	c.ingressDegraded.Store(true)
+	at := log.QueryTime
+	if at.IsZero() {
+		at = nowTime()
+	}
+	c.realtime.RecordDrop(at)
+}
+
+func (c *AuditCollector) notifyAuditSettingsChanged() {
+	select {
+	case c.settingsChanged <- struct{}{}:
+	default:
+	}
 }

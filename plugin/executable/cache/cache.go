@@ -1336,10 +1336,8 @@ func (c *Cache) runLazyUpdate(msgKey string, route cacheRouteSnapshot, qCtx *que
 }
 
 func (c *Cache) Close() error {
-	if c.shouldDumpOnClose() {
-		if err := c.dumpCache(); err != nil {
-			c.logger.Error("failed to dump cache", zap.Error(err))
-		}
+	if err := c.dumpCacheWhen(c.shouldDumpOnClose); err != nil {
+		c.logger.Error("failed to dump cache", zap.Error(err))
 	}
 	if err := c.persistence.close(); err != nil {
 		c.logger.Error("failed to close cache persistence", zap.Error(err))
@@ -1394,13 +1392,9 @@ func (c *Cache) startDumpLoop() {
 		for {
 			select {
 			case <-ticker.C:
-				keyUpdated := c.updatedKey.Swap(0)
-				if keyUpdated < minimumChangesToDump {
-					c.updatedKey.Add(keyUpdated)
-					continue
-				}
-				if err := c.dumpCache(); err != nil {
-					c.updatedKey.Add(keyUpdated)
+				if err := c.dumpCacheWhen(func() bool {
+					return c.updatedKey.Load() >= minimumChangesToDump
+				}); err != nil {
 					c.logger.Error("dump cache", zap.Error(err))
 				}
 			case <-c.closeNotify:
@@ -1411,18 +1405,30 @@ func (c *Cache) startDumpLoop() {
 }
 
 func (c *Cache) dumpCache() error {
+	return c.dumpCacheWhen(nil)
+}
+
+func (c *Cache) dumpCacheWhen(shouldDump func() bool) error {
 	c.dumpMu.Lock()
 	defer c.dumpMu.Unlock()
 
 	if c.persistence == nil {
 		return nil
 	}
+	// 在同一快照锁内重新判断，避免等待中的周期保存或关闭重复保存已覆盖的变更。
+	if shouldDump != nil && !shouldDump() {
+		return nil
+	}
+	// 已计数的变更先于随后采集的快照，新到或延迟计数的变更仍保留为 dirty。
+	// 失败只归还本次消费的计数，不能覆盖采集期间新增的变更。
+	keyUpdated := c.updatedKey.Swap(0)
 	start := time.Now()
 	c.dumpTotalCounter.Inc()
 	en, err := c.persistence.checkpoint(c)
 	c.dumpDuration.Observe(time.Since(start).Seconds())
 	c.runtimeState.recordDump(en, time.Since(start), err)
 	if err != nil {
+		c.updatedKey.Add(keyUpdated)
 		c.dumpErrorCounter.Inc()
 		return fmt.Errorf("failed to write dump, %w", err)
 	}

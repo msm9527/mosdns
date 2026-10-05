@@ -11,7 +11,13 @@ import (
 )
 
 func (s *SQLiteAuditStorage) QueryTimeseries(params AuditTimeseriesQuery) ([]AuditTimeseriesPoint, error) {
-	db := s.DB()
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return []AuditTimeseriesPoint{}, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if db == nil {
 		return []AuditTimeseriesPoint{}, nil
 	}
@@ -19,15 +25,15 @@ func (s *SQLiteAuditStorage) QueryTimeseries(params AuditTimeseriesQuery) ([]Aud
 	if params.Step == "hour" {
 		table = "audit_hour"
 	}
+	source, args := db.aggregateRangeSource(table, params.From.Unix(), params.To.Unix(), true)
 	rows, err := db.Query(`
 		SELECT
 			bucket_start_unix, query_count, duration_sum_ms, duration_max_ms,
 			resolved_query_count, resolved_duration_sum_ms, resolved_duration_max_ms,
 			error_count, cache_hit_count
-		FROM `+table+`
-		WHERE bucket_start_unix BETWEEN ? AND ?
+		FROM `+source+`
 		ORDER BY bucket_start_unix ASC
-	`, params.From.Unix(), params.To.Unix())
+	`, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query sqlite audit timeseries: %w", err)
 	}
@@ -67,7 +73,13 @@ func (s *SQLiteAuditStorage) QueryTimeseries(params AuditTimeseriesQuery) ([]Aud
 }
 
 func (s *SQLiteAuditStorage) QueryRank(rankType RankType, params AuditRangeQuery) ([]AuditRankItem, error) {
-	db := s.DB()
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return []AuditRankItem{}, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if db == nil || params.Limit <= 0 {
 		return []AuditRankItem{}, nil
 	}
@@ -77,7 +89,7 @@ func (s *SQLiteAuditStorage) QueryRank(rankType RankType, params AuditRangeQuery
 	}
 	rows, err := db.Query(`
 		SELECT `+column+`, COUNT(*)
-		FROM audit_log
+		FROM `+db.table("audit_log")+`
 		WHERE query_time_unix_ms BETWEEN ? AND ?
 		GROUP BY `+column+`
 		ORDER BY COUNT(*) DESC, `+column+` ASC
@@ -102,7 +114,13 @@ func (s *SQLiteAuditStorage) QueryRank(rankType RankType, params AuditRangeQuery
 }
 
 func (s *SQLiteAuditStorage) QuerySlowLogs(params AuditRangeQuery) ([]AuditLog, error) {
-	db := s.DB()
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return []AuditLog{}, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if db == nil || params.Limit <= 0 {
 		return []AuditLog{}, nil
 	}
@@ -112,7 +130,7 @@ func (s *SQLiteAuditStorage) QuerySlowLogs(params AuditRangeQuery) ([]AuditLog, 
 			trace_id, response_code, response_flags_aa, response_flags_tc, response_flags_ra,
 			answers_json, answer_count, domain_set_raw, domain_set_norm, upstream_tag,
 			transport, server_name, url_path, cache_status
-		FROM audit_log
+		FROM `+db.table("audit_log")+`
 		WHERE query_time_unix_ms BETWEEN ? AND ?
 		ORDER BY duration_ms DESC, query_time_unix_ms DESC, id DESC
 		LIMIT ?
@@ -125,12 +143,18 @@ func (s *SQLiteAuditStorage) QuerySlowLogs(params AuditRangeQuery) ([]AuditLog, 
 }
 
 func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse, error) {
-	db := s.DB()
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return AuditLogsResponse{}, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if db == nil {
 		return AuditLogsResponse{}, nil
 	}
 	where, args := buildAuditLogWhere(params)
-	summary, err := s.queryLogsSummary(where, args)
+	summary, err := queryLogsSummary(db, where, args)
 	if err != nil {
 		return AuditLogsResponse{}, err
 	}
@@ -155,7 +179,7 @@ func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse
 			trace_id, response_code, response_flags_aa, response_flags_tc, response_flags_ra,
 			answers_json, answer_count, domain_set_raw, domain_set_norm, upstream_tag,
 			transport, server_name, url_path, cache_status
-		FROM audit_log
+		FROM `+db.table("audit_log")+`
 		`+baseWhere+`
 		`+orderBy+`
 		LIMIT ?
@@ -195,12 +219,12 @@ func buildAuditLogOrderBy(sort AuditLogSearchSort) string {
 	}
 }
 
-func (s *SQLiteAuditStorage) queryLogsSummary(where []string, args []any) (AuditLogsSummary, error) {
+func queryLogsSummary(db *auditReadSession, where []string, args []any) (AuditLogsSummary, error) {
 	baseWhere, baseArgs := joinAuditWhere(where, args)
 	var summary AuditLogsSummary
-	err := s.DB().QueryRow(`
+	err := db.QueryRow(`
 		SELECT COUNT(*), COALESCE(AVG(duration_ms), 0), COALESCE(MAX(duration_ms), 0)
-		FROM audit_log
+		FROM `+db.table("audit_log")+`
 		`+baseWhere, baseArgs...).Scan(
 		&summary.MatchedCount,
 		&summary.AverageDurationMs,
