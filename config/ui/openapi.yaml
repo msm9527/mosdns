@@ -2462,8 +2462,10 @@ components:
           maximum: 4096
         flush_interval_ms:
           type: integer
+          description: Maximum delay before flushing audit records. Batch and memory limits flush earlier. Buffered records are searchable but can be lost on abrupt termination.
+          default: 300000
           minimum: 1
-          maximum: 5000
+          maximum: 300000
         maintenance_interval_seconds:
           type: integer
           minimum: 1

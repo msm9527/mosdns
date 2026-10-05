@@ -8,7 +8,13 @@ import (
 )
 
 func (s *SQLiteAuditStorage) QueryStorageStats() (AuditStorageStats, error) {
-	db := s.DB()
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return AuditStorageStats{}, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if db == nil {
 		return AuditStorageStats{}, nil
 	}
@@ -18,7 +24,7 @@ func (s *SQLiteAuditStorage) QueryStorageStats() (AuditStorageStats, error) {
 		return AuditStorageStats{}, fmt.Errorf("query sqlite audit allocated size: %w", err)
 	}
 
-	pageCount, freelistCount, pageSize, err := s.queryPageStats()
+	pageCount, freelistCount, pageSize, err := queryAuditPageStats(db)
 	if err != nil {
 		return AuditStorageStats{}, err
 	}
@@ -58,7 +64,7 @@ func (s *SQLiteAuditStorage) QueryStorageStats() (AuditStorageStats, error) {
 	)
 	if err := db.QueryRow(`
 		SELECT COUNT(*), MIN(query_time_unix_ms), MAX(query_time_unix_ms)
-		FROM audit_log
+		FROM `+db.table("audit_log")+`
 	`).Scan(&stats.RawLogCount, &oldestUnixMs, &newestUnixMs); err != nil {
 		return AuditStorageStats{}, fmt.Errorf("query sqlite audit range: %w", err)
 	}

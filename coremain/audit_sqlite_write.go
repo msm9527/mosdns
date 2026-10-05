@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"time"
@@ -15,6 +16,18 @@ func (s *SQLiteAuditStorage) WriteBatch(logs []AuditLog) error {
 // A maintenance error is returned only after the batch has committed. Write errors
 // mean the batch was not accepted and take precedence over maintenance failures.
 func (s *SQLiteAuditStorage) WriteBatchWithBudget(logs []AuditLog, maxBytes int64) (writeErr, maintenanceErr error) {
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
+	if len(logs) == 0 {
+		return nil, nil
+	}
+	// Public batches remain immediately durable and ignore caller-supplied IDs.
+	// Reserve from the same allocator as Stage so buffered and direct writes mix.
+	owned := append([]AuditLog(nil), logs...)
+	return s.writeBatchWithBudgetLocked(owned, maxBytes, true)
+}
+
+func (s *SQLiteAuditStorage) writeBatchWithBudgetLocked(logs []AuditLog, maxBytes int64, allocateIDs bool) (writeErr, maintenanceErr error) {
 	if len(logs) == 0 {
 		return nil, nil
 	}
@@ -28,11 +41,28 @@ func (s *SQLiteAuditStorage) WriteBatchWithBudget(logs []AuditLog, maxBytes int6
 	defer s.capacityMu.Unlock()
 	target := s.evictionTargetBytes
 
-	tx, err := db.Begin()
+	conn, err := s.borrowConfiguredAuditConn()
+	if err != nil {
+		return err, nil
+	}
+	defer conn.Close()
+	tx, err := conn.BeginTx(context.Background(), nil)
 	if err != nil {
 		return fmt.Errorf("begin sqlite audit tx: %w", err), nil
 	}
 	defer tx.Rollback()
+	if allocateIDs {
+		if err := s.ids.syncFrom(tx); err != nil {
+			return err, nil
+		}
+		for i := range logs {
+			id, err := s.ids.allocate()
+			if err != nil {
+				return err, nil
+			}
+			logs[i].ID = id
+		}
+	}
 	if err := s.insertAuditLogs(tx, logs); err != nil {
 		return err, nil
 	}
@@ -65,16 +95,23 @@ func (s *SQLiteAuditStorage) WriteBatchWithBudget(logs []AuditLog, maxBytes int6
 }
 
 func (s *SQLiteAuditStorage) insertAuditLogs(tx txPreparer, logs []AuditLog) error {
+	return insertAuditLogsInto(tx, "main.audit_log", logs)
+}
+
+func insertAuditLogsInto(tx txPreparer, table string, logs []AuditLog) error {
+	if len(logs) == 0 {
+		return nil
+	}
 	// Answers and search text own the public read paths. Keep the legacy IP and
 	// CNAME columns for older binaries, but do not duplicate new answers in them.
 	stmt, err := tx.Prepare(`
-		INSERT INTO audit_log (
-			query_time_unix_ms, client_ip, query_type, query_name, query_class, duration_ms,
+		INSERT INTO ` + table + ` (
+			id, query_time_unix_ms, client_ip, query_type, query_name, query_class, duration_ms,
 			trace_id, response_code, response_flags_aa, response_flags_tc, response_flags_ra,
 			answers_json, answer_count, answer_search_text,
 			domain_set_raw, domain_set_norm, upstream_tag, transport, server_name, url_path,
 			cache_status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	`)
 	if err != nil {
 		return fmt.Errorf("prepare sqlite audit insert: %w", err)
@@ -83,6 +120,7 @@ func (s *SQLiteAuditStorage) insertAuditLogs(tx txPreparer, logs []AuditLog) err
 
 	for _, log := range logs {
 		if _, err := stmt.Exec(
+			log.ID,
 			log.QueryTime.UnixMilli(),
 			log.ClientIP,
 			log.QueryType,

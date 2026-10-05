@@ -34,7 +34,8 @@ audit:
   max_storage_mb: 128
   sqlite_path: db/audit.db
   flush_batch_size: 256
-  flush_interval_ms: 250
+  # 满批或达到内存预算时提前落盘，内存中的历史仍可搜索
+  flush_interval_ms: 300000
   maintenance_interval_seconds: 60
 # 运行态控制库：
 # - 所有运行态真源统一写入 db/control.db

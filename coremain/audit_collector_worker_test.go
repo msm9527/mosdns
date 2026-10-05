@@ -77,7 +77,7 @@ func TestAuditCollectorBatchThresholdAcrossShards(t *testing.T) {
 }
 
 func TestAuditCollectorTimerFlushesPartialSharedBatch(t *testing.T) {
-	c := newAuditWorkerTestCollector(t, auditDefaultFlushIntervalMs)
+	c := newAuditWorkerTestCollector(t, 250)
 	for i := range c.queues {
 		c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
 	}
@@ -197,7 +197,9 @@ func newAuditStorageWaitTestCollector(t *testing.T, failOpen bool) (*AuditCollec
 		}
 		return originalOpen(settings, dir)
 	}
-	c := NewAuditCollector(defaultAuditSettings(), t.TempDir())
+	settings := defaultAuditSettings()
+	settings.FlushIntervalMs = 250
+	c := NewAuditCollector(settings, t.TempDir())
 	c.StartWorker()
 	t.Cleanup(func() {
 		c.StopWorker()

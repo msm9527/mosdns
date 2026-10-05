@@ -42,7 +42,13 @@ type auditOverviewTotals struct {
 }
 
 func (s *SQLiteAuditStorage) QueryOverviewTotals() (auditOverviewTotals, error) {
-	db := s.DB()
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return auditOverviewTotals{}, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if db == nil {
 		return auditOverviewTotals{}, nil
 	}
@@ -51,13 +57,13 @@ func (s *SQLiteAuditStorage) QueryOverviewTotals() (auditOverviewTotals, error) 
 	var totalDurationMs float64
 	var resolvedQueryCount int64
 	var resolvedDurationMs float64
-	err := db.QueryRow(`
+	err = db.QueryRow(`
 		SELECT
 			COALESCE(SUM(query_count), 0),
 			COALESCE(SUM(duration_sum_ms), 0),
 			COALESCE(SUM(resolved_query_count), 0),
 			COALESCE(SUM(resolved_duration_sum_ms), 0)
-		FROM audit_hour
+		FROM `+db.aggregateTotalsSource("audit_hour")+`
 	`).Scan(&totalQueryCount, &totalDurationMs, &resolvedQueryCount, &resolvedDurationMs)
 	if err != nil {
 		return auditOverviewTotals{}, fmt.Errorf("query sqlite audit overview totals: %w", err)
@@ -76,13 +82,20 @@ func (s *SQLiteAuditStorage) QueryOverviewTotals() (auditOverviewTotals, error) 
 }
 
 func (s *SQLiteAuditStorage) QueryOverviewWindowSummaries(at time.Time) ([]AuditPeriodSummary, error) {
+	db, err := s.beginAuditRead()
+	if err != nil {
+		return nil, err
+	}
+	if db != nil {
+		defer db.Close()
+	}
 	if at.IsZero() {
 		at = nowTime()
 	}
 
 	summaries := make([]AuditPeriodSummary, 0, len(auditOverviewPeriodSpecs)-1)
 	for _, spec := range auditOverviewPeriodSpecs[1:] {
-		summary, err := s.queryOverviewWindowSummary(spec.Window, at)
+		summary, err := queryOverviewWindowSummary(db, spec.Window, at)
 		if err != nil {
 			return nil, err
 		}
@@ -94,8 +107,7 @@ func (s *SQLiteAuditStorage) QueryOverviewWindowSummaries(at time.Time) ([]Audit
 	return summaries, nil
 }
 
-func (s *SQLiteAuditStorage) queryOverviewWindowSummary(window time.Duration, at time.Time) (AuditPeriodSummary, error) {
-	db := s.DB()
+func queryOverviewWindowSummary(db *auditReadSession, window time.Duration, at time.Time) (AuditPeriodSummary, error) {
 	if db == nil || window <= 0 {
 		return AuditPeriodSummary{}, nil
 	}
@@ -108,6 +120,7 @@ func (s *SQLiteAuditStorage) queryOverviewWindowSummary(window time.Duration, at
 		from = at.Add(-window).Truncate(time.Hour).Unix()
 	}
 
+	source, args := db.aggregateRangeSource(table, from, to, false)
 	var queryCount int64
 	var durationSumMs float64
 	var resolvedQueryCount int64
@@ -118,9 +131,8 @@ func (s *SQLiteAuditStorage) queryOverviewWindowSummary(window time.Duration, at
 			COALESCE(SUM(duration_sum_ms), 0),
 			COALESCE(SUM(resolved_query_count), 0),
 			COALESCE(SUM(resolved_duration_sum_ms), 0)
-		FROM `+table+`
-		WHERE bucket_start_unix BETWEEN ? AND ?
-	`, from, to).Scan(&queryCount, &durationSumMs, &resolvedQueryCount, &resolvedDurationSumMs)
+		FROM `+source+`
+	`, args...).Scan(&queryCount, &durationSumMs, &resolvedQueryCount, &resolvedDurationSumMs)
 	if err != nil {
 		return AuditPeriodSummary{}, fmt.Errorf("query sqlite audit overview summary for %s: %w", table, err)
 	}

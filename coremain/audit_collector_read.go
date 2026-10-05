@@ -45,7 +45,8 @@ func (c *AuditCollector) ClearLogs() error {
 	for _, queue := range c.queues {
 		for {
 			select {
-			case _, ok := <-queue:
+			case item, ok := <-queue:
+				c.releaseIngressBytes(item)
 				if !ok {
 					queue = nil
 				}

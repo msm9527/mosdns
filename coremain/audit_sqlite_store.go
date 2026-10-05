@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"path/filepath"
@@ -15,16 +16,28 @@ type SQLiteAuditStorage struct {
 	path                string
 	runtimeDB           *runtimesqlite.RuntimeDB
 	capacityMu          sync.Mutex
+	bufferMu            sync.Mutex
+	pending             []AuditLog
+	pendingBytes        int64
+	bufferOwner         uint64
+	bufferRevision      uint64
+	bufferGeneration    uint64
+	ids                 *auditIDAllocator
 	evictionTargetBytes int64
 }
 
 func newSQLiteAuditStorage(path string) *SQLiteAuditStorage {
 	// A reopened database may be midway through bounded eviction. Resume toward
 	// low water on its first capacity check rather than waiting for new traffic.
-	return &SQLiteAuditStorage{path: path, evictionTargetBytes: -1}
+	return &SQLiteAuditStorage{path: path, evictionTargetBytes: -1, bufferOwner: auditBufferOwnerSequence.Add(1)}
 }
 
 func (s *SQLiteAuditStorage) Open() error {
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
+	if s.runtimeDB != nil {
+		return nil
+	}
 	if s.path == "" {
 		return fmt.Errorf("sqlite audit path is required")
 	}
@@ -33,12 +46,25 @@ func (s *SQLiteAuditStorage) Open() error {
 		return err
 	}
 	s.runtimeDB = db
+	s.ids = auditIDsForPath(db.Path())
+	if err := s.ids.syncFrom(db.DB()); err != nil {
+		_ = db.Close()
+		s.runtimeDB = nil
+		return err
+	}
 	return nil
 }
 
+// Close flushes the accepted tail. On a flush failure it remains open so the
+// collector can report the failure and retry without silently losing records.
 func (s *SQLiteAuditStorage) Close() error {
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
 	if s.runtimeDB == nil {
 		return nil
+	}
+	if writeErr, _ := s.flushBufferedLocked(0); writeErr != nil {
+		return writeErr
 	}
 	err := s.runtimeDB.Close()
 	s.runtimeDB = nil
@@ -209,4 +235,26 @@ func resolveAuditDBDir(path string) string {
 		return ""
 	}
 	return filepath.Dir(path)
+}
+
+// The borrower restores the runtime transaction contract on every physical
+// connection. Callers own Close and must return it before another DB helper.
+func (s *SQLiteAuditStorage) borrowConfiguredAuditConn() (*sql.Conn, error) {
+	db := s.DB()
+	if db == nil {
+		return nil, fmt.Errorf("sqlite audit storage is not open")
+	}
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("borrow sqlite audit connection: %w", err)
+	}
+	// RuntimeDB can replace its physical connection. Restore these settings
+	// before any write rather than accepting SQLite's FULL default.
+	for _, pragma := range []string{"PRAGMA synchronous = NORMAL", "PRAGMA foreign_keys = ON"} {
+		if _, err := conn.ExecContext(context.Background(), pragma); err != nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("configure sqlite audit connection: %w", err)
+		}
+	}
+	return conn, nil
 }
