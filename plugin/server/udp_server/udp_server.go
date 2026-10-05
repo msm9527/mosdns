@@ -101,6 +101,7 @@ type Args struct {
 	Entry                     string                   `yaml:"entry"`
 	Listen                    string                   `yaml:"listen"`
 	EnableAudit               bool                     `yaml:"enable_audit"`
+	RequestSource             string                   `yaml:"request_source"`
 	FastCacheInternalTTL      int                      `yaml:"fast_cache_internal_ttl"`
 	FastCacheStaleRetrySec    int                      `yaml:"fast_cache_stale_retry_seconds"`
 	FastCacheStaleMaxSec      int                      `yaml:"fast_cache_stale_max_seconds"`
@@ -376,6 +377,22 @@ type SwitchRevisionPlugin interface {
 type DomainMapperPlugin interface {
 	FastMatch(qname string) ([]uint8, string, bool)
 }
+type DomainMapperWithSourcePlugin interface {
+	FastMatchWithSource(qname string, source server.RequestSource) ([]uint8, string, bool)
+}
+
+func fastMatchWithSource(dm DomainMapperPlugin, qname string, source server.RequestSource) ([]uint8, string, bool) {
+	if withSource, ok := dm.(DomainMapperWithSourcePlugin); ok {
+		return withSource.FastMatchWithSource(qname, source)
+	}
+	// An old mapper may enqueue user work while matching. Background callers
+	// must continue through the regular chain rather than invoke that contract.
+	if source.IsBackground() {
+		return nil, "", false
+	}
+	return dm.FastMatch(qname)
+}
+
 type DomainMapperRevisionPlugin interface {
 	CacheRevision() string
 }
@@ -519,6 +536,7 @@ type fastCacheItem struct {
 	clientDirect         bool
 	hash                 uint64
 	ruleFlags            uint64
+	ruleMatch            server.FastRuleMatchMeta
 	qname                string
 	qtype                uint16
 }
@@ -1276,7 +1294,7 @@ func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset
 	return fc.storeWithRuleRevision(qname, qtype, resp, dset, fakeIP, clientDirect, ruleFlags, fastRuleRevisionFromJoined(ruleRevision))
 }
 
-func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, clientDirect bool, ruleFlags uint64, ruleRevision fastRuleRevision) bool {
+func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, clientDirect bool, ruleFlags uint64, ruleRevision fastRuleRevision, ruleMatch ...server.FastRuleMatchMeta) bool {
 	if fc.shouldBypassDomainSet(dset) {
 		return false
 	}
@@ -1313,6 +1331,9 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 		ruleFlags:            ruleFlags,
 		qname:                qname,
 		qtype:                qtype,
+	}
+	if len(ruleMatch) > 0 {
+		item.ruleMatch = ruleMatch[0]
 	}
 	fc.storeItem(item)
 	if fc.stats != nil {
@@ -1864,7 +1885,12 @@ func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, me
 }
 
 func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) {
+	meta.RequestSource = server.RequestSourceRefresh
 	meta.PreFastStaleRefresh = false
+	meta.PreFastDomainMatched = false
+	meta.PreFastDomainSet = ""
+	meta.PreFastFlags = 0
+	meta.PreFastRuleMatch = server.FastRuleMatchMeta{}
 	payload := h.next.Handle(ctx, q, meta, pack)
 	if payload == nil {
 		if h.fc != nil && h.fc.stats != nil {
@@ -1896,7 +1922,8 @@ func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, paylo
 	}
 	dsetName := meta.PreFastDomainSet
 	if dsetName == "" && h.dm != nil {
-		_, dsetName, _ = h.dm.FastMatch(q.Question[0].Name)
+		// Cache ownership lookup is not user demand, even after a user response.
+		_, dsetName, _ = fastMatchWithSource(h.dm, q.Question[0].Name, server.RequestSourcePrewarm)
 	}
 	if h.fc.shouldBypassDomainSet(dsetName) {
 		return false
@@ -1914,6 +1941,7 @@ func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, paylo
 		(meta.PreFastFlags&(1<<39)) != 0,
 		meta.PreFastFlags,
 		fastRuntimeRevisionParts(h.dm, h.rewriteRevision, h.fakeCacheSwitch, h.blockSwitch, h.adBlockSwitch, h.cnAnswerSwitch),
+		meta.PreFastRuleMatch,
 	)
 }
 
@@ -2039,7 +2067,11 @@ func Init(bp *coremain.BP, args any) (any, error) {
 }
 
 func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
-	dh, err := server_utils.NewHandler(bp, args.Entry, args.EnableAudit)
+	source, err := server_utils.ResolveRequestSource(args.Entry, args.RequestSource)
+	if err != nil {
+		return nil, err
+	}
+	dh, err := server_utils.NewHandlerWithSource(bp, args.Entry, args.EnableAudit, source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init dns handler, %w", err)
 	}
@@ -2086,7 +2118,7 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		cnAnswerSwitch:  newFastSwitchValue(swCNAnswer),
 		enableAudit:     args.EnableAudit,
 	}
-	fastBypass := buildFastBypass(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second, args.EnableAudit)
+	fastBypass := buildFastBypassWithSourceRuleMatch(bp, fc, stats, time.Duration(args.FastBypassWarmupSec)*time.Second, source, args.EnableAudit)
 
 	socketOpt := server_utils.ListenerSocketOpts{
 		SO_REUSEPORT: true,
@@ -2159,8 +2191,8 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 		go func(c *net.UDPConn) {
 			defer c.Close()
 			err := server.ServeUDP(c, wrappedHandler, server.UDPServerOpts{
-				Logger:     bp.L(),
-				FastBypass: fastBypass,
+				Logger:                  bp.L(),
+				FastBypassWithRuleMatch: fastBypass,
 			})
 			bp.CloseWithErr(err)
 		}(udpConn)
@@ -2169,6 +2201,18 @@ func StartServer(bp *coremain.BP, args *Args) (*UdpServer, error) {
 }
 
 func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration, enableAuditOpt ...bool) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
+	return buildFastBypassWithSource(bp, fc, stats, warmup, server.RequestSourceUser, enableAuditOpt...)
+}
+
+func buildFastBypassWithSource(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration, source server.RequestSource, enableAuditOpt ...bool) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool) {
+	bypass := buildFastBypassWithSourceRuleMatch(bp, fc, stats, warmup, source, enableAuditOpt...)
+	return func(reqLen int, buf []byte, addr netip.AddrPort) (int, int, uint64, string, bool, bool) {
+		action, length, flags, domainSet, matched, stale, _ := bypass(reqLen, buf, addr)
+		return action, length, flags, domainSet, matched, stale
+	}
+}
+
+func buildFastBypassWithSourceRuleMatch(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup time.Duration, source server.RequestSource, enableAuditOpt ...bool) func(int, []byte, netip.AddrPort) (int, int, uint64, string, bool, bool, server.FastRuleMatchMeta) {
 	var once sync.Once
 	var sw15, sw5, sw6, sw1, sw7, clientProxyMode, fakeipCache, cnAnswerMode SwitchPlugin
 	var sw15Value, sw5Value, sw6Value, sw1Value, sw7Value, clientProxyModeValue, fakeipCacheValue, cnAnswerModeValue fastSwitchValue
@@ -2181,7 +2225,8 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 	clientPolicy := &clientPolicyCache{}
 	clientIPCache := &fastAuditClientIPCache{}
 
-	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool) {
+	return func(reqLen int, buf []byte, remoteAddr netip.AddrPort) (int, int, uint64, string, bool, bool, server.FastRuleMatchMeta) {
+		var ruleMatch server.FastRuleMatchMeta
 		var auditStart time.Time
 		if enableAudit {
 			auditStart = time.Now()
@@ -2192,7 +2237,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 					stats.bypassRequests.Add(1)
 					stats.bypassWarmupSkip.Add(1)
 				}
-				return server.FastActionContinue, 0, 0, "", false, false
+				return server.FastActionContinue, 0, 0, "", false, false, ruleMatch
 			}
 			warmupDone = true
 		}
@@ -2231,7 +2276,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			if stats != nil {
 				stats.bypassRequests.Add(1)
 			}
-			return server.FastActionContinue, 0, 0, "", false, false
+			return server.FastActionContinue, 0, 0, "", false, false, ruleMatch
 		}
 		question, ok := parseFastQuestionMeta(reqLen, buf)
 		if !ok {
@@ -2239,7 +2284,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				stats.bypassRequests.Add(1)
 				stats.bypassBadPacket.Add(1)
 			}
-			return server.FastActionContinue, 0, 0, "", false, false
+			return server.FastActionContinue, 0, 0, "", false, false, ruleMatch
 		}
 		qtype := question.qtype
 		qEnd := question.end
@@ -2257,7 +2302,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				}
 				respLen := makeReject(reqLen, buf, qEnd, 0)
 				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, "blocked_query_type", coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:respLen]))
-				return server.FastActionReply, respLen, 0, "", false, false
+				return server.FastActionReply, respLen, 0, "", false, false, ruleMatch
 			}
 		}
 		if qtype == 28 {
@@ -2267,7 +2312,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				}
 				respLen := makeReject(reqLen, buf, qEnd, 0)
 				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, "blocked_ipv6", coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:respLen]))
-				return server.FastActionReply, respLen, 0, "", false, false
+				return server.FastActionReply, respLen, 0, "", false, false, ruleMatch
 			}
 		}
 
@@ -2286,12 +2331,25 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 		var dset string
 		var dsetMatched bool
 		ruleMetaHit := false
+		var currentQName string
+		_, sourceAware := dm.(DomainMapperWithSourcePlugin)
+		revalidate := dm != nil && (sourceAware || source.IsBackground())
+		if sourceAware {
+			currentQName = question.qnameString(buf)
+			mList, dsName, matched := fastMatchWithSource(dm, currentQName, source)
+			ruleMatch = server.FastRuleMatchMeta{Known: true, Flags: fastMarksFromList(mList), DomainSet: dsName, Matched: matched}
+		}
 		if !ruleRevision.empty() {
 			earlyCacheTried = true
 			if stats != nil {
 				stats.cacheLookup.AddShard(statKey, 1)
 			}
 			ptr, occupied := fc.findItemWire(cacheKey, qnameWire, qtype)
+			if ptr != nil && revalidate && (!ruleMatch.Known || !ptr.ruleMatch.Known || ptr.ruleMatch != ruleMatch) {
+				// Validate the original mapper evidence before any cached response or
+				// flags are reused. Response ownership and client marks are separate.
+				ptr, occupied = nil, false
+			}
 			action, rLen, ruleFlags, ds, staleRefresh, auditMeta := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, clientDirect, ruleRevision, statKey, 0)
 			if action == server.FastActionReply {
 				if rejectLen, ok := fastRuleRejectWithBools(reqLen, buf, qEnd, qtype, ruleFlags, sw1Value.isOn(), sw7Value.isOn()); ok {
@@ -2299,16 +2357,16 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 						stats.bypassRuleReply.AddShard(statKey, 1)
 					}
 					collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
-					return server.FastActionReply, rejectLen, 0, "", false, false
+					return server.FastActionReply, rejectLen, 0, "", false, false, ruleMatch
 				}
 				if stats != nil {
 					stats.bypassCacheReply.AddShard(statKey, 1)
 				}
 				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheFastHit, auditMeta)
-				return action, rLen, 0, ds, false, false
+				return action, rLen, 0, ds, false, false, ruleMatch
 			}
 			if staleRefresh {
-				return server.FastActionContinue, 0, marks | ruleFlags, ds, ds != "", true
+				return server.FastActionContinue, 0, marks | ruleFlags, ds, ds != "", true, ruleMatch
 			}
 			if ruleFlags != 0 || ds != "" {
 				marks |= ruleFlags
@@ -2318,24 +2376,36 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 			}
 		}
 
-		if dm != nil && !ruleRevision.domainMapper.empty() {
+		if dm != nil && !revalidate && !ruleRevision.domainMapper.empty() {
 			if meta, ok := fc.getRuleMetaWire(hKey, qnameWire, ruleRevision.domainMapper); ok {
 				marks |= meta.ruleFlags
 				dset = meta.domainSet
 				dsetMatched = meta.matched
 				ruleMetaHit = true
+				ruleMatch = server.FastRuleMatchMeta{Known: true, Flags: meta.ruleFlags, DomainSet: meta.domainSet, Matched: meta.matched}
 			}
 		}
 
-		if dm != nil && !ruleMetaHit {
+		if revalidate {
+			marks |= ruleMatch.Flags
+			dset, dsetMatched = ruleMatch.DomainSet, ruleMatch.Matched
+			if ruleMatch.Known {
+				cached, hit := fc.getRuleMetaWire(hKey, qnameWire, ruleRevision.domainMapper)
+				if !hit || cached.ruleFlags != ruleMatch.Flags || cached.domainSet != dset || cached.matched != dsetMatched {
+					fc.storeRuleMeta(currentQName, hKey, ruleRevision.domainMapper, ruleMatch.Flags, dset, dsetMatched)
+				}
+			}
+		} else if dm != nil && !ruleMetaHit {
 			qname := question.qnameString(buf)
-			if mList, dsName, match := dm.FastMatch(qname); match {
+			if mList, dsName, match := fastMatchWithSource(dm, qname, source); match {
 				ruleFlags := fastMarksFromList(mList)
 				marks |= ruleFlags
 				dset = dsName
 				dsetMatched = true
+				ruleMatch = server.FastRuleMatchMeta{Known: true, Flags: ruleFlags, DomainSet: dset, Matched: true}
 				fc.storeRuleMeta(qname, hKey, ruleRevision.domainMapper, ruleFlags, dset, true)
 			} else {
+				ruleMatch = server.FastRuleMatchMeta{Known: true}
 				fc.storeRuleMeta(qname, hKey, ruleRevision.domainMapper, 0, "", false)
 			}
 		}
@@ -2345,7 +2415,7 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				stats.bypassRuleReply.AddShard(statKey, 1)
 			}
 			collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, dset, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
-			return server.FastActionReply, rejectLen, 0, "", false, false
+			return server.FastActionReply, rejectLen, 0, "", false, false, ruleMatch
 		}
 
 		if !earlyCacheTried && !fc.shouldBypassDomainSet(dset) {
@@ -2353,6 +2423,9 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 				stats.cacheLookup.AddShard(statKey, 1)
 			}
 			ptr, occupied := fc.findItemWire(cacheKey, qnameWire, qtype)
+			if ptr != nil && revalidate && (!ruleMatch.Known || !ptr.ruleMatch.Known || ptr.ruleMatch != ruleMatch) {
+				ptr, occupied = nil, false
+			}
 			action, rLen, ruleFlags, ds, staleRefresh, auditMeta := fc.replyFromItemAt(ptr, occupied, buf, allowFakeIP, clientDirect, ruleRevision, statKey, 0)
 			if action == server.FastActionReply {
 				if rejectLen, ok := fastRuleRejectWithBools(reqLen, buf, qEnd, qtype, ruleFlags, sw1Value.isOn(), sw7Value.isOn()); ok {
@@ -2360,19 +2433,19 @@ func buildFastBypass(bp *coremain.BP, fc *fastCache, stats *fastStats, warmup ti
 						stats.bypassRuleReply.AddShard(statKey, 1)
 					}
 					collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheBypass, fastAuditHeaderMeta(buf[:rejectLen]))
-					return server.FastActionReply, rejectLen, 0, "", false, false
+					return server.FastActionReply, rejectLen, 0, "", false, false, ruleMatch
 				}
 				if stats != nil {
 					stats.bypassCacheReply.AddShard(statKey, 1)
 				}
 				collectFastAuditFromWire(enableAudit, auditStart, question, buf, remoteAddr, clientIPCache, ds, coremain.AuditCacheFastHit, auditMeta)
-				return action, rLen, 0, ds, false, false
+				return action, rLen, 0, ds, false, false, ruleMatch
 			}
 			if staleRefresh {
-				return server.FastActionContinue, 0, marks, dset, dsetMatched, true
+				return server.FastActionContinue, 0, marks, dset, dsetMatched, true, ruleMatch
 			}
 		}
-		return server.FastActionContinue, 0, marks, dset, dsetMatched, false
+		return server.FastActionContinue, 0, marks, dset, dsetMatched, false, ruleMatch
 	}
 }
 

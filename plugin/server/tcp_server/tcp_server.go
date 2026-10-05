@@ -41,12 +41,13 @@ func init() {
 }
 
 type Args struct {
-	Entry       string `yaml:"entry"`
-	Listen      string `yaml:"listen"`
-	Cert        string `yaml:"cert"`
-	Key         string `yaml:"key"`
-	IdleTimeout int    `yaml:"idle_timeout"`
-	EnableAudit bool   `yaml:"enable_audit"` // ADDED: Optional config to enable logging for this server instance.
+	Entry         string `yaml:"entry"`
+	Listen        string `yaml:"listen"`
+	Cert          string `yaml:"cert"`
+	Key           string `yaml:"key"`
+	IdleTimeout   int    `yaml:"idle_timeout"`
+	EnableAudit   bool   `yaml:"enable_audit"` // ADDED: Optional config to enable logging for this server instance.
+	RequestSource string `yaml:"request_source"`
 }
 
 func (a *Args) init() {
@@ -71,8 +72,11 @@ func Init(bp *coremain.BP, args any) (any, error) {
 }
 
 func StartServer(bp *coremain.BP, args *Args) (*TcpServer, error) {
-	// MODIFIED: Pass the EnableAudit flag to the handler constructor.
-	dh, err := server_utils.NewHandler(bp, args.Entry, args.EnableAudit)
+	source, err := server_utils.ResolveRequestSource(args.Entry, args.RequestSource)
+	if err != nil {
+		return nil, err
+	}
+	dh, err := server_utils.NewHandlerWithSource(bp, args.Entry, args.EnableAudit, source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to init dns handler, %w", err)
 	}

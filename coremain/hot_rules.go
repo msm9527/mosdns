@@ -3,6 +3,8 @@ package coremain
 import (
 	"strings"
 	"time"
+
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 )
 
 type HotRuleSnapshotProvider interface {
@@ -18,6 +20,12 @@ type HotRuleConsumer interface {
 // still safe to serve on the current request path.
 type HotRuleRuntimeValidator interface {
 	AllowHotRule(domain string, now time.Time) bool
+}
+
+// HotRuleRuntimeValidatorWithSource applies the same validity rules while allowing
+// internal refreshes to avoid scheduling more work on behalf of a real client.
+type HotRuleRuntimeValidatorWithSource interface {
+	AllowHotRuleWithSource(domain string, now time.Time, source server.RequestSource) bool
 }
 
 type PluginSnapshotter interface {

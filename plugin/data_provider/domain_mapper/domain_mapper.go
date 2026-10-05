@@ -11,6 +11,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"go.uber.org/zap"
@@ -51,8 +52,9 @@ type compiledMatch struct {
 }
 
 type providerRuntime struct {
-	result    *MatchResult
-	validator coremain.HotRuleRuntimeValidator
+	result              *MatchResult
+	validator           coremain.HotRuleRuntimeValidator
+	validatorWithSource coremain.HotRuleRuntimeValidatorWithSource
 }
 
 type providerRegistry struct {
@@ -354,7 +356,12 @@ func (dm *DomainMapper) ReloadControlConfig(global *coremain.GlobalOverrides, _ 
 }
 
 func (dm *DomainMapper) FastMatch(qname string) ([]uint8, string, bool) {
-	result, ok := dm.match(qname)
+	return dm.FastMatchWithSource(qname, server.RequestSourceUser)
+}
+
+// FastMatchWithSource validates dynamic rules without creating user demand for background work.
+func (dm *DomainMapper) FastMatchWithSource(qname string, source server.RequestSource) ([]uint8, string, bool) {
+	result, ok := dm.match(qname, source)
 	if ok && result != nil {
 		return result.Marks, result.JoinedTags, true
 	}
@@ -379,7 +386,7 @@ func (dm *DomainMapper) Exec(ctx context.Context, qCtx *query_context.Context) e
 		qname = q.Question[0].Name
 	}
 
-	result, ok := dm.match(qname)
+	result, ok := dm.match(qname, qCtx.ServerMeta.RequestSource)
 	if ok && result != nil {
 		for _, mark := range result.Marks {
 			qCtx.SetFastFlag(mark)
@@ -415,7 +422,7 @@ func (dm *DomainMapper) GetFastExec() func(ctx context.Context, qCtx *query_cont
 			qname = q.Question[0].Name
 		}
 
-		result, ok := dm.match(qname)
+		result, ok := dm.match(qname, qCtx.ServerMeta.RequestSource)
 		if ok && result != nil {
 			for _, mark := range result.Marks {
 				qCtx.SetFastFlag(mark)

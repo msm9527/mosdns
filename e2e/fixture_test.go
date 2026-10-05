@@ -47,6 +47,8 @@ type serviceE2EFixture struct {
 	configDir     string
 	httpBase      string
 	dnsAddr       string
+	requeryAddr   string
+	refreshAddr   string
 	googleAddr    string
 	googleECSAddr string
 	localAddr     string
@@ -125,6 +127,8 @@ func startServiceE2EFixture(savedEnv coremain.RuntimeEnv) (*serviceE2EFixture, e
 		configDir:     filepath.Dir(configPath),
 		httpBase:      fmt.Sprintf("http://127.0.0.1:%d", ports.api),
 		dnsAddr:       fmt.Sprintf("127.0.0.1:%d", ports.dns),
+		requeryAddr:   fmt.Sprintf("127.0.0.1:%d", ports.requery),
+		refreshAddr:   fmt.Sprintf("127.0.0.1:%d", ports.requeryRefresh),
 		googleAddr:    fmt.Sprintf("127.0.0.1:%d", ports.google),
 		googleECSAddr: fmt.Sprintf("127.0.0.1:%d", ports.googleECS),
 		localAddr:     fmt.Sprintf("127.0.0.1:%d", ports.local),

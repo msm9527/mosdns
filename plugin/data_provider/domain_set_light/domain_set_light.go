@@ -16,6 +16,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 	scdomain "github.com/sagernet/sing/common/domain"
 	"github.com/sagernet/sing/common/varbin"
@@ -43,6 +44,7 @@ var _ data_provider.DomainMatcherProvider = (*DomainSetLight)(nil)
 var _ domain.Matcher[struct{}] = (*DomainSetLight)(nil)
 var _ data_provider.RuleExporter = (*DomainSetLight)(nil)
 var _ coremain.HotRuleRuntimeValidator = (*DomainSetLight)(nil)
+var _ coremain.HotRuleRuntimeValidatorWithSource = (*DomainSetLight)(nil)
 
 // 定义一个简单的接口，用于复用 SRS 解析逻辑（解耦 Trie 树依赖）
 type ruleAdder interface {
@@ -260,20 +262,33 @@ func (d *DomainSetLight) Match(domainStr string) (value struct{}, ok bool) {
 }
 
 func (d *DomainSetLight) AllowHotRule(domain string, now time.Time) bool {
-	validator := d.generatedHotRuleValidator()
-	if validator == nil {
-		return true
-	}
-	return validator.AllowHotRule(domain, now)
+	return d.AllowHotRuleWithSource(domain, now, server.RequestSourceUser)
 }
 
-func (d *DomainSetLight) generatedHotRuleValidator() coremain.HotRuleRuntimeValidator {
-	tag := strings.TrimSpace(d.generatedFrom)
-	if tag == "" || d.bp == nil {
-		return nil
+// AllowHotRuleWithSource preserves the generated provider's request-side-effect policy.
+func (d *DomainSetLight) AllowHotRuleWithSource(domain string, now time.Time, source server.RequestSource) bool {
+	if source == server.RequestSourceUnspecified {
+		source = server.RequestSourceUser
 	}
-	validator, _ := d.bp.Plugin(tag).(coremain.HotRuleRuntimeValidator)
-	return validator
+	d.mu.RLock()
+	tag := strings.TrimSpace(d.generatedFrom)
+	d.mu.RUnlock()
+	if tag == "" || d.bp == nil {
+		return true
+	}
+	provider := d.bp.Plugin(tag)
+	if validator, ok := provider.(coremain.HotRuleRuntimeValidatorWithSource); ok {
+		return validator.AllowHotRuleWithSource(domain, now, source)
+	}
+	validator, ok := provider.(coremain.HotRuleRuntimeValidator)
+	if !ok {
+		return true
+	}
+	// Legacy providers cannot guarantee background validation without demand notifications.
+	if source.IsBackground() {
+		return false
+	}
+	return validator.AllowHotRule(domain, now)
 }
 
 func (d *DomainSetLight) ReloadControlConfig(global *coremain.GlobalOverrides, _ []coremain.UpstreamOverrideConfig) error {

@@ -30,10 +30,14 @@ listeners:
     protocol: udp
     listen: :7766
     entry: sequence_requery
+    options:
+      request_source: prewarm
   - name: tcp_requery
     protocol: tcp
     listen: :7766
     entry: sequence_requery
+    options:
+      request_source: prewarm
 
   # clash.meta 客户端专用入口。
   - name: udp_clashmi
@@ -82,10 +86,14 @@ listeners:
     protocol: udp
     listen: :7767
     entry: sequence_requery_refresh
+    options:
+      request_source: refresh
   - name: tcp_requery_refresh
     protocol: tcp
     listen: :7767
     entry: sequence_requery_refresh
+    options:
+      request_source: refresh
 
   # 节点探测入口。
   - name: sbnode_udp

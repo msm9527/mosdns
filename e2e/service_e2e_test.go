@@ -40,6 +40,7 @@ func TestServiceE2E(t *testing.T) {
 	report.RunCase(t, "cache stats and stability", fx.testCacheAndStability)
 	report.RunCase(t, "udp fast audit latency", fx.testUDPFastAuditLatency)
 	report.RunCase(t, "cache client ttl governance", fx.testCacheClientTTLGovernance)
+	report.RunCase(t, "background request provenance", fx.testBackgroundRequestProvenance)
 }
 
 func (fx *serviceE2EFixture) testControlAPI(t *testing.T, rec *e2eCaseRecorder) {

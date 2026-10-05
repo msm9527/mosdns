@@ -65,6 +65,10 @@ type EntryHandlerOpts struct {
 
 	// ADDED: Flag to enable audit and process logging for this handler instance.
 	EnableAudit bool
+
+	// RequestSource is the listener policy for requests without internal provenance.
+	// The default is user activity.
+	RequestSource server.RequestSource
 }
 
 func (opts *EntryHandlerOpts) init() {
@@ -72,6 +76,9 @@ func (opts *EntryHandlerOpts) init() {
 		opts.Logger = nopLogger
 	}
 	utils.SetDefaultNum(&opts.QueryTimeout, defaultQueryTimeout)
+	if opts.RequestSource == server.RequestSourceUnspecified {
+		opts.RequestSource = server.RequestSourceUser
+	}
 }
 
 type EntryHandler struct {
@@ -98,6 +105,9 @@ func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server
 	ctx, cancel := context.WithDeadline(ctx, ddl)
 	defer cancel()
 
+	if serverMeta.RequestSource == server.RequestSourceUnspecified {
+		serverMeta.RequestSource = h.opts.RequestSource
+	}
 	qCtx := query_context.NewContext(q)
 	qCtx.ServerMeta = serverMeta
 	qCtx.ApplyFastFlags(serverMeta.PreFastFlags)

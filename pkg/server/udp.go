@@ -38,6 +38,9 @@ const (
 type UDPServerOpts struct {
 	Logger     *zap.Logger
 	FastBypass func(reqLen int, buf []byte, clientAddr netip.AddrPort) (action int, respLen int, preMarks uint64, preDset string, preDsetMatched bool, preStaleRefresh bool)
+	// FastBypassWithRuleMatch carries original mapper evidence to response storage.
+	// When set it takes precedence over the legacy six-result callback.
+	FastBypassWithRuleMatch func(reqLen int, buf []byte, clientAddr netip.AddrPort) (action int, respLen int, preMarks uint64, preDset string, preDsetMatched bool, preStaleRefresh bool, ruleMatch FastRuleMatchMeta)
 }
 
 func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
@@ -85,8 +88,17 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 		var preDset string
 		var preDsetMatched bool
 		var preStaleRefresh bool
-		if opts.FastBypass != nil {
-			action, respLen, marks, dset, dsetMatched, staleRefresh := opts.FastBypass(n, *rb, remoteAddr)
+		var preRuleMatch FastRuleMatchMeta
+		if opts.FastBypassWithRuleMatch != nil || opts.FastBypass != nil {
+			var action, respLen int
+			var marks uint64
+			var dset string
+			var dsetMatched, staleRefresh bool
+			if opts.FastBypassWithRuleMatch != nil {
+				action, respLen, marks, dset, dsetMatched, staleRefresh, preRuleMatch = opts.FastBypassWithRuleMatch(n, *rb, remoteAddr)
+			} else {
+				action, respLen, marks, dset, dsetMatched, staleRefresh = opts.FastBypass(n, *rb, remoteAddr)
+			}
 			if action == FastActionReply {
 				if respLen > 0 {
 					var oob []byte
@@ -114,6 +126,7 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 				ClientAddr:           remoteAddr.Addr(),
 				FromUDP:              true,
 				PreFastFlags:         preMarks,
+				PreFastRuleMatch:     preRuleMatch,
 				PreFastDomainSet:     preDset,
 				PreFastDomainMatched: preDsetMatched,
 				PreFastStaleRefresh:  preStaleRefresh,

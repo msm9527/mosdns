@@ -24,6 +24,7 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/pkg/dnsutils"
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/pkg/stringintern"
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
@@ -87,7 +88,6 @@ const (
 var _ sequence.RecursiveExecutable = (*Cache)(nil)
 
 var cacheRefreshBypassKey = query_context.RegKey()
-var cacheResponseStaleKey = query_context.RegKey()
 
 // keyBufferPool 用于复用生成 Key 时的字节缓冲区，显著降低内存分配压力
 var keyBufferPool = sync.Pool{
@@ -1226,7 +1226,7 @@ func (c *Cache) maybePrefetch(msgKey string, route cacheRouteSnapshot, qCtx *que
 	if c.shouldBypassForStoredDomainSet(domainSet) {
 		return
 	}
-	c.ensureLazyUpdate(msgKey, route, qCtx, next)
+	c.ensureLazyUpdateWithSource(msgKey, route, qCtx, next, server.RequestSourcePrewarm)
 }
 
 func markCacheRefreshBypass(qCtx *query_context.Context) {
@@ -1248,30 +1248,22 @@ func shouldBypassCacheForRefresh(qCtx *query_context.Context) bool {
 }
 
 func markCacheResponseStale(qCtx *query_context.Context) {
-	if qCtx != nil {
-		qCtx.StoreValue(cacheResponseStaleKey, true)
-	}
+	qCtx.SetCacheResponseStale(true)
 }
 
 func clearCacheResponseStale(qCtx *query_context.Context) {
-	if qCtx != nil {
-		qCtx.DeleteValue(cacheResponseStaleKey)
-	}
+	qCtx.SetCacheResponseStale(false)
 }
 
 func responseFromStaleCache(qCtx *query_context.Context) bool {
-	if qCtx == nil {
-		return false
-	}
-	value, ok := qCtx.GetValue(cacheResponseStaleKey)
-	if !ok {
-		return false
-	}
-	stale, _ := value.(bool)
-	return stale
+	return qCtx.CacheResponseStale()
 }
 
 func (c *Cache) ensureLazyUpdate(msgKey string, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker) (*lazyRefreshState, bool) {
+	return c.ensureLazyUpdateWithSource(msgKey, route, qCtx, next, server.RequestSourceRefresh)
+}
+
+func (c *Cache) ensureLazyUpdateWithSource(msgKey string, route cacheRouteSnapshot, qCtx *query_context.Context, next sequence.ChainWalker, source server.RequestSource) (*lazyRefreshState, bool) {
 	c.lazyRefreshMu.Lock()
 	if state, ok := c.lazyRefresh[msgKey]; ok {
 		c.lazyRefreshMu.Unlock()
@@ -1282,6 +1274,15 @@ func (c *Cache) ensureLazyUpdate(msgKey string, route cacheRouteSnapshot, qCtx *
 	c.lazyRefreshMu.Unlock()
 
 	qCtxCopy := qCtx.Copy()
+	qCtxCopy.ServerMeta.RequestSource = source
+	qCtxCopy.ServerMeta.PreFastFlags = 0
+	qCtxCopy.ServerMeta.PreFastRuleMatch = server.FastRuleMatchMeta{}
+	qCtxCopy.ServerMeta.PreFastDomainSet = ""
+	qCtxCopy.ServerMeta.PreFastDomainMatched = false
+	qCtxCopy.ServerMeta.PreFastStaleRefresh = false
+	// Continue the selected chain with its routing state, but start new response
+	// work without client demand or stale response provenance from the parent.
+	qCtxCopy.SetCacheResponseStale(false)
 	go func() {
 		defer close(state.done)
 		defer func() {

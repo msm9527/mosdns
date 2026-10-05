@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 )
 
 var _ coremain.HotRuleSnapshotProvider = (*domainMemoryPool)(nil)
 var _ coremain.HotRuleRuntimeValidator = (*domainMemoryPool)(nil)
+var _ coremain.HotRuleRuntimeValidatorWithSource = (*domainMemoryPool)(nil)
 
 func (d *domainMemoryPool) SnapshotHotRules() ([]string, error) {
 	d.mu.Lock()
@@ -74,6 +76,10 @@ func (d *domainMemoryPool) publishTarget() string {
 }
 
 func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
+	return d.AllowHotRuleWithSource(domain, now, server.RequestSourceUser)
+}
+
+func (d *domainMemoryPool) AllowHotRuleWithSource(domain string, now time.Time, source server.RequestSource) bool {
 	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
 	if domain == "" {
 		return false
@@ -100,7 +106,7 @@ func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
 		}
 		shouldDirty = true
 	}
-	if !allow && shouldDirty {
+	if !allow && shouldDirty && !source.IsBackground() {
 		notify = d.markHotRuleRefreshLocked(domain, now)
 	}
 	d.mu.Unlock()
