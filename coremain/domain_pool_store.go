@@ -88,7 +88,7 @@ func SaveDomainPoolStateToPath(path string, state DomainPoolState) error {
 	if err != nil {
 		return fmt.Errorf("begin domain pool tx: %w", err)
 	}
-	if err := replaceDomainPoolState(tx, state); err != nil {
+	if err := updateDomainPoolState(tx, state); err != nil {
 		_ = tx.Rollback()
 		return err
 	}
@@ -156,12 +156,26 @@ func validateDomainPoolState(state DomainPoolState) error {
 	if err := validateDomainPoolPolicy(state.Meta.PoolTag, &state.Meta.Policy); err != nil {
 		return err
 	}
+	seenDomains := make(map[string]struct{}, len(state.Domains))
 	for _, domain := range state.Domains {
+		if _, ok := seenDomains[domain.Domain]; ok {
+			return fmt.Errorf("duplicate domain pool domain %s", domain.Domain)
+		}
+		seenDomains[domain.Domain] = struct{}{}
 		if err := validateDomainPoolDomain(state.Meta.PoolTag, domain); err != nil {
 			return err
 		}
 	}
+	seenVariants := make(map[[2]string]struct{}, len(state.Variants))
 	for _, variant := range state.Variants {
+		if _, ok := seenDomains[variant.Domain]; !ok {
+			return fmt.Errorf("domain pool variant %s has no domain %s in snapshot", variant.VariantKey, variant.Domain)
+		}
+		key := [2]string{variant.Domain, variant.VariantKey}
+		if _, ok := seenVariants[key]; ok {
+			return fmt.Errorf("duplicate domain pool variant %s/%s", variant.Domain, variant.VariantKey)
+		}
+		seenVariants[key] = struct{}{}
 		if err := validateDomainPoolVariant(state.Meta.PoolTag, variant); err != nil {
 			return err
 		}
@@ -192,17 +206,72 @@ func validateDomainPoolVariant(poolTag string, item DomainPoolVariant) error {
 	return nil
 }
 
-func replaceDomainPoolState(tx *sql.Tx, state DomainPoolState) error {
-	if err := saveDomainPoolMeta(tx, state.Meta); err != nil {
+// A complete snapshot remains authoritative, but unchanged rows retain their
+// timestamps and SQLite pages. All reads use the transaction's connection.
+func updateDomainPoolState(tx *sql.Tx, state DomainPoolState) error {
+	oldMeta, exists, err := loadDomainPoolMeta(tx, state.Meta.PoolTag)
+	if err != nil {
 		return err
 	}
-	if err := clearDomainPoolRows(tx, state.Meta.PoolTag); err != nil {
+	oldDomains, err := loadDomainPoolDomains(tx, state.Meta.PoolTag)
+	if err != nil {
 		return err
 	}
-	if err := saveDomainPoolDomains(tx, state.Domains); err != nil {
+	oldVariants, err := loadDomainPoolVariants(tx, state.Meta.PoolTag)
+	if err != nil {
 		return err
 	}
-	return saveDomainPoolVariants(tx, state.Variants)
+	oldMeta.UpdatedAtUnixMS = 0
+	meta := state.Meta
+	meta.UpdatedAtUnixMS = 0
+	if !exists || oldMeta != meta {
+		if err := saveDomainPoolMeta(tx, meta); err != nil {
+			return err
+		}
+	}
+	domains := make(map[string]DomainPoolDomain, len(oldDomains))
+	for _, item := range oldDomains {
+		item.UpdatedAtUnixMS = 0
+		domains[item.Domain] = item
+	}
+	changedDomains := make([]DomainPoolDomain, 0)
+	for _, item := range state.Domains {
+		item.UpdatedAtUnixMS = 0
+		old, ok := domains[item.Domain]
+		if !ok || old != item {
+			changedDomains = append(changedDomains, item)
+		}
+		delete(domains, item.Domain)
+	}
+	variants := make(map[[2]string]DomainPoolVariant, len(oldVariants))
+	for _, item := range oldVariants {
+		item.UpdatedAtUnixMS = 0
+		variants[[2]string{item.Domain, item.VariantKey}] = item
+	}
+	changedVariants := make([]DomainPoolVariant, 0)
+	for _, item := range state.Variants {
+		item.UpdatedAtUnixMS = 0
+		key := [2]string{item.Domain, item.VariantKey}
+		old, ok := variants[key]
+		if !ok || old != item {
+			changedVariants = append(changedVariants, item)
+		}
+		delete(variants, key)
+	}
+	for key := range variants {
+		if _, err := tx.Exec("DELETE FROM domain_pool_variant WHERE pool_tag = ? AND domain = ? AND variant_key = ?", state.Meta.PoolTag, key[0], key[1]); err != nil {
+			return fmt.Errorf("delete domain pool variant: %w", err)
+		}
+	}
+	for domain := range domains {
+		if _, err := tx.Exec("DELETE FROM domain_pool_domain WHERE pool_tag = ? AND domain = ?", state.Meta.PoolTag, domain); err != nil {
+			return fmt.Errorf("delete domain pool domain: %w", err)
+		}
+	}
+	if err := saveDomainPoolDomains(tx, changedDomains); err != nil {
+		return err
+	}
+	return saveDomainPoolVariants(tx, changedVariants)
 }
 
 func saveDomainPoolMeta(tx *sql.Tx, meta DomainPoolMeta) error {
@@ -269,6 +338,22 @@ func saveDomainPoolDomains(tx *sql.Tx, items []DomainPoolDomain) error {
 				last_seen_at_unix_ms, last_dirty_at_unix_ms, last_verified_at_unix_ms,
 				cooldown_until_unix_ms, dirty_reason, refresh_state, updated_at_unix_ms
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch('subsec') * 1000)
+			ON CONFLICT(pool_tag, domain) DO UPDATE SET
+				total_count = excluded.total_count,
+				score = excluded.score,
+				qtype_mask = excluded.qtype_mask,
+				flags_mask = excluded.flags_mask,
+				variant_count = excluded.variant_count,
+				dirty_variant_count = excluded.dirty_variant_count,
+				promoted = excluded.promoted,
+				last_source = excluded.last_source,
+				last_seen_at_unix_ms = excluded.last_seen_at_unix_ms,
+				last_dirty_at_unix_ms = excluded.last_dirty_at_unix_ms,
+				last_verified_at_unix_ms = excluded.last_verified_at_unix_ms,
+				cooldown_until_unix_ms = excluded.cooldown_until_unix_ms,
+				dirty_reason = excluded.dirty_reason,
+				refresh_state = excluded.refresh_state,
+				updated_at_unix_ms = excluded.updated_at_unix_ms
 		`, item.PoolTag, item.Domain, item.TotalCount, item.Score, item.QTypeMask, item.FlagsMask,
 			item.VariantCount, item.DirtyVariantCount, boolToInt(item.Promoted), item.LastSource,
 			item.LastSeenAtUnixMS, item.LastDirtyAtUnixMS, item.LastVerifiedAtUnixMS,
@@ -288,6 +373,21 @@ func saveDomainPoolVariants(tx *sql.Tx, items []DomainPoolVariant) error {
 				last_dirty_at_unix_ms, last_verified_at_unix_ms, cooldown_until_unix_ms,
 				dirty_reason, refresh_state, conflict_count, updated_at_unix_ms
 			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch('subsec') * 1000)
+			ON CONFLICT(pool_tag, domain, variant_key) DO UPDATE SET
+				total_count = excluded.total_count,
+				score = excluded.score,
+				qtype_mask = excluded.qtype_mask,
+				flags_mask = excluded.flags_mask,
+				promoted = excluded.promoted,
+				last_source = excluded.last_source,
+				last_seen_at_unix_ms = excluded.last_seen_at_unix_ms,
+				last_dirty_at_unix_ms = excluded.last_dirty_at_unix_ms,
+				last_verified_at_unix_ms = excluded.last_verified_at_unix_ms,
+				cooldown_until_unix_ms = excluded.cooldown_until_unix_ms,
+				dirty_reason = excluded.dirty_reason,
+				refresh_state = excluded.refresh_state,
+				conflict_count = excluded.conflict_count,
+				updated_at_unix_ms = excluded.updated_at_unix_ms
 		`, item.PoolTag, item.Domain, item.VariantKey, item.TotalCount, item.Score, item.QTypeMask,
 			item.FlagsMask, boolToInt(item.Promoted), item.LastSource, item.LastSeenAtUnixMS,
 			item.LastDirtyAtUnixMS, item.LastVerifiedAtUnixMS, item.CooldownUntilUnixMS,
@@ -298,7 +398,12 @@ func saveDomainPoolVariants(tx *sql.Tx, items []DomainPoolVariant) error {
 	return nil
 }
 
-func loadDomainPoolMeta(db *sql.DB, poolTag string) (DomainPoolMeta, bool, error) {
+type domainPoolQuerier interface {
+	Query(query string, args ...any) (*sql.Rows, error)
+	QueryRow(query string, args ...any) *sql.Row
+}
+
+func loadDomainPoolMeta(db domainPoolQuerier, poolTag string) (DomainPoolMeta, bool, error) {
 	row := db.QueryRow(`
 		SELECT pool_tag, pool_kind, memory_id, policy_json, domain_count, variant_count,
 		       dirty_domain_count, promoted_domain_count, published_domain_count,
@@ -319,7 +424,7 @@ func loadDomainPoolMeta(db *sql.DB, poolTag string) (DomainPoolMeta, bool, error
 	return meta, true, nil
 }
 
-func loadDomainPoolDomains(db *sql.DB, poolTag string) ([]DomainPoolDomain, error) {
+func loadDomainPoolDomains(db domainPoolQuerier, poolTag string) ([]DomainPoolDomain, error) {
 	rows, err := db.Query(`
 		SELECT pool_tag, domain, total_count, score, qtype_mask, flags_mask,
 		       variant_count, dirty_variant_count, promoted, last_source,
@@ -336,7 +441,7 @@ func loadDomainPoolDomains(db *sql.DB, poolTag string) ([]DomainPoolDomain, erro
 	return scanDomainPoolDomains(rows)
 }
 
-func loadDomainPoolVariants(db *sql.DB, poolTag string) ([]DomainPoolVariant, error) {
+func loadDomainPoolVariants(db domainPoolQuerier, poolTag string) ([]DomainPoolVariant, error) {
 	rows, err := db.Query(`
 		SELECT pool_tag, domain, variant_key, total_count, score, qtype_mask,
 		       flags_mask, promoted, last_source, last_seen_at_unix_ms,

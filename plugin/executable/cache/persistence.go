@@ -28,10 +28,14 @@ type persistenceManager struct {
 	walPath      string
 	syncInterval time.Duration
 
-	mu        sync.Mutex
-	walFile   *os.File
-	walWriter *bufio.Writer
-	lastSync  time.Time
+	mu               sync.Mutex
+	walFile          *os.File
+	walWriter        *bufio.Writer
+	lastSync         time.Time
+	header           walHeader
+	loadedCheckpoint *snapshotCheckpoint
+	restoreErr       error
+	validWALSize     int64
 }
 
 type walStoreRecord struct {
@@ -43,6 +47,36 @@ type walStoreRecord struct {
 type walRecord struct {
 	op byte
 	walStoreRecord
+}
+
+// 只保留 dump 所需的不可变字段，不复制 DNS payload，也不持有 L1 或 TTL 索引。
+type snapshotEntry struct {
+	key             key
+	resp            []byte
+	domainSet       string
+	cacheExpiration int64
+	msgExpiration   int64
+	msgStored       int64
+}
+
+type cacheSnapshot struct {
+	entries    []snapshotEntry
+	checkpoint *snapshotCheckpoint
+}
+
+func (snapshot cacheSnapshot) writeDump(w io.Writer) (int, error) {
+	return writeDumpEntries(w, func(yield func(*CachedEntry) error) error {
+		for _, entry := range snapshot.entries {
+			if err := yield(&CachedEntry{
+				Key: []byte(entry.key), Msg: entry.resp, DomainSet: entry.domainSet,
+				CacheExpirationTime: entry.cacheExpiration,
+				MsgExpirationTime:   entry.msgExpiration, MsgStoredTime: entry.msgStored,
+			}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, snapshot.checkpoint.extra())
 }
 
 func newPersistenceManager(args *Args, logger *zap.Logger) *persistenceManager {
@@ -69,7 +103,11 @@ func (pm *persistenceManager) restore(c *Cache) error {
 	if pm.walPath == "" {
 		return nil
 	}
-	return c.replayWAL()
+	if err := c.replayWAL(); err != nil {
+		return err
+	}
+	// 开始服务前原样迁移 v1 records。旧快照与 v2/base=0 仍可完整恢复。
+	return pm.migrateLegacyWAL()
 }
 
 func (pm *persistenceManager) appendStore(record walStoreRecord) error {
@@ -79,7 +117,7 @@ func (pm *persistenceManager) appendStore(record walStoreRecord) error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	if err := pm.ensureWalWriterLocked(false); err != nil {
+	if err := pm.ensureWalWriterLocked(); err != nil {
 		return err
 	}
 	if err := writeWALStoreRecord(pm.walWriter, record); err != nil {
@@ -111,7 +149,7 @@ func (pm *persistenceManager) appendDeletes(recordKeys []key, syncNow bool) erro
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	if err := pm.ensureWalWriterLocked(false); err != nil {
+	if err := pm.ensureWalWriterLocked(); err != nil {
 		return err
 	}
 	for _, recordKey := range recordKeys {
@@ -134,7 +172,7 @@ func (pm *persistenceManager) appendFlush() error {
 	pm.mu.Lock()
 	defer pm.mu.Unlock()
 
-	if err := pm.ensureWalWriterLocked(false); err != nil {
+	if err := pm.ensureWalWriterLocked(); err != nil {
 		return err
 	}
 	if err := writeWALFlushRecord(pm.walWriter); err != nil {
@@ -144,17 +182,81 @@ func (pm *persistenceManager) appendFlush() error {
 }
 
 func (pm *persistenceManager) checkpoint(c *Cache) (int, error) {
+	if pm.restoreErr != nil {
+		return 0, pm.restoreErr
+	}
 	if pm.snapshotPath == "" {
 		return 0, nil
 	}
-	entries, err := c.writeSnapshotFileAtomic(pm.snapshotPath)
+	snapshot, cut, err := pm.captureSnapshot(c)
 	if err != nil {
 		return 0, err
 	}
-	if err := pm.resetWAL(); err != nil {
+	// gzip 和磁盘 I/O 不持有变更锁，期间的新操作继续追加旧 WAL。
+	entries, err := writeSnapshotFileAtomic(pm.snapshotPath, snapshot.writeDump)
+	if err != nil {
+		return 0, err
+	}
+	if err := pm.completeCheckpoint(c, cut); err != nil {
 		return entries, err
 	}
 	return entries, nil
+}
+
+func (pm *persistenceManager) captureSnapshot(c *Cache) (cacheSnapshot, uint64, error) {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	if err := pm.ensureWalWriterLocked(); err != nil {
+		return cacheSnapshot{}, 0, err
+	}
+	// cut 位于已同步的完整记录边界，与内存采集对应同一个状态。
+	if err := pm.flushLocked(); err != nil {
+		return cacheSnapshot{}, 0, err
+	}
+	var cut uint64
+	if pm.walFile != nil {
+		info, err := pm.walFile.Stat()
+		if err != nil {
+			return cacheSnapshot{}, 0, err
+		}
+		payloadSize := info.Size() - pm.header.size()
+		if payloadSize < 0 || uint64(payloadSize) > ^uint64(0)-pm.header.base {
+			return cacheSnapshot{}, 0, errors.New("invalid cache wal size")
+		}
+		cut = pm.header.base + uint64(payloadSize)
+	}
+	snapshot := cacheSnapshot{entries: make([]snapshotEntry, 0, c.backend.Len())}
+	if pm.walPath != "" {
+		snapshot.checkpoint = &snapshotCheckpoint{generation: pm.header.generation, cut: cut}
+	}
+	now := time.Now()
+	err := c.backend.Range(func(k key, v *item, expiration time.Time) error {
+		if !expiration.Before(now) {
+			snapshot.entries = append(snapshot.entries, snapshotEntry{
+				key: k, resp: v.resp, domainSet: v.domainSet,
+				cacheExpiration: expiration.Unix(),
+				msgExpiration:   unixNanoToTime(v.expireUnixNano).Unix(),
+				msgStored:       unixNanoToTime(v.storedUnixNano).Unix(),
+			})
+		}
+		return nil
+	})
+	return snapshot, cut, err
+}
+
+func (pm *persistenceManager) completeCheckpoint(c *Cache, cut uint64) error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	pm.loadedCheckpoint = &snapshotCheckpoint{generation: pm.header.generation, cut: cut}
+	// 发布快照后仍保留完整旧 WAL，直到所有并发增量都已同步并复制。
+	if err := pm.flushLocked(); err != nil {
+		return err
+	}
+	return pm.resetWALLocked(cut)
 }
 
 func (pm *persistenceManager) close() error {
@@ -172,27 +274,118 @@ func (pm *persistenceManager) close() error {
 	return nil
 }
 
-func (pm *persistenceManager) resetWAL() error {
+func (pm *persistenceManager) resetWALLocked(cut uint64) error {
 	if pm.walPath == "" {
 		return nil
 	}
-	pm.mu.Lock()
-	defer pm.mu.Unlock()
-	if pm.walFile != nil {
-		if err := pm.walFile.Close(); err != nil {
-			return err
-		}
-		pm.walFile = nil
-		pm.walWriter = nil
+	if pm.walFile == nil || pm.header.version != 2 || cut < pm.header.base {
+		return errors.New("invalid cache wal checkpoint boundary")
 	}
-	return pm.ensureWalWriterLocked(true)
+	info, err := pm.walFile.Stat()
+	if err != nil {
+		return err
+	}
+	if info.Size() < pm.header.size() || cut-pm.header.base > uint64(info.Size()-pm.header.size()) {
+		return errors.New("cache wal checkpoint boundary exceeds file size")
+	}
+	offset := pm.header.size() + int64(cut-pm.header.base)
+	header := pm.header
+	header.base = cut
+	return pm.replaceWALLocked(pm.walFile, offset, info.Size()-offset, header)
 }
 
-func (pm *persistenceManager) ensureWalWriterLocked(truncate bool) error {
+func (pm *persistenceManager) replaceWALLocked(source *os.File, offset, length int64, header walHeader) error {
+	dir := filepath.Dir(pm.walPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".cache-wal-*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := f.Name()
+	defer os.Remove(tmpPath)
+	if err := f.Chmod(0o644); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := writeWALHeader(f, header); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if _, err := io.Copy(f, io.NewSectionReader(source, offset, length)); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := os.Rename(tmpPath, pm.walPath); err != nil {
+		_ = f.Close()
+		return err
+	}
+	// rename 成功后即切换 writer，目录同步失败时也不能再写旧 inode。
+	oldFile := pm.walFile
+	pm.walFile = f
+	pm.walWriter = bufio.NewWriterSize(f, 64*1024)
+	pm.header = header
+	pm.lastSync = time.Now()
+	if oldFile != nil {
+		if err := oldFile.Close(); err != nil {
+			return err
+		}
+	}
+	return syncDir(dir)
+}
+
+func (pm *persistenceManager) migrateLegacyWAL() error {
+	pm.mu.Lock()
+	defer pm.mu.Unlock()
+	f, err := os.Open(pm.walPath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	header, err := readWALHeader(f)
+	if errors.Is(err, io.EOF) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if header.version == 2 {
+		pm.header = header
+	}
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	if header.version == 2 && pm.validWALSize == info.Size() {
+		return nil
+	}
+	if header.version == 1 {
+		header, err = newWALHeader()
+		if err != nil {
+			return err
+		}
+		return pm.replaceWALLocked(f, int64(len(walMagic)), pm.validWALSize-int64(len(walMagic)), header)
+	}
+	// 忽略的断尾必须在后续 append 前移除，否则新记录会接在半条旧记录之后。
+	return pm.replaceWALLocked(f, header.size(), pm.validWALSize-header.size(), header)
+}
+
+func (pm *persistenceManager) ensureWalWriterLocked() error {
+	if pm.restoreErr != nil {
+		return pm.restoreErr
+	}
 	if pm.walPath == "" {
 		return nil
 	}
-	if !truncate && pm.walFile != nil && pm.walWriter != nil {
+	if pm.walFile != nil && pm.walWriter != nil {
 		return nil
 	}
 	if pm.walFile != nil {
@@ -210,33 +403,45 @@ func (pm *persistenceManager) ensureWalWriterLocked(truncate bool) error {
 	if err := os.MkdirAll(filepath.Dir(pm.walPath), 0o755); err != nil {
 		return err
 	}
-	flag := os.O_CREATE | os.O_RDWR
-	if truncate {
-		flag |= os.O_TRUNC
-	} else {
-		flag |= os.O_APPEND
-	}
-	f, err := os.OpenFile(pm.walPath, flag, 0o644)
+	f, err := os.OpenFile(pm.walPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644)
 	if err != nil {
 		return err
 	}
-	if truncate {
-		if _, err := f.WriteString(walMagic); err != nil {
-			_ = f.Close()
-			return err
-		}
-	} else {
-		info, err := f.Stat()
+	info, err := f.Stat()
+	if err != nil {
+		_ = f.Close()
+		return err
+	}
+	if info.Size() == 0 {
+		header, err := newWALHeader()
 		if err != nil {
 			_ = f.Close()
 			return err
 		}
-		if info.Size() == 0 {
-			if _, err := f.WriteString(walMagic); err != nil {
-				_ = f.Close()
-				return err
-			}
+		if pm.loadedCheckpoint != nil {
+			header.generation = pm.loadedCheckpoint.generation
+			header.base = pm.loadedCheckpoint.cut
 		}
+		if err := writeWALHeader(f, header); err != nil {
+			_ = f.Close()
+			return err
+		}
+		pm.header = header
+		if err := f.Sync(); err != nil {
+			_ = f.Close()
+			return err
+		}
+		if err := syncDir(filepath.Dir(pm.walPath)); err != nil {
+			_ = f.Close()
+			return err
+		}
+	} else {
+		header, err := readWALHeader(io.NewSectionReader(f, 0, info.Size()))
+		if err != nil || header.version != 2 {
+			_ = f.Close()
+			return fmt.Errorf("cache wal was not migrated to v2, %v", err)
+		}
+		pm.header = header
 	}
 	pm.walFile = f
 	pm.walWriter = bufio.NewWriterSize(f, 64*1024)
@@ -278,7 +483,7 @@ func (c *Cache) loadSnapshot() error {
 		return err
 	}
 	defer f.Close()
-	entries, err = c.readDump(f)
+	entries, err = c.readDumpState(f, false, true)
 	if err != nil {
 		c.loadErrorCounter.Inc()
 		c.runtimeState.recordLoad(entries, time.Since(start), err)
@@ -309,37 +514,46 @@ func (c *Cache) replayWAL() error {
 	}
 	defer f.Close()
 
-	magic := make([]byte, len(walMagic))
-	if _, err := io.ReadFull(f, magic); err != nil {
-		if errors.Is(err, io.EOF) {
-			c.runtimeState.recordReplay(0, time.Since(start), nil)
-			return nil
-		}
+	header, err := readWALHeader(f)
+	if errors.Is(err, io.EOF) && c.persistence.loadedCheckpoint == nil {
+		c.runtimeState.recordReplay(0, time.Since(start), nil)
+		return nil
+	}
+	if err != nil {
 		c.walReplayErrorCounter.Inc()
 		c.runtimeState.recordReplay(0, time.Since(start), err)
 		return err
 	}
-	if string(magic) != walMagic {
-		err := fmt.Errorf("invalid wal header")
+	info, err := f.Stat()
+	if err != nil {
+		return err
+	}
+	offset, err := walReplayOffset(header, c.persistence.loadedCheckpoint, info.Size())
+	if err == nil {
+		err = validateWALCut(bufio.NewReader(io.NewSectionReader(f, header.size(), offset-header.size())), offset-header.size())
+	}
+	if err != nil {
 		c.walReplayErrorCounter.Inc()
 		c.runtimeState.recordReplay(0, time.Since(start), err)
 		return err
 	}
+	reader := &walCountingReader{r: bufio.NewReader(io.NewSectionReader(f, offset, info.Size()-offset))}
+	validSize := offset
 
 	for {
-		record, err := readWALRecord(f)
+		record, err := readWALRecord(reader)
 		if err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			if errors.Is(err, io.ErrUnexpectedEOF) {
-				c.logger.Warn("ignore truncated wal tail", zap.Error(err))
+			if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+				if offset+reader.n != validSize {
+					c.logger.Warn("ignore truncated wal tail", zap.Error(err))
+				}
 				break
 			}
 			c.walReplayErrorCounter.Inc()
 			c.runtimeState.recordReplay(entries, time.Since(start), err)
 			return err
 		}
+		validSize = offset + reader.n
 		switch record.op {
 		case walOpSet:
 			if c.containsExcludedWire(record.cacheItem.resp) {
@@ -364,11 +578,17 @@ func (c *Cache) replayWAL() error {
 		}
 		entries++
 	}
+	c.persistence.header = header
+	c.persistence.validWALSize = validSize
 	c.runtimeState.recordReplay(entries, time.Since(start), nil)
 	return nil
 }
 
 func (c *Cache) writeSnapshotFileAtomic(path string) (int, error) {
+	return writeSnapshotFileAtomic(path, c.writeDump)
+}
+
+func writeSnapshotFileAtomic(path string, writeDump func(io.Writer) (int, error)) (int, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return 0, err
 	}
@@ -382,7 +602,7 @@ func (c *Cache) writeSnapshotFileAtomic(path string) (int, error) {
 		_ = os.Remove(tmpPath)
 	}
 
-	entries, err := c.writeDump(tmp)
+	entries, err := writeDump(tmp)
 	if err != nil {
 		cleanup()
 		return 0, err

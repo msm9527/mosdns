@@ -1292,14 +1292,10 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 		return
 	}
 
-	for _, job := range jobs {
-		if job.VerifyTag != "" {
-			if err := p.markDomainVerified(ctx, job); err != nil {
-				p.mu.Lock()
-				p.lastError = err.Error()
-				p.mu.Unlock()
-			}
-		}
+	if err := p.markDomainsVerified(ctx, jobs); err != nil {
+		p.mu.Lock()
+		p.lastError = err.Error()
+		p.mu.Unlock()
 	}
 
 	if workflowBool(p.config.Workflow.SaveAfterRefresh, true) && len(p.config.URLActions.SaveRules) > 0 {
@@ -1328,6 +1324,40 @@ func (p *Requery) processOnDemandBatch(jobs []refreshJob) {
 	p.status.LastOnDemandAt = time.Now().UTC()
 	p.status.LastOnDemandDomain = jobs[len(jobs)-1].Domain
 	p.mu.Unlock()
+}
+
+func (p *Requery) markDomainsVerified(ctx context.Context, jobs []refreshJob) error {
+	groups := make(map[string][]refreshJob)
+	tags := make([]string, 0)
+	for _, job := range jobs {
+		if strings.TrimSpace(job.VerifyTag) == "" {
+			continue
+		}
+		if _, ok := groups[job.VerifyTag]; !ok {
+			tags = append(tags, job.VerifyTag)
+		}
+		groups[job.VerifyTag] = append(groups[job.VerifyTag], job)
+	}
+	verifiedAt := time.Now().UTC().Format(time.RFC3339)
+	var errs []error
+	for _, tag := range tags {
+		if verifier, ok := p.plugin(tag).(coremain.DomainBatchVerifyPlugin); ok && verifier != nil {
+			domains := make([]string, 0, len(groups[tag]))
+			for _, job := range groups[tag] {
+				domains = append(domains, job.Domain)
+			}
+			if _, err := verifier.MarkDomainsVerified(ctx, domains, verifiedAt); err != nil {
+				errs = append(errs, err)
+			}
+			continue
+		}
+		for _, job := range groups[tag] {
+			if err := p.markDomainVerified(ctx, job); err != nil {
+				errs = append(errs, err)
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
 
 func (p *Requery) markDomainVerified(ctx context.Context, job refreshJob) error {

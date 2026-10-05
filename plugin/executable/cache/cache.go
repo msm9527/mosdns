@@ -481,6 +481,8 @@ type Cache struct {
 
 	// dumpMu protects the dump file writing process
 	dumpMu sync.Mutex
+	// 缓存变更和对应 WAL 必须处于同一检查点边界，避免轮换丢失并发操作。
+	mutationMu sync.Mutex
 
 	queryTotal              prometheus.Counter
 	hitTotal                prometheus.Counter
@@ -799,6 +801,9 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	q := qCtx.Q()
 	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheBypass)
 	clearCacheResponseStale(qCtx)
+	if c.persistence.restoreErr != nil {
+		return next.ExecNext(ctx, qCtx)
+	}
 
 	// 补丁：获取 Key 的字节切片和原始 Pool 指针
 	routeSnapshot := newCacheRouteSnapshot(qCtx, c.plugin)
@@ -1346,7 +1351,7 @@ func (c *Cache) Close() error {
 }
 
 func (c *Cache) shouldDumpOnClose() bool {
-	if c.persistence == nil {
+	if c.persistence == nil || c.persistence.restoreErr != nil {
 		return false
 	}
 	snapshotPath := c.persistence.snapshotPath
@@ -1368,7 +1373,15 @@ func (c *Cache) loadDump() error {
 	if c.persistence == nil {
 		return nil
 	}
-	return c.persistence.restore(c)
+	err := c.persistence.restore(c)
+	if err != nil {
+		// 错配或损坏的文件保留供恢复，部分加载的缓存不能用于 DNS 回答。
+		c.persistence.restoreErr = err
+		c.backend.Flush()
+		c.resetL1()
+		c.runtimeState.recordReplay(0, 0, err)
+	}
+	return err
 }
 
 func (c *Cache) startDumpLoop() {
@@ -1387,6 +1400,7 @@ func (c *Cache) startDumpLoop() {
 					continue
 				}
 				if err := c.dumpCache(); err != nil {
+					c.updatedKey.Add(keyUpdated)
 					c.logger.Error("dump cache", zap.Error(err))
 				}
 			case <-c.closeNotify:
@@ -1441,12 +1455,9 @@ func (c *Cache) RuntimeCacheEntryCount() int {
 
 func (c *Cache) FlushRuntimeCache(_ context.Context) error {
 	c.logger.Info("flushing cache via direct action")
-	if err := c.appendRuntimeFlush("runtime_flush"); err != nil {
+	if err := c.flushRuntimeCache(); err != nil {
 		return err
 	}
-	c.backend.Flush()
-	c.resetL1()
-	c.updatedKey.Store(0)
 	if len(c.args.DumpFile) == 0 {
 		return nil
 	}
@@ -1454,6 +1465,18 @@ func (c *Cache) FlushRuntimeCache(_ context.Context) error {
 		c.logger.Error("failed to dump cache after direct flush", zap.Error(err))
 		return err
 	}
+	return nil
+}
+
+func (c *Cache) flushRuntimeCache() error {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	if err := c.appendRuntimeFlush("runtime_flush"); err != nil {
+		return err
+	}
+	c.backend.Flush()
+	c.resetL1()
+	c.updatedKey.Add(1)
 	return nil
 }
 
@@ -1487,6 +1510,8 @@ func (c *Cache) PurgeDomainsRuntimeCache(_ context.Context, domains []string, qt
 		}
 		qtypeSet[qtype] = struct{}{}
 	}
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 
 	now := time.Now()
 	purgeKeys := make([]key, 0, len(domainSet))
@@ -1522,11 +1547,7 @@ func (c *Cache) PurgeDomainsRuntimeCache(_ context.Context, domains []string, qt
 		}
 		c.deleteL1Keys(purgeKeys)
 		c.updatedKey.Add(uint64(len(purgeKeys)))
-		if len(c.args.DumpFile) > 0 {
-			if err := c.dumpCache(); err != nil {
-				return 0, err
-			}
-		}
+		// 删除已通过 WAL 同步落盘，全量快照由周期或显式保存合并执行。
 	}
 
 	return len(purgeKeys), nil
@@ -1576,7 +1597,7 @@ func (c *Cache) Api() *chi.Mux {
 	}))
 
 	r.Post("/load_dump", coremain.WithAsyncGC(func(w http.ResponseWriter, req *http.Request) {
-		if _, err := c.readDump(req.Body); err != nil {
+		if _, err := c.readDumpWithWAL(req.Body, true); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
@@ -1789,9 +1810,29 @@ func dnsMsgToString(msg *dns.Msg) string {
 }
 
 func (c *Cache) writeDump(w io.Writer) (int, error) {
+	now := time.Now()
+	return writeDumpEntries(w, func(yield func(*CachedEntry) error) error {
+		return c.backend.Range(func(k key, v *item, expiration time.Time) error {
+			if expiration.Before(now) {
+				return nil
+			}
+			return yield(&CachedEntry{
+				Key: []byte(k), CacheExpirationTime: expiration.Unix(),
+				MsgExpirationTime: unixNanoToTime(v.expireUnixNano).Unix(),
+				MsgStoredTime:     unixNanoToTime(v.storedUnixNano).Unix(),
+				Msg:               v.resp, DomainSet: v.domainSet,
+			})
+		})
+	})
+}
+
+func writeDumpEntries(w io.Writer, iterate func(func(*CachedEntry) error) error, extra ...[]byte) (int, error) {
 	en := 0
 	gw, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
 	gw.Name = dumpHeader
+	if len(extra) > 0 {
+		gw.Extra = extra[0]
+	}
 
 	block := new(CacheDumpBlock)
 	writeBlock := func() error {
@@ -1812,26 +1853,14 @@ func (c *Cache) writeDump(w io.Writer) (int, error) {
 		return nil
 	}
 
-	now := time.Now()
-	rangeFunc := func(k key, v *item, cacheExpirationTime time.Time) error {
-		if cacheExpirationTime.Before(now) {
-			return nil
-		}
-		e := &CachedEntry{
-			Key:                 []byte(k),
-			CacheExpirationTime: cacheExpirationTime.Unix(),
-			MsgExpirationTime:   unixNanoToTime(v.expireUnixNano).Unix(),
-			MsgStoredTime:       unixNanoToTime(v.storedUnixNano).Unix(),
-			Msg:                 v.resp,
-			DomainSet:           v.domainSet,
-		}
+	appendEntry := func(e *CachedEntry) error {
 		block.Entries = append(block.Entries, e)
 		if len(block.Entries) >= dumpBlockSize {
 			return writeBlock()
 		}
 		return nil
 	}
-	if err := c.backend.Range(rangeFunc); err != nil {
+	if err := iterate(appendEntry); err != nil {
 		return en, err
 	}
 	if len(block.GetEntries()) > 0 {
@@ -1843,6 +1872,19 @@ func (c *Cache) writeDump(w io.Writer) (int, error) {
 }
 
 func (c *Cache) readDump(r io.Reader) (int, error) {
+	return c.readDumpWithWAL(r, false)
+}
+
+func (c *Cache) readDumpWithWAL(r io.Reader, persist bool) (int, error) {
+	return c.readDumpState(r, persist, false)
+}
+
+func (c *Cache) readDumpState(r io.Reader, persist, restore bool) (int, error) {
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
+	if persist && c.persistence.restoreErr != nil {
+		return 0, c.persistence.restoreErr
+	}
 	en := 0
 	gr, err := gzip.NewReader(r)
 	if err != nil {
@@ -1850,6 +1892,14 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 	}
 	if gr.Name != dumpHeader {
 		return en, fmt.Errorf("invalid or old cache dump, header is %s, want %s", gr.Name, dumpHeader)
+	}
+	defer gr.Close()
+	var checkpoint *snapshotCheckpoint
+	if restore {
+		checkpoint, err = readSnapshotCheckpoint(gr.Extra)
+		if err != nil {
+			return en, err
+		}
 	}
 
 	var errReadHeaderEOF = errors.New("")
@@ -1895,6 +1945,17 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 			i.refreshTTLOffsets()
 			c.prepareCacheItemForStore(i)
 			c.backend.Store(key(entry.GetKey()), i, cacheExpTime)
+			if persist {
+				// 导入也进入 WAL，快照已发布而 WAL 尚未轮换时仍可安全重放。
+				c.updatedKey.Add(1)
+				if err := c.persistence.appendStore(walStoreRecord{
+					key: key(entry.GetKey()), cacheExp: cacheExpTime, cacheItem: i,
+				}); err != nil {
+					c.recordWALAppendError("set", "load_dump", err)
+					return err
+				}
+				c.recordWALAppendSuccess(1)
+			}
 			en++
 		}
 		return nil
@@ -1912,6 +1973,9 @@ func (c *Cache) readDump(r io.Reader) (int, error) {
 
 	if err != nil {
 		return en, err
+	}
+	if restore {
+		c.persistence.loadedCheckpoint = checkpoint
 	}
 	return en, gr.Close()
 }
@@ -2425,6 +2489,8 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	c.prepareCacheItemForStore(v)
 
 	cacheExp := now.Add(cacheTtl)
+	c.mutationMu.Lock()
+	defer c.mutationMu.Unlock()
 	c.backend.Store(key(msgKey), v, cacheExp)
 	if err := c.persistence.appendStore(walStoreRecord{
 		key:       key(msgKey),

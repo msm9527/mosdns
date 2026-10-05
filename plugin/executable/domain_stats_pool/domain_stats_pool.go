@@ -419,6 +419,9 @@ func (d *domainStatsPool) performWrite(mode WriteMode) error {
 		return nil
 	}
 
+	// Consume before taking the snapshot so observations during persistence
+	// remain pending. A failed save must be retried.
+	d.dirtyPending.Swap(false)
 	snapshot := d.buildSnapshot(mode)
 	rulesHash := uint64(0)
 	rulesChanged := mode == WriteModeFlush || !d.hasRulesHash || d.lastRulesHash != rulesHash
@@ -426,12 +429,12 @@ func (d *domainStatsPool) performWrite(mode WriteMode) error {
 		snapshot.state.Meta.LastPublishAtUnixMS = time.Now().UTC().UnixMilli()
 	}
 	if err := d.saveState(snapshot.state); err != nil {
+		d.dirtyPending.Store(true)
 		return err
 	}
 
 	d.lastRulesHash = rulesHash
 	d.hasRulesHash = true
-	d.dirtyPending.Store(false)
 	atomic.StoreInt64(&d.promotedCount, int64(snapshot.promotedCount))
 	atomic.StoreInt64(&d.publishedCount, 0)
 

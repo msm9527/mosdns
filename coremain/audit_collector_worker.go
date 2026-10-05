@@ -14,8 +14,16 @@ type auditQueuedLog struct {
 	log        AuditLog
 }
 
-func (c *AuditCollector) runWriter(queue <-chan auditQueuedLog, done chan<- struct{}) {
-	defer close(done)
+func (c *AuditCollector) runWriter() {
+	defer close(c.workerDone)
+	// Ingress stays sharded, but SQLite has one connection and one batch owner.
+	// Independent shard timers would rewrite the same rollup and index pages in
+	// separate transactions within a single flush interval.
+	var queues [auditQueueMaxShards]<-chan auditQueuedLog
+	for i, queue := range c.queues {
+		queues[i] = queue
+	}
+	remaining := len(c.queues)
 	timer := time.NewTimer(c.flushInterval())
 	defer timer.Stop()
 
@@ -32,39 +40,70 @@ func (c *AuditCollector) runWriter(queue <-chan auditQueuedLog, done chan<- stru
 		batch = batch[:0]
 	}
 
-	for {
+	for remaining > 0 {
+		var item auditQueuedLog
+		var ok bool
+		var shard int
+		// Nil channels disable unused and drained shards. A fixed select avoids
+		// reflection and forwarding goroutines on the hot audit path.
 		select {
-		case item, ok := <-queue:
-			if !ok {
-				flush()
-				return
-			}
-			if len(batch) > 0 && item.generation != batchGeneration {
-				flush()
-			}
-			batchGeneration = item.generation
-			currentGeneration := c.generation.Load()
-			if item.generation == currentGeneration && item.dropped {
-				c.realtime.RecordDrop(item.at)
-				continue
-			}
-			if item.generation == currentGeneration {
-				normalizeAuditLog(&item.log)
-				c.realtime.Record(item.log)
-			}
-			if item.dropped {
-				continue
-			}
-			batch = append(batch, item.log)
-			if len(batch) >= c.batchSize() {
-				flush()
-				resetTimer(timer, c.flushInterval())
-			}
+		case item, ok = <-queues[0]:
+			shard = 0
+		case item, ok = <-queues[1]:
+			shard = 1
+		case item, ok = <-queues[2]:
+			shard = 2
+		case item, ok = <-queues[3]:
+			shard = 3
+		case item, ok = <-queues[4]:
+			shard = 4
+		case item, ok = <-queues[5]:
+			shard = 5
+		case item, ok = <-queues[6]:
+			shard = 6
+		case item, ok = <-queues[7]:
+			shard = 7
 		case <-timer.C:
+			flush()
+			resetTimer(timer, c.flushInterval())
+			continue
+		}
+		if !ok {
+			queues[shard] = nil
+			remaining--
+			continue
+		}
+		if !c.recordQueuedLog(&item) {
+			continue
+		}
+		if len(batch) > 0 && item.generation != batchGeneration {
+			flush()
+		}
+		batchGeneration = item.generation
+		batch = append(batch, item.log)
+		if len(batch) >= c.batchSize() {
 			flush()
 			resetTimer(timer, c.flushInterval())
 		}
 	}
+	flush()
+}
+
+func (c *AuditCollector) recordQueuedLog(item *auditQueuedLog) bool {
+	// Clear resets realtime and persistent history as one generation boundary.
+	// A dequeued old event must not reappear after that reset.
+	c.clearMu.RLock()
+	defer c.clearMu.RUnlock()
+	if item.generation != c.generation.Load() {
+		return false
+	}
+	if item.dropped {
+		c.realtime.RecordDrop(item.at)
+		return false
+	}
+	normalizeAuditLog(&item.log)
+	c.realtime.Record(item.log)
+	return true
 }
 
 func (c *AuditCollector) runMaintenance() {
@@ -115,6 +154,7 @@ func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
 	defer c.storageMu.Unlock()
 	c.mu.RLock()
 	storage := c.storage
+	settings := c.settings
 	c.mu.RUnlock()
 	if storage == nil {
 		return nil
@@ -122,7 +162,16 @@ func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
 	if generation != c.generation.Load() {
 		return nil
 	}
-	return storage.WriteBatch(batch)
+	if err := storage.WriteBatch(batch); err != nil {
+		return err
+	}
+	// Capacity work follows the same serialized writer and can retire more rows
+	// than this batch adds without an unbounded maintenance pause.
+	if err := storage.enforceStorageBudget(int64(settings.MaxStorageMB)*1024*1024, len(batch)*2); err != nil {
+		c.degraded.Store(true)
+		mlog.L().Warn("failed to enforce audit capacity after persisted batch", zap.Error(err))
+	}
+	return nil
 }
 
 func (c *AuditCollector) enforceRetention() error {

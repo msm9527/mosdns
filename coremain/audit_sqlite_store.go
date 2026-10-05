@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"sync"
 
 	runtimesqlite "github.com/IrineSistiana/mosdns/v5/internal/store/sqlite"
 )
@@ -11,12 +12,16 @@ import (
 const auditLogsDirname = "audit_logs"
 
 type SQLiteAuditStorage struct {
-	path      string
-	runtimeDB *runtimesqlite.RuntimeDB
+	path                string
+	runtimeDB           *runtimesqlite.RuntimeDB
+	capacityMu          sync.Mutex
+	evictionTargetBytes int64
 }
 
 func newSQLiteAuditStorage(path string) *SQLiteAuditStorage {
-	return &SQLiteAuditStorage{path: path}
+	// A reopened database may be midway through bounded eviction. Resume toward
+	// low water on its first capacity check rather than waiting for new traffic.
+	return &SQLiteAuditStorage{path: path, evictionTargetBytes: -1}
 }
 
 func (s *SQLiteAuditStorage) Open() error {
