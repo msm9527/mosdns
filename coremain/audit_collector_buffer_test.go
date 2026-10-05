@@ -176,3 +176,44 @@ func TestAuditCollectorShutdownDiskFailureIsBoundedAndVisible(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestAuditDefaultUsesByteBudgetBeforeRowLimit(t *testing.T) {
+	c := NewAuditCollector(defaultAuditSettings(), t.TempDir())
+	if err := c.reopenStorage(c.GetSettings(), c.configBaseDir); err != nil {
+		t.Fatal(err)
+	}
+	defer c.closeStorage()
+	written := 0
+	for i := 0; i < c.GetSettings().FlushBatchSize; i++ {
+		item := auditQueuedLog{generation: c.generation.Load(), log: auditWorkerTestLog(i)}
+		if err := c.stageQueuedLog(item); err != nil {
+			t.Fatal(err)
+		}
+		written++
+		count, size := c.getStorage().BufferedUsage()
+		if size > auditCollectorBufferBytes {
+			t.Fatalf("pending budget exceeded: %d", size)
+		}
+		persisted := auditWorkerRowCount(t, c)
+		if written == 257 && (persisted != 0 || count != written) {
+			t.Fatalf("legacy row threshold still flushed: persisted=%d pending=%d", persisted, count)
+		}
+		if persisted > 0 {
+			if written <= 257 || written >= c.GetSettings().FlushBatchSize {
+				t.Fatalf("unexpected flush threshold: %d", written)
+			}
+			result, err := c.GetLogs(AuditLogsQuery{From: time.Now().Add(-time.Hour), To: time.Now().Add(time.Hour), Limit: 10})
+			if err != nil || result.Summary.MatchedCount != written {
+				t.Fatalf("history after budget flush: %+v %v", result.Summary, err)
+			}
+			if err := c.flushBuffered(); err != nil {
+				t.Fatal(err)
+			}
+			if got := auditWorkerRowCount(t, c); got != written {
+				t.Fatalf("lost records: %d/%d", got, written)
+			}
+			return
+		}
+	}
+	t.Fatal("row limit preceded byte budget")
+}

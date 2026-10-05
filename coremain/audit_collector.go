@@ -19,7 +19,7 @@ import (
 const (
 	auditQueueCapacityFactor       = 32
 	auditMinQueueCapacity          = 512
-	auditMaxQueueCapacity          = 32768
+	auditMaxQueueCapacity          = 8192
 	auditQueueMaxShards            = 8
 	auditQueueMinShardCap          = 64
 	auditIngressMaxBytes     int64 = 4 * 1024 * 1024
@@ -441,6 +441,8 @@ func answerDetail(answer dns.RR) AnswerDetail {
 
 var nowTime = time.Now
 
+// Larger disk batches must not expand the ingress allocation on small devices.
+// Keep the historical smaller queues for explicitly configured small batches.
 func auditQueueCapacity(settings AuditSettings) int {
 	size := settings.FlushBatchSize * auditQueueCapacityFactor
 	if size < auditMinQueueCapacity {

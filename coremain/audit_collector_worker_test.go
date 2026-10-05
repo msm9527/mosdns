@@ -7,9 +7,12 @@ import (
 	"time"
 )
 
+const auditWorkerTestBatchSize = 256
+
 func newAuditWorkerTestCollector(t *testing.T, intervalMs int) *AuditCollector {
 	t.Helper()
 	settings := defaultAuditSettings()
+	settings.FlushBatchSize = auditWorkerTestBatchSize
 	settings.FlushIntervalMs = intervalMs
 	c := NewAuditCollector(settings, t.TempDir())
 	// Exercise every ingress shard independently of the test host CPU count.
@@ -56,12 +59,12 @@ func TestAuditCollectorBatchThresholdAcrossShards(t *testing.T) {
 	// The timer is deliberately later than the assertion deadline. A full
 	// collector batch must become visible even though no shard holds 256 logs.
 	c := newAuditWorkerTestCollector(t, 5000)
-	for i := 0; i < auditDefaultFlushBatchSize; i++ {
+	for i := 0; i < auditWorkerTestBatchSize; i++ {
 		c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
 	}
-	waitAuditWorker(t, func() bool { return auditWorkerRowCount(t, c) == auditDefaultFlushBatchSize })
-	if got := c.realtime.Snapshot(60).QueryCount; got != auditDefaultFlushBatchSize {
-		t.Fatalf("realtime count = %d, want %d", got, auditDefaultFlushBatchSize)
+	waitAuditWorker(t, func() bool { return auditWorkerRowCount(t, c) == auditWorkerTestBatchSize })
+	if got := c.realtime.Snapshot(60).QueryCount; got != auditWorkerTestBatchSize {
+		t.Fatalf("realtime count = %d, want %d", got, auditWorkerTestBatchSize)
 	}
 	c.storageMu.RLock()
 	defer c.storageMu.RUnlock()
@@ -70,8 +73,8 @@ func TestAuditCollectorBatchThresholdAcrossShards(t *testing.T) {
 		if err := c.getStorage().DB().QueryRow("SELECT SUM(query_count) FROM " + table).Scan(&count); err != nil {
 			t.Fatal(err)
 		}
-		if count != auditDefaultFlushBatchSize {
-			t.Fatalf("%s count = %d, want %d", table, count, auditDefaultFlushBatchSize)
+		if count != auditWorkerTestBatchSize {
+			t.Fatalf("%s count = %d, want %d", table, count, auditWorkerTestBatchSize)
 		}
 	}
 }
@@ -101,12 +104,12 @@ func TestAuditCollectorClearDiscardsPendingGeneration(t *testing.T) {
 	if c.recordQueuedLog(&old) {
 		t.Fatal("old drop marker accepted after clear")
 	}
-	for i := 1; i <= auditDefaultFlushBatchSize; i++ {
+	for i := 1; i <= auditWorkerTestBatchSize; i++ {
 		c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
 	}
-	waitAuditWorker(t, func() bool { return auditWorkerRowCount(t, c) == auditDefaultFlushBatchSize })
+	waitAuditWorker(t, func() bool { return auditWorkerRowCount(t, c) == auditWorkerTestBatchSize })
 	overview := c.realtime.Snapshot(60)
-	if overview.QueryCount != auditDefaultFlushBatchSize || overview.DroppedEvents != 0 {
+	if overview.QueryCount != auditWorkerTestBatchSize || overview.DroppedEvents != 0 {
 		t.Fatalf("realtime after clear = %+v", overview)
 	}
 	c.storageMu.RLock()
@@ -227,7 +230,7 @@ func assertAuditWorkerHistoryCount(t *testing.T, c *AuditCollector, want int) {
 
 func TestAuditCollectorDelayedStoragePreservesAcceptedQueue(t *testing.T) {
 	c, release := newAuditStorageWaitTestCollector(t, false)
-	const count = auditDefaultFlushBatchSize + 17
+	const count = auditWorkerTestBatchSize + 17
 	producerDone := make(chan struct{})
 	go func() {
 		for i := 0; i < count; i++ {
@@ -256,7 +259,7 @@ func TestAuditCollectorDelayedStoragePreservesAcceptedQueue(t *testing.T) {
 
 func TestAuditCollectorClearWhileWaitingForStorage(t *testing.T) {
 	c, release := newAuditStorageWaitTestCollector(t, false)
-	for i := 0; i < auditDefaultFlushBatchSize; i++ {
+	for i := 0; i < auditWorkerTestBatchSize; i++ {
 		c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
 	}
 	if err := c.ClearLogs(); err != nil {
