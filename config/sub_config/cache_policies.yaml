@@ -93,7 +93,7 @@ response:
     persist: true
     dump_file: db/cache/cache_main.dump
     dump_interval: 3600
-    wal_sync_interval: 1
+    wal_sync_interval: 60
 
   cache_branch_domestic:
     size: 5000

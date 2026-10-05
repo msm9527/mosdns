@@ -25,7 +25,7 @@ response:
     persist: true
     dump_file: db/cache/cache_main.dump
     dump_interval: 3600
-    wal_sync_interval: 1
+    wal_sync_interval: 60
 ```
 
 ## 发布前检查
@@ -38,7 +38,9 @@ response:
 
 ## WAL v2 格式与恢复合同
 
-配置字段和默认值保持不变，持久化实例仍使用现有 `dump_file`、自动推导或显式配置的 `wal_file` 和 `wal_sync_interval`。批量失效先同步删除 WAL，再删除内存与 L1 缓存，不再逐批重写全量快照。变更计数仍触发周期 checkpoint，显式保存和退出保存也保持可用。
+持久化实例使用现有 `dump_file`、自动推导或显式配置的 `wal_file` 和 `wal_sync_interval`。WAL 定期同步默认间隔为 60 秒，合并普通缓存追加，减少小块反复写入。核心保留显式正值配置，MSM 升级会将所管理的 `cache_main` 同步间隔更新为产品推荐值。正常关闭、显式保存和批量失效仍强制同步，异常退出可能丢失尚未同步的缓存尾部，这些缓存可由后续 DNS 查询重新获取。
+
+批量失效先同步删除 WAL，再删除内存与 L1 缓存，不再逐批重写全量快照。变更计数仍触发周期 checkpoint，显式保存和退出保存也保持可用。
 
 WAL v2 使用 `mosdns_cache_wal_v2\n` header，后接 16 字节随机 incarnation UUID 和 8 字节大端逻辑 base。逻辑位置只累计 record 字节，不包含 header。`set`、`delete`、`flush` 的 record 编码沿用 v1。gzip 快照的 Name 和 protobuf block 格式保持不变，Extra 的 `MC` 子字段版本 1 记录同一 UUID 和 8 字节大端逻辑 cut。HTTP dump 导入只导入条目，不继承源实例的 UUID 和 cut。
 

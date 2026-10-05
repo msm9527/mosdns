@@ -49,13 +49,14 @@ func init() {
 }
 
 const (
-	defaultLazyUpdateTimeout = time.Second * 5
-	defaultLazyWaitTimeout   = 250 * time.Millisecond
-	expiredMsgTtl            = 5
-	prefetchMinLead          = 3 * time.Second
-	prefetchMaxLead          = 30 * time.Second
-	prefetchLeadDivisor      = 5
-	defaultColdQueryWait     = 80 * time.Millisecond
+	defaultLazyUpdateTimeout      = time.Second * 5
+	defaultLazyWaitTimeout        = 250 * time.Millisecond
+	expiredMsgTtl                 = 5
+	prefetchMinLead               = 3 * time.Second
+	prefetchMaxLead               = 30 * time.Second
+	prefetchLeadDivisor           = 5
+	defaultColdQueryWait          = 80 * time.Millisecond
+	defaultWALSyncIntervalSeconds = 60
 
 	minimumChangesToDump   = 1024
 	dumpHeader             = "mosdns_cache_v2"
@@ -388,7 +389,7 @@ func (a *Args) init() {
 	}
 	utils.SetDefaultUnsignNum(&a.Size, 1024)
 	utils.SetDefaultUnsignNum(&a.DumpInterval, 600)
-	utils.SetDefaultUnsignNum(&a.WALSyncInterval, 1)
+	utils.SetDefaultUnsignNum(&a.WALSyncInterval, defaultWALSyncIntervalSeconds)
 	utils.SetDefaultUnsignNum(&a.NXDomainTTL, 60)
 	utils.SetDefaultUnsignNum(&a.ServfailTTL, 15)
 	utils.SetDefaultUnsignNum(&a.ColdQueryWaitMs, int(defaultColdQueryWait/time.Millisecond))
