@@ -183,3 +183,138 @@ func TestAuditCollectorFullQueueDoesNotWaitForStorage(t *testing.T) {
 		t.Fatal("overflow must keep bounded queue and report degraded")
 	}
 }
+
+func newAuditStorageWaitTestCollector(t *testing.T, failOpen bool) (*AuditCollector, func()) {
+	t.Helper()
+	originalOpen := openAuditStorage
+	gate := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(gate) }) }
+	openAuditStorage = func(settings AuditSettings, dir string) (*SQLiteAuditStorage, error) {
+		<-gate
+		if failOpen {
+			return nil, fmt.Errorf("test audit storage unavailable")
+		}
+		return originalOpen(settings, dir)
+	}
+	c := NewAuditCollector(defaultAuditSettings(), t.TempDir())
+	c.StartWorker()
+	t.Cleanup(func() {
+		c.StopWorker()
+		release()
+		waitAuditWorker(t, func() bool { return !c.opening.Load() })
+		openAuditStorage = originalOpen
+	})
+	return c, release
+}
+
+func assertAuditWorkerHistoryCount(t *testing.T, c *AuditCollector, want int) {
+	t.Helper()
+	c.storageMu.RLock()
+	defer c.storageMu.RUnlock()
+	for _, table := range []string{"audit_minute", "audit_hour"} {
+		var got int
+		if err := c.getStorage().DB().QueryRow("SELECT SUM(query_count) FROM " + table).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Fatalf("%s count = %d, want %d", table, got, want)
+		}
+	}
+}
+
+func TestAuditCollectorDelayedStoragePreservesAcceptedQueue(t *testing.T) {
+	c, release := newAuditStorageWaitTestCollector(t, false)
+	const count = auditDefaultFlushBatchSize + 17
+	producerDone := make(chan struct{})
+	go func() {
+		for i := 0; i < count; i++ {
+			c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
+		}
+		close(producerDone)
+	}()
+	select {
+	case <-producerDone:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("storage wait blocked audit producer")
+	}
+	// The blocked opener spans both a full batch and the normal flush interval.
+	time.Sleep(c.flushInterval() + 50*time.Millisecond)
+	if got := c.queueDepth(); got != count {
+		t.Fatalf("queue before storage ready = %d, want %d", got, count)
+	}
+	release()
+	waitAuditWorker(t, func() bool { return c.getStorage() != nil })
+	waitAuditWorker(t, func() bool { return auditWorkerRowCount(t, c) == count })
+	assertAuditWorkerHistoryCount(t, c, count)
+	if got := c.realtime.Snapshot(60); got.QueryCount != count || got.DroppedEvents != 0 {
+		t.Fatalf("realtime after storage ready = %+v", got)
+	}
+}
+
+func TestAuditCollectorClearWhileWaitingForStorage(t *testing.T) {
+	c, release := newAuditStorageWaitTestCollector(t, false)
+	for i := 0; i < auditDefaultFlushBatchSize; i++ {
+		c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
+	}
+	if err := c.ClearLogs(); err != nil {
+		t.Fatal(err)
+	}
+	// A stale event dequeued across Clear must neither persist nor count as loss.
+	c.queues[0] <- auditQueuedLog{generation: 0, log: auditWorkerTestLog(-1)}
+	const count = 7
+	for i := 0; i < count; i++ {
+		c.CollectLogWithShard(auditWorkerTestLog(1000+i), uint64(i))
+	}
+	release()
+	waitAuditWorker(t, func() bool { return c.getStorage() != nil })
+	waitAuditWorker(t, func() bool { return auditWorkerRowCount(t, c) == count })
+	assertAuditWorkerHistoryCount(t, c, count)
+	if got := c.realtime.Snapshot(60); got.QueryCount != count || got.DroppedEvents != 0 {
+		t.Fatalf("realtime after Clear and storage ready = %+v", got)
+	}
+}
+
+func TestAuditCollectorUnavailableStorageStopReportsDrops(t *testing.T) {
+	for _, failed := range []bool{false, true} {
+		t.Run(fmt.Sprintf("open_failed_%t", failed), func(t *testing.T) {
+			c, release := newAuditStorageWaitTestCollector(t, failed)
+			if failed {
+				release()
+				waitAuditWorker(t, func() bool { return !c.opening.Load() })
+			}
+			if err := c.ClearLogs(); err != nil {
+				t.Fatal(err)
+			}
+			at := time.Now()
+			c.queues[0] <- auditQueuedLog{generation: 0, log: auditWorkerTestLog(-1)}
+			c.queues[0] <- auditQueuedLog{generation: 0, dropped: true, at: at}
+			c.queues[0] <- auditQueuedLog{generation: c.generation.Load(), dropped: true, at: at}
+			const count = 3
+			for i := 0; i < count; i++ {
+				c.CollectLogWithShard(auditWorkerTestLog(i), uint64(i))
+			}
+			time.Sleep(c.flushInterval() + 50*time.Millisecond)
+			stopped := make(chan struct{})
+			go func() { c.StopWorker(); close(stopped) }()
+			select {
+			case <-stopped:
+			case <-time.After(500 * time.Millisecond):
+				t.Fatal("StopWorker blocked on unavailable storage")
+			}
+			got := c.realtime.Snapshot(60)
+			// The existing current-generation drop marker is counted once. Old
+			// generation events are excluded, including their drop markers.
+			if !c.degraded.Load() || c.queueDepth() != 0 || got.QueryCount != 0 || got.DroppedEvents != count+1 {
+				t.Fatalf("shutdown degraded=%t queue=%d realtime=%+v", c.degraded.Load(), c.queueDepth(), got)
+			}
+		})
+	}
+}
+
+func TestAuditCollectorWriteBatchWithoutStorageReturnsError(t *testing.T) {
+	c := NewAuditCollector(defaultAuditSettings(), t.TempDir())
+	if err := c.writeBatch(c.generation.Load(), []AuditLog{auditWorkerTestLog(1)}); err == nil {
+		t.Fatal("missing storage reported an accepted batch")
+	}
+}

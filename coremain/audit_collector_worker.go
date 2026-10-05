@@ -1,6 +1,7 @@
 package coremain
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/mlog"
@@ -16,6 +17,12 @@ type auditQueuedLog struct {
 
 func (c *AuditCollector) runWriter() {
 	defer close(c.workerDone)
+	// Retain startup traffic in the bounded ingress until storage is installed.
+	// DNS producers remain nonblocking even if opening fails or takes a while.
+	if !c.waitForWriterStorage() {
+		c.dropQueuedLogsWithoutStorage()
+		return
+	}
 	// Ingress stays sharded, but SQLite has one connection and one batch owner.
 	// Independent shard timers would rewrite the same rollup and index pages in
 	// separate transactions within a single flush interval.
@@ -89,6 +96,48 @@ func (c *AuditCollector) runWriter() {
 	flush()
 }
 
+func (c *AuditCollector) waitForWriterStorage() bool {
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		// Check readiness after the shutdown snapshot so storage installed just
+		// before Stop can still receive the final closed-queue drain.
+		stopping := c.closed.Load()
+		if c.getStorage() != nil {
+			return true
+		}
+		if stopping {
+			return false
+		}
+		<-ticker.C
+	}
+}
+
+func (c *AuditCollector) dropQueuedLogsWithoutStorage() {
+	dropped := 0
+	// Stop closes every ingress queue. Only current-generation raw events are
+	// additional persistence losses; Clear-invalidated events do not count.
+	for _, queue := range c.queues {
+		for item := range queue {
+			c.clearMu.RLock()
+			if item.generation == c.generation.Load() {
+				at := item.at
+				if !item.dropped {
+					at = item.log.QueryTime
+					dropped++
+				}
+				if at.IsZero() {
+					at = nowTime()
+				}
+				c.realtime.RecordDrop(at)
+			}
+			c.clearMu.RUnlock()
+		}
+	}
+	c.degraded.Store(true)
+	mlog.L().Warn("audit storage unavailable at writer shutdown", zap.Int("dropped_events", dropped))
+}
+
 func (c *AuditCollector) recordQueuedLog(item *auditQueuedLog) bool {
 	// Clear resets realtime and persistent history as one generation boundary.
 	// A dequeued old event must not reappear after that reset.
@@ -157,7 +206,7 @@ func (c *AuditCollector) writeBatch(generation uint64, batch []AuditLog) error {
 	settings := c.settings
 	c.mu.RUnlock()
 	if storage == nil {
-		return nil
+		return fmt.Errorf("audit storage is not ready")
 	}
 	if generation != c.generation.Load() {
 		return nil
