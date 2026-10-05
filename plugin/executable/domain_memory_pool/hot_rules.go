@@ -6,10 +6,12 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 )
 
 var _ coremain.HotRuleSnapshotProvider = (*domainMemoryPool)(nil)
 var _ coremain.HotRuleRuntimeValidator = (*domainMemoryPool)(nil)
+var _ coremain.HotRuleRuntimeValidatorWithSource = (*domainMemoryPool)(nil)
 
 func (d *domainMemoryPool) SnapshotHotRules() ([]string, error) {
 	d.mu.Lock()
@@ -74,6 +76,10 @@ func (d *domainMemoryPool) publishTarget() string {
 }
 
 func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
+	return d.AllowHotRuleWithSource(domain, now, server.RequestSourceUser)
+}
+
+func (d *domainMemoryPool) AllowHotRuleWithSource(domain string, now time.Time, source server.RequestSource) bool {
 	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
 	if domain == "" {
 		return false
@@ -89,18 +95,15 @@ func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
 	)
 
 	d.mu.Lock()
-	for key, entry := range d.stats {
-		bare := key.domain
-		if bare != domain || !entry.Promoted {
-			continue
-		}
+	d.visitPromotedDomainEntriesLocked(domain, func(entry *statEntry) bool {
 		if d.allowHotRuleEntryLocked(entry, now) {
 			allow = true
-			break
+			return false
 		}
 		shouldDirty = true
-	}
-	if !allow && shouldDirty {
+		return true
+	})
+	if !allow && shouldDirty && !source.IsBackground() {
 		notify = d.markHotRuleRefreshLocked(domain, now)
 	}
 	d.mu.Unlock()
@@ -140,14 +143,10 @@ func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time
 		shouldQueue bool
 	)
 
-	for key, entry := range d.stats {
-		bare := key.domain
-		if bare != domain || !entry.Promoted {
-			continue
-		}
+	d.visitPromotedDomainEntriesLocked(domain, func(entry *statEntry) bool {
 		qTypeMask |= entry.QTypeMask
 		if entry.CooldownUntilUnixMS > 0 && now.UnixMilli() < entry.CooldownUntilUnixMS {
-			continue
+			return true
 		}
 		entry.RefreshState = "dirty"
 		entry.DirtyReason = "stale"
@@ -156,7 +155,8 @@ func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time
 			entry.CooldownUntilUnixMS = now.Add(time.Duration(d.policy.refreshCooldownMinute) * time.Minute).UnixMilli()
 		}
 		shouldQueue = true
-	}
+		return true
+	})
 
 	if !shouldQueue {
 		return nil
@@ -168,6 +168,27 @@ func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time
 		Reason:     "stale",
 		VerifyTag:  d.pluginTag,
 		ObservedAt: now,
+	}
+}
+
+// visitPromotedDomainEntriesLocked 在 visit 返回 false 时停止。
+// 持久化 flags 保留完整 uint8 范围。小池扫描不超过键空间的条目数，
+// 大池只查询该域名的所有 flags 变体，避免扫描无关域名。
+func (d *domainMemoryPool) visitPromotedDomainEntriesLocked(domain string, visit func(*statEntry) bool) {
+	const variantKeySpace = 256
+	if len(d.stats) <= variantKeySpace {
+		for key, entry := range d.stats {
+			if key.domain == domain && entry.Promoted && !visit(entry) {
+				return
+			}
+		}
+		return
+	}
+	for flags := 0; flags < variantKeySpace; flags++ {
+		entry := d.stats[buildEntryKey(domain, uint8(flags))]
+		if entry != nil && entry.Promoted && !visit(entry) {
+			return
+		}
 	}
 }
 

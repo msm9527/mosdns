@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 )
 
@@ -121,10 +122,11 @@ func buildProviderRegistry(ruleConfigs []RuleConfig, providers map[string]data_p
 			continue
 		}
 		registry.byTag[tag] = uint16(len(registry.providers))
-		registry.providers = append(registry.providers, providerRuntime{
-			result:    result,
-			validator: validators[tag],
-		})
+		runtime := providerRuntime{result: result, validator: validators[tag]}
+		if aware, ok := providers[tag].(runtimeValidationAwareExporter); !ok || aware.HasRuntimeHotRuleValidation() {
+			runtime.validatorWithSource, _ = providers[tag].(coremain.HotRuleRuntimeValidatorWithSource)
+		}
+		registry.providers = append(registry.providers, runtime)
 	}
 	return registry
 }
@@ -289,7 +291,7 @@ func buildCompiledMatch(registry *providerRegistry, sources providerSet) *compil
 		if provider == nil || provider.result == nil {
 			return
 		}
-		if provider.validator != nil {
+		if provider.validator != nil || provider.validatorWithSource != nil {
 			dynamicProviders = appendUniqueDynamicProvider(dynamicProviders, provider)
 			return
 		}
@@ -323,11 +325,18 @@ func getOrBuildCompiledMatch(
 	return compiled
 }
 
-func allowProvider(provider *providerRuntime, domain string, now time.Time) bool {
-	if provider == nil || provider.validator == nil {
+func allowProvider(provider *providerRuntime, domain string, now time.Time, source server.RequestSource) bool {
+	if provider == nil || (provider.validator == nil && provider.validatorWithSource == nil) {
 		return true
 	}
 	if domain == "" {
+		return false
+	}
+	if provider.validatorWithSource != nil {
+		return provider.validatorWithSource.AllowHotRuleWithSource(domain, now, source)
+	}
+	// A legacy validator can schedule refresh work, so background requests must not call it.
+	if source.IsBackground() {
 		return false
 	}
 	return provider.validator.AllowHotRule(domain, now)
@@ -337,7 +346,7 @@ func normalizedValidationDomain(qname string) string {
 	return strings.TrimSuffix(ensureFQDN(qname), ".")
 }
 
-func (dm *DomainMapper) resolveCompiledMatch(compiled *compiledMatch, qname string, now time.Time) *MatchResult {
+func (dm *DomainMapper) resolveCompiledMatch(compiled *compiledMatch, qname string, now time.Time, source server.RequestSource) *MatchResult {
 	if compiled == nil {
 		return nil
 	}
@@ -347,7 +356,7 @@ func (dm *DomainMapper) resolveCompiledMatch(compiled *compiledMatch, qname stri
 	domain := normalizedValidationDomain(qname)
 	merged := cloneMatchResult(compiled.staticResult)
 	for _, provider := range compiled.dynamicProviders {
-		if !allowProvider(provider, domain, now) {
+		if !allowProvider(provider, domain, now, source) {
 			continue
 		}
 		merged = mergeMatchResult(merged, provider.result)

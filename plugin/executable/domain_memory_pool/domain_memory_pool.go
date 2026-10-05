@@ -12,6 +12,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/pkg/stringintern"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 	"go.uber.org/zap"
@@ -54,12 +55,14 @@ type statEntry struct {
 }
 
 type logItem struct {
-	name   string
-	qtype  uint16
-	source string
-	ad     bool
-	cd     bool
-	do     bool
+	name          string
+	qtype         uint16
+	source        string
+	requestSource server.RequestSource
+	verified      bool
+	ad            bool
+	cd            bool
+	do            bool
 }
 
 type outputRankItem struct {
@@ -237,34 +240,9 @@ func (d *domainMemoryPool) Exec(_ context.Context, qCtx *query_context.Context) 
 }
 
 func (d *domainMemoryPool) GetFastExec() func(ctx context.Context, qCtx *query_context.Context) error {
-	rChan := d.recordChan
-	enableFlags := d.enableFlags
-	trackQType := d.policy.trackQType
 	return func(_ context.Context, qCtx *query_context.Context) error {
 		query_context.AppendDependencyTag(qCtx, d.pluginTag)
-		q := qCtx.Q()
-		if q == nil || len(q.Question) == 0 {
-			return nil
-		}
-		for _, question := range q.Question {
-			item := &logItem{name: question.Name, source: "live"}
-			if trackQType {
-				item.qtype = question.Qtype
-			}
-			if enableFlags {
-				item.ad = q.AuthenticatedData
-				item.cd = q.CheckingDisabled
-				if opt := q.IsEdns0(); opt != nil {
-					item.do = opt.Do()
-				}
-			}
-			select {
-			case rChan <- item:
-			default:
-				atomic.AddInt64(&d.droppedBufferCount, 1)
-				atomic.AddInt64(&d.droppedCount, 1)
-			}
-		}
+		d.enqueueFromContext(qCtx, "live")
 		return nil
 	}
 }
@@ -275,7 +253,16 @@ func (d *domainMemoryPool) enqueueFromContext(qCtx *query_context.Context, sourc
 		return
 	}
 	for _, question := range q.Question {
-		item := &logItem{name: question.Name, source: source}
+		requestSource := qCtx.ServerMeta.RequestSource
+		verified := false
+		if requestSource.IsBackground() {
+			verified = d.backgroundClassificationVerified(qCtx, question.Qtype)
+			if !verified {
+				continue
+			}
+			source = requestSource.String()
+		}
+		item := &logItem{name: question.Name, source: source, requestSource: requestSource, verified: verified}
 		if d.policy.trackQType {
 			item.qtype = question.Qtype
 		}
@@ -331,6 +318,10 @@ func (d *domainMemoryPool) drainPendingRecords() {
 }
 
 func (d *domainMemoryPool) processRecord(item *logItem) {
+	background := item.requestSource.IsBackground()
+	if background && !item.verified {
+		return
+	}
 	bareDomain := strings.TrimSpace(strings.TrimSuffix(item.name, "."))
 	if bareDomain == "" {
 		return
@@ -355,9 +346,19 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 		d.stats[canonicalKey] = entry
 		d.trackEntryCreatedLocked(canonicalDomain)
 	}
-	entry.Count++
-	entry.Score++
-	entry.LastSeenAtUnixMS = nowUnixMS
+	if !background {
+		entry.Count++
+		entry.Score++
+		entry.LastSeenAtUnixMS = nowUnixMS
+	} else {
+		// Successful classification is verification evidence, independent of demand.
+		// Keep it on the record so a concurrent batch verify may safely miss a new entry.
+		entry.LastVerifiedAtUnixMS = nowUnixMS
+		entry.LastDirtyAtUnixMS = nowUnixMS
+		entry.RefreshState = "clean"
+		entry.DirtyReason = ""
+		entry.CooldownUntilUnixMS = 0
+	}
 	entry.LastSource = item.source
 	if qmask != 0 {
 		entry.QTypeMask |= qmask
@@ -367,7 +368,7 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	if !wasPromoted && entry.Promoted {
 		hotRules = []string{"full:" + bareDomain}
 	}
-	if item.source == "live" {
+	if !background && item.source == "live" {
 		reason := d.nextDirtyReason(entry, now)
 		if reason != "" {
 			entry.RefreshState = "dirty"
@@ -391,7 +392,9 @@ func (d *domainMemoryPool) processRecord(item *logItem) {
 	d.mu.Unlock()
 
 	d.dirtyPending.Store(true)
-	atomic.AddInt64(&d.totalCount, 1)
+	if !background {
+		atomic.AddInt64(&d.totalCount, 1)
+	}
 	if notify != nil {
 		go d.notifyDirty(*notify)
 	}
@@ -450,11 +453,12 @@ func (d *domainMemoryPool) evictLRUEntriesLocked(count int) int {
 		return 0
 	}
 
-	// Collect oldest LastSeen timestamp per domain
+	// User activity owns retention when present. Background-only entries use verification.
 	seenDomains := make(map[string]int64)
 	for key, entry := range d.stats {
-		if oldestSeen, exists := seenDomains[key.domain]; !exists || entry.LastSeenAtUnixMS < oldestSeen {
-			seenDomains[key.domain] = entry.LastSeenAtUnixMS
+		stamp := retentionTimestamp(entry)
+		if oldestSeen, exists := seenDomains[key.domain]; !exists || stamp < oldestSeen {
+			seenDomains[key.domain] = stamp
 		}
 	}
 
@@ -672,10 +676,11 @@ func (d *domainMemoryPool) pruneExpiredLocked() {
 	evictBefore := time.Now().AddDate(0, 0, -maxInt(d.policy.decayDays*3, d.policy.decayDays+7))
 	deleted := false
 	for key, entry := range d.stats {
-		if entry.LastSeenAtUnixMS <= 0 {
+		stamp := retentionTimestamp(entry)
+		if stamp <= 0 {
 			continue
 		}
-		if time.UnixMilli(entry.LastSeenAtUnixMS).Before(evictBefore) {
+		if time.UnixMilli(stamp).Before(evictBefore) {
 			d.deleteEntryLocked(key)
 			deleted = true
 		}
@@ -830,10 +835,11 @@ func buildVariantRecord(poolTag, domain string, flagsMask uint8, entry *statEntr
 }
 
 func (d *domainMemoryPool) shouldPromote(entry *statEntry) bool {
-	if entry.Count < d.policy.promoteAfter {
-		return false
-	}
-	if d.isStale(entry.LastSeenAtUnixMS) {
+	accessEvidence := entry.Count >= d.policy.promoteAfter && !d.isStale(entry.LastSeenAtUnixMS)
+	// Preserve verified promoted history so stale user matches can request refresh.
+	// Runtime validation still rejects dirty or expired rules.
+	verifiedEvidence := entry.LastVerifiedAtUnixMS > 0 && (entry.Promoted || !d.isStale(entry.LastVerifiedAtUnixMS))
+	if !accessEvidence && !verifiedEvidence {
 		return false
 	}
 	switch d.policy.kind {
@@ -844,6 +850,13 @@ func (d *domainMemoryPool) shouldPromote(entry *statEntry) bool {
 	default:
 		return true
 	}
+}
+
+func retentionTimestamp(entry *statEntry) int64 {
+	if entry.LastSeenAtUnixMS > 0 {
+		return entry.LastSeenAtUnixMS
+	}
+	return entry.LastVerifiedAtUnixMS
 }
 
 func (d *domainMemoryPool) isStale(lastSeenAtUnixMS int64) bool {

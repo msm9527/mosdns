@@ -87,7 +87,7 @@ func newPersistenceManager(args *Args, logger *zap.Logger) *persistenceManager {
 		syncInterval: time.Duration(args.WALSyncInterval) * time.Second,
 	}
 	if pm.syncInterval <= 0 {
-		pm.syncInterval = time.Second
+		pm.syncInterval = defaultWALSyncIntervalSeconds * time.Second
 	}
 	return pm
 }

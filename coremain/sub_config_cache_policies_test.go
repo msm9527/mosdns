@@ -21,6 +21,13 @@ func TestLoadCachePolicyConfigFromSubConfigDefaults(t *testing.T) {
 	if ok {
 		t.Fatal("expected cache policy file to be absent")
 	}
+	pc := PluginConfig{Tag: "cache_main", Type: "cache", Args: map[string]any{}}
+	if err := ApplyRuntimeCachePolicy(&pc, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := pc.Args.(map[string]any)["wal_sync_interval"]; got != 60 {
+		t.Fatalf("default main cache sync interval = %v, want 60", got)
+	}
 	if cfg.Response["cache_main"].Size <= 0 {
 		t.Fatalf("expected default cache_main policy, got %+v", cfg.Response["cache_main"])
 	}
@@ -117,6 +124,13 @@ func TestRepoCachePoliciesTemplateUsesMainPersistentBranchShortTermProfile(t *te
 	}
 	if !ok {
 		t.Fatal("expected repo cache policy template to exist")
+	}
+	pc := PluginConfig{Tag: "cache_main", Type: "cache", Args: map[string]any{}}
+	if err := ApplyRuntimeCachePolicy(&pc, cfg); err != nil {
+		t.Fatal(err)
+	}
+	if got := pc.Args.(map[string]any)["wal_sync_interval"]; got != 60 {
+		t.Fatalf("template main cache sync interval = %v, want 60", got)
 	}
 
 	totalSize := 0
@@ -735,7 +749,7 @@ func TestApplyRuntimeCachePolicy(t *testing.T) {
 		t.Fatalf("ApplyRuntimeCachePolicy(cache): %v", err)
 	}
 	args := pc.Args.(map[string]any)
-	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 || args["client_ttl_min"] != uint32(3) || args["client_ttl_max"] != uint32(30) || args["cold_query_wait_ms"] != 34 {
+	if args["size"] != 123 || args["dump_file"] != "db/cache/custom.dump" || args["lazy_stale_ttl"] != 30 || args["client_ttl_min"] != uint32(3) || args["client_ttl_max"] != uint32(30) || args["cold_query_wait_ms"] != 34 || args["wal_sync_interval"] != 7 {
 		t.Fatalf("unexpected cache args: %+v", args)
 	}
 	bypassDomainSets, ok := args["bypass_domain_sets"].([]string)

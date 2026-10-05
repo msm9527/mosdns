@@ -8,6 +8,7 @@ import (
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
 	domainmatcher "github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 )
 
@@ -118,7 +119,10 @@ func (dm *DomainMapper) rebuildHotLookupLocked() {
 	dm.revision.Add(1)
 }
 
-func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
+func (dm *DomainMapper) match(qname string, source server.RequestSource) (*MatchResult, bool) {
+	if source == server.RequestSourceUnspecified {
+		source = server.RequestSourceUser
+	}
 	matcher := dm.loadMatcher()
 	mainCompiled, mainOK := matcher.Match(qname)
 	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
@@ -132,8 +136,8 @@ func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
 	}
 
 	now := time.Now()
-	mainResult := dm.resolveCompiledMatch(mainCompiled, qname, now)
-	hotResult, hotOK := dm.matchHotWithLookup(lookup, qname, now)
+	mainResult := dm.resolveCompiledMatch(mainCompiled, qname, now, source)
+	hotResult, hotOK := dm.matchHotWithLookup(lookup, qname, now, source)
 	switch {
 	case mainResult == nil && hotResult == nil:
 		return nil, false
@@ -146,17 +150,17 @@ func (dm *DomainMapper) match(qname string) (*MatchResult, bool) {
 	}
 }
 
-func (dm *DomainMapper) matchHot(qname string, now time.Time) (*MatchResult, bool) {
+func (dm *DomainMapper) matchHot(qname string, now time.Time, source server.RequestSource) (*MatchResult, bool) {
 	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
-	return dm.matchHotWithLookup(lookup, qname, now)
+	return dm.matchHotWithLookup(lookup, qname, now, source)
 }
 
-func (dm *DomainMapper) matchHotWithLookup(lookup map[string]*compiledMatch, qname string, now time.Time) (*MatchResult, bool) {
+func (dm *DomainMapper) matchHotWithLookup(lookup map[string]*compiledMatch, qname string, now time.Time, source server.RequestSource) (*MatchResult, bool) {
 	if len(lookup) == 0 {
 		return nil, false
 	}
 	compiled, ok := lookup[fastEnsureFQDN(qname)]
-	result := dm.resolveCompiledMatch(compiled, qname, now)
+	result := dm.resolveCompiledMatch(compiled, qname, now, source)
 	return result, ok && result != nil
 }
 

@@ -28,8 +28,45 @@ import (
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
 )
 
-// MODIFIED: Function signature now accepts the enableAudit flag.
+// NewHandler retains the default policy for existing listener constructors.
 func NewHandler(bp *coremain.BP, entry string, enableAudit bool) (server.Handler, error) {
+	source, err := ResolveRequestSource(entry, "")
+	if err != nil {
+		return nil, err
+	}
+	return NewHandlerWithSource(bp, entry, enableAudit, source)
+}
+
+// ResolveRequestSource accepts explicit server-owned provenance. Only the two
+// original background entry names inherit a background policy when omitted.
+func ResolveRequestSource(entry, option string) (server.RequestSource, error) {
+	switch option {
+	case "user":
+		return server.RequestSourceUser, nil
+	case "prewarm":
+		return server.RequestSourcePrewarm, nil
+	case "refresh":
+		return server.RequestSourceRefresh, nil
+	case "":
+		switch entry {
+		case "sequence_requery":
+			return server.RequestSourcePrewarm, nil
+		case "sequence_requery_refresh":
+			return server.RequestSourceRefresh, nil
+		default:
+			return server.RequestSourceUser, nil
+		}
+	default:
+		return server.RequestSourceUnspecified, fmt.Errorf("invalid request_source %q, expected user, prewarm or refresh", option)
+	}
+}
+
+// NewHandlerWithSource sets the listener policy without overriding provenance
+// that an internal replay already supplied in QueryMeta.
+func NewHandlerWithSource(bp *coremain.BP, entry string, enableAudit bool, source server.RequestSource) (server.Handler, error) {
+	if source == server.RequestSourceUnspecified {
+		source, _ = ResolveRequestSource(entry, "")
+	}
 	p := bp.Plugin(entry)
 	exec := sequence.ToExecutable(p)
 	if exec == nil {
@@ -40,7 +77,8 @@ func NewHandler(bp *coremain.BP, entry string, enableAudit bool) (server.Handler
 		Logger: bp.L(),
 		Entry:  exec,
 		// ADDED: Pass the enableAudit flag to the handler options.
-		EnableAudit: enableAudit,
+		EnableAudit:   enableAudit,
+		RequestSource: source,
 	}
 	return server_handler.NewEntryHandler(handlerOpts), nil
 }

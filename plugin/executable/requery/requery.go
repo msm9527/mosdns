@@ -212,6 +212,8 @@ type Status struct {
 }
 
 type Progress struct {
+	// Processed 统计所需 DNS 尝试均已结束的域名，失败和超时也属于已处理。
+	// 此进度覆盖刷新计划，后续发布和预热是否完成由 TaskState 和 TaskStage 表达。
 	Processed int64 `json:"processed"`
 	Total     int64 `json:"total"`
 }
@@ -858,6 +860,24 @@ func (p *Requery) runStageWithCheckpoint(ctx context.Context, profile taskProfil
 
 // resendDNSQueries handles step 6 of the workflow.
 func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidate, updateProgress bool, profile taskProfile) error {
+	var completed func()
+	if updateProgress {
+		completed = func() {
+			p.mu.Lock()
+			p.status.Progress.Processed++
+			p.status.TaskStageProcessed++
+			p.mu.Unlock()
+		}
+	}
+	err := p.resendDNSQueriesWithCompletion(ctx, domains, profile, completed)
+	if err != nil && updateProgress {
+		p.setCancelledState("task cancelled by user")
+	}
+	return err
+}
+
+// 完成回调只归属于本次调用，所有 worker 退出后调用方才可切换任务阶段。
+func (p *Requery) resendDNSQueriesWithCompletion(ctx context.Context, domains []domainCandidate, profile taskProfile, completed func()) (err error) {
 	// 确保 QueriesPerSecond 大于 0，防止除以零 panic
 	qps := profile.QPS
 	if qps <= 0 {
@@ -871,11 +891,12 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidat
 	defer ticker.Stop()
 
 	type queryJob struct {
-		domain string
-		qtype  uint16
-		useAD  bool
-		useCD  bool
-		useDO  bool
+		domain    string
+		qtype     uint16
+		useAD     bool
+		useCD     bool
+		useDO     bool
+		remaining *atomic.Int32
 	}
 	workerCount := requeryWorkerCount(qps)
 	jobCh := make(chan queryJob, workerCount*4)
@@ -888,6 +909,9 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidat
 			defer workerWG.Done()
 			dnsClient := &dns.Client{Timeout: 2 * time.Second}
 			for job := range jobCh {
+				if ctx.Err() != nil {
+					continue
+				}
 				msg := new(dns.Msg)
 				msg.SetQuestion(dns.Fqdn(job.domain), job.qtype)
 				msg.AuthenticatedData = job.useAD
@@ -897,9 +921,21 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidat
 					msg.SetEdns0(4096, true)
 				}
 				_, _, _ = dnsClient.ExchangeContext(ctx, msg, resolverAddr)
+				// 传输失败和超时属于已完成尝试，不表示查询成功。
+				// 取消时域名保持未完成，不能推进检查点。
+				if ctx.Err() == nil && job.remaining.Add(-1) == 0 && completed != nil {
+					completed()
+				}
 			}
 		}()
 	}
+	defer func() {
+		close(jobCh)
+		workerWG.Wait()
+		if ctx.Err() != nil {
+			err = ctx.Err()
+		}
+	}()
 
 	sendJob := func(job queryJob) bool {
 		select {
@@ -939,49 +975,38 @@ func (p *Requery) resendDNSQueries(ctx context.Context, domains []domainCandidat
 		}
 
 		qmask := p.effectiveQueryMask(domains[i].QTypeMask)
+		remaining := new(atomic.Int32)
+		if qmask&qtypeMaskA != 0 {
+			remaining.Add(1)
+		}
+		if qmask&qtypeMaskAAAA != 0 {
+			remaining.Add(1)
+		}
 		if qmask&qtypeMaskA != 0 {
 			if !sendJob(queryJob{
-				domain: realDomain,
-				qtype:  dns.TypeA,
-				useAD:  useAD,
-				useCD:  useCD,
-				useDO:  useDO,
+				domain:    realDomain,
+				qtype:     dns.TypeA,
+				useAD:     useAD,
+				useCD:     useCD,
+				useDO:     useDO,
+				remaining: remaining,
 			}) {
-				close(jobCh)
-				workerWG.Wait()
-				if updateProgress {
-					p.setCancelledState("task cancelled by user")
-				}
 				return ctx.Err()
 			}
 		}
 		if qmask&qtypeMaskAAAA != 0 {
 			if !sendJob(queryJob{
-				domain: realDomain,
-				qtype:  dns.TypeAAAA,
-				useAD:  useAD,
-				useCD:  useCD,
-				useDO:  useDO,
+				domain:    realDomain,
+				qtype:     dns.TypeAAAA,
+				useAD:     useAD,
+				useCD:     useCD,
+				useDO:     useDO,
+				remaining: remaining,
 			}) {
-				close(jobCh)
-				workerWG.Wait()
-				if updateProgress {
-					p.setCancelledState("task cancelled by user")
-				}
 				return ctx.Err()
 			}
 		}
-
-		if updateProgress {
-			p.mu.Lock()
-			p.status.Progress.Processed++
-			p.status.TaskStageProcessed++
-			p.mu.Unlock()
-		}
 	}
-
-	close(jobCh)
-	workerWG.Wait()
 	return nil
 }
 

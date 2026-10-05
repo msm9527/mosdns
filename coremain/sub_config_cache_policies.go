@@ -172,7 +172,7 @@ func defaultCachePolicyConfig() *CachePolicyConfig {
 				BypassDomainSets: defaultResponseCacheBypassDomains(),
 				DomainSetTTL:     defaultHighChurnTTLPolicy(43200, 43200),
 				ExcludeIPs:       realCacheExcludeIPs,
-				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 1,
+				DumpFile:         "db/cache/cache_main.dump", DumpInterval: 3600, WALSyncInterval: 60,
 			},
 			"cache_branch_domestic": {
 				Size: defaultCacheBranchDomesticSize, LazyCacheTTL: 900, LazyStaleTTL: 300, ClientTTLMin: 120, ClientTTLMax: 900, NXDomainTTL: 180, ServfailTTL: 1, ColdQueryWaitMs: 80,
