@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 	"time"
 )
 
@@ -98,51 +99,55 @@ func (s *SQLiteAuditStorage) insertAuditLogs(tx txPreparer, logs []AuditLog) err
 	return insertAuditLogsInto(tx, "main.audit_log", logs)
 }
 
+// Keep each statement below SQLite's conservative 999-parameter limit.
+const auditInsertChunkRows = 32
+const auditInsertRowValues = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+
 func insertAuditLogsInto(tx txPreparer, table string, logs []AuditLog) error {
 	if len(logs) == 0 {
 		return nil
 	}
 	// Answers and search text own the public read paths. Keep the legacy IP and
 	// CNAME columns for older binaries, but do not duplicate new answers in them.
-	stmt, err := tx.Prepare(`
-		INSERT INTO ` + table + ` (
-			id, query_time_unix_ms, client_ip, query_type, query_name, query_class, duration_ms,
-			trace_id, response_code, response_flags_aa, response_flags_tc, response_flags_ra,
-			answers_json, answer_count, answer_search_text,
-			domain_set_raw, domain_set_norm, upstream_tag, transport, server_name, url_path,
-			cache_status
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`)
+	prefix := `INSERT INTO ` + table + ` (
+		id, query_time_unix_ms, client_ip, query_type, query_name, query_class, duration_ms,
+		trace_id, response_code, response_flags_aa, response_flags_tc, response_flags_ra,
+		answers_json, answer_count, answer_search_text,
+		domain_set_raw, domain_set_norm, upstream_tag, transport, server_name, url_path,
+		cache_status
+	) VALUES `
+	prepare := func(count int) (*sql.Stmt, error) {
+		return tx.Prepare(prefix + strings.TrimSuffix(strings.Repeat(auditInsertRowValues+",", count), ","))
+	}
+	chunkSize := min(auditInsertChunkRows, len(logs))
+	stmt, err := prepare(chunkSize)
 	if err != nil {
 		return fmt.Errorf("prepare sqlite audit insert: %w", err)
 	}
 	defer stmt.Close()
-
-	for _, log := range logs {
-		if _, err := stmt.Exec(
-			log.ID,
-			log.QueryTime.UnixMilli(),
-			log.ClientIP,
-			log.QueryType,
-			log.QueryName,
-			log.QueryClass,
-			log.DurationMs,
-			log.TraceID,
-			log.ResponseCode,
-			boolToInt(log.ResponseFlags.AA),
-			boolToInt(log.ResponseFlags.TC),
-			boolToInt(log.ResponseFlags.RA),
-			marshalAnswers(log.Answers),
-			log.AnswerCount,
-			answerSearchText(log.Answers),
-			log.DomainSetRaw,
-			log.DomainSetNorm,
-			log.UpstreamTag,
-			log.Transport,
-			log.ServerName,
-			log.URLPath,
-			log.CacheStatus,
-		); err != nil {
+	args := make([]any, 0, chunkSize*22)
+	for start := 0; start < len(logs); start += chunkSize {
+		chunk := logs[start:min(start+chunkSize, len(logs))]
+		current := stmt
+		if len(chunk) != chunkSize {
+			current, err = prepare(len(chunk))
+			if err != nil {
+				return fmt.Errorf("prepare sqlite audit insert: %w", err)
+			}
+			defer current.Close()
+		}
+		args = args[:0]
+		for _, log := range chunk {
+			args = append(args,
+				log.ID, log.QueryTime.UnixMilli(), log.ClientIP, log.QueryType, log.QueryName, log.QueryClass,
+				log.DurationMs, log.TraceID, log.ResponseCode,
+				boolToInt(log.ResponseFlags.AA), boolToInt(log.ResponseFlags.TC), boolToInt(log.ResponseFlags.RA),
+				marshalAnswers(log.Answers), log.AnswerCount, answerSearchText(log.Answers),
+				log.DomainSetRaw, log.DomainSetNorm, log.UpstreamTag, log.Transport,
+				log.ServerName, log.URLPath, log.CacheStatus,
+			)
+		}
+		if _, err := current.Exec(args...); err != nil {
 			return fmt.Errorf("insert sqlite audit row: %w", err)
 		}
 	}

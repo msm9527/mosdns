@@ -46,7 +46,12 @@ func auditWorkerRowCount(t *testing.T, c *AuditCollector) int {
 
 func waitAuditWorker(t *testing.T, ready func() bool) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	waitAuditWorkerWithin(t, 2*time.Second, ready)
+}
+
+func waitAuditWorkerWithin(t *testing.T, timeout time.Duration, ready func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for !ready() {
 		if time.Now().After(deadline) {
 			t.Fatal("audit worker did not reach expected state")
@@ -332,7 +337,9 @@ func TestAuditCollectorDelayedStorageOverflowStaysVisibleAfterDrain(t *testing.T
 	}
 	release()
 	waitAuditWorker(t, func() bool { return c.getStorage() != nil })
-	waitAuditWorker(t, func() bool { return c.queueDepth() == 0 && auditWorkerRowCount(t, c) == count })
+	// This correctness check drains a full ingress shard through SQLite. Race
+	// instrumentation can take several seconds; it is not a latency budget.
+	waitAuditWorkerWithin(t, 10*time.Second, func() bool { return c.queueDepth() == 0 && auditWorkerRowCount(t, c) == count })
 	assertAuditWorkerHistoryCount(t, c, count)
 	if got := c.GetOverview(60); got.DroppedEvents != 1 || !got.Degraded || got.QueryCount != uint64(count) {
 		t.Fatalf("overflow after storage readiness and drain = %+v", got)
@@ -385,7 +392,9 @@ func TestAuditCollectorClearPreservesOverflowAfterIngressReset(t *testing.T) {
 	}
 	release()
 	waitAuditWorker(t, func() bool { return c.getStorage() != nil })
-	waitAuditWorker(t, func() bool { return c.queueDepth() == 0 && auditWorkerRowCount(t, c) == count })
+	// This correctness check drains a full ingress shard through SQLite. Race
+	// instrumentation can take several seconds; it is not a latency budget.
+	waitAuditWorkerWithin(t, 10*time.Second, func() bool { return c.queueDepth() == 0 && auditWorkerRowCount(t, c) == count })
 	assertAuditWorkerHistoryCount(t, c, count)
 	if got := c.GetOverview(60); got.DroppedEvents != 2 || !got.Degraded {
 		t.Fatalf("new overflow after storage readiness = %+v", got)

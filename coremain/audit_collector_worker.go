@@ -292,14 +292,14 @@ func (c *AuditCollector) stageQueuedLog(item auditQueuedLog) error {
 		c.reportAuditMaintenanceError(maintenanceErr)
 		return writeErr
 	}
-	if err := storage.StageBufferedLog(item.log); err != nil {
+	if err := storage.stageOwnedBufferedLog(item.log); err != nil {
 		if !errors.Is(err, ErrAuditBufferFull) {
 			return err
 		}
 		if err := c.flushStorageBuffered(storage, settings); err != nil {
 			return err
 		}
-		return storage.StageBufferedLog(item.log)
+		return storage.stageOwnedBufferedLog(item.log)
 	}
 	return nil
 }

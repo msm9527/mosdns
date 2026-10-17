@@ -184,15 +184,20 @@ func (d *domainMemoryPool) markHotRuleRefreshLocked(domain string, now time.Time
 // 大池只查询该域名的所有 flags 变体，避免扫描无关域名。
 func (d *domainMemoryPool) visitPromotedDomainEntriesLocked(domain string, visit func(*statEntry) bool) {
 	const variantKeySpace = 256
+	// Most pools do not track flags. Check that variant directly before walking
+	// unrelated entries; still visit every other variant if it is invalid.
+	if entry := d.stats[buildEntryKey(domain, 0)]; entry != nil && entry.Promoted && !visit(entry) {
+		return
+	}
 	if len(d.stats) <= variantKeySpace {
 		for key, entry := range d.stats {
-			if key.domain == domain && entry.Promoted && !visit(entry) {
+			if key.domain == domain && key.flags != 0 && entry.Promoted && !visit(entry) {
 				return
 			}
 		}
 		return
 	}
-	for flags := 0; flags < variantKeySpace; flags++ {
+	for flags := 1; flags < variantKeySpace; flags++ {
 		entry := d.stats[buildEntryKey(domain, uint8(flags))]
 		if entry != nil && entry.Promoted && !visit(entry) {
 			return

@@ -52,99 +52,103 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 	listenerCtx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(errListenerCtxCanceled)
 
-	rb := pool.GetBuf(dns.MaxMsgSize)
-	defer pool.ReleaseBuf(rb)
-
 	oobReader, oobWriter, err := initOobHandler(c)
 	if err != nil {
 		return fmt.Errorf("failed to init oob handler, %w", err)
 	}
-	var ob []byte
-	if oobReader != nil {
-		obp := pool.GetBuf(1024)
-		defer pool.ReleaseBuf(obp)
-		ob = *obp
+	batch := newUDPPacketBatch(c, oobReader != nil, opts.FastBypassWithRuleMatch != nil || opts.FastBypass != nil)
+	defer batch.close()
+	flush := func() {
+		if err := batch.flush(); err != nil && !isListenerCloseErr(err) {
+			logger.Warn("failed to write fast responses", zap.Error(err))
+		}
 	}
 
 	for {
-		n, oobn, _, remoteAddr, err := c.ReadMsgUDPAddrPort(*rb, ob)
+		count, err := batch.read()
 		if err != nil {
 			if isListenerCloseErr(err) {
 				return nil
 			}
-			if n <= 0 {
-				return fmt.Errorf("unexpected read err: %w", err)
-			}
-			logger.Warn("read err", zap.Error(err))
-			continue
+			return fmt.Errorf("unexpected read err: %w", err)
 		}
+		for index := 0; index < count; index++ {
+			message := &batch.receive[index]
+			n, buf := message.N, message.Buffers[0]
+			remoteAddr := batch.remote(index)
 
-		var dstIpFromCm net.IP
-		if oobReader != nil {
-			dstIpFromCm, _ = oobReader(ob[:oobn])
-		}
-
-		var preMarks uint64
-		var preDset string
-		var preDsetMatched bool
-		var preStaleRefresh bool
-		var preRuleMatch FastRuleMatchMeta
-		if opts.FastBypassWithRuleMatch != nil || opts.FastBypass != nil {
-			var action, respLen int
-			var marks uint64
-			var dset string
-			var dsetMatched, staleRefresh bool
-			if opts.FastBypassWithRuleMatch != nil {
-				action, respLen, marks, dset, dsetMatched, staleRefresh, preRuleMatch = opts.FastBypassWithRuleMatch(n, *rb, remoteAddr)
-			} else {
-				action, respLen, marks, dset, dsetMatched, staleRefresh = opts.FastBypass(n, *rb, remoteAddr)
+			var dstIpFromCm net.IP
+			if oobReader != nil {
+				dstIpFromCm, _ = oobReader(message.OOB[:message.NN])
 			}
-			if action == FastActionReply {
-				if respLen > 0 {
-					var oob []byte
-					if oobWriter != nil && dstIpFromCm != nil {
-						oob = oobWriter(dstIpFromCm)
-					}
-					_, _, _ = c.WriteMsgUDPAddrPort((*rb)[:respLen], oob, remoteAddr)
+
+			var preMarks uint64
+			var preDset string
+			var preDsetMatched bool
+			var preStaleRefresh bool
+			var preRuleMatch FastRuleMatchMeta
+			if opts.FastBypassWithRuleMatch != nil || opts.FastBypass != nil {
+				var action, respLen int
+				var marks uint64
+				var dset string
+				var dsetMatched, staleRefresh bool
+				if opts.FastBypassWithRuleMatch != nil {
+					action, respLen, marks, dset, dsetMatched, staleRefresh, preRuleMatch = opts.FastBypassWithRuleMatch(n, buf, remoteAddr)
+				} else {
+					action, respLen, marks, dset, dsetMatched, staleRefresh = opts.FastBypass(n, buf, remoteAddr)
 				}
+				if action == FastActionReply {
+					if respLen > 0 {
+						var oob []byte
+						if oobWriter != nil && dstIpFromCm != nil {
+							oob = oobWriter(dstIpFromCm)
+						}
+						batch.reply(index, respLen, oob)
+					}
+					continue
+				}
+				preMarks = marks
+				preDset = dset
+				preDsetMatched = dsetMatched
+				preStaleRefresh = staleRefresh
+			}
+
+			// Do not let slow-path handling delay fast replies from earlier slots.
+			flush()
+			q := new(dns.Msg)
+			if err := q.Unpack(buf[:n]); err != nil {
+				logger.Warn("invalid msg", zap.Error(err), zap.Binary("msg", buf[:n]), zap.Stringer("from", remoteAddr))
 				continue
 			}
-			preMarks = marks
-			preDset = dset
-			preDsetMatched = dsetMatched
-			preStaleRefresh = staleRefresh
+
+			// Control-message addresses can alias the receive slot reused next read.
+			dstIpFromCm = append(net.IP(nil), dstIpFromCm...)
+			go func() {
+				payload := h.Handle(listenerCtx, q, QueryMeta{
+					ClientAddr:           remoteAddr.Addr(),
+					FromUDP:              true,
+					PreFastFlags:         preMarks,
+					PreFastRuleMatch:     preRuleMatch,
+					PreFastDomainSet:     preDset,
+					PreFastDomainMatched: preDsetMatched,
+					PreFastStaleRefresh:  preStaleRefresh,
+				}, pool.PackBuffer)
+
+				if payload == nil {
+					return
+				}
+				defer pool.ReleaseBuf(payload)
+
+				var oob []byte
+				if oobWriter != nil && dstIpFromCm != nil {
+					oob = oobWriter(dstIpFromCm)
+				}
+				if _, _, err := c.WriteMsgUDPAddrPort(*payload, oob, remoteAddr); err != nil {
+					logger.Warn("failed to write response", zap.Stringer("client", remoteAddr), zap.Error(err))
+				}
+			}()
 		}
-
-		q := new(dns.Msg)
-		if err := q.Unpack((*rb)[:n]); err != nil {
-			logger.Warn("invalid msg", zap.Error(err), zap.Binary("msg", (*rb)[:n]), zap.Stringer("from", remoteAddr))
-			continue
-		}
-
-		go func() {
-			payload := h.Handle(listenerCtx, q, QueryMeta{
-				ClientAddr:           remoteAddr.Addr(),
-				FromUDP:              true,
-				PreFastFlags:         preMarks,
-				PreFastRuleMatch:     preRuleMatch,
-				PreFastDomainSet:     preDset,
-				PreFastDomainMatched: preDsetMatched,
-				PreFastStaleRefresh:  preStaleRefresh,
-			}, pool.PackBuffer)
-
-			if payload == nil {
-				return
-			}
-			defer pool.ReleaseBuf(payload)
-
-			var oob []byte
-			if oobWriter != nil && dstIpFromCm != nil {
-				oob = oobWriter(dstIpFromCm)
-			}
-			if _, _, err := c.WriteMsgUDPAddrPort(*payload, oob, remoteAddr); err != nil {
-				logger.Warn("failed to write response", zap.Stringer("client", remoteAddr), zap.Error(err))
-			}
-		}()
+		flush()
 	}
 }
 

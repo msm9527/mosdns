@@ -26,6 +26,16 @@ var auditBufferOwnerSequence atomic.Uint64
 // StageBufferedLog accepts an owned, normalized copy with a stable process ID.
 // The collector owns flush scheduling and retries after ErrAuditBufferFull.
 func (s *SQLiteAuditStorage) StageBufferedLog(log AuditLog) error {
+	return s.stageBufferedLog(log, false)
+}
+
+// The collector already owns compact copies of strings and answers from
+// ingress. Transfer that ownership rather than cloning the same record twice.
+func (s *SQLiteAuditStorage) stageOwnedBufferedLog(log AuditLog) error {
+	return s.stageBufferedLog(log, true)
+}
+
+func (s *SQLiteAuditStorage) stageBufferedLog(log AuditLog, owned bool) error {
 	s.bufferMu.Lock()
 	defer s.bufferMu.Unlock()
 	if s.DB() == nil {
@@ -43,7 +53,9 @@ func (s *SQLiteAuditStorage) StageBufferedLog(log AuditLog) error {
 	log.ID = id
 	// Clone variable input so neither mutation nor a large caller backing array
 	// can change or retain memory beyond the accepted record's accounting.
-	cloneAuditLog(&log)
+	if !owned {
+		cloneAuditLog(&log)
+	}
 	s.pending = append(s.pending, log)
 	s.pendingBytes += size
 	s.bufferRevision++
