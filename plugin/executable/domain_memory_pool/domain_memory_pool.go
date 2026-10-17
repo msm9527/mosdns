@@ -113,6 +113,21 @@ type entryKey struct {
 }
 
 type domainMemoryPool struct {
+	// Keep raw 64-bit atomics first: on 32-bit ARM their addresses must be
+	// 8-byte aligned, which the allocator guarantees for the start of a struct.
+	totalCount           int64
+	droppedCount         int64
+	droppedBufferCount   int64
+	droppedByCapCount    int64
+	promotedCount        int64
+	publishedCount       int64
+	hotPendingCount      int64
+	hotAddTotal          int64
+	hotReplaceTotal      int64
+	hotDispatchFailTotal int64
+	lastHotSyncAtUnixMS  int64
+	lastEnqueueWarnAtMS  int64
+
 	pluginTag   string
 	plugin      func(string) any
 	snapshotter coremain.PluginSnapshotter
@@ -134,31 +149,19 @@ type domainMemoryPool struct {
 	mu      sync.Mutex
 	writeMu sync.Mutex
 
-	totalCount         int64
-	droppedCount       int64
-	droppedBufferCount int64
-	droppedByCapCount  int64
-	promotedCount      int64
-	publishedCount     int64
-	recordChan         chan *logItem
-	writeSignalChan    chan struct{}
-	stopChan           chan struct{}
-	workerDoneChan     chan struct{}
-	hotCmdChan         chan hotPublishRequest
-	hotDoneChan        chan struct{}
-	workerStarted      atomic.Bool
+	recordChan      chan *logItem
+	writeSignalChan chan struct{}
+	stopChan        chan struct{}
+	workerDoneChan  chan struct{}
+	hotCmdChan      chan hotPublishRequest
+	hotDoneChan     chan struct{}
+	workerStarted   atomic.Bool
 
-	dirtyPending         atomic.Bool
-	hotNeedsReplace      atomic.Bool
-	lastRulesHash        uint64
-	hasRulesHash         bool
-	closeOnce            sync.Once
-	hotPendingCount      int64
-	hotAddTotal          int64
-	hotReplaceTotal      int64
-	hotDispatchFailTotal int64
-	lastHotSyncAtUnixMS  int64
-	lastEnqueueWarnAtMS  int64
+	dirtyPending    atomic.Bool
+	hotNeedsReplace atomic.Bool
+	lastRulesHash   uint64
+	hasRulesHash    bool
+	closeOnce       sync.Once
 }
 
 func init() {
@@ -835,6 +838,12 @@ func buildVariantRecord(poolTag, domain string, flagsMask uint8, entry *statEntr
 }
 
 func (d *domainMemoryPool) shouldPromote(entry *statEntry) bool {
+	// Negative memory can suppress a working address before any upstream runs.
+	// Background probes may verify user-confirmed negatives, but must not create
+	// blocking rules without the configured number of user observations.
+	if d.isNegativePool() && entry.Count < d.policy.promoteAfter {
+		return false
+	}
 	accessEvidence := entry.Count >= d.policy.promoteAfter && !d.isStale(entry.LastSeenAtUnixMS)
 	// Preserve verified promoted history so stale user matches can request refresh.
 	// Runtime validation still rejects dirty or expired rules.

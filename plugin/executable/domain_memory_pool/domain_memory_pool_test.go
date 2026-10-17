@@ -509,8 +509,10 @@ func TestMemoryPoolSaveCancelsPendingHotAdd(t *testing.T) {
 		MaxVariantsPerDomain: 4,
 		EvictionPolicy:       "lru",
 		FlushIntervalMS:      1000,
-		PublishDebounceMS:    200,
-		PruneIntervalSec:     60,
+		// Keep the add pending independently of SQLite startup or race overhead.
+		// Timer delivery itself is covered by the debounce test above.
+		PublishDebounceMS: 60000,
+		PruneIntervalSec:  60,
 	})
 
 	consumer := newMockHotRuleConsumer()
@@ -522,7 +524,13 @@ func TestMemoryPoolSaveCancelsPendingHotAdd(t *testing.T) {
 	t.Cleanup(func() { _ = pool.Close() })
 
 	pool.processRecord(&logItem{name: "save.example.", source: "live"})
-	assertNoHotRuleCall(t, consumer.addCh, 60*time.Millisecond)
+	deadline := time.Now().Add(5 * time.Second)
+	for pool.SnapshotDomainStats().HotPendingRules != 1 {
+		if time.Now().After(deadline) {
+			t.Fatal("hot add was not queued")
+		}
+		time.Sleep(time.Millisecond)
+	}
 
 	if err := pool.performWrite(WriteModeSave); err != nil {
 		t.Fatalf("performWrite save: %v", err)
@@ -532,7 +540,10 @@ func TestMemoryPoolSaveCancelsPendingHotAdd(t *testing.T) {
 		t.Fatalf("unexpected replace rules: %+v", replaceCall)
 	}
 
-	assertNoHotRuleCall(t, consumer.addCh, 260*time.Millisecond)
+	if pending := pool.SnapshotDomainStats().HotPendingRules; pending != 0 {
+		t.Fatalf("save did not cancel the queued hot add: %d", pending)
+	}
+	assertNoHotRuleCall(t, consumer.addCh, 20*time.Millisecond)
 }
 
 func TestMemoryPoolSkipsUnchangedHotRuleReplace(t *testing.T) {

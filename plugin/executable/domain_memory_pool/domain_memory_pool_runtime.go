@@ -19,6 +19,7 @@ func (d *domainMemoryPool) loadFromStore() error {
 
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	demotedNegative := false
 	for _, variant := range state.Variants {
 		domain, key := d.acquireEntryKeyFromFlags(variant.Domain, variant.FlagsMask)
 		entry := &statEntry{
@@ -35,6 +36,10 @@ func (d *domainMemoryPool) loadFromStore() error {
 			ConflictCount:        variant.ConflictCount,
 			LastSource:           variant.LastSource,
 		}
+		if d.isNegativePool() && entry.Promoted && entry.Count < d.policy.promoteAfter {
+			entry.Promoted = false
+			demotedNegative = true
+		}
 		d.stats[key] = entry
 		d.trackEntryCreatedLocked(domain)
 	}
@@ -46,6 +51,15 @@ func (d *domainMemoryPool) loadFromStore() error {
 	atomicStoreIfGreater(&d.promotedCount, int64(state.Meta.PromotedDomainCount))
 	atomicStoreIfGreater(&d.publishedCount, int64(len(rules)))
 	atomicStoreIfGreater(&d.lastHotSyncAtUnixMS, state.Meta.LastPublishAtUnixMS)
+	if demotedNegative {
+		// 5.4.4-5.4.6 could publish a single background NXDOMAIN with Count=0.
+		// Rebuild from surviving variants, rather than the obsolete domain rows,
+		// and persist the downgrade on the next write (including shutdown).
+		d.rebuildActivePromotedRulesLocked()
+		atomic.StoreInt64(&d.promotedCount, int64(len(d.hotActiveRules)))
+		atomic.StoreInt64(&d.publishedCount, int64(len(d.hotActiveRules)))
+		d.dirtyPending.Store(true)
+	}
 
 	// 加载后强制裁剪到 max_domains。
 	// cap 仅在新条目写入时强制（ensureCapacityForNewEntryLocked），加载路径原本不裁剪，
@@ -56,17 +70,7 @@ func (d *domainMemoryPool) loadFromStore() error {
 		evicted := d.evictLRUEntriesLocked(excess)
 		// 淘汰可能移除了已 promoted 域名，按裁剪后的存活集合重建活跃热规则。
 		// 已持有 d.mu，使用 *Locked 变体（与上方 replaceActiveHotRulesLocked 一致），不可自锁。
-		promoted := make(map[string]struct{}, d.domainCount)
-		for key, entry := range d.stats {
-			if entry.Promoted && key.domain != "" {
-				promoted[key.domain] = struct{}{}
-			}
-		}
-		rules := make([]string, 0, len(promoted))
-		for domain := range promoted {
-			rules = append(rules, "full:"+domain)
-		}
-		d.replaceActiveHotRulesLocked(rules)
+		d.rebuildActivePromotedRulesLocked()
 		d.lastRulesHash = hashPromotedDomains(state.Domains)
 		atomic.StoreInt64(&d.publishedCount, int64(len(d.hotActiveRules)))
 		if d.logger != nil {
@@ -79,6 +83,20 @@ func (d *domainMemoryPool) loadFromStore() error {
 		}
 	}
 	return nil
+}
+
+func (d *domainMemoryPool) rebuildActivePromotedRulesLocked() {
+	promoted := make(map[string]struct{}, d.domainCount)
+	for key, entry := range d.stats {
+		if entry.Promoted && key.domain != "" {
+			promoted[key.domain] = struct{}{}
+		}
+	}
+	rules := make([]string, 0, len(promoted))
+	for domain := range promoted {
+		rules = append(rules, "full:"+domain)
+	}
+	d.replaceActiveHotRulesLocked(rules)
 }
 
 func buildRulesFromStoredDomains(items []coremain.DomainPoolDomain) []string {

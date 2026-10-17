@@ -211,6 +211,12 @@ func (d *domainMemoryPool) MarkDomainVerified(ctx context.Context, domain, verif
 }
 
 func (d *domainMemoryPool) MarkDomainsVerified(_ context.Context, domains []string, verifiedAt string) (int, error) {
+	// Requery reports completed attempts here, including positive answers and
+	// failures. Only a fresh, correctly typed NXDOMAIN passed to Exec can renew
+	// negative evidence; completion alone must not reactivate an old blocker.
+	if d.isNegativePool() {
+		return 0, nil
+	}
 	verifiedAtUnixMS := parseStampUnixMS(verifiedAt)
 	if verifiedAtUnixMS <= 0 {
 		verifiedAtUnixMS = time.Now().UTC().UnixMilli()

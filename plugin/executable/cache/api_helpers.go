@@ -61,7 +61,7 @@ func (c *Cache) deleteRuntimeCacheKey(k key, reason string) {
 }
 
 func (c *Cache) appendRuntimeDelete(k key, reason string) {
-	if c.persistence == nil {
+	if c.persistence == nil || c.persistence.restoreErr != nil {
 		return
 	}
 	if err := c.persistence.appendDelete(k); err != nil {
@@ -72,7 +72,7 @@ func (c *Cache) appendRuntimeDelete(k key, reason string) {
 }
 
 func (c *Cache) appendRuntimeDeleteBatch(keys []key, reason string) error {
-	if c.persistence == nil || len(keys) == 0 {
+	if c.persistence == nil || c.persistence.restoreErr != nil || len(keys) == 0 {
 		return nil
 	}
 	if err := c.persistence.appendDeleteBatch(keys); err != nil {
@@ -84,7 +84,7 @@ func (c *Cache) appendRuntimeDeleteBatch(keys []key, reason string) error {
 }
 
 func (c *Cache) appendRuntimeFlush(reason string) error {
-	if c.persistence == nil {
+	if c.persistence == nil || c.persistence.restoreErr != nil {
 		return nil
 	}
 	if err := c.persistence.appendFlush(); err != nil {

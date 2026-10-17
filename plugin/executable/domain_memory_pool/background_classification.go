@@ -5,6 +5,15 @@ import (
 	"github.com/miekg/dns"
 )
 
+func (d *domainMemoryPool) isNegativePool() bool {
+	switch d.policy.kind {
+	case "nov4", "nov6", "nodenov4", "nodenov6":
+		return true
+	default:
+		return false
+	}
+}
+
 // The sequence owns classification. The pool checks only response success and
 // qtype evidence before accepting a background classification as verified.
 func (d *domainMemoryPool) backgroundClassificationVerified(qCtx *query_context.Context, qtype uint16) bool {

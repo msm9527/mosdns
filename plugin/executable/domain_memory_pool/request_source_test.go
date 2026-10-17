@@ -169,10 +169,6 @@ func TestBackgroundClassificationAllPoolsAndExecutors(t *testing.T) {
 		{"realip", dns.TypeAAAA, dns.RcodeSuccess, true},
 		{"fakeip", dns.TypeA, dns.RcodeSuccess, true},
 		{"fakeip", dns.TypeAAAA, dns.RcodeSuccess, true},
-		{"nov4", dns.TypeA, dns.RcodeNameError, false},
-		{"nov6", dns.TypeAAAA, dns.RcodeNameError, false},
-		{"nodenov4", dns.TypeA, dns.RcodeNameError, false},
-		{"nodenov6", dns.TypeAAAA, dns.RcodeNameError, false},
 	}
 	for _, c := range classifications {
 		for _, source := range []server.RequestSource{server.RequestSourcePrewarm, server.RequestSourceRefresh} {

@@ -80,6 +80,11 @@ func (d *domainMemoryPool) AllowHotRule(domain string, now time.Time) bool {
 }
 
 func (d *domainMemoryPool) AllowHotRuleWithSource(domain string, now time.Time, source server.RequestSource) bool {
+	// A classification refresh must reach the upstream even while a cached
+	// negative rule is fresh. Otherwise it would verify its own empty answer.
+	if source == server.RequestSourceRefresh && d.isNegativePool() {
+		return false
+	}
 	domain = strings.TrimSpace(strings.TrimSuffix(domain, "."))
 	if domain == "" {
 		return false
@@ -117,6 +122,9 @@ func (d *domainMemoryPool) AllowHotRuleWithSource(domain string, now time.Time, 
 
 func (d *domainMemoryPool) allowHotRuleEntryLocked(entry *statEntry, now time.Time) bool {
 	if entry == nil || !entry.Promoted {
+		return false
+	}
+	if d.isNegativePool() && entry.Count < d.policy.promoteAfter {
 		return false
 	}
 	if strings.EqualFold(strings.TrimSpace(entry.RefreshState), "dirty") {

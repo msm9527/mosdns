@@ -804,9 +804,6 @@ func (c *Cache) Exec(ctx context.Context, qCtx *query_context.Context, next sequ
 	q := qCtx.Q()
 	coremain.SetAuditCacheStatus(qCtx, coremain.AuditCacheBypass)
 	clearCacheResponseStale(qCtx)
-	if c.persistence.restoreErr != nil {
-		return next.ExecNext(ctx, qCtx)
-	}
 
 	// 补丁：获取 Key 的字节切片和原始 Pool 指针
 	routeSnapshot := newCacheRouteSnapshot(qCtx, c.plugin)
@@ -2470,6 +2467,11 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	c.mutationMu.Lock()
 	defer c.mutationMu.Unlock()
 	c.backend.Store(key(msgKey), v, cacheExp)
+	// Failed recovery quarantines the persisted files, not fresh DNS data.
+	// Keep caching in RAM without retrying a blocked WAL on every query.
+	if c.persistence.restoreErr != nil {
+		return v, true
+	}
 	if err := c.persistence.appendStore(walStoreRecord{
 		key:       key(msgKey),
 		cacheExp:  cacheExp,
