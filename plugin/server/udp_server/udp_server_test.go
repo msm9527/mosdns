@@ -1213,7 +1213,13 @@ func TestBuildFastAuditLogFromWireParsesCacheHit(t *testing.T) {
 
 func TestCollectFastAuditFromWireRecordsRealtimeOverview(t *testing.T) {
 	oldCollector := coremain.GlobalAuditCollector
-	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, t.TempDir())
+	dir := t.TempDir()
+	collector := coremain.NewAuditCollector(coremain.AuditSettings{Enabled: true}, dir)
+	// This test exercises collection, not asynchronous SQLite startup. Open
+	// storage before starting its one-second observation window.
+	if err := collector.SetSettings(collector.GetSettings(), dir); err != nil {
+		t.Fatal(err)
+	}
 	collector.StartWorker()
 	coremain.GlobalAuditCollector = collector
 	t.Cleanup(func() {
@@ -1783,7 +1789,7 @@ func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
 	}, &fastStats{})
 	name := "refresh.example."
 	oldResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "1.1.1.1")
-	newResp := makeAnswerWithIP(t, name, dns.TypeA, 0x1111, 30, "8.8.8.8")
+	newResp := makeAnswerWithIP(t, name, dns.TypeA, 0x9999, 30, "8.8.8.8")
 	fc.Store(name, dns.TypeA, oldResp, "stale", false)
 
 	hash := fastQNameHashString(name, dns.TypeA)

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 	"go.uber.org/zap"
 )
@@ -29,11 +30,13 @@ func (d *DomainSet) loadGeneratedRules(generatedFrom string) (data_provider.Rule
 				return nil, nil, fmt.Errorf("load rules from exporter %s: %w", generatedFrom, err)
 			}
 		}
+		generated := domain.NewDomainMixMatcher()
 		for _, rule := range rules {
-			if err := d.mixM.Add(rule, struct{}{}); err != nil {
+			if err := generated.Add(rule, struct{}{}); err != nil {
 				continue
 			}
 		}
+		d.generatedM = generated
 		return exporter, rules, nil
 	}
 	return nil, nil, fmt.Errorf("generated_from source %s is unavailable", generatedFrom)

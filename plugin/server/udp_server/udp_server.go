@@ -540,6 +540,7 @@ type fastCacheItem struct {
 	ruleMatch            server.FastRuleMatchMeta
 	qname                string
 	qtype                uint16
+	withoutOPTLen        uint16
 }
 
 type fastAuditResponseMeta struct {
@@ -1272,12 +1273,17 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 	}
 
 	if ptr.resp != nil {
+		if len(buf) < dnsHeaderSize {
+			return server.FastActionContinue, 0, ptr.ruleFlags, ptr.domainSet, false, fastAuditResponseMeta{}
+		}
+		txid0, txid1 := buf[0], buf[1]
+		respLen := ptr.copyReply(buf, buf[10] != 0 || buf[11] != 0)
+		if respLen == 0 {
+			return server.FastActionContinue, 0, ptr.ruleFlags, ptr.domainSet, false, fastAuditResponseMeta{}
+		}
 		if fc.stats != nil {
 			fc.stats.cacheHit.AddShard(statKey, 1)
 		}
-		respLen := len(ptr.resp)
-		txid0, txid1 := buf[0], buf[1]
-		copy(buf, ptr.resp)
 		buf[0], buf[1] = txid0, txid1
 		applyFastCacheReplyPolicy(buf[:respLen], ptr, expire, now)
 		return server.FastActionReply, respLen, ptr.ruleFlags, ptr.domainSet, false, ptr.audit
@@ -1297,53 +1303,12 @@ func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset
 }
 
 func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, clientDirect bool, ruleFlags uint64, ruleRevision fastRuleRevision, ruleMatch ...server.FastRuleMatchMeta) bool {
-	if !shouldStoreFastResponse(resp) || fc.shouldBypassDomainSet(dset) {
+	item := fc.newResponseItem(qname, qtype, resp, dset, fakeIP, clientDirect, ruleFlags, ruleRevision, ruleMatch...)
+	if item == nil {
 		return false
 	}
-	qname = fastNormalizeQNameString(qname)
-	baseHash := fastQNameHashString(qname, qtype)
-	h := fastCachePolicyHash(baseHash, clientDirect)
-
-	bakedResp := make([]byte, len(resp))
-	copy(bakedResp, resp)
-	offsets := findTTLOffsets(bakedResp)
-	now := time.Now()
-	authenticatedUntil := fastAuthenticatedUntil(resp, offsets, now)
-	for _, off := range offsets {
-		if off+4 <= len(bakedResp) {
-			ttl := binary.BigEndian.Uint32(bakedResp[off : off+4])
-			binary.BigEndian.PutUint32(bakedResp[off:off+4], clampTTL(ttl, fc.cfg.ttlMin, fc.cfg.ttlMax))
-		}
-	}
-	internalTTL := fc.cfg.internalTTL
-	if overrideTTL, _, ok := fc.domainSetTTLOverride(dset); ok && overrideTTL > 0 {
-		internalTTL = overrideTTL
-	}
-
-	item := &fastCacheItem{
-		resp:                 bakedResp,
-		audit:                fastAuditResponseMetaFromPayloadIfEnabled(fc.cfg.auditEnabled, strings.TrimSuffix(qname, "."), bakedResp),
-		expire:               now.Add(internalTTL).Unix(),
-		authenticatedUntil:   authenticatedUntil,
-		updating:             0,
-		domainSet:            dset,
-		domainMapperRevision: ruleRevision.domainMapper,
-		rewriteRevision:      ruleRevision.rewrite,
-		controlRevision:      ruleRevision.control,
-		fakeIP:               fakeIP,
-		clientDirect:         clientDirect,
-		hash:                 h,
-		ruleFlags:            ruleFlags,
-		qname:                qname,
-		qtype:                qtype,
-	}
-	if len(ruleMatch) > 0 {
-		item.ruleMatch = ruleMatch[0]
-	}
 	fc.storeItem(item)
-	if fc.stats != nil {
-		fc.stats.cacheStore.AddShard(baseHash, 1)
-	}
+	fc.recordResponseStore(item)
 	return true
 }
 
@@ -1353,28 +1318,8 @@ func (fc *fastCache) CopyResponse(txid uint16, qname string, qtype uint16, allow
 }
 
 func (fc *fastCache) CopyResponseWithAudit(txid uint16, qname string, qtype uint16, allowFakeIP bool, expectedRuleRevision fastRuleRevision) (*[]byte, fastAuditResponseMeta) {
-	hash := fastCachePolicyHash(fastQNameHashString(qname, qtype), false)
-	ptr, _ := fc.findItem(hash, qname, qtype)
-	if ptr == nil {
-		return nil, fastAuditResponseMeta{}
-	}
-	if !expectedRuleRevision.empty() && !expectedRuleRevision.matches(ptr) {
-		return nil, fastAuditResponseMeta{}
-	}
-	if ptr.fakeIP && !allowFakeIP {
-		return nil, fastAuditResponseMeta{}
-	}
-	if fc.shouldBypassDomainSet(ptr.domainSet) {
-		return nil, fastAuditResponseMeta{}
-	}
-	if len(ptr.resp) == 0 {
-		return nil, fastAuditResponseMeta{}
-	}
-	resp := pool.GetBuf(len(ptr.resp))
-	copy(*resp, ptr.resp)
-	binary.BigEndian.PutUint16((*resp)[:2], txid)
-	applyFastCacheReplyPolicy(*resp, ptr, atomic.LoadInt64(&ptr.expire), fastNowUnix())
-	return resp, ptr.audit
+	resp, audit, _ := fc.copyResponseItem(txid, qname, qtype, allowFakeIP, false, expectedRuleRevision)
+	return resp, audit
 }
 
 func (fc *fastCache) findItem(hash uint64, qname string, qtype uint16) (*fastCacheItem, bool) {
@@ -1851,6 +1796,9 @@ type fastHandler struct {
 }
 
 func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) *[]byte {
+	// EntryHandler normalizes OPT in place; admission belongs to the original
+	// request, including its DNSSEC and EDNS options.
+	cacheableRequest := fastRequestCacheable(q)
 	var auditStart time.Time
 	if h.enableAudit {
 		auditStart = time.Now()
@@ -1862,21 +1810,33 @@ func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryM
 	}
 
 	payload, stale := server.HandleResponse(h.next, ctx, q, meta, pack)
-	if !stale {
+	if !stale && cacheableRequest {
 		h.storeFastResponse(q, meta, payload)
 	}
 	return payload
 }
 
 func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error), auditStart time.Time) *[]byte {
-	if !h.fastCacheEnabled() || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
+	if !h.fastCacheEnabled() || !fastRequestCacheable(q) {
 		return nil
 	}
 	if h.fc.shouldBypassDomainSet(meta.PreFastDomainSet) {
 		return nil
 	}
 	question := q.Question[0]
-	stalePayload, auditMeta := h.fc.CopyResponseWithAudit(q.Id, question.Name, question.Qtype, h.allowFakeIPCache(), h.runtimeRevision())
+	queryOPT := q.IsEdns0()
+	stalePayload, auditMeta, item := h.fc.copyResponseItem(q.Id, question.Name, question.Qtype, h.allowFakeIPCache(), meta.PreFastFlags&(1<<39) != 0, h.runtimeRevision(), queryOPT != nil)
+	if stalePayload != nil {
+		limit := dns.MinMsgSize
+		if queryOPT != nil {
+			limit = max(limit, int(queryOPT.UDPSize()))
+		}
+		_, sourceAware := h.dm.(DomainMapperWithSourcePlugin)
+		if len(*stalePayload) > limit || (sourceAware && (!meta.PreFastRuleMatch.Known || meta.PreFastRuleMatch != item.ruleMatch)) {
+			pool.ReleaseBuf(stalePayload)
+			stalePayload = nil
+		}
+	}
 	if stalePayload == nil {
 		if h.fc != nil && h.fc.stats != nil {
 			h.fc.stats.refreshMiss.Add(1)
@@ -1888,41 +1848,17 @@ func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, me
 		h.fc.stats.bypassStaleReply.Add(1)
 	}
 	collectFastAuditFromMsg(h.enableAudit, auditStart, q, meta, auditMeta, coremain.AuditCacheLazy)
-	go h.refreshExpiredCache(ctx, q.Copy(), meta, pack)
+	if atomic.LoadInt64(&item.expire) <= fastNowUnix() {
+		go h.refreshExpiredCache(ctx, q.Copy(), meta, pack, item)
+	}
 	return stalePayload
-}
-
-func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta server.QueryMeta, pack func(*dns.Msg) (*[]byte, error)) {
-	meta.RequestSource = server.RequestSourceRefresh
-	meta.PreFastStaleRefresh = false
-	meta.PreFastDomainMatched = false
-	meta.PreFastDomainSet = ""
-	meta.PreFastFlags = 0
-	meta.PreFastRuleMatch = server.FastRuleMatchMeta{}
-	payload, stale := server.HandleResponse(h.next, ctx, q, meta, pack)
-	if payload == nil {
-		if h.fc != nil && h.fc.stats != nil {
-			h.fc.stats.refreshNoPayload.Add(1)
-		}
-		return
-	}
-	defer pool.ReleaseBuf(payload)
-	if !stale && h.storeFastResponse(q, meta, payload) {
-		if h.fc != nil && h.fc.stats != nil {
-			h.fc.stats.refreshStore.Add(1)
-		}
-		return
-	}
-	if h.fc != nil && h.fc.stats != nil {
-		h.fc.stats.refreshStoreSkip.Add(1)
-	}
 }
 
 func (h *fastHandler) storeFastResponse(q *dns.Msg, meta server.QueryMeta, payload *[]byte) bool {
 	if !h.sw.isOnDefault(true) {
 		return false
 	}
-	if payload == nil || q == nil || q.Opcode != dns.OpcodeQuery || len(q.Question) == 0 {
+	if payload == nil || !fastRequestCacheable(q) {
 		return false
 	}
 	if !shouldStoreFastResponse(*payload) {
@@ -2296,6 +2232,7 @@ func buildFastBypassWithSourceRuleMatch(bp *coremain.BP, fc *fastCache, stats *f
 		}
 		qtype := question.qtype
 		qEnd := question.end
+		buf = buf[:min(len(buf), question.udpSize)]
 		hKey := question.hash
 		statKey := fastStatsKey(hKey, remoteAddr, buf)
 
@@ -2759,6 +2696,7 @@ func dnsRcodeString(rcode int) string {
 type fastQuestion struct {
 	qtype    uint16
 	qclass   uint16
+	udpSize  int
 	end      int
 	qnameEnd int
 	hash     uint64
@@ -2784,7 +2722,7 @@ func parseFastQuestion(reqLen int, buf []byte) (qname string, qtype uint16, end 
 }
 
 func parseFastQuestionMeta(reqLen int, buf []byte) (fastQuestion, bool) {
-	if reqLen < 12 {
+	if reqLen < 12 || reqLen > len(buf) {
 		return fastQuestion{}, false
 	}
 	flags0 := buf[2]
@@ -2832,9 +2770,14 @@ func parseFastQuestionMeta(reqLen int, buf []byte) (fastQuestion, bool) {
 	}
 	qtype := binary.BigEndian.Uint16(buf[offset : offset+2])
 	qclass := binary.BigEndian.Uint16(buf[offset+2 : offset+4])
+	udpSize, eligible := fastRequestUDPLimit(buf[:reqLen], offset+4)
+	if !eligible {
+		return fastQuestion{}, false
+	}
 	return fastQuestion{
 		qtype:    qtype,
 		qclass:   qclass,
+		udpSize:  udpSize,
 		end:      offset + 4,
 		qnameEnd: offset,
 		hash:     fastQNameHashFinish(hash, qtype),

@@ -24,6 +24,7 @@ import (
 	"fmt"
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider/domain_set"
 	"github.com/IrineSistiana/mosdns/v5/plugin/executable/sequence"
@@ -47,6 +48,13 @@ type Matcher struct {
 
 func (m *Matcher) Match(_ context.Context, qCtx *query_context.Context) (bool, error) {
 	return m.match(qCtx, domain_set.MatcherGroup(m.mg))
+}
+
+// MatchDomainWithSource is used by request-name matching. Response-name
+// matching retains its existing behavior.
+func (m *Matcher) MatchDomainWithSource(name string, source server.RequestSource) bool {
+	_, ok := domain_set.MatcherGroup(m.mg).MatchWithSource(name, source)
+	return ok
 }
 
 func NewMatcher(bq sequence.BQ, args *Args, f MatchFunc) (m *Matcher, err error) {

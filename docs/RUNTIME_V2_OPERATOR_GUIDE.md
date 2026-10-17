@@ -54,6 +54,8 @@
 - `domain_set` / `domain_set_light` 通过 `generated_from` 直接订阅对应 pool 插件，不再依赖中间导出文件
 - `config/gen/` 不再承担运行态真源角色
 
+`qname $domain_set` 会对生成的动态规则逐次检查有效性。节点的 noV4/noV6 规则在未确认、dirty 或过期时会放行到后续解析；有效且已确认的规则仍可直接返回空响应。`request_source: refresh` 会绕过负规则，`prewarm` 和 `refresh` 的匹配不会增加用户访问记录或触发用户按需刷新。同一个 `domain_set` 中的手工表达式、文件规则，以及其他静态 provider 的匹配独立生效。
+
 ## 3. 稳定 API
 
 ### 3.1 运行态概览

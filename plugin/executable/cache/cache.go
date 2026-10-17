@@ -2010,6 +2010,11 @@ func getMsgKeyBytesWithRouteSnapshot(q *dns.Msg, qCtx *query_context.Context, us
 	if q.Response || q.Opcode != dns.OpcodeQuery || len(q.Question) != 1 {
 		return nil, nil
 	}
+	// Existing persistent keys represent recursive IN questions. Other classes
+	// and non-recursive lookups must not reuse or overwrite those responses.
+	if q.Question[0].Qclass != dns.ClassINET || !q.RecursionDesired {
+		return nil, nil
+	}
 
 	question := q.Question[0]
 	totalLen := 1 + 2 + 1 + len(question.Name)
@@ -2037,6 +2042,11 @@ func getMsgKeyBytesWithRouteSnapshot(q *dns.Msg, qCtx *query_context.Context, us
 		b = b | cdBit
 	}
 	if opt := q.IsEdns0(); opt != nil && opt.Do() {
+		b = b | doBit
+	}
+	// Plugins may replace upstream OPT; the original client's DNSSEC demand
+	// must still isolate its response from ordinary cache entries.
+	if opt := qCtx.ClientOpt(); opt != nil && opt.Do() {
 		b = b | doBit
 	}
 

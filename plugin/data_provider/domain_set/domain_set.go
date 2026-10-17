@@ -62,9 +62,10 @@ type DomainSet struct {
 	baseArgs  *Args
 	curArgs   *Args
 
-	mu     sync.RWMutex
-	mixM   *domain.MixMatcher[struct{}]
-	otherM []domain.Matcher[struct{}]
+	mu         sync.RWMutex
+	mixM       *domain.MixMatcher[struct{}]
+	generatedM *domain.MixMatcher[struct{}]
+	otherM     []domain.Matcher[struct{}]
 
 	ruleFile          string
 	generatedFrom     string
@@ -259,13 +260,20 @@ func (d *DomainSet) GetDomainMatcher() domain.Matcher[struct{}] {
 func (d *DomainSet) Match(domainStr string) (value struct{}, ok bool) {
 	d.mu.RLock()
 	m := d.mixM
+	generated := d.generatedM
+	others := d.otherM
 	d.mu.RUnlock()
 
 	if _, ok := m.Match(domainStr); ok {
 		return struct{}{}, true
 	}
+	if generated != nil {
+		if _, ok := generated.Match(domainStr); ok {
+			return struct{}{}, true
+		}
+	}
 
-	for _, matcher := range d.otherM {
+	for _, matcher := range others {
 		if _, ok := matcher.Match(domainStr); ok {
 			return struct{}{}, true
 		}
@@ -334,6 +342,7 @@ func (d *DomainSet) ReloadControlConfig(global *coremain.GlobalOverrides, _ []co
 	d.mu.Lock()
 	d.curArgs = cloneArgs(effective)
 	d.mixM = tmpMatcher
+	d.generatedM = tmp.generatedM
 	d.otherM = otherM
 	d.ruleFile = ruleFile
 	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)
@@ -417,6 +426,7 @@ func (d *DomainSet) reloadCurrentArgs(fileStates map[string]watchedFileState) er
 
 	d.mu.Lock()
 	d.mixM = tmpMatcher
+	d.generatedM = tmp.generatedM
 	d.otherM = otherM
 	d.ruleFile = ruleFile
 	d.generatedFrom = strings.TrimSpace(effective.GeneratedFrom)

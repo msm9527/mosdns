@@ -120,6 +120,9 @@ func NewContext(q *dns.Msg) *Context {
 		// RFC 3225 3
 		// The DO bit of the query MUST be copied in the response.
 		if ctx.clientOpt.Do() {
+			// Preserve DNSSEC demand when replacing the client's OPT. Other
+			// EDNS options are still selected explicitly by their plugins.
+			setDo(ctx.QOpt(), true)
 			setDo(ctx.respOpt, true)
 		}
 	}

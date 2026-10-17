@@ -57,6 +57,11 @@ func Test_cachePlugin_Dump(t *testing.T) {
 
 	resp := new(dns.Msg)
 	resp.SetQuestion("test.", dns.TypeA)
+	resp.Response = true
+	resp.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{Name: "test.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 3600},
+		A:   net.IPv4(192, 0, 2, 1),
+	}}
 
 	// Fix: Pack the dns.Msg to []byte because item.resp is now []byte
 	packedResp, err := resp.Pack()

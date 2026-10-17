@@ -19,9 +19,16 @@
 
 package domain_set
 
-import "github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
+import (
+	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/server"
+)
 
 type MatcherGroup []domain.Matcher[struct{}]
+
+type sourceMatcher interface {
+	MatchWithSource(string, server.RequestSource) (struct{}, bool)
+}
 
 func (mg MatcherGroup) Match(s string) (struct{}, bool) {
 	for _, m := range mg {
@@ -30,4 +37,22 @@ func (mg MatcherGroup) Match(s string) (struct{}, bool) {
 		}
 	}
 	return struct{}{}, false
+}
+
+// MatchWithSource keeps each provider's runtime validity independent of other
+// providers, so a stale generated match cannot hide a valid static match.
+func (mg MatcherGroup) MatchWithSource(s string, source server.RequestSource) (struct{}, bool) {
+	for _, m := range mg {
+		if _, ok := matchWithSource(m, s, source); ok {
+			return struct{}{}, true
+		}
+	}
+	return struct{}{}, false
+}
+
+func matchWithSource(m domain.Matcher[struct{}], s string, source server.RequestSource) (struct{}, bool) {
+	if runtime, ok := m.(sourceMatcher); ok {
+		return runtime.MatchWithSource(s, source)
+	}
+	return m.Match(s)
 }

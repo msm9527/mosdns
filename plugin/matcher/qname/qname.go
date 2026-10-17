@@ -53,12 +53,21 @@ func matchQName(qCtx *query_context.Context, m domain.Matcher[struct{}]) (bool, 
 }
 
 type fastQnameMatcher struct {
-	sequence.Matcher
+	*base.Matcher
+}
+
+func (f *fastQnameMatcher) Match(_ context.Context, qCtx *query_context.Context) (bool, error) {
+	for _, question := range qCtx.Q().Question {
+		if f.Matcher.MatchDomainWithSource(question.Name, qCtx.ServerMeta.RequestSource) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (f *fastQnameMatcher) GetFastCheck() func(qCtx *query_context.Context) bool {
 	return func(qCtx *query_context.Context) bool {
-		ok, _ := f.Matcher.Match(context.Background(), qCtx)
+		ok, _ := f.Match(context.Background(), qCtx)
 		return ok
 	}
 }
