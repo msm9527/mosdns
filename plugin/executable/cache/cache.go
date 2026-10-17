@@ -2144,7 +2144,14 @@ func (c *Cache) respFromCacheItem(v *item, lazyStaleTTL int, expiredResponseTTL 
 	if corrupt || resp == nil {
 		return resp, lazy, domainSet, corrupt
 	}
-	c.applyClientTTL(resp)
+	if lazy {
+		// Expired data must not inherit the fresh response's minimum TTL.
+		if c != nil && c.args != nil {
+			applyClientTTL(resp, 0, c.args.ClientTTLMax)
+		}
+	} else {
+		c.applyClientTTL(resp)
+	}
 	return resp, lazy, domainSet, corrupt
 }
 
@@ -2321,7 +2328,7 @@ func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL 
 			continue
 		}
 		if lazy {
-			ttl := clampClientTTL(uint32(expiredResponseTTL), clientTTLMin, clientTTLMax)
+			ttl := clampClientTTL(uint32(expiredResponseTTL), 0, clientTTLMax)
 			binary.BigEndian.PutUint32(wire[offset:offset+4], ttl)
 			continue
 		}

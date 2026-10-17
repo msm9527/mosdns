@@ -21,6 +21,9 @@ func (ctx *Context) CacheResponseStale() bool {
 	if ctx == nil {
 		return false
 	}
+	if ctx.respPayload != nil && ctx.respPayload.Stale {
+		return true
+	}
 	value, _ := ctx.GetValue(cacheResponseStaleKey)
 	stale, _ := value.(bool)
 	return stale

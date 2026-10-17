@@ -86,6 +86,7 @@ type EntryHandler struct {
 }
 
 var _ server.Handler = (*EntryHandler)(nil)
+var _ server.ResponseHandler = (*EntryHandler)(nil)
 
 func NewEntryHandler(opts EntryHandlerOpts) *EntryHandler {
 	opts.init()
@@ -96,9 +97,15 @@ func NewEntryHandler(opts EntryHandlerOpts) *EntryHandler {
 // If entry returns an error, a SERVFAIL response will be returned.
 // If entry returns without a response, a REFUSED response will be returned.
 func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server.QueryMeta, packMsgPayload func(m *dns.Msg) (*[]byte, error)) *[]byte {
+	payload, _ := h.HandleResponse(ctx, q, serverMeta, packMsgPayload)
+	return payload
+}
+
+// HandleResponse keeps cache provenance alongside the final packed response.
+func (h *EntryHandler) HandleResponse(ctx context.Context, q *dns.Msg, serverMeta server.QueryMeta, packMsgPayload func(m *dns.Msg) (*[]byte, error)) (*[]byte, bool) {
 	// basic query check.
 	if q.Response || len(q.Question) != 1 || len(q.Answer)+len(q.Ns) > 0 || len(q.Extra) > 1 {
-		return nil
+		return nil, false
 	}
 
 	ddl := time.Now().Add(h.opts.QueryTimeout)
@@ -130,11 +137,12 @@ func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server
 	if err == sequence.ErrExit {
 		err = nil
 	}
+	stale := err == nil && qCtx.CacheResponseStale()
 	if err == nil {
 		if payload := qCtx.ResponsePayload(); payload != nil && len(payload.Wire) > 0 {
 			msgBuf := pool.GetBuf(len(payload.Wire))
 			copy(*msgBuf, payload.Wire)
-			return msgBuf
+			return msgBuf, stale
 		}
 	}
 	var resp *dns.Msg
@@ -181,9 +189,9 @@ func (h *EntryHandler) Handle(ctx context.Context, q *dns.Msg, serverMeta server
 	payload, err := packMsgPayload(resp)
 	if err != nil {
 		h.opts.Logger.Error("internal err: failed to pack resp msg", qCtx.InfoField(), zap.Error(err))
-		return nil
+		return nil, false
 	}
-	return payload
+	return payload, stale
 }
 
 // opt can be nil.

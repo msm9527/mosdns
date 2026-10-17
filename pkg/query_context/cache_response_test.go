@@ -50,3 +50,17 @@ func TestCacheResponseStaleCopyAndResponseReplacement(t *testing.T) {
 		t.Fatal("response replacement changed cache-owned metadata")
 	}
 }
+
+func TestCacheResponseStaleIncludesPackedResponse(t *testing.T) {
+	q := new(dns.Msg)
+	q.SetQuestion("stale-wire.example.", dns.TypeA)
+	ctx := NewContext(q)
+	ctx.SetResponsePayload(&ResponsePayload{Stale: true, Wire: []byte{1}})
+	if !ctx.CacheResponseStale() || !ctx.Copy().CacheResponseStale() {
+		t.Fatal("packed response lost stale provenance")
+	}
+	ctx.SetResponsePayload(&ResponsePayload{})
+	if ctx.CacheResponseStale() {
+		t.Fatal("fresh packed response inherited stale provenance")
+	}
+}

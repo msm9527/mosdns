@@ -86,6 +86,7 @@ domain:jd.hk
 domain:apple.cn
 domain:me.com
 domain:apple.com
+domain:mzstatic.com
 domain:icloud.com
 domain:icloud-content.com
 domain:push.apple.com

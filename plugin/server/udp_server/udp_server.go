@@ -1279,7 +1279,7 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		txid0, txid1 := buf[0], buf[1]
 		copy(buf, ptr.resp)
 		buf[0], buf[1] = txid0, txid1
-		clearFastStaleAD(buf[:respLen], ptr, expire, now)
+		applyFastCacheReplyPolicy(buf[:respLen], ptr, expire, now)
 		return server.FastActionReply, respLen, ptr.ruleFlags, ptr.domainSet, false, ptr.audit
 	}
 	if fc.stats != nil {
@@ -1373,7 +1373,7 @@ func (fc *fastCache) CopyResponseWithAudit(txid uint16, qname string, qtype uint
 	resp := pool.GetBuf(len(ptr.resp))
 	copy(*resp, ptr.resp)
 	binary.BigEndian.PutUint16((*resp)[:2], txid)
-	clearFastStaleAD(*resp, ptr, atomic.LoadInt64(&ptr.expire), fastNowUnix())
+	applyFastCacheReplyPolicy(*resp, ptr, atomic.LoadInt64(&ptr.expire), fastNowUnix())
 	return resp, ptr.audit
 }
 
@@ -1861,8 +1861,10 @@ func (h *fastHandler) Handle(ctx context.Context, q *dns.Msg, meta server.QueryM
 		}
 	}
 
-	payload := h.next.Handle(ctx, q, meta, pack)
-	h.storeFastResponse(q, meta, payload)
+	payload, stale := server.HandleResponse(h.next, ctx, q, meta, pack)
+	if !stale {
+		h.storeFastResponse(q, meta, payload)
+	}
 	return payload
 }
 
@@ -1897,7 +1899,7 @@ func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta 
 	meta.PreFastDomainSet = ""
 	meta.PreFastFlags = 0
 	meta.PreFastRuleMatch = server.FastRuleMatchMeta{}
-	payload := h.next.Handle(ctx, q, meta, pack)
+	payload, stale := server.HandleResponse(h.next, ctx, q, meta, pack)
 	if payload == nil {
 		if h.fc != nil && h.fc.stats != nil {
 			h.fc.stats.refreshNoPayload.Add(1)
@@ -1905,7 +1907,7 @@ func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta 
 		return
 	}
 	defer pool.ReleaseBuf(payload)
-	if h.storeFastResponse(q, meta, payload) {
+	if !stale && h.storeFastResponse(q, meta, payload) {
 		if h.fc != nil && h.fc.stats != nil {
 			h.fc.stats.refreshStore.Add(1)
 		}
