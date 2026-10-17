@@ -93,38 +93,41 @@ func TestSignedColdResponseHonorsSignatureLifetime(t *testing.T) {
 	}
 }
 
-func TestCachedADExpiresWithOriginalTTLAndStale(t *testing.T) {
-	c := newResponseTTLTestCache()
-	defer c.Close()
-	q := testQueryContextWithTTL(t, "authenticated.example.", net.IPv4(1, 2, 3, 4), 30)
-	q.R().AuthenticatedData = true
-	v, ok := c.saveRespToCache("authenticated-policy", q)
-	if !ok {
-		t.Fatal("response was not cached")
-	}
-	for _, state := range []string{"fresh", "ttl_governed", "stale"} {
-		t.Run(state, func(t *testing.T) {
-			entry := *v
-			lazy := state == "stale"
-			if state != "fresh" {
-				entry.authenticatedUntilUnixNano = time.Now().Add(-time.Second).UnixNano()
-			}
-			if lazy {
-				entry.expireUnixNano = time.Now().Add(-time.Second).UnixNano()
-			}
-			msg, _, _, _ := c.respFromCacheItem(&entry, 43200, expiredMsgTtl)
-			if msg == nil || msg.AuthenticatedData != (state == "fresh") {
-				t.Fatal("message AD does not reflect original TTL and stale state")
-			}
-			wire := buildCachedWirePayload(&entry, 42, lazy, expiredMsgTtl, time.Now().UnixNano(), 120, 900, dns.MinMsgSize)
-			var udp dns.Msg
-			if err := udp.Unpack(wire); err != nil || udp.AuthenticatedData != (state == "fresh") {
-				t.Fatal("wire AD differs from message AD")
-			}
-			if v.resp[3]&0x20 == 0 {
-				t.Fatal("clearing a response AD mutated the stored payload")
-			}
-		})
+func TestAuthenticatedResponseCacheLifetime(t *testing.T) {
+	for _, ttl := range []uint32{0, 30} {
+		c := newResponseTTLTestCache()
+		defer c.Close()
+		q := testQueryContextWithTTL(t, "authenticated.example.", net.IPv4(1, 2, 3, 4), ttl)
+		q.R().AuthenticatedData = true // No RRSIG: the client did not request DO.
+		q.StoreValue(query_context.KeyDomainSet, "高变化域名")
+		v, ok := c.saveRespToCache("authenticated-policy", q)
+		if ok != (ttl != 0) {
+			t.Fatalf("AD response with TTL %d cached = %v", ttl, ok)
+		}
+		if !ok {
+			continue
+		}
+		_, expiration, _ := c.backend.Get("authenticated-policy")
+		if !v.dnssec || v.expireUnixNano-v.storedUnixNano != int64(30*time.Second) || expiration.UnixNano() != v.expireUnixNano {
+			t.Fatal("AD response entered a client-minimum or lazy retention window")
+		}
+		msg, lazy, _, _ := c.respFromCacheItem(v, 43200, expiredMsgTtl)
+		if msg == nil || lazy || !msg.AuthenticatedData || msg.Answer[0].Header().Ttl > ttl {
+			t.Fatal("AD message lost authentication or exceeded original TTL")
+		}
+		wire := buildCachedWirePayload(v, 42, false, expiredMsgTtl, v.storedUnixNano+int64(25*time.Second), 120, 900, dns.MinMsgSize)
+		var udp dns.Msg
+		if err := udp.Unpack(wire); err != nil || !udp.AuthenticatedData || udp.Answer[0].Header().Ttl > 5 {
+			t.Fatal("AD wire TTL was raised above the remaining original TTL")
+		}
+		stale := *v
+		stale.expireUnixNano = time.Now().Add(-time.Second).UnixNano()
+		if msg, _, _, _ := c.respFromCacheItem(&stale, 43200, expiredMsgTtl); msg != nil {
+			t.Fatal("expired AD response was returned stale")
+		}
+		if buildCachedWirePayload(&stale, 42, true, expiredMsgTtl, time.Now().UnixNano(), 120, 900, dns.MinMsgSize) != nil {
+			t.Fatal("expired AD response produced a stale wire payload")
+		}
 	}
 }
 

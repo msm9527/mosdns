@@ -7,8 +7,8 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Old snapshots can carry a negative fresh lifetime that predates the SOA
-// bounds. Recheck persisted responses before they can enter either L1 or L2.
+// Old snapshots can outlive negative SOA bounds or authenticated RR TTLs.
+// Recheck persisted responses before they can enter either L1 or L2.
 func (c *Cache) normalizeRestoredResponse(v *item, expiration time.Time) (time.Time, bool) {
 	if v == nil || len(v.resp) < 12 || v.resp[2]&0x02 != 0 {
 		return expiration, false

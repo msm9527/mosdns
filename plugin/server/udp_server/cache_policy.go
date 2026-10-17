@@ -10,11 +10,13 @@ const dnsHeaderSize = 12
 
 func shouldStoreFastResponse(payload []byte) bool {
 	rcode, ok := responseRcode(payload)
-	if !ok || rcode != dns.RcodeSuccess || payload[2]&0x02 != 0 || binary.BigEndian.Uint16(payload[6:8]) == 0 {
+	if !ok || rcode != dns.RcodeSuccess || payload[2]&0x02 != 0 || payload[3]&0x20 != 0 || binary.BigEndian.Uint16(payload[6:8]) == 0 {
 		return false
 	}
 	// Negative lifetimes belong to the shared response cache. Fast-cache
 	// internal TTLs and stale policies must never extend NXDOMAIN or NODATA.
+	// AD responses also require the original TTL, which client TTL governance
+	// may already have changed before this payload reached the fast cache.
 	return !hasNegativeFastAuthority(payload) && !fastResponseHasSignatures(payload)
 }
 

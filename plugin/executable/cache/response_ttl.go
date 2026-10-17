@@ -113,7 +113,7 @@ func (c *Cache) responseCacheTTLAt(msg *dns.Msg, domainSet string, at time.Time)
 			}
 		}
 	}
-	if signedTTL, signed := signedResponseTTL(msg, at); signed {
+	if signedTTL, signed := signedResponseTTL(msg, at); signed || msg.AuthenticatedData {
 		msgTTL = min(msgTTL, signedTTL)
 		return msgTTL, msgTTL, msgTTL > 0
 	}

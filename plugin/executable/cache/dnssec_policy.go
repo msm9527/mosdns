@@ -42,7 +42,8 @@ func responseHasSignatures(msg *dns.Msg) bool {
 }
 
 func (v *item) refreshResponsePolicy() {
-	v.dnssec = false
+	// A validating upstream can set AD without RRSIG when the client omits DO.
+	v.dnssec = len(v.resp) >= 12 && v.resp[3]&0x20 != 0
 	v.authenticatedUntilUnixNano = v.storedUnixNano
 	minimumTTL := ^uint32(0)
 	for _, offset16 := range v.ttlOffsets {

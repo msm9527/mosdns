@@ -19,6 +19,7 @@ func TestLegacyNegativePersistenceRechecksTTL(t *testing.T) {
 			zeroSOA   bool
 			truncated bool
 			signed    bool
+			ad        bool
 			keep      bool
 		}{
 			{name: "recent_nodata", age: 5 * time.Second, keep: true},
@@ -29,6 +30,8 @@ func TestLegacyNegativePersistenceRechecksTTL(t *testing.T) {
 			{name: "truncated", truncated: true},
 			{name: "recent_signed", signed: true, age: 5 * time.Second, keep: true},
 			{name: "expired_signed", signed: true, age: time.Minute},
+			{name: "recent_ad", ad: true, age: 5 * time.Second, keep: true},
+			{name: "expired_ad", ad: true, age: time.Minute},
 		} {
 			t.Run(storage+"/"+tc.name, func(t *testing.T) {
 				args := persistenceTestArgs(t.TempDir())
@@ -36,6 +39,10 @@ func TestLegacyNegativePersistenceRechecksTTL(t *testing.T) {
 				qCtx := responseTTLQuery(tc.rcode, false, true, 600, 30)
 				if tc.signed {
 					qCtx = signedPolicyQuery(t)
+				}
+				if tc.ad {
+					qCtx = testQueryContextWithTTL(t, "authenticated.example.", net.IPv4(1, 2, 3, 4), 30)
+					qCtx.R().AuthenticatedData = true
 				}
 				if tc.zeroSOA {
 					qCtx.R().Ns[0].(*dns.SOA).Minttl = 0
@@ -80,15 +87,15 @@ func TestLegacyNegativePersistenceRechecksTTL(t *testing.T) {
 				if tc.keep {
 					limit := stored.Add(30 * time.Second)
 					if v.expireUnixNano > limit.UnixNano() || expiration.After(limit) {
-						t.Fatal("legacy negative lifetime still exceeds its SOA limit")
+						t.Fatal("legacy response lifetime still exceeds its original limit")
 					}
 					msg, _, _, _ := restored.respFromCacheItem(v, 43200, expiredMsgTtl)
 					if msg == nil {
 						t.Fatal("recent restored response was lost")
 					}
-					if tc.signed {
+					if tc.signed || tc.ad {
 						if !v.dnssec || msg.Answer[0].Header().Ttl > 30 {
-							t.Fatal("legacy signature cache metadata or TTL was not bounded")
+							t.Fatal("legacy authentication cache metadata or TTL was not bounded")
 						}
 					} else if msg.Ns[0].Header().Ttl > 30 {
 						t.Fatal("legacy SOA wire TTL was not bounded")

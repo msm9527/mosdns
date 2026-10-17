@@ -121,7 +121,7 @@ type item struct {
 	storedUnixNano             int64
 	expireUnixNano             int64
 	domainSet                  string
-	dnssec                     bool
+	dnssec                     bool // AD or RRSIG requires the original authentication lifetime.
 	authenticatedUntilUnixNano int64
 }
 
@@ -2200,7 +2200,7 @@ func (c *Cache) applyClientTTL(msg *dns.Msg) {
 	if c == nil || c.args == nil || msg == nil {
 		return
 	}
-	if !positiveCacheResponse(msg) || responseHasSignatures(msg) {
+	if !positiveCacheResponse(msg) || msg.AuthenticatedData || responseHasSignatures(msg) {
 		return
 	}
 	applyClientTTL(msg, c.args.ClientTTLMin, c.args.ClientTTLMax)
@@ -2438,7 +2438,7 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 	}
 
 	msgToCache := copyNoOpt(r)
-	if !positiveCacheResponse(msgToCache) || responseHasSignatures(msgToCache) {
+	if !positiveCacheResponse(msgToCache) || msgToCache.AuthenticatedData || responseHasSignatures(msgToCache) {
 		dnsutils.ApplyMaximumTTL(msgToCache, uint32(msgTtl/time.Second))
 	}
 	packedMsg, err := msgToCache.Pack()
