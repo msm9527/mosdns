@@ -184,12 +184,15 @@ L2 基于：
 
 ### 空答案成功响应
 
-- 真实 `msgTtl` 最多裁剪到 `300s`
-- `cacheTtl` 仍可能被 `lazy_cache_ttl` 拉长
+- 真实 `msgTtl` 最多裁剪到 `300s`；存在 SOA 时还受 `min(SOA TTL, SOA MINIMUM)` 约束。
+- `cacheTtl = msgTtl`，不应用 `lazy_cache_ttl`、`domain_set_ttl` 或客户端最小 TTL。
+- CNAME 链末尾携带 SOA、且没有请求类型记录的 NODATA 采用相同规则。
+- 过期后不返回 stale 负响应。
 
 ### `NXDOMAIN`
 
-- 使用 `nxdomain_ttl`
+- 使用 `nxdomain_ttl`，并以 SOA TTL 和 MINIMUM 的较小值为上限。
+- 不应用长保留、域名集 TTL 覆盖或 stale 返回。
 
 ### `SERVFAIL`
 
@@ -197,9 +200,14 @@ L2 基于：
 
 ### 最小下限
 
-如果算出来的 TTL 小于等于零，会被抬到：
+没有 SOA 约束且算出的 TTL 小于等于零时，使用 `5s` 短时保护。SOA TTL 或 MINIMUM 为零的负响应不缓存。长保留、`domain_set_ttl` 和客户端 TTL 下限只适用于正响应。
 
-- `5s`
+### 携带 RRSIG 的响应
+
+- 不抬高上游 TTL，以最小 RR TTL、RRSIG Original TTL 和签名剩余有效期的最小值限制缓存寿命及缓存副本的 TTL。
+- 不应用客户端 TTL 下限、长缓存覆盖或 stale 返回；签名尚未生效或已经过期时不写入缓存。
+- 这些限制用于避免缓存延长签名数据的寿命，不代替 DNSSEC 签名验证。
+- 所有 stale 响应清除 AD；即使普通正响应仍在配置的保留窗口内，原始 TTL 到期后也不再保留 AD。
 
 ## 4.8 lazy stale 与 lazy refresh
 
@@ -326,6 +334,10 @@ L2 基于：
 1. 先读 snapshot。
 2. 再回放 WAL。
 
+导入 dump 和恢复 snapshot/WAL 时重新检查负响应和携带 RRSIG 的响应。旧版本记录的较长过期时间会按原始存储时间及当前 TTL 上限收紧；已过期、零 SOA 寿命和截断记录直接丢弃，避免升级后复活旧错误结果。
+
+WAL 恢复同时重建二进制响应的 TTL 偏移索引，保证 UDP 缓存命中后仍按实际存储时间递减 TTL。
+
 ### dump 触发特点
 
 周期 dump 不是每次到点都写，而是：
@@ -400,25 +412,30 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 ### 5.2 缓存范围
 
-当前只缓存：
-
-- `NOERROR`
-- `NXDOMAIN`
+当前只缓存具有答案的正 `NOERROR` 响应。
 
 不会缓存：
 
-- `SERVFAIL`
-- 非法响应
+- `NXDOMAIN`、空 `NOERROR`，以及 CNAME + SOA 的 NODATA
+- `SERVFAIL`、截断响应和非法响应
+- 携带 RRSIG 的响应，由共享响应缓存管理其签名寿命
+
+负响应由共享响应缓存按短 TTL 处理，避免 UDP 独立的内部 TTL 和 stale 窗口延长故障。
+
+UDP stale 响应会清除 AD；普通正响应的原始 TTL 到期后同样清除 AD，避免热点保留策略延长认证标记。
 
 ### 5.3 过期语义
 
+规则匹配与响应缓存分开处理：每个编译规则快照保留最多 8192 个域名的匹配证据（含未命中），避免热查询重复扫描正则。动态 provider 仍在每次查询中校验；热规则发布直接影响下一次查找；重建规则会替换快照及其缓存。该缓存不保存最终的动态分流决定。
+
 默认策略面向热点查询：
 
-- `internal_ttl = 120s`
-- `stale_retry_seconds = 10s`
-- `stale_max_seconds = 300s`
-- `ttl_min = 1`
-- `ttl_max = 5`
+- `internal_ttl = 7200s`
+- `stale_retry_seconds = 30s`
+- `stale_max_seconds = 7200s`
+- `ttl_min = 120`
+- `ttl_max = 900`
+- 高变化域名使用独立的 12 小时热点保留和 stale 窗口。以上均只适用于正响应，部署时以 `cache_policies.yaml` 为准。
 
 因此它更像是：
 
@@ -535,11 +552,9 @@ UDP 快路径缓存与 `type: cache` 完全独立。
 
 `udp_server` 的快路径缓存本身也带有防放大边界：
 
-- 只缓存 `NOERROR` 和 `NXDOMAIN`
-- 不缓存 `SERVFAIL`
-- `internal_ttl` 默认 `120s`
-- stale retry 默认 `10s`
-- stale 返回上限默认 `300s`
+- 仅缓存具有答案的正 `NOERROR` 响应
+- 负响应、空响应和截断响应交给共享缓存处理
+- 正响应的热点保留和 stale 参数由 `cache_policies.yaml` 控制，不能用于推断负响应寿命
 
 这意味着：
 

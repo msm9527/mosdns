@@ -556,7 +556,9 @@ func (c *Cache) replayWAL() error {
 		validSize = offset + reader.n
 		switch record.op {
 		case walOpSet:
-			if c.containsExcludedWire(record.cacheItem.resp) {
+			var cacheable bool
+			record.cacheExp, cacheable = c.normalizeRestoredResponse(record.cacheItem, record.cacheExp)
+			if !cacheable || c.containsExcludedWire(record.cacheItem.resp) {
 				c.backend.Delete(record.key)
 				c.deleteL1Key(record.key)
 				entries++

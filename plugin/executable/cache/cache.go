@@ -116,11 +116,13 @@ func (k key) Sum() uint64 {
 
 // item stores the cached response in L2.
 type item struct {
-	resp           []byte
-	ttlOffsets     []uint16
-	storedUnixNano int64
-	expireUnixNano int64
-	domainSet      string
+	resp                       []byte
+	ttlOffsets                 []uint16
+	storedUnixNano             int64
+	expireUnixNano             int64
+	domainSet                  string
+	dnssec                     bool
+	authenticatedUntilUnixNano int64
 }
 
 type l1Entry struct {
@@ -1950,7 +1952,11 @@ func (c *Cache) readDumpState(r io.Reader, persist, restore bool) (int, error) {
 				expireUnixNano: msgExpTime.UnixNano(),
 				domainSet:      entry.GetDomainSet(),
 			}
-			i.refreshTTLOffsets()
+			var cacheable bool
+			cacheExpTime, cacheable = c.normalizeRestoredResponse(i, cacheExpTime)
+			if !cacheable {
+				continue
+			}
 			c.prepareCacheItemForStore(i)
 			c.backend.Store(key(entry.GetKey()), i, cacheExpTime)
 			if persist {
@@ -2162,6 +2168,9 @@ func respFromCacheItemWithLazyPolicy(v *item, lazyStaleTTL int, expiredResponseT
 		if nowUnix < v.expireUnixNano {
 			// 这里必须 Copy，因为下游会修改 TTL 或 ID
 			r := m.Copy()
+			if nowUnix >= v.authenticatedUntilUnixNano {
+				r.AuthenticatedData = false
+			}
 			ageSeconds := int64(0)
 			if nowUnix > v.storedUnixNano {
 				ageSeconds = (nowUnix - v.storedUnixNano) / int64(time.Second)
@@ -2177,8 +2186,9 @@ func respFromCacheItemWithLazyPolicy(v *item, lazyStaleTTL int, expiredResponseT
 		} else if domainSetContainsToken(v.domainSet, "DDNS域名") {
 			canLazyStale = false
 		}
-		if lazyStaleTTL > 0 && nowUnix < staleUntilUnixNano && canLazyStale {
+		if lazyStaleTTL > 0 && nowUnix < staleUntilUnixNano && canLazyStale && !v.dnssec && positiveCacheResponse(m) {
 			r := m.Copy()
+			r.AuthenticatedData = false
 			dnsutils.SetTTL(r, uint32(expiredResponseTTL))
 			return r, true, rawDomainSet, false
 		}
@@ -2190,7 +2200,7 @@ func (c *Cache) applyClientTTL(msg *dns.Msg) {
 	if c == nil || c.args == nil || msg == nil {
 		return
 	}
-	if msg.Rcode != dns.RcodeSuccess {
+	if !positiveCacheResponse(msg) || responseHasSignatures(msg) {
 		return
 	}
 	applyClientTTL(msg, c.args.ClientTTLMin, c.args.ClientTTLMax)
@@ -2212,6 +2222,7 @@ func (v *item) refreshTTLOffsets() {
 	if v == nil || len(v.resp) == 0 {
 		return
 	}
+	defer v.refreshResponsePolicy()
 	offsets := findResponseTTLOffsets(v.resp)
 	if len(offsets) == 0 {
 		v.ttlOffsets = nil
@@ -2284,8 +2295,13 @@ func buildCachedWirePayload(v *item, txid uint16, lazy bool, expiredResponseTTL 
 	copy(wire, v.resp)
 	binary.BigEndian.PutUint16(wire[:2], txid)
 	wire[3] |= 0x80 // RecursionAvailable; matches EntryHandler's normal response path.
-	rcode := int(wire[3] & 0x0f)
-	if rcode != dns.RcodeSuccess {
+	if lazy || nowUnix >= v.authenticatedUntilUnixNano {
+		wire[3] &^= 0x20 // RFC 8767: stale responses must not carry AD.
+	}
+	if v.dnssec || !positiveCacheWire(wire) {
+		if lazy {
+			return nil
+		}
 		clientTTLMin = 0
 		clientTTLMax = 0
 	}
@@ -2416,68 +2432,15 @@ func (c *Cache) saveRespToCache(msgKey string, qCtx *query_context.Context, rout
 		return nil, false
 	}
 
-	var msgTtl time.Duration
-	var cacheTtl time.Duration
-	var successfulResponse bool
-	switch r.Rcode {
-	case dns.RcodeNameError:
-		msgTtl = time.Duration(c.args.NXDomainTTL) * time.Second
-		cacheTtl = msgTtl
-	case dns.RcodeServerFailure:
-		msgTtl = time.Duration(c.args.ServfailTTL) * time.Second
-		cacheTtl = msgTtl
-	case dns.RcodeSuccess:
-		successfulResponse = true
-		minTTL := dnsutils.GetMinimalTTL(r)
-		if len(r.Answer) == 0 { // Empty answer. Set ttl between 0~300.
-			const maxEmtpyAnswerTtl = 300
-			msgTtl = time.Duration(min(minTTL, maxEmtpyAnswerTtl)) * time.Second
-			// 空答案（NOERROR 无记录）不应套用 lazy_cache_ttl（cache_main 高达 30 天）。
-			// 否则上游一次瞬时空响应会被长期 lazy 复用，表现为"时好时坏、过段时间才恢复"。
-			// 这类近似 negative 的结果只做短时后端缓存，让其尽快重新查询真实记录。
-			cacheTtl = msgTtl
-		} else {
-			msgTtl = time.Duration(minTTL) * time.Second
-			if c.args.LazyCacheTTL > 0 {
-				cacheTtl = time.Duration(c.args.LazyCacheTTL) * time.Second
-			} else {
-				cacheTtl = msgTtl
-			}
-		}
-	}
-
-	const minCacheableTTL = 5 * time.Second
-	if msgTtl <= 0 {
-		msgTtl = minCacheableTTL
-	}
-	if successfulResponse && c.args.ClientTTLMin > 0 {
-		clientMinTTL := time.Duration(c.args.ClientTTLMin) * time.Second
-		if msgTtl < clientMinTTL {
-			msgTtl = clientMinTTL
-		}
-	}
-	if cacheTtl <= 0 {
-		cacheTtl = minCacheableTTL
-	}
-	if cacheTtl < msgTtl {
-		cacheTtl = msgTtl
-	}
-	if overrideCacheTTL, overrideStaleTTL, ok := c.domainSetTTLOverride(domainSet); ok {
-		if overrideCacheTTL > 0 {
-			cacheTtl = time.Duration(overrideCacheTTL) * time.Second
-		}
-		if overrideStaleTTL > 0 {
-			staleCacheTTL := msgTtl + time.Duration(overrideStaleTTL)*time.Second
-			if cacheTtl < staleCacheTTL {
-				cacheTtl = staleCacheTTL
-			}
-		}
-		if cacheTtl < msgTtl {
-			cacheTtl = msgTtl
-		}
+	msgTtl, cacheTtl, cacheable := c.responseCacheTTL(r, domainSet)
+	if !cacheable {
+		return nil, false
 	}
 
 	msgToCache := copyNoOpt(r)
+	if !positiveCacheResponse(msgToCache) || responseHasSignatures(msgToCache) {
+		dnsutils.ApplyMaximumTTL(msgToCache, uint32(msgTtl/time.Second))
+	}
 	packedMsg, err := msgToCache.Pack()
 	if err != nil {
 		return nil, false

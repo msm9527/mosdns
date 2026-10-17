@@ -431,7 +431,7 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	}
 }
 
-func TestFastCacheClampsAuthorityTTLForNegativeResponse(t *testing.T) {
+func TestFastCacheRejectsAuthorityNegativeResponse(t *testing.T) {
 	stats := &fastStats{}
 	fc := newFastCache(fastCacheConfig{
 		internalTTL: time.Minute,
@@ -442,29 +442,17 @@ func TestFastCacheClampsAuthorityTTLForNegativeResponse(t *testing.T) {
 	name := "negative.example.org."
 	qtype := uint16(dns.TypeA)
 	resp := makeNXDomainWithSOA(t, name, 0x1111, 120)
-	fc.Store(name, qtype, resp, "negative", false)
+	if fc.Store(name, qtype, resp, "negative", false) {
+		t.Fatal("negative response entered the long-lived fast cache")
+	}
 
 	query := makeQuery(t, name, qtype, 0x9999)
 	buf := make([]byte, len(resp))
 	copy(buf, query)
 	hash := fastQNameHashString(name, qtype)
-	action, respLen, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
-	if action != server.FastActionReply {
-		t.Fatalf("expected cache hit, got action=%d", action)
-	}
-
-	var out dns.Msg
-	if err := out.Unpack(buf[:respLen]); err != nil {
-		t.Fatalf("unpack negative response: %v", err)
-	}
-	if out.Rcode != dns.RcodeNameError {
-		t.Fatalf("expected NXDOMAIN, got rcode=%d", out.Rcode)
-	}
-	if len(out.Ns) != 1 {
-		t.Fatalf("expected authority SOA, got %d records", len(out.Ns))
-	}
-	if out.Ns[0].Header().Ttl != 30 {
-		t.Fatalf("authority ttl should be clamped to 30, got %d", out.Ns[0].Header().Ttl)
+	action, _, _, _, _ := fc.GetOrUpdating(hash, buf, name, qtype, true)
+	if action != server.FastActionContinue {
+		t.Fatalf("negative response should use the shared cache lifetime, got action=%d", action)
 	}
 }
 

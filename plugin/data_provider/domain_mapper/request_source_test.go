@@ -49,7 +49,7 @@ func mapperWithSourceProvider(t *testing.T, provider data_provider.RuleExporter)
 }
 
 func TestRequestSourceValidatorAcrossMapperEntryPoints(t *testing.T) {
-	for _, location := range []string{"compiled", "hot"} {
+	for _, location := range []string{"compiled", "hot", "both"} {
 		for _, entry := range []string{"fast", "legacy_fast", "exec", "fast_exec"} {
 			for _, source := range []server.RequestSource{server.RequestSourceUnspecified, server.RequestSourceUser, server.RequestSourcePrewarm, server.RequestSourceRefresh} {
 				if entry == "legacy_fast" && source != server.RequestSourceUser {
@@ -58,9 +58,10 @@ func TestRequestSourceValidatorAcrossMapperEntryPoints(t *testing.T) {
 				for _, stale := range []bool{false, true} {
 					t.Run(location+"/"+entry+"/"+source.String()+"/"+map[bool]string{true: "stale", false: "valid"}[stale], func(t *testing.T) {
 						exporter := &mockRuleExporter{}
-						if location == "compiled" {
+						if location != "hot" {
 							exporter.rules = []string{"full:stale.example"}
-						} else {
+						}
+						if location != "compiled" {
 							exporter.hotRules = []string{"full:stale.example"}
 						}
 						spy := &sourceValidationSpy{mockRuleExporter: exporter, expires: time.Now().Add(time.Hour)}

@@ -53,6 +53,7 @@ type compiledMatch struct {
 
 type providerRuntime struct {
 	result              *MatchResult
+	sourceKey           any
 	validator           coremain.HotRuleRuntimeValidator
 	validatorWithSource coremain.HotRuleRuntimeValidatorWithSource
 }
@@ -293,19 +294,6 @@ func normalizeRuleKey(rule string) string {
 		return rule
 	}
 	return "domain:" + rule
-}
-
-func mergeTagStrings(current, next string) string {
-	if next == "" {
-		return current
-	}
-	if current == "" {
-		return next
-	}
-	if strings.Contains(current, next) {
-		return current
-	}
-	return current + "|" + next
 }
 
 func (dm *DomainMapper) triggerUpdate() {

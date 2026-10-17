@@ -523,7 +523,8 @@ func fastRuleRevisionFromJoined(revision string) fastRuleRevision {
 
 type fastCacheItem struct {
 	// Keep the atomic field first so 32-bit ARM gets 8-byte alignment.
-	expire int64
+	expire             int64
+	authenticatedUntil int64
 
 	resp                 []byte
 	audit                fastAuditResponseMeta
@@ -1278,6 +1279,7 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		txid0, txid1 := buf[0], buf[1]
 		copy(buf, ptr.resp)
 		buf[0], buf[1] = txid0, txid1
+		clearFastStaleAD(buf[:respLen], ptr, expire, now)
 		return server.FastActionReply, respLen, ptr.ruleFlags, ptr.domainSet, false, ptr.audit
 	}
 	if fc.stats != nil {
@@ -1295,7 +1297,7 @@ func (fc *fastCache) storeWithMeta(qname string, qtype uint16, resp []byte, dset
 }
 
 func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []byte, dset string, fakeIP bool, clientDirect bool, ruleFlags uint64, ruleRevision fastRuleRevision, ruleMatch ...server.FastRuleMatchMeta) bool {
-	if fc.shouldBypassDomainSet(dset) {
+	if !shouldStoreFastResponse(resp) || fc.shouldBypassDomainSet(dset) {
 		return false
 	}
 	qname = fastNormalizeQNameString(qname)
@@ -1305,6 +1307,8 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 	bakedResp := make([]byte, len(resp))
 	copy(bakedResp, resp)
 	offsets := findTTLOffsets(bakedResp)
+	now := time.Now()
+	authenticatedUntil := fastAuthenticatedUntil(resp, offsets, now)
 	for _, off := range offsets {
 		if off+4 <= len(bakedResp) {
 			ttl := binary.BigEndian.Uint32(bakedResp[off : off+4])
@@ -1319,7 +1323,8 @@ func (fc *fastCache) storeWithRuleRevision(qname string, qtype uint16, resp []by
 	item := &fastCacheItem{
 		resp:                 bakedResp,
 		audit:                fastAuditResponseMetaFromPayloadIfEnabled(fc.cfg.auditEnabled, strings.TrimSuffix(qname, "."), bakedResp),
-		expire:               time.Now().Add(internalTTL).Unix(),
+		expire:               now.Add(internalTTL).Unix(),
+		authenticatedUntil:   authenticatedUntil,
 		updating:             0,
 		domainSet:            dset,
 		domainMapperRevision: ruleRevision.domainMapper,
@@ -1368,6 +1373,7 @@ func (fc *fastCache) CopyResponseWithAudit(txid uint16, qname string, qtype uint
 	resp := pool.GetBuf(len(ptr.resp))
 	copy(*resp, ptr.resp)
 	binary.BigEndian.PutUint16((*resp)[:2], txid)
+	clearFastStaleAD(*resp, ptr, atomic.LoadInt64(&ptr.expire), fastNowUnix())
 	return resp, ptr.audit
 }
 

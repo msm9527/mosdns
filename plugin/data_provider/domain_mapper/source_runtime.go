@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	domainmatcher "github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 	"github.com/IrineSistiana/mosdns/v5/pkg/server"
 	"github.com/IrineSistiana/mosdns/v5/plugin/data_provider"
 )
@@ -122,7 +123,7 @@ func buildProviderRegistry(ruleConfigs []RuleConfig, providers map[string]data_p
 			continue
 		}
 		registry.byTag[tag] = uint16(len(registry.providers))
-		runtime := providerRuntime{result: result, validator: validators[tag]}
+		runtime := providerRuntime{result: result, sourceKey: comparableProviderKey(providers[tag]), validator: validators[tag]}
 		if aware, ok := providers[tag].(runtimeValidationAwareExporter); !ok || aware.HasRuntimeHotRuleValidation() {
 			runtime.validatorWithSource, _ = providers[tag].(coremain.HotRuleRuntimeValidatorWithSource)
 		}
@@ -259,7 +260,7 @@ func appendUniqueDynamicProvider(dst []*providerRuntime, provider *providerRunti
 		return dst
 	}
 	for _, existing := range dst {
-		if existing == provider {
+		if sameDynamicProvider(existing, provider) {
 			return dst
 		}
 	}
@@ -343,7 +344,7 @@ func allowProvider(provider *providerRuntime, domain string, now time.Time, sour
 }
 
 func normalizedValidationDomain(qname string) string {
-	return strings.TrimSuffix(ensureFQDN(qname), ".")
+	return domainmatcher.NormalizeDomain(strings.TrimSuffix(strings.TrimSpace(qname), "."))
 }
 
 func (dm *DomainMapper) resolveCompiledMatch(compiled *compiledMatch, qname string, now time.Time, source server.RequestSource) *MatchResult {
@@ -354,12 +355,18 @@ func (dm *DomainMapper) resolveCompiledMatch(compiled *compiledMatch, qname stri
 		return compiled.staticResult
 	}
 	domain := normalizedValidationDomain(qname)
-	merged := cloneMatchResult(compiled.staticResult)
+	// Compiled results are immutable. Only allocate a merged result when two
+	// distinct outputs actually contribute to this query.
+	merged := compiled.staticResult
 	for _, provider := range compiled.dynamicProviders {
 		if !allowProvider(provider, domain, now, source) {
 			continue
 		}
-		merged = mergeMatchResult(merged, provider.result)
+		if merged == nil {
+			merged = provider.result
+		} else if !sameMatchResult(merged, provider.result) {
+			merged = mergeMatchResult(merged, provider.result)
+		}
 	}
 	return merged
 }

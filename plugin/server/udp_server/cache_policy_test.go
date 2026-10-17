@@ -43,9 +43,9 @@ func TestShouldStoreFastResponse(t *testing.T) {
 			want:    true,
 		},
 		{
-			name:    "cache nxdomain",
+			name:    "skip nxdomain",
 			payload: makeRcodeResponse(t, name, dns.TypeA, 0x1111, dns.RcodeNameError),
-			want:    true,
+			want:    false,
 		},
 		{
 			name:    "skip servfail",

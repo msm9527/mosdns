@@ -3,6 +3,7 @@ package domain_mapper
 import (
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/matcher/domain"
 )
@@ -12,6 +13,7 @@ type compiledMatcherSet struct {
 	domain  *domain.SubDomainMatcher[*compiledMatch]
 	regex   *domain.RegexMatcher[*compiledMatch]
 	keyword *domain.KeywordMatcher[*compiledMatch]
+	cache   atomic.Pointer[compiledMatchCache]
 }
 
 func newCompiledMatcherSet() *compiledMatcherSet {
@@ -27,6 +29,11 @@ func (m *compiledMatcherSet) Add(rule string, compiled *compiledMatch) error {
 	rule = strings.TrimSpace(rule)
 	if rule == "" || compiled == nil {
 		return nil
+	}
+	// Production builds a new matcher before publishing it. Also invalidate
+	// memoized evidence when a caller adds a rule to an unpublished test matcher.
+	if cache := m.cache.Load(); cache != nil {
+		cache.Flush()
 	}
 	typ, pattern, ok := strings.Cut(rule, ":")
 	if !ok {
@@ -48,6 +55,17 @@ func (m *compiledMatcherSet) Add(rule string, compiled *compiledMatch) error {
 }
 
 func (m *compiledMatcherSet) Match(qname string) (*compiledMatch, bool) {
+	cache := m.matchCache()
+	key := compiledQueryKey(qname)
+	if compiled, ok := cache.Get(key); ok {
+		return compiled, compiled != nil
+	}
+	compiled, ok := m.matchUncached(qname)
+	cache.Set(key, compiled)
+	return compiled, ok
+}
+
+func (m *compiledMatcherSet) matchUncached(qname string) (*compiledMatch, bool) {
 	var combined *compiledMatch
 	fullMatch, fullOK := m.full.Match(qname)
 	combined = appendCompiledMatch(combined, fullMatch, fullOK)
@@ -69,6 +87,9 @@ func appendCompiledMatch(dst *compiledMatch, compiled *compiledMatch, ok bool) *
 	}
 	if dst == nil {
 		return compiled
+	}
+	if containsCompiledMatch(dst, compiled) {
+		return dst
 	}
 	merged := &compiledMatch{
 		staticResult: mergeMatchResult(dst.staticResult, compiled.staticResult),

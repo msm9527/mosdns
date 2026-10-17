@@ -119,37 +119,6 @@ func (dm *DomainMapper) rebuildHotLookupLocked() {
 	dm.revision.Add(1)
 }
 
-func (dm *DomainMapper) match(qname string, source server.RequestSource) (*MatchResult, bool) {
-	if source == server.RequestSourceUnspecified {
-		source = server.RequestSourceUser
-	}
-	matcher := dm.loadMatcher()
-	mainCompiled, mainOK := matcher.Match(qname)
-	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
-	if len(lookup) == 0 {
-		if mainCompiled == nil {
-			return nil, false
-		}
-		if len(mainCompiled.dynamicProviders) == 0 {
-			return mainCompiled.staticResult, mainOK
-		}
-	}
-
-	now := time.Now()
-	mainResult := dm.resolveCompiledMatch(mainCompiled, qname, now, source)
-	hotResult, hotOK := dm.matchHotWithLookup(lookup, qname, now, source)
-	switch {
-	case mainResult == nil && hotResult == nil:
-		return nil, false
-	case mainResult == nil:
-		return hotResult, hotOK
-	case hotResult == nil:
-		return mainResult, mainOK
-	default:
-		return mergeMatchResult(mainResult, hotResult), true
-	}
-}
-
 func (dm *DomainMapper) matchHot(qname string, now time.Time, source server.RequestSource) (*MatchResult, bool) {
 	lookup := dm.hotLookup.Load().(map[string]*compiledMatch)
 	return dm.matchHotWithLookup(lookup, qname, now, source)
@@ -245,9 +214,9 @@ func fastEnsureFQDN(name string) string {
 	if name == "" {
 		return ""
 	}
-	needsChange := name[len(name)-1] != '.'
+	needsChange := name[len(name)-1] != '.' || name == "." || (len(name) > 1 && name[len(name)-2] == '.')
 	for i := 0; i < len(name) && !needsChange; i++ {
-		if name[i] >= 'A' && name[i] <= 'Z' {
+		if (name[i] >= 'A' && name[i] <= 'Z') || name[i] >= 0x80 {
 			needsChange = true
 		}
 	}
