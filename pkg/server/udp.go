@@ -56,6 +56,7 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 	if err != nil {
 		return fmt.Errorf("failed to init oob handler, %w", err)
 	}
+	replyOOB := newUDPReplyOOB(oobWriter)
 	batch := newUDPPacketBatch(c, oobReader != nil, opts.FastBypassWithRuleMatch != nil || opts.FastBypass != nil)
 	defer batch.close()
 	flush := func() {
@@ -99,11 +100,7 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 				}
 				if action == FastActionReply {
 					if respLen > 0 {
-						var oob []byte
-						if oobWriter != nil && dstIpFromCm != nil {
-							oob = oobWriter(dstIpFromCm)
-						}
-						batch.reply(index, respLen, oob)
+						batch.reply(index, respLen, replyOOB(dstIpFromCm))
 					}
 					continue
 				}
@@ -121,8 +118,9 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 				continue
 			}
 
-			// Control-message addresses can alias the receive slot reused next read.
-			dstIpFromCm = append(net.IP(nil), dstIpFromCm...)
+			// Build immutable reply control data before reusing the receive slot.
+			// It is safe for concurrent handlers to share the cached bytes.
+			responseOOB := replyOOB(dstIpFromCm)
 			go func() {
 				payload := h.Handle(listenerCtx, q, QueryMeta{
 					ClientAddr:           remoteAddr.Addr(),
@@ -139,11 +137,7 @@ func ServeUDP(c *net.UDPConn, h Handler, opts UDPServerOpts) error {
 				}
 				defer pool.ReleaseBuf(payload)
 
-				var oob []byte
-				if oobWriter != nil && dstIpFromCm != nil {
-					oob = oobWriter(dstIpFromCm)
-				}
-				if _, _, err := c.WriteMsgUDPAddrPort(*payload, oob, remoteAddr); err != nil {
+				if _, _, err := c.WriteMsgUDPAddrPort(*payload, responseOOB, remoteAddr); err != nil {
 					logger.Warn("failed to write response", zap.Stringer("client", remoteAddr), zap.Error(err))
 				}
 			}()

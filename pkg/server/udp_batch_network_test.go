@@ -50,8 +50,9 @@ func TestUDPBatchMixedClientsAndReusedBuffers(t *testing.T) {
 			queries := make([]*dns.Msg, count)
 			for i := range clients {
 				destination := tc.destination
-				if tc.destination == "127.0.0.2" && i%2 == 0 {
-					destination = "127.0.0.1"
+				if tc.destination == "127.0.0.2" {
+					// More local addresses than the control-message cache holds.
+					destination = fmt.Sprintf("127.0.0.%d", i%6+1)
 				}
 				clients[i], err = net.DialUDP(tc.network, nil, &net.UDPAddr{IP: net.ParseIP(destination), Port: conn.LocalAddr().(*net.UDPAddr).Port})
 				if err != nil {

@@ -102,12 +102,18 @@ func (b *udpPacketBatch) flush() error {
 		}
 		b.pending = 0
 	}()
-	if b.conn == nil {
-		if b.pending == 0 {
-			return nil
-		}
+	if b.pending == 0 {
+		return nil
+	}
+	if b.conn == nil || b.pending == 1 && b.native != nil {
+		// A lone reply gains nothing from sendmmsg's message preparation.
+		// Retain the native AddrPort write path for sparse traffic.
 		m := &b.send[0]
-		_, _, err := b.native.WriteMsgUDPAddrPort(m.Buffers[0], m.OOB, b.peer)
+		peer := b.peer
+		if b.conn != nil {
+			peer = m.Addr.(*net.UDPAddr).AddrPort()
+		}
+		_, _, err := b.native.WriteMsgUDPAddrPort(m.Buffers[0], m.OOB, peer)
 		return err
 	}
 	for sent := 0; sent < b.pending; {
@@ -127,4 +133,35 @@ func (b *udpPacketBatch) flush() error {
 		return err
 	}
 	return nil
+}
+
+// Each listener normally answers through only a few local addresses. Cache a
+// bounded number of immutable control messages, keeping per-packet allocations
+// off both fast and full reply paths. Only the receive loop calls this function;
+// asynchronous handlers only read returned bytes, which are never overwritten.
+func newUDPReplyOOB(writer writeSrcAddrToOOB) func(net.IP) []byte {
+	if writer == nil {
+		return func(net.IP) []byte { return nil }
+	}
+	type entry struct {
+		address netip.Addr
+		data    []byte
+	}
+	var cache [4]entry
+	next := 0
+	return func(ip net.IP) []byte {
+		address, ok := netip.AddrFromSlice(ip)
+		if !ok {
+			return nil
+		}
+		for _, cached := range cache {
+			if cached.address == address {
+				return cached.data
+			}
+		}
+		data := writer(ip)
+		cache[next] = entry{address: address, data: data}
+		next = (next + 1) % len(cache)
+		return data
+	}
 }
