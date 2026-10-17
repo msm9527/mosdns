@@ -525,10 +525,10 @@ type fastCacheItem struct {
 	// Keep the atomic field first so 32-bit ARM gets 8-byte alignment.
 	expire             int64
 	authenticatedUntil int64
+	refreshAfter       atomic.Int64
 
 	resp                 []byte
 	audit                fastAuditResponseMeta
-	updating             uint32
 	domainSet            string
 	domainMapperRevision fastRevisionValue
 	rewriteRevision      fastRevisionValue
@@ -1231,19 +1231,12 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 		now = fastNowUnix()
 	}
 	expire := atomic.LoadInt64(&ptr.expire)
-	staleMax := fc.cfg.staleMax
-	if _, overrideStaleMax, ok := fc.domainSetTTLOverride(ptr.domainSet); ok && overrideStaleMax > 0 {
-		staleMax = overrideStaleMax
-	}
-	staleAllowed := true
-	if now > expire {
+	if now >= expire {
+		staleAllowed := fc.withinStaleWindow(ptr, expire, now)
 		if fc.stats != nil {
 			fc.stats.cacheExpired.AddShard(statKey, 1)
 		}
-		if staleMax > 0 && now-expire > int64(staleMax/time.Second) {
-			staleAllowed = false
-		}
-		if atomic.CompareAndSwapUint32(&ptr.updating, 0, 1) {
+		if ptr.scheduleRefresh(now, fc.cfg.staleRetry) {
 			if fc.stats != nil {
 				fc.stats.cacheMiss.AddShard(statKey, 1)
 				if ptr.resp != nil {
@@ -1251,18 +1244,6 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 				}
 			}
 			return server.FastActionContinue, 0, ptr.ruleFlags, ptr.domainSet, ptr.resp != nil && staleAllowed, fastAuditResponseMeta{}
-		}
-		retryAfter := int64(fc.cfg.staleRetry / time.Second)
-		if now-expire > retryAfter && atomic.CompareAndSwapUint32(&ptr.updating, 1, 0) {
-			if atomic.CompareAndSwapUint32(&ptr.updating, 0, 1) {
-				if fc.stats != nil {
-					fc.stats.cacheMiss.AddShard(statKey, 1)
-					if ptr.resp != nil {
-						fc.stats.refreshRequested.AddShard(statKey, 1)
-					}
-				}
-				return server.FastActionContinue, 0, ptr.ruleFlags, ptr.domainSet, ptr.resp != nil && staleAllowed, fastAuditResponseMeta{}
-			}
 		}
 		if !staleAllowed {
 			if fc.stats != nil {

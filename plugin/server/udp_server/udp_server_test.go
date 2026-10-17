@@ -23,6 +23,12 @@ func TestFastCacheItemAtomicFieldAlignment(t *testing.T) {
 	if offset := unsafe.Offsetof(item.expire); offset != 0 {
 		t.Fatalf("expire must stay at struct offset 0 for 32-bit atomic alignment, got %d", offset)
 	}
+	if offset := unsafe.Offsetof(item.refreshAfter); offset%8 != 0 {
+		t.Fatalf("refreshAfter must remain 8-byte aligned, got offset %d", offset)
+	}
+	if !item.scheduleRefresh(100, time.Second) || item.scheduleRefresh(100, time.Second) || !item.scheduleRefresh(101, time.Second) {
+		t.Fatal("atomic refresh deadline did not reserve and renew correctly")
+	}
 }
 
 func mustFastCacheItem(t testing.TB, fc *fastCache, name string, qtype uint16) *fastCacheItem {
@@ -535,41 +541,25 @@ func TestIsFakeIPResponse(t *testing.T) {
 }
 
 func TestFastCacheHonorsConfiguredStaleRetryWindow(t *testing.T) {
-	name := "retry.example."
-	qtype := uint16(dns.TypeA)
-	hash := fastQNameHashString(name, qtype)
-	resp := makeAnswer(t, name, qtype, 0x1111, 30)
-
-	fcSlow := newFastCache(fastCacheConfig{
-		internalTTL: time.Minute,
-		staleRetry:  time.Hour,
-	}, &fastStats{})
-	fcSlow.Store(name, qtype, resp, "", false)
-	item := mustFastCacheItem(t, fcSlow, name, qtype)
-	atomic.StoreInt64(&item.expire, time.Now().Add(-30*time.Second).Unix())
-	atomic.StoreUint32(&item.updating, 1)
-
-	buf := make([]byte, len(resp))
-	copy(buf, makeQuery(t, name, qtype, 0x9999))
-	_, _, _, _, staleRefresh := fcSlow.GetOrUpdating(hash, buf, name, qtype, true)
-	if staleRefresh {
-		t.Fatal("expected stale refresh to stay suppressed before configured retry window")
-	}
-
-	fcFast := newFastCache(fastCacheConfig{
-		internalTTL: time.Minute,
-		staleRetry:  time.Second,
-	}, &fastStats{})
-	fcFast.Store(name, qtype, resp, "", false)
-	item = mustFastCacheItem(t, fcFast, name, qtype)
-	atomic.StoreInt64(&item.expire, time.Now().Add(-30*time.Second).Unix())
-	atomic.StoreUint32(&item.updating, 1)
-
-	buf = make([]byte, len(resp))
-	copy(buf, makeQuery(t, name, qtype, 0x9999))
-	_, _, _, _, staleRefresh = fcFast.GetOrUpdating(hash, buf, name, qtype, true)
-	if !staleRefresh {
-		t.Fatal("expected stale refresh after retry window elapsed")
+	for _, retry := range []time.Duration{time.Second, time.Hour} {
+		t.Run(retry.String(), func(t *testing.T) {
+			name := "retry.example."
+			qtype := uint16(dns.TypeA)
+			fc := newFastCache(fastCacheConfig{internalTTL: time.Minute, staleRetry: retry}, &fastStats{})
+			fc.Store(name, qtype, makeAnswer(t, name, qtype, 0x1111, 30), "", false)
+			item := mustFastCacheItem(t, fc, name, qtype)
+			now := fastNowUnix()
+			atomic.StoreInt64(&item.expire, now-60)
+			for i, at := range []int64{now, now + 30} {
+				buf := make([]byte, 512)
+				copy(buf, makeQuery(t, name, qtype, 0x9999))
+				_, _, _, _, refresh, _ := fc.replyFromItemAt(item, true, buf, true, false, fastRuleRevision{}, item.hash, at)
+				want := i == 0 || retry < 30*time.Second
+				if refresh != want {
+					t.Fatalf("attempt %d refresh=%v, want %v for retry %s", i, refresh, want, retry)
+				}
+			}
+		})
 	}
 }
 
@@ -587,7 +577,7 @@ func TestFastCacheStopsServingStaleAfterMaxWindow(t *testing.T) {
 	fc.Store(name, qtype, resp, "", false)
 	item := mustFastCacheItem(t, fc, name, qtype)
 	atomic.StoreInt64(&item.expire, time.Now().Add(-10*time.Second).Unix())
-	atomic.StoreUint32(&item.updating, 1)
+	item.refreshAfter.Store(fastNowUnix() + 3600)
 
 	buf := make([]byte, len(resp))
 	copy(buf, makeQuery(t, name, qtype, 0x9999))
@@ -626,7 +616,7 @@ func TestFastCacheDomainSetTTLOverrideKeepsHighChurnHot(t *testing.T) {
 	}
 
 	atomic.StoreInt64(&item.expire, time.Now().Add(-10*time.Second).Unix())
-	atomic.StoreUint32(&item.updating, 1)
+	item.refreshAfter.Store(fastNowUnix() + 3600)
 	buf := make([]byte, len(resp))
 	copy(buf, makeQuery(t, name, qtype, 0x9999))
 	action, _, _, _, staleRefresh := fc.GetOrUpdating(hash, buf, name, qtype, true)
@@ -1795,7 +1785,7 @@ func TestFastHandlerServesStaleWhileRefreshingExpiredCache(t *testing.T) {
 	hash := fastQNameHashString(name, dns.TypeA)
 	ptr := mustFastCacheItem(t, fc, name, dns.TypeA)
 	atomic.StoreInt64(&ptr.expire, fastNowUnix()-1)
-	atomic.StoreUint32(&ptr.updating, 1)
+	ptr.refreshAfter.Store(fastNowUnix() + 3600)
 
 	called := make(chan struct{}, 1)
 	handler := &fastHandler{
@@ -1871,7 +1861,7 @@ func TestFastHandlerSkipsStaleWhenControlSwitchChanges(t *testing.T) {
 	}
 	ptr := mustFastCacheItem(t, fc, name, dns.TypeA)
 	atomic.StoreInt64(&ptr.expire, fastNowUnix()-1)
-	atomic.StoreUint32(&ptr.updating, 1)
+	ptr.refreshAfter.Store(fastNowUnix() + 3600)
 
 	called := make(chan struct{}, 1)
 	handler := &fastHandler{

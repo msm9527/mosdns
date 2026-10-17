@@ -92,7 +92,7 @@ func TestFastStaleRepliesUseShortTTLWithoutChangingFreshPayload(t *testing.T) {
 	fc.Store(name, dns.TypeA, payload, "", false)
 	item := mustFastCacheItem(t, fc, name, dns.TypeA)
 	atomic.StoreInt64(&item.expire, fastNowUnix()-1)
-	atomic.StoreUint32(&item.updating, 1)
+	item.refreshAfter.Store(fastNowUnix() + 3600)
 	buf := make([]byte, len(payload))
 	copy(buf, makeQuery(t, name, dns.TypeA, 84))
 	action, length, _, _, _ := fc.GetOrUpdating(fastQNameHashString(name, dns.TypeA), buf, name, dns.TypeA, true)

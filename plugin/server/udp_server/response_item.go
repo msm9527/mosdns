@@ -43,7 +43,6 @@ func (fc *fastCache) newResponseItem(qname string, qtype uint16, resp []byte, ds
 		audit:                fastAuditResponseMetaFromPayloadIfEnabled(fc.cfg.auditEnabled, strings.TrimSuffix(qname, "."), bakedResp),
 		expire:               now.Add(internalTTL).Unix(),
 		authenticatedUntil:   authenticatedUntil,
-		updating:             0,
 		domainSet:            dset,
 		domainMapperRevision: ruleRevision.domainMapper,
 		rewriteRevision:      ruleRevision.rewrite,
@@ -86,6 +85,10 @@ func (fc *fastCache) copyResponseItem(txid uint16, qname string, qtype uint16, a
 	if len(ptr.resp) == 0 {
 		return nil, fastAuditResponseMeta{}, nil
 	}
+	expire, now := atomic.LoadInt64(&ptr.expire), fastNowUnix()
+	if now >= expire && !fc.withinStaleWindow(ptr, expire, now) {
+		return nil, fastAuditResponseMeta{}, nil
+	}
 	size := len(ptr.resp)
 	if len(withOPT) > 0 {
 		size = ptr.replySize(withOPT[0])
@@ -99,6 +102,6 @@ func (fc *fastCache) copyResponseItem(txid uint16, qname string, qtype uint16, a
 		return nil, fastAuditResponseMeta{}, nil
 	}
 	binary.BigEndian.PutUint16((*resp)[:2], txid)
-	applyFastCacheReplyPolicy(*resp, ptr, atomic.LoadInt64(&ptr.expire), fastNowUnix())
+	applyFastCacheReplyPolicy(*resp, ptr, expire, now)
 	return resp, ptr.audit, ptr
 }

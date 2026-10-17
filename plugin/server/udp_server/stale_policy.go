@@ -10,7 +10,7 @@ const fastStaleResponseTTL = uint32(5)
 
 func applyFastCacheReplyPolicy(payload []byte, item *fastCacheItem, expire, now int64) {
 	clearFastStaleAD(payload, item, expire, now)
-	if now > expire {
+	if now >= expire {
 		capFastStaleTTL(payload)
 	}
 }

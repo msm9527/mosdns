@@ -83,7 +83,7 @@ func refreshTestSeed(t *testing.T, h *fastHandler, q *dns.Msg, meta server.Query
 		t.Fatal("seed item missing")
 	}
 	atomic.StoreInt64(&item.expire, fastNowUnix()-1)
-	atomic.StoreUint32(&item.updating, 1)
+	item.refreshAfter.Store(fastNowUnix() + 3600)
 	return item
 }
 
