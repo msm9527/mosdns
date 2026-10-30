@@ -31,6 +31,46 @@ BASE_TESTS = {
                "TestTunSystemRouteFreshParseValidation",
                "TestDirectSystemExcludedFromAutomaticProxyGroups"],
 }
+SMART_TESTS = {
+    "transport/anytls/session": ["TestStreamDoesNotExposeSharedSessionCloseWrite"],
+    "component/smart/lightgbm": ["TestSmartModelRecoveryAndAtomicDownload",
+                                "TestSmartCollectorConfigurationLifecycle"],
+    "adapter/outboundgroup": ["TestSmartASNUnavailableFallback",
+                              "TestSmartGlobalTasksSurviveGroupReplacement",
+                              "TestSmartDialBudgetAllowsTransientJitter"],
+    "component/updater": ["TestSmartModelAutoUpdaterRetriesMissingAndFailedModel",
+                          "TestSmartModelUpdaterHotReload",
+                          "TestSmartModelUpdaterCancellationAndIdempotence",
+                          "TestSmartModelUpdaterPolicyConcurrentRegistration"],
+    "config": ["TestSmartModelUpdaterIntervalValidation"],
+}
+SELECTION_TESTS = ["TestNativeGroupSelectionConcurrent",
+                   "TestSelectorDefaultSelection",
+                   "TestFallbackStaleSelectionDoesNotClearNewChoice"]
+SMART_SELECTION_TESTS = ["TestSmartSelectionConcurrent",
+                        "TestSmartStaleSelectionDoesNotClearNewChoice"]
+
+SMART_TRANSFER_TESTS = ["TestSmartAutomaticWinnerPreservesHealthyStream",
+                        "TestSmartManualSelectionKeepsAutomaticPin",
+                        "TestSmartUDPWinnerDoesNotCloseTCPStream",
+                        "TestSmartFirstDialWaitersReadCommittedWinner",
+                        "TestSmartFirstDialCancellationAndFailureCleanup",
+                        "TestSmartManualDialFailurePreservesAutomaticPin",
+                        "TestSmartAutomaticSoftSkippedFailureClearsPin"]
+
+
+def patch_revision(channel):
+    return "msm.3" if channel == "smart" else "msm.2"
+
+
+def features(channel):
+    return ["direct-system", "tun.system-route-mark", "group.selection-concurrency"] + (
+        ["smart.feature-lifecycle", "smart.selection-concurrency", "smart.transfer-lifecycle"] if channel == "smart" else [])
+
+
+def selection_test_names(channel):
+    tests = SELECTION_TESTS + (SMART_SELECTION_TESTS + SMART_TRANSFER_TESTS if channel == "smart" else [])
+    return sorted(f"{MODULE}/adapter/outboundgroup:{test}" for test in tests)
 
 
 def run(*command, **kwargs):
@@ -81,9 +121,12 @@ def patch_smart_stream(source):
 
 
 def patch_files(channel):
-    files = ["native-system-route-direct.patch", "native-system-route-tun.patch"]
+    files = ["native-system-route-direct.patch", "native-system-route-tun.patch",
+             "group-selection-concurrency.patch"]
     if channel == "smart":
-        files.extend(["smart-anytls-isolation.patch", "smart-anytls-isolation_test.go.txt"])
+        files.extend(["smart-anytls-isolation.patch", "smart-anytls-isolation_test.go.txt",
+                      "smart-feature-lifecycle.patch", "smart-selection-concurrency.patch",
+                      "smart-transfer-lifecycle.patch"])
     return files
 
 
@@ -113,7 +156,8 @@ def verify_tests(source, channel, unit_only, sudo_tests):
         ])
         tests["listener"] = ["TestTunSystemRouteReloadNamespace"]
     if channel == "smart":
-        tests["transport/anytls/session"] = ["TestStreamDoesNotExposeSharedSessionCloseWrite"]
+        for package, names in SMART_TESTS.items():
+            tests.setdefault(package, []).extend(names)
     required = {(f"{MODULE}/{package}", test) for package, names in tests.items() for test in names}
     env = os.environ.copy()
     for variable in ("GOOS", "GOARCH", "GOAMD64", "GOARM", "GOMIPS"):
@@ -159,6 +203,19 @@ def run_test_gate(source, command, env, required, log_name):
     return sorted([f"{package}:{test}" for package, test in passed])
 
 
+def verify_selection_concurrency(source, channel):
+    required = {tuple(name.split(":")) for name in selection_test_names(channel)}
+    env = os.environ.copy()
+    for variable in ("GOOS", "GOARCH", "GOAMD64", "GOARM", "GOMIPS"):
+        env.pop(variable, None)
+    # Race tests execute on the CI host, independently of the packaged target.
+    env["CGO_ENABLED"] = "1"
+    names = "^(" + "|".join(re.escape(test) for _, test in sorted(required)) + ")$"
+    command = ["go", "test", "-json", "-race", "-count=1", "-tags",
+               env.get("MIHOMO_TAGS", "with_gvisor"), "-run", names, "./adapter/outboundgroup"]
+    return run_test_gate(source, command, env, required, ".msm-selection-race-tests.jsonl")
+
+
 def verify_nonlinux_options(source):
     # Explicit file arguments exercise the real !linux implementation on the
     # Linux CI host. The only harness substitute is the unused Listener type;
@@ -198,14 +255,20 @@ def main():
     proof = source / PROOF_FILE
     proof.unlink(missing_ok=True)
     patch_hashes = fingerprints(args.channel)
-    for patch in ("native-system-route-direct.patch", "native-system-route-tun.patch"):
+    for patch in ("native-system-route-direct.patch", "native-system-route-tun.patch",
+                  "group-selection-concurrency.patch"):
         apply_patch(source, patch)
     if args.channel == "smart":
         patch_smart_stream(source)
+        apply_patch(source, "smart-feature-lifecycle.patch")
+        apply_patch(source, "smart-selection-concurrency.patch")
+        apply_patch(source, "smart-transfer-lifecycle.patch")
     if args.apply_only:
         return
     source_hashes = source_fingerprints(source, args.channel)
     tests = verify_tests(source, args.channel, args.unit_only, args.sudo_tests)
+    race_tests = verify_selection_concurrency(source, args.channel)
+    tests += race_tests
     if not args.unit_only:
         tests += verify_nonlinux_options(source)
     if fingerprints(args.channel) != patch_hashes or source_fingerprints(source, args.channel) != source_hashes:
@@ -215,10 +278,11 @@ def main():
         "channel": args.channel,
         "source_repository": "vernesong/mihomo" if args.channel == "smart" else "MetaCubeX/mihomo",
         "source_commit": run("git", "rev-parse", "HEAD", cwd=source, capture_output=True).stdout.strip(),
-        "patch_revision": "msm.1",
-        "features": ["direct-system", "tun.system-route-mark"],
+        "patch_revision": patch_revision(args.channel),
+        "features": features(args.channel),
         "verified": not args.unit_only,
         "tests": tests,
+        "race_tests": race_tests,
         "patch_sha256": patch_hashes,
         "patched_file_sha256": source_hashes,
     }

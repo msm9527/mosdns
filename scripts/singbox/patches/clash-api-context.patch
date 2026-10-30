@@ -1,0 +1,116 @@
+diff --git a/experimental/clashapi/server.go b/experimental/clashapi/server.go
+index 8b7d71b..a968709 100644
+--- a/experimental/clashapi/server.go
++++ b/experimental/clashapi/server.go
+@@ -125,6 +125,10 @@ func NewServer(ctx context.Context, logFactory log.ObservableFactory, options op
+ 		//nolint:staticcheck
+ 		externalUIDownloadDetour: options.ExternalUIDownloadDetour,
+ 	}
++	// Requests inherit instance services (certificate roots, NTP and URL-test
++	// policy), while net/http still owns per-request cancellation. Start may
++	// replace s.ctx with a lifecycle context before Serve begins.
++	s.httpServer.BaseContext = func(net.Listener) context.Context { return s.ctx }
+ 	//goland:noinspection GoDeprecation
+ 	//nolint:staticcheck
+ 	if options.StoreMode || options.StoreSelected || options.StoreFakeIP || options.CacheFile != "" || options.CacheID != "" {
+diff --git a/experimental/clashapi/server_context_test.go b/experimental/clashapi/server_context_test.go
+new file mode 100644
+index 0000000..ad24200
+--- /dev/null
++++ b/experimental/clashapi/server_context_test.go
+@@ -0,0 +1,95 @@
++package clashapi
++
++import (
++	"context"
++	"crypto/x509"
++	"net"
++	"net/http"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing-box/adapter"
++	"github.com/sagernet/sing-box/common/trafficcontrol"
++	"github.com/sagernet/sing-box/common/urltest"
++	"github.com/sagernet/sing-box/experimental/clashmode"
++	"github.com/sagernet/sing-box/log"
++	"github.com/sagernet/sing-box/option"
++	"github.com/sagernet/sing/service"
++	"github.com/stretchr/testify/require"
++)
++
++type apiContextCertificateStore struct {
++	adapter.CertificateStore
++	pool *x509.CertPool
++}
++
++func (s *apiContextCertificateStore) Pool() *x509.CertPool { return s.pool }
++
++func TestAPIRequestsInheritInstanceServicesAndCancellation(t *testing.T) {
++	for _, fromClient := range []bool{false, true} {
++		t.Run(map[bool]string{false: "instance-close", true: "request-close"}[fromClient], func(t *testing.T) {
++			instance, closeInstance := context.WithCancel(context.Background())
++			defer closeInstance()
++			pool := x509.NewCertPool()
++			ctx := service.ContextWith[adapter.CertificateStore](instance, &apiContextCertificateStore{pool: pool})
++			ctx = service.ContextWithPtr(ctx, trafficcontrol.NewManager())
++			ctx = service.ContextWithPtr(ctx, urltest.NewHistoryStorage())
++			ctx = service.ContextWithPtr(ctx, clashmode.NewManager(ctx, log.NewNOPFactory().Logger(), "rule", []string{"rule"}))
++			ctx = urltest.ContextWithUnifiedDelay(ctx, true)
++			created, err := NewServer(ctx, log.NewNOPFactory(), option.ClashAPIOptions{})
++			require.NoError(t, err)
++			server := created.(*Server)
++			// Start installs a derived lifecycle context after NewServer returns.
++			lifecycle, closeLifecycle := context.WithCancel(server.ctx)
++			server.ctx = lifecycle
++			defer closeLifecycle()
++			inherited, canceled := make(chan bool, 1), make(chan struct{})
++			server.httpServer.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				inherited <- adapter.RootPoolFromContext(r.Context()) == pool && urltest.UnifiedDelayFromContext(r.Context())
++				<-r.Context().Done()
++				close(canceled)
++				w.WriteHeader(http.StatusNoContent)
++			})
++			listener, err := net.Listen("tcp", "127.0.0.1:0")
++			require.NoError(t, err)
++			defer server.httpServer.Close()
++			served := make(chan error, 1)
++			go func() { served <- server.httpServer.Serve(listener) }()
++			requestCtx, closeRequest := context.WithCancel(context.Background())
++			defer closeRequest()
++			request, err := http.NewRequestWithContext(requestCtx, http.MethodGet, "http://"+listener.Addr().String(), nil)
++			require.NoError(t, err)
++			client := &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}, Timeout: time.Second}
++			response := make(chan error, 1)
++			go func() {
++				result, err := client.Do(request)
++				if result != nil {
++					result.Body.Close()
++				}
++				response <- err
++			}()
++			select {
++			case valid := <-inherited:
++				require.True(t, valid, "HTTP request lost the instance certificate store or URL-test policy")
++			case <-time.After(time.Second):
++				t.Fatal("request did not reach server")
++			}
++			if fromClient {
++				closeRequest()
++			} else {
++				closeLifecycle()
++			}
++			select {
++			case <-canceled:
++			case <-time.After(time.Second):
++				t.Fatal("API request ignored cancellation")
++			}
++			if fromClient {
++				require.NoError(t, instance.Err())
++			}
++			<-response
++			require.NoError(t, server.httpServer.Close())
++			require.ErrorIs(t, <-served, http.ErrServerClosed)
++		})
++	}
++}

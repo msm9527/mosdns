@@ -29,15 +29,17 @@ targets = importlib.util.module_from_spec(target_spec)
 target_spec.loader.exec_module(targets)
 targets.validate_target(channel, suffix, package_format, os.environ)
 proof = json.loads(Path(module.PROOF_FILE).read_text())
+revision = module.patch_revision(channel)
 expected = {"schema": 1, "channel": channel, "source_commit": commit,
-            "patch_revision": "msm.1", "features": ["direct-system", "tun.system-route-mark"],
+            "patch_revision": revision, "features": module.features(channel),
             "verified": True, "patch_sha256": module.fingerprints(channel),
+            "race_tests": module.selection_test_names(channel),
             "patched_file_sha256": module.source_fingerprints(Path("."), channel)}
 if any(proof.get(key) != value for key, value in expected.items()):
     raise SystemExit("source has not passed the exact required native patch/test gate")
-if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+_-]*-msm[.]1", version):
+if not re.fullmatch(r"[0-9A-Za-z][0-9A-Za-z.+_-]*-" + re.escape(revision), version):
     raise SystemExit("version must explicitly identify the native MSM patch revision")
-if channel == "smart" and version != f"alpha-smart-{commit[:12]}-msm.1":
+if channel == "smart" and version != f"alpha-smart-{commit[:12]}-{revision}":
     raise SystemExit("Smart version does not identify the verified upstream source")
 PY
 

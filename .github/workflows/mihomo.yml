@@ -62,7 +62,7 @@ jobs:
           source_commit="$(bash scripts/mihomo/resolve-ref.sh MetaCubeX/mihomo "refs/tags/${version}")"
           {
             echo "source_commit=${source_commit}"
-            echo "version=${version}-msm.1"
+            echo "version=${version}-msm.2"
             echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')"
           } >> "$GITHUB_OUTPUT"
 
@@ -102,7 +102,7 @@ jobs:
           fi
           {
             echo "source_commit=${source_commit}"
-            echo "version=${version}-msm.1"
+            echo "version=${version}-msm.2"
             echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')"
           } >> "$GITHUB_OUTPUT"
 
@@ -292,7 +292,7 @@ jobs:
             更新 [mihomo Meta 版](https://github.com/MetaCubeX/mihomo/tree/Meta) 至 ${{ needs.meta-info.outputs.version }}，发布于 ${{ needs.meta-info.outputs.published_at }}
             更新 [mihomo Alpha 版](https://github.com/MetaCubeX/mihomo/tree/Alpha) 至 ${{ needs.alpha-info.outputs.version }}，发布于 ${{ needs.alpha-info.outputs.published_at }}
 
-            Native MSM features: direct-system, tun.system-route-mark (msm.1).
+            Native MSM features: direct-system, tun.system-route-mark, group.selection-concurrency (msm.2).
             Meta upstream: ${{ needs.meta-info.outputs.source_commit }}
             Alpha upstream: ${{ needs.alpha-info.outputs.source_commit }}
             Source and verified patch fingerprints: mihomo-meta-source.json / mihomo-alpha-source.json.

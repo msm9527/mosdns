@@ -4,3 +4,4 @@
 # Unified diff context includes a leading space before Go tabs and blank lines.
 # Preserve patch bytes; applied source is checked by the native build gates.
 scripts/mihomo/patches/*.patch -whitespace
+scripts/singbox/patches/*.patch -whitespace

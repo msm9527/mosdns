@@ -1,0 +1,594 @@
+diff --git a/none.go b/none.go
+index 4c2329c..2fd8ed2 100644
+--- a/none.go
++++ b/none.go
+@@ -176,14 +176,14 @@ func (c *nonePacketConn) Headroom() int {
+ 
+ type NoneService struct {
+ 	handler Handler
+-	udpNat  *udpnat.Service[netip.AddrPort]
++	udpNat  *udpnat.Service[UDPFamilySessionKey[netip.AddrPort]]
+ }
+ 
+ func NewNoneService(udpTimeout int64, handler Handler) Service {
+ 	s := &NoneService{
+ 		handler: handler,
+ 	}
+-	s.udpNat = udpnat.New[netip.AddrPort](udpTimeout, handler)
++	s.udpNat = udpnat.New[UDPFamilySessionKey[netip.AddrPort]](udpTimeout, handler)
+ 	return s
+ }
+ 
+@@ -215,7 +215,7 @@ func (s *NoneService) NewPacket(ctx context.Context, conn N.PacketConn, buffer *
+ 	}
+ 	metadata.Protocol = "shadowsocks"
+ 	metadata.Destination = destination
+-	s.udpNat.NewPacket(ctx, metadata.Source.AddrPort(), buffer, metadata, func(natConn N.PacketConn) N.PacketWriter {
++	s.udpNat.NewPacket(ctx, NewUDPFamilySessionKey(metadata.Source.AddrPort(), destination), buffer, metadata, func(natConn N.PacketConn) N.PacketWriter {
+ 		return &nonePacketWriter{conn, natConn}
+ 	})
+ 	return nil
+diff --git a/shadowaead/service.go b/shadowaead/service.go
+index 0b56257..5df4eb7 100644
+--- a/shadowaead/service.go
++++ b/shadowaead/service.go
+@@ -26,7 +26,7 @@ type Service struct {
+ 	*Method
+ 	password string
+ 	handler  shadowsocks.Handler
+-	udpNat   *udpnat.Service[netip.AddrPort]
++	udpNat   *udpnat.Service[shadowsocks.UDPFamilySessionKey[netip.AddrPort]]
+ }
+ 
+ func NewService(method string, key []byte, password string, udpTimeout int64, handler shadowsocks.Handler) (*Service, error) {
+@@ -37,7 +37,7 @@ func NewService(method string, key []byte, password string, udpTimeout int64, ha
+ 	s := &Service{
+ 		Method:  m,
+ 		handler: handler,
+-		udpNat:  udpnat.New[netip.AddrPort](udpTimeout, handler),
++		udpNat:  udpnat.New[shadowsocks.UDPFamilySessionKey[netip.AddrPort]](udpTimeout, handler),
+ 	}
+ 	return s, nil
+ }
+@@ -215,7 +215,7 @@ func (s *Service) newPacket(ctx context.Context, conn N.PacketConn, buffer *buf.
+ 
+ 	metadata.Protocol = "shadowsocks"
+ 	metadata.Destination = destination
+-	s.udpNat.NewPacket(ctx, metadata.Source.AddrPort(), buffer, metadata, func(natConn N.PacketConn) N.PacketWriter {
++	s.udpNat.NewPacket(ctx, shadowsocks.NewUDPFamilySessionKey(metadata.Source.AddrPort(), destination), buffer, metadata, func(natConn N.PacketConn) N.PacketWriter {
+ 		return &serverPacketWriter{s.Method, conn, natConn}
+ 	})
+ 	return nil
+diff --git a/shadowaead_2022/service.go b/shadowaead_2022/service.go
+index df99e26..b51f5ba 100644
+--- a/shadowaead_2022/service.go
++++ b/shadowaead_2022/service.go
+@@ -51,7 +51,7 @@ type Service struct {
+ 	psk              []byte
+ 
+ 	replayFilter replay.Filter
+-	udpNat       *udpnat.Service[uint64]
++	udpNat       *udpnat.Service[shadowsocks.UDPFamilySessionKey[uint64]]
+ 	udpSessions  *cache.LruCache[uint64, *serverUDPSession]
+ }
+ 
+@@ -73,7 +73,7 @@ func NewService(method string, psk []byte, udpTimeout int64, handler shadowsocks
+ 		timeFunc: timeFunc,
+ 
+ 		replayFilter: replay.NewSimple(60 * time.Second),
+-		udpNat:       udpnat.New[uint64](udpTimeout, handler),
++		udpNat:       udpnat.New[shadowsocks.UDPFamilySessionKey[uint64]](udpTimeout, handler),
+ 		udpSessions: cache.New[uint64, *serverUDPSession](
+ 			cache.WithAge[uint64, *serverUDPSession](udpTimeout),
+ 			cache.WithUpdateAgeOnGet[uint64, *serverUDPSession](),
+@@ -497,7 +497,7 @@ process:
+ 	}
+ 	metadata.Protocol = "shadowsocks"
+ 	metadata.Destination = destination
+-	s.udpNat.NewPacket(ctx, sessionId, buffer, metadata, func(natConn N.PacketConn) N.PacketWriter {
++	s.udpNat.NewPacket(ctx, shadowsocks.NewUDPFamilySessionKey(sessionId, destination), buffer, metadata, func(natConn N.PacketConn) N.PacketWriter {
+ 		return &serverPacketWriter{s, conn, natConn, session, s.udpBlockCipher}
+ 	})
+ 	return nil
+@@ -516,6 +516,10 @@ type serverPacketWriter struct {
+ }
+ 
+ func (w *serverPacketWriter) WritePacket(buffer *buf.Buffer, destination M.Socksaddr) error {
++	// Family-specific NAT sockets share one crypto session. Keep nonce RNG,
++	// response counters and writes serialized as before that split.
++	w.session.writeAccess.Lock()
++	defer w.session.writeAccess.Unlock()
+ 	var hdrLen int
+ 	if w.udpCipher != nil {
+ 		hdrLen = PacketNonceSize
+@@ -598,6 +602,7 @@ func (w *serverPacketWriter) Upstream() any {
+ }
+ 
+ type serverUDPSession struct {
++	writeAccess     sync.Mutex
+ 	sessionId       uint64
+ 	remoteSessionId uint64
+ 	packetId        uint64
+diff --git a/shadowaead_2022/service_multi.go b/shadowaead_2022/service_multi.go
+index 4e33631..b65d27b 100644
+--- a/shadowaead_2022/service_multi.go
++++ b/shadowaead_2022/service_multi.go
+@@ -381,7 +381,7 @@ process:
+ 
+ 	metadata.Protocol = "shadowsocks"
+ 	metadata.Destination = destination
+-	s.udpNat.NewContextPacket(ctx, sessionId, buffer, metadata, func(natConn N.PacketConn) (context.Context, N.PacketWriter) {
++	s.udpNat.NewContextPacket(ctx, shadowsocks.NewUDPFamilySessionKey(sessionId, destination), buffer, metadata, func(natConn N.PacketConn) (context.Context, N.PacketWriter) {
+ 		return auth.ContextWithUser(ctx, user), &serverPacketWriter{s.Service, conn, natConn, session, uCipher}
+ 	})
+ 	return nil
+diff --git a/shadowaead_2022/udp_family_reply_test.go b/shadowaead_2022/udp_family_reply_test.go
+new file mode 100644
+index 0000000..73d7267
+--- /dev/null
++++ b/shadowaead_2022/udp_family_reply_test.go
+@@ -0,0 +1,125 @@
++package shadowaead_2022
++
++import (
++	"encoding/binary"
++	"io"
++	"net"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing/common/buf"
++	M "github.com/sagernet/sing/common/metadata"
++)
++
++type replyCapture struct {
++	mu      sync.Mutex
++	packets [][]byte
++}
++
++func (c *replyCapture) WritePacket(packet *buf.Buffer, _ M.Socksaddr) error {
++	c.mu.Lock()
++	c.packets = append(c.packets, append([]byte{}, packet.Bytes()...))
++	c.mu.Unlock()
++	packet.Release()
++	return nil
++}
++func (*replyCapture) ReadPacket(*buf.Buffer) (M.Socksaddr, error) { return M.Socksaddr{}, io.EOF }
++func (*replyCapture) Close() error                                { return nil }
++func (*replyCapture) LocalAddr() net.Addr {
++	return &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 40000}
++}
++func (*replyCapture) SetDeadline(time.Time) error      { return nil }
++func (*replyCapture) SetReadDeadline(time.Time) error  { return nil }
++func (*replyCapture) SetWriteDeadline(time.Time) error { return nil }
++
++// The two NAT sockets can now reply concurrently through one crypto session.
++// Verify the real response writer under -race and decrypt every ciphertext;
++// distinct packet IDs/nonces and all payloads must survive concurrent writes.
++func Test2022SplitSessionConcurrentReplies(t *testing.T) {
++	for _, methodName := range List {
++		t.Run(methodName, func(t *testing.T) {
++			keySize := 32
++			if methodName == "2022-blake3-aes-128-gcm" {
++				keySize = 16
++			}
++			service, err := NewService(methodName, make([]byte, keySize), 300, nil, nil)
++			if err != nil {
++				t.Fatal(err)
++			}
++			s := service.(*Service)
++			session := s.newUDPSession()
++			session.remoteSessionId = 42
++			output := &replyCapture{}
++			writers := []*serverPacketWriter{
++				{Service: s, source: output, nat: output, session: session, udpBlockCipher: s.udpBlockCipher},
++				{Service: s, source: output, nat: output, session: session, udpBlockCipher: s.udpBlockCipher},
++			}
++			var wg sync.WaitGroup
++			errors := make(chan error, 64)
++			for i := 0; i < 64; i++ {
++				wg.Add(1)
++				go func(i int) {
++					defer wg.Done()
++					packet := buf.NewSize(1024)
++					packet.Resize(512, 0)
++					packet.Write([]byte{byte(i)})
++					target := M.ParseSocksaddr("192.0.2.10:8001")
++					if i%2 != 0 {
++						target = M.ParseSocksaddr("[2001:db8::10]:8001")
++					}
++					if err := writers[i%2].WritePacket(packet, target); err != nil {
++						errors <- err
++					}
++				}(i)
++			}
++			wg.Wait()
++			close(errors)
++			for err := range errors {
++				t.Error(err)
++			}
++			if len(output.packets) != 64 {
++				t.Fatalf("got %d encrypted replies", len(output.packets))
++			}
++			counters, payloads, nonces := map[uint64]bool{}, map[byte]bool{}, map[string]bool{}
++			for _, wire := range output.packets {
++				var header, plain []byte
++				if s.udpCipher != nil {
++					nonce := wire[:PacketNonceSize]
++					if nonces[string(nonce)] {
++						t.Fatal("response nonce repeated")
++					}
++					nonces[string(nonce)] = true
++					plain, err = s.udpCipher.Open(nil, nonce, wire[PacketNonceSize:], nil)
++					if err != nil {
++						t.Fatal(err)
++					}
++					header, plain = plain[:16], plain[16:]
++				} else {
++					header = append([]byte{}, wire[:16]...)
++					s.udpBlockCipher.Decrypt(header, header)
++					plain, err = session.cipher.Open(nil, header[4:16], wire[16:], nil)
++					if err != nil {
++						t.Fatal(err)
++					}
++				}
++				if binary.BigEndian.Uint64(header[:8]) != session.sessionId {
++					t.Fatal("reply crypto session changed")
++				}
++				id := binary.BigEndian.Uint64(header[8:])
++				if counters[id] {
++					t.Fatal("response counter repeated")
++				}
++				counters[id] = true
++				if len(plain) == 0 {
++					t.Fatal("empty decrypted response")
++				}
++				payloads[plain[len(plain)-1]] = true
++			}
++			if len(payloads) != 64 {
++				t.Fatalf("corrupted response payloads: %d", len(payloads))
++			}
++		})
++	}
++}
++
+diff --git a/shadowaead_2022/udp_family_test.go b/shadowaead_2022/udp_family_test.go
+new file mode 100644
+index 0000000..0a8287d
+--- /dev/null
++++ b/shadowaead_2022/udp_family_test.go
+@@ -0,0 +1,159 @@
++package shadowaead_2022_test
++
++import (
++	"context"
++	"crypto/rand"
++	"io"
++	"net"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing-shadowsocks"
++	"github.com/sagernet/sing-shadowsocks/shadowaead_2022"
++	"github.com/sagernet/sing/common/auth"
++	"github.com/sagernet/sing/common/buf"
++	M "github.com/sagernet/sing/common/metadata"
++	N "github.com/sagernet/sing/common/network"
++)
++
++type familyEvent struct {
++	connection                 int32
++	destination, payload, user string
++}
++type familyHandler struct {
++	connections atomic.Int32
++	events      chan familyEvent
++	errors      chan error
++}
++
++func (*familyHandler) NewConnection(context.Context, net.Conn, M.Metadata) error { return nil }
++func (h *familyHandler) NewError(_ context.Context, err error)                   { h.errors <- err }
++func (h *familyHandler) NewPacketConnection(ctx context.Context, conn N.PacketConn, _ M.Metadata) error {
++	id := h.connections.Add(1)
++	user, _ := auth.UserFromContext[string](ctx)
++	for {
++		packet := buf.NewPacket()
++		destination, err := conn.ReadPacket(packet)
++		if err != nil {
++			packet.Release()
++			return nil
++		}
++		h.events <- familyEvent{id, destination.String(), string(packet.Bytes()), user}
++		packet.Release()
++	}
++}
++
++type familyCapture struct{ wire []byte }
++
++func (c *familyCapture) Write(p []byte) (int, error) {
++	c.wire = append([]byte{}, p...)
++	return len(p), nil
++}
++func (*familyCapture) Read([]byte) (int, error)         { return 0, io.EOF }
++func (*familyCapture) Close() error                     { return nil }
++func (*familyCapture) LocalAddr() net.Addr              { return &net.UDPAddr{} }
++func (*familyCapture) RemoteAddr() net.Addr             { return &net.UDPAddr{} }
++func (*familyCapture) SetDeadline(time.Time) error      { return nil }
++func (*familyCapture) SetReadDeadline(time.Time) error  { return nil }
++func (*familyCapture) SetWriteDeadline(time.Time) error { return nil }
++
++// Every packet has a real 2022 encrypted header, session ID and replay counter.
++// The same crypto session must create independent network sockets per family,
++// while preserving multi-user authentication and same-family NAT reuse.
++func Test2022UDPNATSeparatesDestinationFamilies(t *testing.T) {
++	for _, methodName := range shadowaead_2022.List {
++		for _, multi := range []bool{false, true} {
++			if multi && methodName == "2022-blake3-chacha20-poly1305" {
++				continue
++			}
++			name := methodName + "/single"
++			if multi {
++				name = methodName + "/multi"
++			}
++			t.Run(name, func(t *testing.T) {
++				ctx, cancel := context.WithCancel(context.Background())
++				defer cancel()
++				handler := &familyHandler{events: make(chan familyEvent, 16), errors: make(chan error, 16)}
++				keySize := 32
++				if methodName == "2022-blake3-aes-128-gcm" {
++					keySize = 16
++				}
++				serverKey := make([]byte, keySize)
++				if _, err := rand.Read(serverKey); err != nil {
++					t.Fatal(err)
++				}
++				keys := [][]byte{serverKey}
++				var service N.UDPHandler
++				if multi {
++					multiService, err := shadowaead_2022.NewMultiService[string](methodName, serverKey, 300, handler, nil)
++					if err != nil {
++						t.Fatal(err)
++					}
++					userKey := make([]byte, keySize)
++					if _, err = rand.Read(userKey); err != nil {
++						t.Fatal(err)
++					}
++					if err = multiService.UpdateUsers([]string{"test-user"}, [][]byte{userKey}); err != nil {
++						t.Fatal(err)
++					}
++					service = multiService
++					keys = append(keys, userKey)
++				} else {
++					single, err := shadowaead_2022.NewService(methodName, serverKey, 300, handler, nil)
++					if err != nil {
++						t.Fatal(err)
++					}
++					service = single
++				}
++				method, err := shadowaead_2022.New(methodName, keys, nil)
++				if err != nil {
++					t.Fatal(err)
++				}
++				var _ shadowsocks.Method = method
++				capture := &familyCapture{}
++				client := method.DialPacketConn(capture)
++				groups := map[int]int32{}
++				for sequence, target := range []struct {
++					address string
++					group   int
++				}{
++					{"192.0.2.10:8001", 4}, {"192.0.2.11:8002", 4},
++					{"[2001:db8::10]:8001", 6}, {"[2001:db8::11]:8002", 6},
++					{"192.0.2.10:8001", 4}, {"[2001:db8::10]:8001", 6},
++				} {
++					destination := M.ParseSocksaddr(target.address)
++					payload := []byte{byte(sequence)}
++					if _, err = client.WriteTo(payload, destination); err != nil {
++						t.Fatal(err)
++					}
++					packet := buf.NewPacket()
++					packet.Write(capture.wire)
++					if err = service.NewPacket(ctx, nil, packet, M.Metadata{Source: M.ParseSocksaddr("127.0.0.1:40000")}); err != nil {
++						t.Fatal(err)
++					}
++					select {
++					case event := <-handler.events:
++						if event.destination != target.address || event.payload != string(payload) {
++							t.Fatalf("corrupted packet: %+v", event)
++						}
++						if multi && event.user != "test-user" {
++							t.Fatalf("lost authenticated user: %+v", event)
++						}
++						if previous, ok := groups[target.group]; ok && previous != event.connection {
++							t.Fatal("same-family NAT stopped reusing its connection")
++						}
++						groups[target.group] = event.connection
++						if groups[4] != 0 && groups[4] == groups[6] {
++							t.Fatal("IPv4 and IPv6 reused one network socket")
++						}
++					case err := <-handler.errors:
++						t.Fatal(err)
++					case <-time.After(time.Second):
++						t.Fatal("packet not dispatched")
++					}
++				}
++			})
++		}
++	}
++}
+diff --git a/udp_family.go b/udp_family.go
+new file mode 100644
+index 0000000..17c7e2f
+--- /dev/null
++++ b/udp_family.go
+@@ -0,0 +1,29 @@
++package shadowsocks
++
++import (
++	"strings"
++
++	M "github.com/sagernet/sing/common/metadata"
++)
++
++// UDPFamilySessionKey prevents an IPv4-first NAT session from pinning later
++// IPv6 destinations to its IPv4 socket. Destinations in one IP family retain
++// their shared session and source port. Domain names are kept separate because
++// their address family is not known until the outbound resolves them.
++type UDPFamilySessionKey[T comparable] struct {
++	Session T
++	family  uint8
++	domain  string
++}
++
++func NewUDPFamilySessionKey[T comparable](session T, destination M.Socksaddr) UDPFamilySessionKey[T] {
++	key := UDPFamilySessionKey[T]{Session: session}
++	if destination.Fqdn != "" {
++		key.domain = strings.ToLower(strings.TrimSuffix(destination.Fqdn, "."))
++	} else if destination.IsIPv6() {
++		key.family = 6
++	} else {
++		key.family = 4
++	}
++	return key
++}
+diff --git a/udp_family_test.go b/udp_family_test.go
+new file mode 100644
+index 0000000..b86f47b
+--- /dev/null
++++ b/udp_family_test.go
+@@ -0,0 +1,133 @@
++package shadowsocks_test
++
++import (
++	"context"
++	"io"
++	"net"
++	"testing"
++	"time"
++
++	"github.com/sagernet/sing-shadowsocks"
++	"github.com/sagernet/sing-shadowsocks/shadowaead"
++	"github.com/sagernet/sing/common/buf"
++	M "github.com/sagernet/sing/common/metadata"
++	N "github.com/sagernet/sing/common/network"
++)
++
++type udpFamilyEvent struct {
++	connection  int
++	destination string
++	payload     string
++}
++
++type udpFamilyHandler struct {
++	connections int
++	events      chan udpFamilyEvent
++	errors      chan error
++}
++
++func (h *udpFamilyHandler) NewConnection(context.Context, net.Conn, M.Metadata) error { return nil }
++func (h *udpFamilyHandler) NewError(_ context.Context, err error)                     { h.errors <- err }
++func (h *udpFamilyHandler) NewPacketConnection(ctx context.Context, conn N.PacketConn, _ M.Metadata) error {
++	h.connections++
++	id := h.connections
++	for {
++		packet := buf.NewPacket()
++		destination, err := conn.ReadPacket(packet)
++		if err != nil {
++			packet.Release()
++			return nil
++		}
++		h.events <- udpFamilyEvent{id, destination.String(), string(packet.Bytes())}
++		packet.Release()
++	}
++}
++
++type udpFamilyCapture struct{ wire []byte }
++
++func (c *udpFamilyCapture) Write(p []byte) (int, error) {
++	c.wire = append([]byte{}, p...)
++	return len(p), nil
++}
++func (*udpFamilyCapture) Read([]byte) (int, error)         { return 0, io.EOF }
++func (*udpFamilyCapture) Close() error                     { return nil }
++func (*udpFamilyCapture) LocalAddr() net.Addr              { return &net.UDPAddr{} }
++func (*udpFamilyCapture) RemoteAddr() net.Addr             { return &net.UDPAddr{} }
++func (*udpFamilyCapture) SetDeadline(time.Time) error      { return nil }
++func (*udpFamilyCapture) SetReadDeadline(time.Time) error  { return nil }
++func (*udpFamilyCapture) SetWriteDeadline(time.Time) error { return nil }
++
++// Exercise encrypted frames with one peer source port, including an IPv6 packet
++// after IPv4 left a live server NAT entry. Same-family destinations keep their
++// connection; a domain whose family is unknown never reuses an IP-only entry.
++func TestUDPNATSeparatesDestinationFamilies(t *testing.T) {
++	for _, methodName := range []string{"none", "aes-128-gcm", "chacha20-ietf-poly1305"} {
++		t.Run(methodName, func(t *testing.T) {
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			handler := &udpFamilyHandler{events: make(chan udpFamilyEvent, 10), errors: make(chan error, 10)}
++			var method shadowsocks.Method
++			var service shadowsocks.Service
++			if methodName == "none" {
++				method = shadowsocks.NewNone()
++				service = shadowsocks.NewNoneService(300, handler)
++			} else {
++				var err error
++				method, err = shadowaead.New(methodName, nil, "isolated-udp-family-test")
++				if err != nil {
++					t.Fatal(err)
++				}
++				service, err = shadowaead.NewService(methodName, nil, "isolated-udp-family-test", 300, handler)
++				if err != nil {
++					t.Fatal(err)
++				}
++			}
++			capture := &udpFamilyCapture{}
++			client := method.DialPacketConn(capture)
++			groups := map[int]int{}
++			for sequence, target := range []struct {
++				address string
++				group   int
++			}{
++				{"192.0.2.10:8001", 4}, {"192.0.2.11:8002", 4},
++				{"[2001:db8::10]:8001", 6}, {"[2001:db8::11]:8002", 6},
++				{"192.0.2.10:8001", 4}, {"[2001:db8::10]:8001", 6},
++				{"ipv4.example.test:8001", 40}, {"ipv6.example.test:8001", 60},
++				{"ipv4.example.test:8002", 40}, {"ipv6.example.test:8002", 60},
++			} {
++				destination := M.ParseSocksaddr(target.address)
++				payload := []byte{byte(sequence)}
++				if _, err := client.WriteTo(payload, destination); err != nil {
++					t.Fatal(err)
++				}
++				packet := buf.NewPacket()
++				packet.Write(capture.wire)
++				if err := service.NewPacket(ctx, nil, packet, M.Metadata{Source: M.ParseSocksaddr("127.0.0.1:40000")}); err != nil {
++					t.Fatal(err)
++				}
++				select {
++				case event := <-handler.events:
++					if event.destination != target.address || event.payload != string(payload) {
++						t.Fatalf("corrupted packet: %+v", event)
++					}
++					if previous, ok := groups[target.group]; ok && previous != event.connection {
++						t.Fatal("same-family destination opened another NAT session")
++					}
++					for group, connection := range groups {
++						if group != target.group && connection == event.connection {
++							t.Fatal("different-family or unknown domain reused one NAT socket")
++						}
++					}
++					groups[target.group] = event.connection
++					if groups[4] != 0 && groups[4] == groups[6] {
++						t.Fatal("IPv4 and IPv6 reused one NAT socket")
++					}
++				case err := <-handler.errors:
++					t.Fatal(err)
++				case <-time.After(time.Second):
++					t.Fatal("packet was not dispatched")
++				}
++			}
++		})
++	}
++}

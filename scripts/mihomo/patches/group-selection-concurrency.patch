@@ -1,0 +1,371 @@
+diff --git a/adapter/outboundgroup/selector.go b/adapter/outboundgroup/selector.go
+--- a/adapter/outboundgroup/selector.go
++++ b/adapter/outboundgroup/selector.go
+@@ -5,6 +5,7 @@
+ 	"encoding/json"
+ 	"errors"
+ 
++	"github.com/metacubex/mihomo/common/atomic"
+ 	C "github.com/metacubex/mihomo/constant"
+ 	P "github.com/metacubex/mihomo/constant/provider"
+ )
+@@ -16,7 +17,7 @@
+ type Selector struct {
+ 	*GroupBase
+ 	disableUDP bool
+-	selected   string
++	selected   atomic.TypedValue[string]
+ 	testUrl    string
+ }
+ 
+@@ -83,7 +84,7 @@
+ func (s *Selector) Set(name string) error {
+ 	for _, proxy := range s.GetProxies(false) {
+ 		if proxy.Name() == name {
+-			s.selected = name
++			s.selected.Store(name)
+ 			return nil
+ 		}
+ 	}
+@@ -92,7 +93,7 @@
+ }
+ 
+ func (s *Selector) ForceSet(name string) {
+-	s.selected = name
++	s.selected.Store(name)
+ }
+ 
+ // Unwrap implements C.ProxyAdapter
+@@ -102,8 +103,9 @@
+ 
+ func (s *Selector) selectedProxy(touch bool) C.Proxy {
+ 	proxies := s.GetProxies(touch)
++	selected := s.selected.Load()
+ 	for _, proxy := range proxies {
+-		if proxy.Name() == s.selected {
++		if proxy.Name() == selected {
+ 			return proxy
+ 		}
+ 	}
+@@ -134,7 +136,7 @@
+ 			EmptyFallback:  emptyFallback,
+ 			Providers:      providers,
+ 		}),
+-		selected:   selectorOption.DefaultSelected,
++		selected:   atomic.NewTypedValue(selectorOption.DefaultSelected),
+ 		disableUDP: option.DisableUDP,
+ 		testUrl:    option.URL,
+ 	}, nil
+diff --git a/adapter/outboundgroup/urltest.go b/adapter/outboundgroup/urltest.go
+--- a/adapter/outboundgroup/urltest.go
++++ b/adapter/outboundgroup/urltest.go
+@@ -4,8 +4,10 @@
+ 	"context"
+ 	"encoding/json"
+ 	"errors"
++	"sync"
+ 	"time"
+ 
++	"github.com/metacubex/mihomo/common/atomic"
+ 	"github.com/metacubex/mihomo/common/callback"
+ 	N "github.com/metacubex/mihomo/common/net"
+ 	"github.com/metacubex/mihomo/common/singledo"
+@@ -20,11 +22,12 @@
+ 
+ type URLTest struct {
+ 	*GroupBase
+-	selected       string
++	selected       atomic.TypedValue[string]
+ 	testUrl        string
+ 	expectedStatus string
+ 	tolerance      uint16
+ 	disableUDP     bool
++	fastNodeMutex  sync.Mutex
+ 	fastNode       C.Proxy
+ 	fastSingle     *singledo.Single[C.Proxy]
+ }
+@@ -49,7 +52,7 @@
+ }
+ 
+ func (u *URLTest) ForceSet(name string) {
+-	u.selected = name
++	u.selected.Store(name)
+ 	u.fastSingle.Reset()
+ }
+ 
+@@ -102,13 +105,17 @@
+ 
+ func (u *URLTest) fast(touch bool) C.Proxy {
+ 	elm, _, shared := u.fastSingle.Do(func() (C.Proxy, error) {
++		// Reset can start another calculation while an older one is in flight.
++		// Serialize only calculations that read or replace fastNode.
++		u.fastNodeMutex.Lock()
++		defer u.fastNodeMutex.Unlock()
+ 		proxies := u.GetProxies(touch)
+-		if u.selected != "" {
++		if selected := u.selected.Load(); selected != "" {
+ 			for _, proxy := range proxies {
+ 				if !proxy.AliveForTestUrl(u.testUrl) {
+ 					continue
+ 				}
+-				if proxy.Name() == u.selected {
++				if proxy.Name() == selected {
+ 					u.fastNode = proxy
+ 					return proxy, nil
+ 				}
+@@ -173,7 +180,7 @@
+ 		"all":            all,
+ 		"testUrl":        u.testUrl,
+ 		"expectedStatus": u.expectedStatus,
+-		"fixed":          u.selected,
++		"fixed":          u.selected.Load(),
+ 		"hidden":         u.Hidden(),
+ 		"icon":           u.Icon(),
+ 		"emptyFallback":  u.EmptyFallback().Name(),
+diff --git a/adapter/outboundgroup/fallback.go b/adapter/outboundgroup/fallback.go
+--- a/adapter/outboundgroup/fallback.go
++++ b/adapter/outboundgroup/fallback.go
+@@ -6,6 +6,7 @@
+ 	"errors"
+ 	"time"
+ 
++	"github.com/metacubex/mihomo/common/atomic"
+ 	"github.com/metacubex/mihomo/common/callback"
+ 	N "github.com/metacubex/mihomo/common/net"
+ 	"github.com/metacubex/mihomo/common/utils"
+@@ -19,7 +20,7 @@
+ 	*GroupBase
+ 	disableUDP     bool
+ 	testUrl        string
+-	selected       string
++	selected       atomic.TypedValue[string]
+ 	expectedStatus string
+ }
+ 
+@@ -89,7 +90,7 @@
+ 		"all":            all,
+ 		"testUrl":        f.testUrl,
+ 		"expectedStatus": f.expectedStatus,
+-		"fixed":          f.selected,
++		"fixed":          f.selected.Load(),
+ 		"hidden":         f.Hidden(),
+ 		"icon":           f.Icon(),
+ 		"emptyFallback":  f.EmptyFallback().Name(),
+@@ -104,17 +105,19 @@
+ 
+ func (f *Fallback) findAliveProxy(touch bool) C.Proxy {
+ 	proxies := f.GetProxies(touch)
++	selected := f.selected.Load()
+ 	for _, proxy := range proxies {
+-		if len(f.selected) == 0 {
++		if selected == "" {
+ 			if proxy.AliveForTestUrl(f.testUrl) {
+ 				return proxy
+ 			}
+ 		} else {
+-			if proxy.Name() == f.selected {
++			if proxy.Name() == selected {
+ 				if proxy.AliveForTestUrl(f.testUrl) {
+ 					return proxy
+ 				} else {
+-					f.selected = ""
++					f.selected.CompareAndSwap(selected, "")
++					selected = ""
+ 				}
+ 			}
+ 		}
+@@ -136,7 +139,7 @@
+ 		return errors.New("proxy not exist")
+ 	}
+ 
+-	f.selected = name
++	f.selected.Store(name)
+ 	if !p.AliveForTestUrl(f.testUrl) {
+ 		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(5000))
+ 		defer cancel()
+@@ -148,7 +151,7 @@
+ }
+ 
+ func (f *Fallback) ForceSet(name string) {
+-	f.selected = name
++	f.selected.Store(name)
+ }
+ 
+ func (f *Fallback) Providers() []P.ProxyProvider {
+diff --git a/adapter/outboundgroup/native_selection_test.go b/adapter/outboundgroup/native_selection_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/native_selection_test.go
+@@ -0,0 +1,172 @@
++package outboundgroup
++
++import (
++	"encoding/json"
++	"fmt"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/common/singledo"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++type nativeSelectionProxy struct {
++	C.Proxy
++	name      string
++	alive     bool
++	delay     uint16
++	nameHook  func()
++	aliveHook func()
++}
++
++func (p *nativeSelectionProxy) Name() string {
++	if p.nameHook != nil {
++		p.nameHook()
++	}
++	return p.name
++}
++func (p *nativeSelectionProxy) AliveForTestUrl(string) bool {
++	if p.aliveHook != nil {
++		p.aliveHook()
++	}
++	return p.alive
++}
++func (p *nativeSelectionProxy) LastDelayForTestUrl(string) uint16 { return p.delay }
++
++func nativeSelectionBase(kind C.AdapterType, proxies ...C.Proxy) *GroupBase {
++	base := NewGroupBase(GroupBaseOption{Name: "native-selection", Type: kind, EmptyFallback: proxies[0]})
++	// An immutable provider snapshot exercises native methods without background
++	// health checks or the network changing proxy liveness during this test.
++	base.providerProxies = proxies
++	return base
++}
++
++type nativeSelectionGroup interface {
++	Set(string) error
++	ForceSet(string)
++	Now() string
++	MarshalJSON() ([]byte, error)
++	Unwrap(*C.Metadata, bool) C.Proxy
++}
++
++func exerciseNativeSelection(t *testing.T, group nativeSelectionGroup, automatic bool) {
++	t.Helper()
++	if err := group.Set("node-a"); err != nil {
++		t.Fatal(err)
++	}
++	start := make(chan struct{})
++	errors := make(chan error, 4)
++	var workers sync.WaitGroup
++	for role := 0; role < 4; role++ {
++		workers.Add(1)
++		go func(role int) {
++			defer workers.Done()
++			<-start
++			for i := 0; i < 1000; i++ {
++				switch role {
++				case 0:
++					if err := group.Set([]string{"node-a", "node-b"}[i%2]); err != nil {
++						errors <- err
++						return
++					}
++					if automatic {
++						group.ForceSet("")
++					}
++				case 1:
++					if now := group.Now(); now != "node-a" && now != "node-b" {
++						errors <- fmt.Errorf("invalid current selection %q", now)
++						return
++					}
++				case 2:
++					data, err := group.MarshalJSON()
++					if err != nil || !json.Valid(data) {
++						errors <- fmt.Errorf("invalid proxy JSON: %s (%v)", data, err)
++						return
++					}
++				case 3:
++					if proxy := group.Unwrap(&C.Metadata{Host: "example.com"}, false); proxy == nil {
++						errors <- fmt.Errorf("missing data-path proxy")
++						return
++					}
++				}
++			}
++		}(role)
++	}
++	close(start)
++	workers.Wait()
++	close(errors)
++	for err := range errors {
++		t.Error(err)
++	}
++	if err := group.Set("node-b"); err != nil || group.Now() != "node-b" {
++		t.Fatalf("final selected node was lost: %v", err)
++	}
++	if err := group.Set("missing"); err == nil || group.Now() != "node-b" {
++		t.Fatal("invalid selection replaced the current node")
++	}
++}
++
++func TestNativeGroupSelectionConcurrent(t *testing.T) {
++	for _, kind := range []C.AdapterType{C.Selector, C.URLTest, C.Fallback} {
++		t.Run(kind.String(), func(t *testing.T) {
++			a := &nativeSelectionProxy{name: "node-a", alive: true, delay: 10}
++			b := &nativeSelectionProxy{name: "node-b", alive: true, delay: 20}
++			base := nativeSelectionBase(kind, a, b)
++			var group nativeSelectionGroup
++			switch kind {
++			case C.Selector:
++				group = &Selector{GroupBase: base}
++			case C.URLTest:
++				group = &URLTest{GroupBase: base, fastSingle: singledo.NewSingle[C.Proxy](time.Second)}
++			case C.Fallback:
++				group = &Fallback{GroupBase: base}
++			}
++			exerciseNativeSelection(t, group, true)
++		})
++	}
++}
++
++func TestSelectorDefaultSelection(t *testing.T) {
++	a := &nativeSelectionProxy{name: "node-a", alive: true}
++	b := &nativeSelectionProxy{name: "node-b", alive: true}
++	group, err := NewSelector(GroupCommonOption{Name: "default-selection"},
++		SelectorOption{DefaultSelected: "node-b"}, a, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	group.GroupBase.providerProxies = []C.Proxy{a, b}
++	if group.Now() != "node-b" {
++		t.Fatal("constructor ignored the configured default selection")
++	}
++}
++
++func TestFallbackStaleSelectionDoesNotClearNewChoice(t *testing.T) {
++	entered, release := make(chan struct{}), make(chan struct{})
++	var once sync.Once
++	a := &nativeSelectionProxy{name: "node-a", alive: false, aliveHook: func() {
++		once.Do(func() { close(entered) })
++		<-release
++	}}
++	b := &nativeSelectionProxy{name: "node-b", alive: true}
++	group := &Fallback{GroupBase: nativeSelectionBase(C.Fallback, a, b)}
++	group.ForceSet("node-a")
++	finished := make(chan struct{})
++	go func() { defer close(finished); group.Now() }()
++	select {
++	case <-entered:
++	case <-time.After(5 * time.Second):
++		close(release)
++		t.Fatal("native liveness check was not reached")
++	}
++	group.ForceSet("node-b")
++	close(release)
++	<-finished
++	data, err := group.MarshalJSON()
++	var state struct {
++		Fixed string `json:"fixed"`
++	}
++	if err != nil || json.Unmarshal(data, &state) != nil || state.Fixed != "node-b" {
++		t.Fatalf("stale liveness check cleared the newer selection: %s (%v)", data, err)
++	}
++}

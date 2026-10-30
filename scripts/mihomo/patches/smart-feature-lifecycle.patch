@@ -1,0 +1,1622 @@
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+index 4ef5441..766abe9 100644
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -81,11 +81,6 @@ const (
+ 	blockCodeStalled   = 6
+ )
+ 
+-var (
+-	flushQueueOnce atomic.Bool
+-	smartInitOnce  sync.Once
+-)
+-
+ type SmartOption struct {
+ 	PolicyPriority string  `group:"policy-priority,omitempty"`
+ 	UseLightGBM    bool    `group:"uselightgbm,omitempty"`
+@@ -99,9 +94,10 @@ type Smart struct {
+ 	*GroupBase
+ 	store *smart.Store
+ 
+-	wg     sync.WaitGroup
+-	ctx    context.Context
+-	cancel context.CancelFunc
++	wg        sync.WaitGroup
++	ctx       context.Context
++	cancel    context.CancelFunc
++	closeOnce sync.Once
+ 
+ 	configName     string
+ 	selected       string
+@@ -118,6 +114,10 @@ type Smart struct {
+ 	useLightGBM    bool
+ 	collectData    bool
+ 	preferASN      bool
++	asnMutex       sync.Mutex
++	asnReady       bool
++	asnError       string
++	asnLastCheck   time.Time
+ 	hostFailLimit  atomic.Int32
+ 	tolerance      uint16
+ 
+@@ -428,15 +428,7 @@ func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *
+ // dialTimeout converts the remembered connect time into a deadline: a node that was slow
+ // before fails fast instead of holding the whole batch until the default timeout.
+ func (s *Smart) dialTimeout(metadata *C.Metadata, proxy C.Proxy, max time.Duration) time.Duration {
+-	historyConnectTime := s.getHistoryConnectStats(metadata, proxy)
+-	if historyConnectTime <= 0 {
+-		return max
+-	}
+-	timeout := time.Duration(float64(historyConnectTime)*connectThreshold) * time.Millisecond
+-	if timeout > max {
+-		return max
+-	}
+-	return timeout
++	return smartDialBudget(s.getHistoryConnectStats(metadata, proxy), max)
+ }
+ 
+ func (s *Smart) groupDialFailed(proxies []C.Proxy, err error) {
+@@ -649,6 +641,8 @@ func (s *Smart) Now() string {
+ }
+ 
+ func (s *Smart) MarshalJSON() ([]byte, error) {
++	modelReady, modelError := s.weightModel.Status()
++	asnReady, asnError := s.asnStatus()
+ 	proxies := s.GetProxies(false)
+ 	all := make([]string, len(proxies))
+ 	for i, proxy := range proxies {
+@@ -675,9 +669,13 @@ func (s *Smart) MarshalJSON() ([]byte, error) {
+ 		"emptyFallback":   s.EmptyFallback().Name(),
+ 		"policy-priority": policyPriorityBuf.String(),
+ 		"useLightGBM":     s.useLightGBM,
++		"lightGBMReady":   s.useLightGBM && modelReady,
++		"lightGBMError":   modelError,
+ 		"collectData":     s.collectData,
+ 		"sampleRate":      s.sampleRate,
+ 		"preferASN":       s.preferASN,
++		"asnReady":        asnReady,
++		"asnError":        asnError,
+ 		"tolerance":       s.tolerance,
+ 	})
+ }
+@@ -1129,7 +1127,7 @@ func (s *Smart) getASNCode(metadata *C.Metadata) string {
+ 	}
+ 
+ 	if metadata.DstIPASN == "" {
+-		if !s.preferASN {
++		if ready, _ := s.asnStatus(); !ready {
+ 			return ""
+ 		}
+ 		var ip netip.Addr
+@@ -2311,27 +2309,31 @@ func (s *Smart) InitSmart() {
+ 	s.store = cachefile.GetSmartStore()
+ 
+ 	s.ctx, s.cancel = context.WithCancel(context.Background())
++	// Every ASN-enabled group must validate its optional database. A failed or
++	// corrupt download must never reach ASNInstance(), which is fatal on open.
++	if s.preferASN {
++		s.asnLastCheck = time.Now()
++		if err := geodata.InitASN(); err != nil {
++			s.asnError = err.Error()
++		} else if !mmdb.Verify(C.Path.ASN()) {
++			s.asnError = "downloaded ASN database is invalid"
++		} else {
++			s.asnReady = true
++		}
++		if !s.asnReady {
++			log.Warnln("[Smart] ASN preference unavailable for %s: %s", s.Name(), s.asnError)
++		}
++	}
+ 
+ 	s.exitWatch = smart.NewExitWatcher(smart.ExitWatcherOptions{
+ 		Name:    s.Name(),
+ 		Config:  s.configName,
+ 		Store:   s.store,
+-		WantASN: func() bool { return s.preferASN },
++		WantASN: func() bool { ready, _ := s.asnStatus(); return ready },
+ 	})
+ 
+-	smartInitOnce.Do(func() {
+-		s.startTimedTask(5*time.Minute, checkInterval, "Global orphaned groups Clean up", s.cleanupOrphanedGroups, true)
+-		s.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment", s.store.AdjustCacheParameters, false)
+-		s.startTimedTask(5*time.Minute, flushQueueInterval, "Global queues flush", func() {
+-			s.store.FlushQueue(true)
+-		}, false)
+-		// the database belongs to the process, so one load serves every group
+-		if s.preferASN {
+-			if err := geodata.InitASN(); err != nil {
+-				log.Warnln("[Smart] Failed to load ASN database: %v", err)
+-			}
+-		}
+-	})
++	s.acquireGlobalTasks()
++	s.startTimedTask(5*time.Minute, checkInterval, "Group orphaned groups cleanup", s.cleanupOrphanedGroups, true)
+ 
+ 	s.startTimedTask(10*time.Minute, cleanupInterval, "Group orphaned nodes clean up", s.cleanupOrphanedNodeCache, true)
+ 	s.startTimedTask(5*time.Minute, prefetchInterval, "Group targets prefetch", s.runPrefetch, false)
+@@ -2553,19 +2555,14 @@ func (s *Smart) cleanupOrphanedNodeCache() {
+ }
+ 
+ func (s *Smart) Close() error {
+-	if s.cancel != nil {
+-		s.cancel()
+-	}
+-
+-	s.wg.Wait()
+-
+-	if !flushQueueOnce.Swap(true) {
++	s.closeOnce.Do(func() {
++		if s.cancel != nil {
++			s.cancel()
++		}
++		s.wg.Wait()
+ 		s.store.FlushQueue(true)
+-	}
+-
+-	lightgbm.CloseAllCollectors()
+-
+-	smartInitOnce = sync.Once{}
+-
++		lightgbm.CloseAllCollectors()
++		s.releaseGlobalTasks()
++	})
+ 	return nil
+ }
+diff --git a/adapter/outboundgroup/smart_feature_lifecycle.go b/adapter/outboundgroup/smart_feature_lifecycle.go
+new file mode 100644
+index 0000000..1ac2ada
+--- /dev/null
++++ b/adapter/outboundgroup/smart_feature_lifecycle.go
+@@ -0,0 +1,88 @@
++package outboundgroup
++
++import (
++	"context"
++	"sync"
++	"time"
++
++	"github.com/metacubex/mihomo/component/mmdb"
++	C "github.com/metacubex/mihomo/constant"
++	"github.com/metacubex/mihomo/log"
++)
++
++var smartGlobals struct {
++	sync.Mutex
++	users  int
++	worker *Smart
++}
++
++// Millisecond LAN history is an estimate, not a safe handshake deadline. Keep
++// room for scheduler jitter, transient congestion and proxy protocol handshakes,
++// while preserving a shorter explicit limit supplied by the caller.
++func smartDialBudget(historyMilliseconds int64, maximum time.Duration) time.Duration {
++	if historyMilliseconds <= 0 || maximum <= 0 {
++		return maximum
++	}
++	if historyMilliseconds >= maximum.Milliseconds()/int64(connectThreshold) {
++		return maximum
++	}
++	budget := time.Duration(historyMilliseconds) * time.Millisecond * time.Duration(connectThreshold)
++	if budget < time.Second {
++		budget = time.Second
++	}
++	if budget > maximum {
++		return maximum
++	}
++	return budget
++}
++
++// Global maintenance must outlive whichever group happened to initialize first.
++// During reload, the replacement groups are parsed before old groups close.
++func (s *Smart) acquireGlobalTasks() {
++	smartGlobals.Lock()
++	defer smartGlobals.Unlock()
++	smartGlobals.users++
++	if smartGlobals.worker != nil {
++		return
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	worker := &Smart{GroupBase: s.GroupBase, store: s.store, ctx: ctx, cancel: cancel}
++	smartGlobals.worker = worker
++	worker.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment", worker.store.AdjustCacheParameters, false)
++	worker.startTimedTask(5*time.Minute, flushQueueInterval, "Global queues flush", func() {
++		worker.store.FlushQueue(true)
++	}, false)
++}
++
++func (s *Smart) releaseGlobalTasks() {
++	smartGlobals.Lock()
++	defer smartGlobals.Unlock()
++	smartGlobals.users--
++	if smartGlobals.users != 0 || smartGlobals.worker == nil {
++		return
++	}
++	worker := smartGlobals.worker
++	smartGlobals.worker = nil
++	worker.cancel()
++	worker.wg.Wait()
++}
++
++// asnStatus retries only a local validation after an unavailable database. This
++// allows a successful updater or user-installed database to take effect without
++// restarting the core or making a network download on a user's request path.
++func (s *Smart) asnStatus() (bool, string) {
++	if !s.preferASN {
++		return false, ""
++	}
++	s.asnMutex.Lock()
++	defer s.asnMutex.Unlock()
++	if !s.asnReady && time.Since(s.asnLastCheck) >= 5*time.Second {
++		s.asnLastCheck = time.Now()
++		if mmdb.Verify(C.Path.ASN()) {
++			s.asnReady = true
++			s.asnError = ""
++			log.Infoln("[Smart] ASN preference recovered for %s", s.Name())
++		}
++	}
++	return s.asnReady, s.asnError
++}
+diff --git a/adapter/outboundgroup/smart_lifecycle_test.go b/adapter/outboundgroup/smart_lifecycle_test.go
+new file mode 100644
+index 0000000..8d8bf1c
+--- /dev/null
++++ b/adapter/outboundgroup/smart_lifecycle_test.go
+@@ -0,0 +1,96 @@
++package outboundgroup
++
++import (
++	"net/netip"
++	"os"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestSmartASNUnavailableFallback(t *testing.T) {
++	old := C.Path.HomeDir()
++	C.SetHomeDir(t.TempDir())
++	defer C.SetHomeDir(old)
++	s := &Smart{
++		GroupBase: NewGroupBase(GroupBaseOption{Name: "asn-test", Type: C.Smart}),
++		preferASN: true,
++		asnError:  "database unavailable",
++	}
++	metadata := &C.Metadata{DstIP: netip.MustParseAddr("1.1.1.1")}
++	if asn := s.getASNCode(metadata); asn != "" {
++		t.Fatalf("missing database produced ASN %q", asn)
++	}
++	if ready, err := s.asnStatus(); ready || err == "" {
++		t.Fatalf("missing database status: %v %q", ready, err)
++	}
++	if err := os.WriteFile(C.Path.ASN(), []byte("invalid MaxMind data"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	s.asnLastCheck = time.Time{}
++	metadata.DstIPASN = ""
++	if asn := s.getASNCode(metadata); asn != "" {
++		t.Fatalf("invalid database produced ASN %q", asn)
++	}
++	if ready, _ := s.asnStatus(); ready {
++		t.Fatal("invalid database marked ready")
++	}
++}
++
++func TestSmartGlobalTasksSurviveGroupReplacement(t *testing.T) {
++	group := func(name string) *Smart {
++		return &Smart{GroupBase: NewGroupBase(GroupBaseOption{Name: name, Type: C.Smart}), store: &smart.Store{}}
++	}
++	first, replacement := group("first"), group("replacement")
++	first.acquireGlobalTasks()
++	worker := smartGlobals.worker
++	replacement.acquireGlobalTasks()
++	first.releaseGlobalTasks()
++	if smartGlobals.worker != worker {
++		t.Fatal("replacing first group replaced the shared worker")
++	}
++	select {
++	case <-worker.ctx.Done():
++		t.Fatal("old group closed maintenance needed by replacement")
++	default:
++	}
++	replacement.releaseGlobalTasks()
++	if smartGlobals.worker != nil || smartGlobals.users != 0 {
++		t.Fatal("last group leaked shared worker")
++	}
++	select {
++	case <-worker.ctx.Done():
++	default:
++		t.Fatal("last group did not stop shared worker")
++	}
++	next := group("next")
++	next.acquireGlobalTasks()
++	if smartGlobals.worker == worker {
++		t.Fatal("new lifecycle reused stopped worker")
++	}
++	next.releaseGlobalTasks()
++}
++
++func TestSmartDialBudgetAllowsTransientJitter(t *testing.T) {
++	for _, tc := range []struct {
++		name          string
++		history       int64
++		maximum, want time.Duration
++	}{
++		{"unknown", 0, 5 * time.Second, 5 * time.Second},
++		{"lan", 1, 5 * time.Second, time.Second},
++		{"normal", 30, 5 * time.Second, time.Second},
++		{"slow", 400, 5 * time.Second, 2 * time.Second},
++		{"capped", 5000, 5 * time.Second, 5 * time.Second},
++		{"explicit-short", 1, 50 * time.Millisecond, 50 * time.Millisecond},
++		{"overflow", 1 << 62, 5 * time.Second, 5 * time.Second},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if got := smartDialBudget(tc.history, tc.maximum); got != tc.want {
++				t.Fatalf("budget=%v, want=%v", got, tc.want)
++			}
++		})
++	}
++}
+diff --git a/component/smart/lightgbm/collector.go b/component/smart/lightgbm/collector.go
+index c253900..c22cc97 100644
+--- a/component/smart/lightgbm/collector.go
++++ b/component/smart/lightgbm/collector.go
+@@ -37,6 +37,8 @@ type DataCollector struct {
+ }
+ 
+ func InitCollector(collectSize float64) {
++	collectMutex.Lock()
++	defer collectMutex.Unlock()
+ 	var smartCollectorSize int64
+ 	if collectSize > 0 {
+ 		smartCollectorSize = int64(collectSize * 1024 * 1024)
+@@ -44,13 +46,29 @@ func InitCollector(collectSize float64) {
+ 		smartCollectorSize = defaultSmartCollectorSize
+ 	}
+ 
+-	smartCollector = &DataCollector{
+-		dataPath:           filepath.Join(C.Path.HomeDir(), "smart_weight_data.csv"),
+-		smartCollectorSize: smartCollectorSize,
++	dataPath := filepath.Join(C.Path.HomeDir(), "smart_weight_data.csv")
++	if smartCollector == nil {
++		smartCollector = &DataCollector{dataPath: dataPath, smartCollectorSize: smartCollectorSize}
++		return
+ 	}
++	// Parsing temporarily applies general settings and then rolls them back. Keep
++	// the handle held by existing and newly parsed groups stable across all three
++	// applications; replacing it leaks their buffered writer and loses samples.
++	c := smartCollector
++	c.mutex.Lock()
++	defer c.mutex.Unlock()
++	if c.dataPath != dataPath {
++		_ = c.closeLocked()
++		c.dataPath = dataPath
++	}
++	c.smartCollectorSize = smartCollectorSize
++	c.sizeLimited = false
++	c.lastFileCheck = time.Time{}
+ }
+ 
+ func GetCollector() *DataCollector {
++	collectMutex.Lock()
++	defer collectMutex.Unlock()
+ 	return smartCollector
+ }
+ 
+@@ -298,6 +316,7 @@ func (c *DataCollector) Flush() error {
+ 
+ 	if c.writer != nil {
+ 		c.writer.Flush()
++		return c.writer.Error()
+ 	}
+ 
+ 	return nil
+@@ -310,16 +329,27 @@ func (c *DataCollector) Close() error {
+ 
+ 	c.mutex.Lock()
+ 	defer c.mutex.Unlock()
++	return c.closeLocked()
++}
+ 
++func (c *DataCollector) closeLocked() error {
++	var err error
+ 	if c.writer != nil {
+ 		c.writer.Flush()
++		err = c.writer.Error()
+ 	}
+ 
+ 	if c.file != nil {
+-		return c.file.Close()
++		if closeErr := c.file.Close(); err == nil {
++			err = closeErr
++		}
+ 	}
+-
+-	return nil
++	// Another group can continue collecting after a reload closes the old one.
++	c.file = nil
++	c.writer = nil
++	c.configured = false
++	c.sizeLimited = false
++	return err
+ }
+ 
+ func CloseAllCollectors() {
+diff --git a/component/smart/lightgbm/lifecycle_test.go b/component/smart/lightgbm/lifecycle_test.go
+new file mode 100644
+index 0000000..5fbdbdd
+--- /dev/null
++++ b/component/smart/lightgbm/lifecycle_test.go
+@@ -0,0 +1,216 @@
++package lightgbm
++
++import (
++	"encoding/csv"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"strings"
++	"sync"
++	"testing"
++
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++const lifecycleModel = `tree
++version=v4
++num_class=1
++num_tree_per_iteration=1
++label_index=0
++max_feature_idx=0
++objective=regression
++tree_sizes=200
++
++Tree=0
++num_leaves=2
++num_cat=0
++split_feature=0
++threshold=5.0
++decision_type=2
++left_child=-1
++right_child=-2
++leaf_count=300 700
++leaf_value=0.43 0.59
++
++end of trees
++`
++
++func lifecycleHome(t *testing.T) string {
++	t.Helper()
++	old := C.Path.HomeDir()
++	home := t.TempDir()
++	C.SetHomeDir(home)
++	t.Cleanup(func() { C.SetHomeDir(old) })
++	return home
++}
++
++func TestSmartModelRecoveryAndAtomicDownload(t *testing.T) {
++	home := lifecycleHome(t)
++	oldURL := LgbmUrl()
++	smartModel, modelOnce = nil, sync.Once{}
++	t.Cleanup(func() { smartModel, modelOnce = nil, sync.Once{}; SetLgbmUrl(oldURL) })
++	status, body := http.StatusServiceUnavailable, "temporarily unavailable"
++	var contentLength string
++	requests := 0
++	var serverMutex sync.Mutex
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		serverMutex.Lock()
++		requests++
++		code, response, length := status, body, contentLength
++		serverMutex.Unlock()
++		if length != "" {
++			w.Header().Set("Content-Length", length)
++		}
++		w.WriteHeader(code)
++		_, _ = w.Write([]byte(response))
++	}))
++	defer server.Close()
++	SetLgbmUrl(server.URL)
++	m := GetModel()
++	if m == nil {
++		t.Fatal("failed first download must retain a recoverable model handle")
++	}
++	if ready, err := m.Status(); ready || !strings.Contains(err, "503") {
++		t.Fatalf("first failure status: %v %q", ready, err)
++	}
++	if _, err := os.Stat(C.Path.SmartModel()); !os.IsNotExist(err) {
++		t.Fatalf("HTTP error body was installed: %v", err)
++	}
++	serverMutex.Lock()
++	requestCount := requests
++	serverMutex.Unlock()
++	if GetModel() != m || requestCount != 1 {
++		t.Fatal("GetModel changed handle or retried on every access")
++	}
++	serverMutex.Lock()
++	status, body = http.StatusOK, lifecycleModel
++	serverMutex.Unlock()
++	if err := downloadModel(C.Path.SmartModel()); err != nil {
++		t.Fatal(err)
++	}
++	ReloadModel()
++	if ready, err := m.Status(); !ready || err != "" {
++		t.Fatalf("model did not recover in place: %v %q", ready, err)
++	}
++	input := &smart.ModelInput{Success: 3, IsTCP: true, ConnectTime: 5, Latency: 10}
++	if weight, model := m.PredictWeight(input, 1.5); !model || weight <= 0 {
++		t.Fatalf("CGO-free inference not active: %v %v", weight, model)
++	}
++	good, err := os.ReadFile(C.Path.SmartModel())
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, tc := range []struct {
++		name         string
++		status       int
++		body, length string
++	}{
++		{"non-200", 503, lifecycleModel, ""},
++		{"invalid-model", 200, "not a model", ""},
++		{"empty", 200, "", ""},
++		{"truncated", 200, lifecycleModel, "10000"},
++		{"oversized-header", 200, "", fmt.Sprint(maxModelDownloadBytes + 1)},
++		{"unsafe-feature-count", 200, strings.Replace(lifecycleModel, "max_feature_idx=0", "max_feature_idx=5000", 1), ""},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			serverMutex.Lock()
++			status, body, contentLength = tc.status, tc.body, tc.length
++			serverMutex.Unlock()
++			if err := downloadModel(C.Path.SmartModel()); err == nil {
++				t.Fatal("unsafe download accepted")
++			}
++			current, err := os.ReadFile(C.Path.SmartModel())
++			if err != nil || string(current) != string(good) {
++				t.Fatalf("working model was replaced: %v", err)
++			}
++			staged, err := filepath.Glob(filepath.Join(home, ".Model.bin-*"))
++			if err != nil || len(staged) != 0 {
++				t.Fatalf("staged files leaked: %v %v", staged, err)
++			}
++		})
++	}
++	if err := os.WriteFile(C.Path.SmartModel(), []byte("invalid"), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	ReloadModel()
++	if ready, err := m.Status(); !ready || err == "" {
++		t.Fatalf("bad reload discarded active model or hid error: %v %q", ready, err)
++	}
++	if _, model := m.PredictWeight(input, 1); !model {
++		t.Fatal("failed reload disabled working inference")
++	}
++}
++
++func TestSmartCollectorConfigurationLifecycle(t *testing.T) {
++	home := lifecycleHome(t)
++	CloseAllCollectors()
++	old := smartCollector
++	smartCollector = nil
++	t.Cleanup(func() { CloseAllCollectors(); smartCollector = old })
++	InitCollector(1)
++	c := GetCollector()
++	input := &smart.ModelInput{Success: 3, IsTCP: true, GroupName: "group", NodeName: "node"}
++	metadata := &C.Metadata{}
++	for i := 0; i < 3; i++ {
++		c.AddSample(input, metadata, .5, "Traditional")
++	}
++	InitCollector(2) // temporary general, rollback and final apply must share a writer
++	if GetCollector() != c {
++		t.Fatal("configuration replaced the collector referenced by groups")
++	}
++	CloseAllCollectors()
++	countRows := func() int {
++		f, err := os.Open(filepath.Join(home, "smart_weight_data.csv"))
++		if err != nil {
++			t.Fatal(err)
++		}
++		defer f.Close()
++		rows, err := csv.NewReader(f).ReadAll()
++		if err != nil {
++			t.Fatal(err)
++		}
++		return len(rows) - 1
++	}
++	if n := countRows(); n != 3 {
++		t.Fatalf("graceful close lost buffered samples: %d", n)
++	}
++	before, _ := os.ReadDir("/proc/self/fd")
++	for i := 0; i < 40; i++ {
++		InitCollector(float64(i%3 + 1))
++		c.AddSample(input, metadata, .5, "Traditional")
++		CloseAllCollectors()
++	}
++	if n := countRows(); n != 43 {
++		t.Fatalf("reload/close lost or duplicated samples: %d", n)
++	}
++	after, err := os.ReadDir("/proc/self/fd")
++	if err == nil && len(after) > len(before)+1 {
++		t.Fatalf("collector leaked FDs: %d -> %d", len(before), len(after))
++	}
++	var wg sync.WaitGroup
++	for i := 0; i < 4; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for j := 0; j < 20; j++ {
++				c.AddSample(input, metadata, .5, "Traditional")
++			}
++		}()
++	}
++	wg.Add(1)
++	go func() {
++		defer wg.Done()
++		for j := 0; j < 20; j++ {
++			InitCollector(1)
++			CloseAllCollectors()
++		}
++	}()
++	wg.Wait()
++	CloseAllCollectors()
++	if n := countRows(); n != 123 {
++		t.Fatalf("concurrent reload/close lost samples: %d", n)
++	}
++}
+diff --git a/component/smart/lightgbm/lightgbm.go b/component/smart/lightgbm/lightgbm.go
+index f45e0de..671b231 100644
+--- a/component/smart/lightgbm/lightgbm.go
++++ b/component/smart/lightgbm/lightgbm.go
+@@ -8,6 +8,7 @@ import (
+ 	"net/http"
+ 	"net/netip"
+ 	"os"
++	"path/filepath"
+ 	"regexp"
+ 	"strconv"
+ 	"strings"
+@@ -27,7 +28,8 @@ const (
+ 	MaxFeatureSize = 32
+ 
+ 	// a corrupt max_feature_idx must not drive an unbounded allocation in the tail fill
+-	maxModelFeatureSlots = 4096
++	maxModelFeatureSlots  = 4096
++	maxModelDownloadBytes = 64 << 20
+ )
+ 
+ type keywordEntry struct {
+@@ -39,14 +41,16 @@ type WeightModel struct {
+ 	model      *leaves.Ensemble
+ 	transforms *FeatureTransforms
+ 	lastUpdate time.Time
++	lastError  string
+ 	mutex      sync.RWMutex
+ }
+ 
+ var (
+-	smartModel  *WeightModel
+-	reloadModel = singleflight.Group[bool]{StoreResult: false}
+-	modelOnce   sync.Once
+-	lgbmUrl     string
++	smartModel   *WeightModel
++	reloadModel  = singleflight.Group[bool]{StoreResult: false}
++	modelOnce    sync.Once
++	lgbmURLMutex sync.RWMutex
++	lgbmUrl      string
+ 
+ 	domainRegex = regexp.MustCompile(`([a-zA-Z0-9-]+)(\.[a-zA-Z0-9-]+)+$`)
+ 
+@@ -536,63 +540,86 @@ func init() {
+ 	}
+ }
+ 
++// GetModel always returns the same handle, including after a failed first load.
++// Groups can then recover in place when a later update installs a valid model.
+ func GetModel() *WeightModel {
+ 	modelOnce.Do(func() {
+-		m := &WeightModel{}
++		smartModel = &WeightModel{}
+ 		modelPath := C.Path.SmartModel()
+-
+-		if _, err := os.Stat(modelPath); err == nil {
+-			if err := m.loadModel(modelPath); err != nil {
+-				log.Warnln("[Smart] Model.bin invalid, remove and download: %v", err)
+-				if rmErr := os.Remove(modelPath); rmErr != nil {
+-					log.Errorln("[Smart] Failed to remove invalid Model.bin: %v", rmErr)
+-					return
+-				}
+-
+-				if downloadErr := downloadModel(modelPath); downloadErr != nil {
+-					log.Errorln("[Smart] Failed to download Model.bin: %v", downloadErr)
+-					return
+-				}
+-
+-				if reloadErr := m.loadModel(modelPath); reloadErr != nil {
+-					log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", reloadErr)
+-					return
+-				}
+-
+-				log.Infoln("[Smart] Model.bin downloaded and loaded successfully")
+-			} else {
+-				log.Infoln("[Smart] Model file loaded successfully")
+-			}
+-		} else {
+-			log.Infoln("[Smart] Can't find Model.bin, start download")
+-			if downloadErr := downloadModel(modelPath); downloadErr != nil {
+-				log.Errorln("[Smart] Can't download Model.bin: %v", downloadErr)
+-				return
+-			}
+-
+-			if loadErr := m.loadModel(modelPath); loadErr != nil {
+-				log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", loadErr)
+-				return
+-			}
+-
+-			log.Infoln("[Smart] Download Model.bin finish")
++		if err := smartModel.loadModel(modelPath); err == nil {
++			log.Infoln("[Smart] Model file loaded successfully")
++			return
+ 		}
+-
+-		smartModel = m
++		log.Infoln("[Smart] Model unavailable, start download")
++		if err := downloadModel(modelPath); err != nil {
++			smartModel.setLoadError(err)
++			log.Errorln("[Smart] Can't download Model.bin: %v", err)
++			return
++		}
++		if err := smartModel.loadModel(modelPath); err != nil {
++			log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", err)
++			return
++		}
++		log.Infoln("[Smart] Model.bin downloaded and loaded successfully")
+ 	})
+-
+ 	return smartModel
+ }
+ 
+-func (m *WeightModel) loadModel(path string) error {
++// Status reports effective readiness separately from the configured toggle.
++func (m *WeightModel) Status() (bool, string) {
++	if m == nil {
++		return false, ""
++	}
++	m.mutex.RLock()
++	defer m.mutex.RUnlock()
++	return m.model != nil, m.lastError
++}
++
++func (m *WeightModel) setLoadError(err error) {
+ 	m.mutex.Lock()
+ 	defer m.mutex.Unlock()
++	m.lastError = err.Error()
++}
++
++// ValidateModel checks update candidates with the same feature bound as loads.
++func ValidateModel(path string) error {
++	info, err := os.Stat(path)
++	if err != nil {
++		return err
++	}
++	if info.Size() == 0 || info.Size() > maxModelDownloadBytes {
++		return fmt.Errorf("model has invalid size %d", info.Size())
++	}
++	model, err := leaves.LGEnsembleFromFile(path, false)
++	if err != nil {
++		return err
++	}
++	if model.NFeatures() > maxModelFeatureSlots {
++		return fmt.Errorf("model needs %d features; maximum is %d", model.NFeatures(), maxModelFeatureSlots)
++	}
++	return nil
++}
++
++func (m *WeightModel) loadModel(path string) (err error) {
++	m.mutex.Lock()
++	defer m.mutex.Unlock()
++	defer func() {
++		if err != nil {
++			m.lastError = err.Error()
++		} else {
++			m.lastError = ""
++		}
++	}()
+ 
+ 	model, err := leaves.LGEnsembleFromFile(path, false)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to load binary model: %v", err)
+ 	}
+ 
++	if model.NFeatures() > maxModelFeatureSlots {
++		return fmt.Errorf("model needs %d features; maximum is %d", model.NFeatures(), maxModelFeatureSlots)
++	}
++
+ 	// a model with more slots still predicts, the missing tail is filled with zeros
+ 	if n := model.NFeatures(); n > MaxFeatureSize {
+ 		log.Warnln("[Smart] Model needs [%d] features, this build computes [%d], the missing slots are filled with zeros", n, MaxFeatureSize)
+@@ -624,65 +651,84 @@ func (m *WeightModel) loadModel(path string) error {
+ }
+ 
+ func ReloadModel() {
+-	if smartModel != nil {
+-		success, err, _ := reloadModel.Do("reload", func() (bool, error) {
+-			modelPath := C.Path.SmartModel()
+-			if _, err := os.Stat(modelPath); err == nil {
+-				if err := smartModel.loadModel(modelPath); err != nil {
+-					return false, err
+-				} else {
+-					return true, nil
+-				}
+-			}
+-			return false, nil
+-		})
+-
+-		if err != nil {
+-			log.Errorln("[Smart] Model reload failed: %v", err)
+-		} else if success {
+-			log.Debugln("[Smart] Model reload completed successfully")
++	m := GetModel()
++	success, err, _ := reloadModel.Do("reload", func() (bool, error) {
++		if err := m.loadModel(C.Path.SmartModel()); err != nil {
++			return false, err
+ 		}
++		return true, nil
++	})
++	if err != nil {
++		log.Errorln("[Smart] Model reload failed: %v", err)
++	} else if success {
++		log.Debugln("[Smart] Model reload completed successfully")
+ 	}
+ }
+ 
+ func SetLgbmUrl(newUrl string) {
++	lgbmURLMutex.Lock()
++	defer lgbmURLMutex.Unlock()
+ 	lgbmUrl = newUrl
+ }
+ 
+ func LgbmUrl() string {
++	lgbmURLMutex.RLock()
++	defer lgbmURLMutex.RUnlock()
+ 	return lgbmUrl
+ }
+ 
+-func downloadModel(path string) (err error) {
+-	modelUrl := LgbmUrl()
+-	if modelUrl == "" {
+-		modelUrl = GetModelDownloadURL()
++func downloadModel(path string) error {
++	modelURL := LgbmUrl()
++	if modelURL == "" {
++		modelURL = GetModelDownloadURL()
+ 	}
+-
+-	ctx, cancel := context.WithTimeout(context.Background(), time.Second*90)
++	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+ 	defer cancel()
+-
+-	resp, err := mihomoHttp.HttpRequest(ctx, modelUrl, http.MethodGet, nil, nil)
++	resp, err := mihomoHttp.HttpRequest(ctx, modelURL, http.MethodGet, nil, nil)
+ 	if err != nil {
+-		return
++		return err
+ 	}
+ 	defer resp.Body.Close()
+-
+-	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0o644)
++	if resp.StatusCode != http.StatusOK {
++		return fmt.Errorf("model download returned HTTP %d", resp.StatusCode)
++	}
++	if resp.ContentLength > maxModelDownloadBytes {
++		return fmt.Errorf("model download exceeds %d bytes", maxModelDownloadBytes)
++	}
++	f, err := os.CreateTemp(filepath.Dir(path), ".Model.bin-*")
+ 	if err != nil {
+ 		return err
+ 	}
++	staged := f.Name()
++	defer os.Remove(staged)
+ 	defer f.Close()
+-	_, err = io.Copy(f, resp.Body)
+-
+-	return err
++	n, err := io.Copy(f, io.LimitReader(resp.Body, maxModelDownloadBytes+1))
++	if err != nil {
++		return err
++	}
++	if n == 0 || n > maxModelDownloadBytes {
++		return fmt.Errorf("model download has invalid size %d", n)
++	}
++	if err := f.Sync(); err != nil {
++		return err
++	}
++	if err := f.Close(); err != nil {
++		return err
++	}
++	if err := ValidateModel(staged); err != nil {
++		return fmt.Errorf("invalid downloaded model: %w", err)
++	}
++	if err := os.Chmod(staged, 0o644); err != nil {
++		return err
++	}
++	return os.Rename(staged, path)
+ }
+ 
+ func GetModelDownloadURL() string {
+ 	return "https://github.com/vernesong/mihomo/releases/download/LightGBM-Model/Model.bin"
+ }
+ 
+-func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor float64) (float64, bool) {
++func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor float64) (weight float64, modelPredicted bool) {
+ 	if m == nil {
+ 		return smart.CalculateWeight(input, priorityFactor)
+ 	}
+@@ -724,7 +770,7 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
+ 	defer func() {
+ 		if r := recover(); r != nil {
+ 			log.Errorln("[Smart] Model prediction panic: %v", r)
+-			prediction, _ = smart.CalculateWeight(input, priorityFactor)
++			weight, modelPredicted = smart.CalculateWeight(input, priorityFactor)
+ 		}
+ 	}()
+ 
+diff --git a/component/updater/lgbm_scheduler.go b/component/updater/lgbm_scheduler.go
+new file mode 100644
+index 0000000..509f786
+--- /dev/null
++++ b/component/updater/lgbm_scheduler.go
+@@ -0,0 +1,137 @@
++package updater
++
++import (
++	"context"
++	"sync"
++	"time"
++
++	"github.com/metacubex/mihomo/log"
++)
++
++var lgbmPolicy struct {
++	sync.RWMutex
++	enabled bool
++	hours   int
++}
++
++var lgbmScheduler = newLgbmUpdateScheduler()
++
++func LgbmAutoUpdate() bool {
++	enabled, _ := LgbmUpdatePolicy()
++	return enabled
++}
++
++func LgbmUpdateInterval() int {
++	_, hours := LgbmUpdatePolicy()
++	return hours
++}
++
++func LgbmUpdatePolicy() (bool, int) {
++	lgbmPolicy.RLock()
++	defer lgbmPolicy.RUnlock()
++	return lgbmPolicy.enabled, lgbmPolicy.hours
++}
++
++// Keep the existing setters safe for callers that stage policy before Register.
++// Committing a configuration uses ConfigureLgbmUpdater to apply both together.
++func SetLgbmAutoUpdate(enabled bool) {
++	lgbmPolicy.Lock()
++	defer lgbmPolicy.Unlock()
++	lgbmPolicy.enabled = enabled
++}
++
++func SetLgbmUpdateInterval(hours int) {
++	lgbmPolicy.Lock()
++	defer lgbmPolicy.Unlock()
++	lgbmPolicy.hours = hours
++}
++
++func ConfigureLgbmUpdater(enabled bool, hours int) {
++	lgbmPolicy.Lock()
++	defer lgbmPolicy.Unlock()
++	lgbmPolicy.enabled, lgbmPolicy.hours = enabled, hours
++	registerLgbmUpdaterLocked()
++}
++
++// main.go may register after the first committed configuration. Applying the
++// same policy is idempotent and must not create a second worker or reset a tick.
++func RegisterLgbmUpdater() {
++	lgbmPolicy.Lock()
++	defer lgbmPolicy.Unlock()
++	registerLgbmUpdaterLocked()
++}
++
++func registerLgbmUpdaterLocked() {
++	hours := lgbmPolicy.hours
++	if hours <= 0 || hours > int((1<<63-1)/int64(time.Hour)) {
++		if lgbmPolicy.enabled {
++			log.Errorln("[Smart] Invalid update interval: %d", hours)
++		}
++		lgbmScheduler.configure(false, 0)
++		return
++	}
++	lgbmScheduler.configure(lgbmPolicy.enabled, time.Duration(hours)*time.Hour)
++}
++
++// There is exactly one scheduler goroutine. Reconfiguration cancels its current
++// automatic HTTP request and coalesces notifications; it never adds workers.
++type lgbmUpdateScheduler struct {
++	mutex        sync.Mutex
++	enabled      bool
++	interval     time.Duration
++	wake         chan struct{}
++	ctx          context.Context
++	cancel       context.CancelFunc
++	cancelUpdate context.CancelFunc
++	done         chan struct{}
++}
++
++func newLgbmUpdateScheduler() *lgbmUpdateScheduler {
++	ctx, cancel := context.WithCancel(context.Background())
++	s := &lgbmUpdateScheduler{wake: make(chan struct{}, 1), ctx: ctx, cancel: cancel, done: make(chan struct{})}
++	go s.run()
++	return s
++}
++
++func (s *lgbmUpdateScheduler) configure(enabled bool, interval time.Duration) {
++	s.mutex.Lock()
++	defer s.mutex.Unlock()
++	if s.ctx.Err() != nil || (s.enabled == enabled && s.interval == interval) {
++		return
++	}
++	s.enabled, s.interval = enabled, interval
++	if s.cancelUpdate != nil {
++		s.cancelUpdate()
++	}
++	select {
++	case s.wake <- struct{}{}:
++	default:
++	}
++}
++
++func (s *lgbmUpdateScheduler) run() {
++	defer close(s.done)
++	for {
++		select {
++		case <-s.ctx.Done():
++			return
++		case <-s.wake:
++		}
++		s.mutex.Lock()
++		if !s.enabled || s.interval <= 0 {
++			s.mutex.Unlock()
++			continue
++		}
++		ctx, cancel := context.WithCancel(s.ctx)
++		s.cancelUpdate = cancel
++		interval := s.interval
++		s.mutex.Unlock()
++		runLgbmUpdater(ctx, interval)
++		cancel()
++	}
++}
++
++func (s *lgbmUpdateScheduler) close() {
++	s.cancel()
++	<-s.done
++}
+diff --git a/component/updater/lgbm_scheduler_test.go b/component/updater/lgbm_scheduler_test.go
+new file mode 100644
+index 0000000..26154cc
+--- /dev/null
++++ b/component/updater/lgbm_scheduler_test.go
+@@ -0,0 +1,181 @@
++package updater
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"sync"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/smart/lightgbm"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func waitSmartUpdater(t *testing.T, condition func() bool) {
++	t.Helper()
++	deadline := time.Now().Add(3 * time.Second)
++	for time.Now().Before(deadline) {
++		if condition() {
++			return
++		}
++		time.Sleep(time.Millisecond)
++	}
++	t.Fatal("timed out waiting for model updater")
++}
++
++func smartUpdaterFixture(t *testing.T, handler http.HandlerFunc) (*lgbmUpdateScheduler, string) {
++	t.Helper()
++	oldHome, oldURL := C.Path.HomeDir(), lightgbm.LgbmUrl()
++	C.SetHomeDir(t.TempDir())
++	path := filepath.Join(C.Path.HomeDir(), "Model.bin")
++	server := httptest.NewServer(handler)
++	lightgbm.SetLgbmUrl(server.URL)
++	scheduler := newLgbmUpdateScheduler()
++	t.Cleanup(func() {
++		scheduler.close()
++		server.Close()
++		C.SetHomeDir(oldHome)
++		lightgbm.SetLgbmUrl(oldURL)
++	})
++	return scheduler, path
++}
++
++func TestSmartModelUpdaterHotReload(t *testing.T) {
++	var requests atomic.Int32
++	scheduler, path := smartUpdaterFixture(t, func(w http.ResponseWriter, _ *http.Request) {
++		requests.Add(1)
++		_, _ = w.Write([]byte(lifecycleUpdateModel))
++	})
++	if err := os.WriteFile(path, []byte(lifecycleUpdateModel), 0o644); err != nil {
++		t.Fatal(err)
++	}
++	// Disabled startup does nothing, then enabling starts the timer in place.
++	scheduler.configure(false, 20*time.Millisecond)
++	time.Sleep(50 * time.Millisecond)
++	if requests.Load() != 0 {
++		t.Fatal("disabled updater downloaded a model")
++	}
++	scheduler.configure(true, 20*time.Millisecond)
++	waitSmartUpdater(t, func() bool { return requests.Load() >= 2 })
++
++	// Changing the interval replaces the old timer, without an extra worker.
++	now := time.Now()
++	if err := os.Chtimes(path, now, now); err != nil {
++		t.Fatal(err)
++	}
++	scheduler.configure(true, 300*time.Millisecond)
++	time.Sleep(30 * time.Millisecond)
++	before := requests.Load()
++	time.Sleep(100 * time.Millisecond)
++	if got := requests.Load(); got != before {
++		t.Fatalf("old short timer survived interval change: %d -> %d", before, got)
++	}
++	waitSmartUpdater(t, func() bool { return requests.Load() > before })
++
++	// Disabling stops scheduled work, but the manual API remains usable.
++	scheduler.configure(false, 300*time.Millisecond)
++	time.Sleep(30 * time.Millisecond)
++	before = requests.Load()
++	time.Sleep(350 * time.Millisecond)
++	if got := requests.Load(); got != before {
++		t.Fatalf("disabled timer still downloaded: %d -> %d", before, got)
++	}
++	if err := UpdateLgbmModelDatabase(); err != nil {
++		t.Fatal(err)
++	}
++	if got := requests.Load(); got != before+1 {
++		t.Fatalf("manual model update no longer works while disabled: %d -> %d", before, got)
++	}
++}
++
++func TestSmartModelUpdaterCancellationAndIdempotence(t *testing.T) {
++	var requests atomic.Int32
++	canceled := make(chan struct{}, 4)
++	scheduler, _ := smartUpdaterFixture(t, func(_ http.ResponseWriter, r *http.Request) {
++		requests.Add(1)
++		<-r.Context().Done()
++		canceled <- struct{}{}
++	})
++	scheduler.configure(true, 20*time.Millisecond)
++	waitSmartUpdater(t, func() bool { return requests.Load() == 1 })
++	for i := 0; i < 100; i++ {
++		scheduler.configure(true, 20*time.Millisecond)
++	}
++	time.Sleep(50 * time.Millisecond)
++	if requests.Load() != 1 {
++		t.Fatal("idempotent registration created another updater")
++	}
++	select {
++	case <-canceled:
++		t.Fatal("unchanged policy canceled its active download")
++	default:
++	}
++	scheduler.configure(false, 20*time.Millisecond)
++	select {
++	case <-canceled:
++	case <-time.After(3 * time.Second):
++		t.Fatal("disable did not cancel automatic model download")
++	}
++	scheduler.configure(true, 100*time.Millisecond)
++	waitSmartUpdater(t, func() bool { return requests.Load() == 2 })
++	scheduler.configure(true, 200*time.Millisecond)
++	select {
++	case <-canceled:
++	case <-time.After(3 * time.Second):
++		t.Fatal("interval change did not cancel the old automatic download")
++	}
++	waitSmartUpdater(t, func() bool { return requests.Load() == 3 })
++	scheduler.configure(false, 200*time.Millisecond)
++	select {
++	case <-canceled:
++	case <-time.After(3 * time.Second):
++		t.Fatal("replacement automatic download did not stop")
++	}
++	// Configuring after close cannot restart the worker or create a leak.
++	scheduler.close()
++	scheduler.configure(true, time.Millisecond)
++	time.Sleep(30 * time.Millisecond)
++	if got := requests.Load(); got != 3 {
++		t.Fatalf("scheduler restarted after close: %d requests", got)
++	}
++}
++
++func TestSmartModelUpdaterPolicyConcurrentRegistration(t *testing.T) {
++	oldEnabled, oldHours := LgbmAutoUpdate(), LgbmUpdateInterval()
++	defer ConfigureLgbmUpdater(oldEnabled, oldHours)
++	ConfigureLgbmUpdater(false, 1)
++	var wg sync.WaitGroup
++	for i := 0; i < 8; i++ {
++		wg.Add(1)
++		go func() {
++			defer wg.Done()
++			for hours := 1; hours <= 100; hours++ {
++				SetLgbmAutoUpdate(false)
++				SetLgbmUpdateInterval(hours)
++				_ = LgbmAutoUpdate()
++				_ = LgbmUpdateInterval()
++				RegisterLgbmUpdater()
++				ConfigureLgbmUpdater(false, hours)
++			}
++		}()
++	}
++	wg.Wait()
++	for _, hours := range []int{-1, 0, int((1<<63-1)/int64(time.Hour)) + 1} {
++		ConfigureLgbmUpdater(true, hours)
++		lgbmScheduler.mutex.Lock()
++		enabled := lgbmScheduler.enabled
++		lgbmScheduler.mutex.Unlock()
++		if enabled {
++			t.Fatalf("invalid duration started a scheduler: %d", hours)
++		}
++	}
++	ctx, cancel := context.WithCancel(context.Background())
++	cancel()
++	if err := updateLgbmModelDatabaseContext(ctx); err != context.Canceled {
++		t.Fatalf("canceled update must not start: %v", err)
++	}
++}
+diff --git a/component/updater/smart_lifecycle_test.go b/component/updater/smart_lifecycle_test.go
+new file mode 100644
+index 0000000..463448b
+--- /dev/null
++++ b/component/updater/smart_lifecycle_test.go
+@@ -0,0 +1,68 @@
++package updater
++
++import (
++	"context"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/smart/lightgbm"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++const lifecycleUpdateModel = `tree
++version=v4
++num_class=1
++num_tree_per_iteration=1
++label_index=0
++max_feature_idx=0
++objective=regression
++tree_sizes=200
++
++Tree=0
++num_leaves=2
++num_cat=0
++split_feature=0
++threshold=5.0
++decision_type=2
++left_child=-1
++right_child=-2
++leaf_count=300 700
++leaf_value=0.43 0.59
++
++end of trees
++`
++
++func TestSmartModelAutoUpdaterRetriesMissingAndFailedModel(t *testing.T) {
++	oldHome, oldURL := C.Path.HomeDir(), lightgbm.LgbmUrl()
++	C.SetHomeDir(t.TempDir())
++	defer C.SetHomeDir(oldHome)
++	defer lightgbm.SetLgbmUrl(oldURL)
++	var requests atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		if requests.Add(1) == 1 {
++			http.Error(w, "temporary", 503)
++			return
++		}
++		_, _ = w.Write([]byte(lifecycleUpdateModel))
++	}))
++	defer server.Close()
++	lightgbm.SetLgbmUrl(server.URL)
++	ctx, cancel := context.WithCancel(context.Background())
++	done := make(chan struct{})
++	go func() { defer close(done); runLgbmUpdater(ctx, 20*time.Millisecond) }()
++	defer func() { cancel(); <-done }()
++	deadline := time.Now().Add(2 * time.Second)
++	for time.Now().Before(deadline) {
++		if data, err := os.ReadFile(C.Path.SmartModel()); err == nil && string(data) == lifecycleUpdateModel {
++			if ready, _ := lightgbm.GetModel().Status(); ready {
++				return
++			}
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	t.Fatalf("auto updater stopped after temporary failure; requests=%d", requests.Load())
++}
+diff --git a/component/updater/update_lgbm.go b/component/updater/update_lgbm.go
+index 0bd68a8..1c67a29 100644
+--- a/component/updater/update_lgbm.go
++++ b/component/updater/update_lgbm.go
+@@ -14,34 +14,15 @@ import (
+ 	"github.com/metacubex/mihomo/component/smart/lightgbm"
+ 	C "github.com/metacubex/mihomo/constant"
+ 	"github.com/metacubex/mihomo/log"
+-
+-	"github.com/vernesong/leaves"
+-)
+-
+-var (
+-	lgbmAutoUpdate     bool
+-	lgbmUpdateInterval int
+-
+-	updatingLgbm atomic.Bool
+ )
+ 
+-func LgbmAutoUpdate() bool {
+-	return lgbmAutoUpdate
+-}
+-
+-func LgbmUpdateInterval() int {
+-	return lgbmUpdateInterval
+-}
++var updatingLgbm atomic.Bool
+ 
+-func SetLgbmAutoUpdate(newAutoUpdate bool) {
+-	lgbmAutoUpdate = newAutoUpdate
+-}
+-
+-func SetLgbmUpdateInterval(newUpdateInterval int) {
+-	lgbmUpdateInterval = newUpdateInterval
++func UpdateLgbmModel() (err error) {
++	return updateLgbmModelContext(context.Background())
+ }
+ 
+-func UpdateLgbmModel() (err error) {
++func updateLgbmModelContext(ctx context.Context) (err error) {
+ 	modelUrl := lightgbm.LgbmUrl()
+ 	if modelUrl == "" {
+ 		modelUrl = lightgbm.GetModelDownloadURL()
+@@ -52,11 +33,17 @@ func UpdateLgbmModel() (err error) {
+ 	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
+ 		oldHash = utils.MakeHash(buf)
+ 	}
+-	data, hash, err := vehicle.Read(context.Background(), oldHash)
++	data, hash, err := vehicle.Read(ctx, oldHash)
+ 	if err != nil {
+ 		return fmt.Errorf("can't download LightGBM model file: %w", err)
+ 	}
+ 	if oldHash.Equal(hash) {
++		// The file can have been restored while the original groups still hold
++		// an unloaded handle. "Up to date" must also activate that valid file.
++		if err := lightgbm.ValidateModel(vehicle.Path()); err != nil {
++			return fmt.Errorf("invalid installed LightGBM model file: %w", err)
++		}
++		lightgbm.ReloadModel()
+ 		log.Infoln("[Smart] LightGBM model is up to date")
+ 		return nil
+ 	}
+@@ -76,8 +63,7 @@ func UpdateLgbmModel() (err error) {
+ 		return fmt.Errorf("failed to write temp file: %w", err)
+ 	}
+ 
+-	_, err = leaves.LGEnsembleFromFile(tmpPath, false)
+-	if err != nil {
++	if err = lightgbm.ValidateModel(tmpPath); err != nil {
+ 		return fmt.Errorf("invalid LightGBM model file: %s", err)
+ 	}
+ 
+@@ -93,15 +79,22 @@ func UpdateLgbmModel() (err error) {
+ 	return nil
+ }
+ 
+-func updateLgbmModel() error {
++func updateLgbmModel(ctx context.Context) error {
+ 	defer runtime.GC()
+ 
+-	return UpdateLgbmModel()
++	return updateLgbmModelContext(ctx)
+ }
+ 
+ var ErrGetLgbmModelUpdateSkip = errors.New("LightGBM model is updating, skip")
+ 
+ func UpdateLgbmModelDatabase() error {
++	return updateLgbmModelDatabaseContext(context.Background())
++}
++
++func updateLgbmModelDatabaseContext(ctx context.Context) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
+ 	if !updatingLgbm.CompareAndSwap(false, true) {
+ 		return ErrGetLgbmModelUpdateSkip
+ 	}
+@@ -109,8 +102,10 @@ func UpdateLgbmModelDatabase() error {
+ 
+ 	log.Infoln("[Smart] Start updating LightGBM model")
+ 
+-	if err := updateLgbmModel(); err != nil {
+-		log.Errorln("[Smart] update LightGBM model error: %s", err.Error())
++	if err := updateLgbmModel(ctx); err != nil {
++		if ctx.Err() == nil {
++			log.Errorln("[Smart] update LightGBM model error: %s", err.Error())
++		}
+ 		return err
+ 	}
+ 
+@@ -125,36 +120,27 @@ func getLgbmModelUpdateTime() (time time.Time, err error) {
+ 	return
+ }
+ 
+-func RegisterLgbmUpdater() {
+-	if lgbmUpdateInterval <= 0 {
+-		log.Errorln("[Smart] Invalid update interval: %d", lgbmUpdateInterval)
++// A missing model or temporary download failure must not stop future attempts.
++func runLgbmUpdater(ctx context.Context, interval time.Duration) {
++	if ctx.Err() != nil {
+ 		return
+ 	}
+-
+-	go func() {
+-		ticker := time.NewTicker(time.Duration(lgbmUpdateInterval) * time.Hour)
+-		defer ticker.Stop()
+-
+-		lastUpdate, err := getLgbmModelUpdateTime()
+-		if err != nil {
+-			log.Errorln("[Smart] Get LightGBM model update time error: %s", err.Error())
+-			return
++	ticker := time.NewTicker(interval)
++	defer ticker.Stop()
++	lastUpdate, err := getLgbmModelUpdateTime()
++	if err != nil || lastUpdate.Add(interval).Before(time.Now()) {
++		if err := updateLgbmModelDatabaseContext(ctx); err != nil && ctx.Err() == nil {
++			log.Errorln("[Smart] Failed to update LightGBM model, will retry: %s", err)
+ 		}
+-
+-		log.Infoln("[Smart] last update time %s", lastUpdate)
+-		if lastUpdate.Add(time.Duration(lgbmUpdateInterval) * time.Hour).Before(time.Now()) {
+-			log.Infoln("[Smart] Model has not been updated for %v, update now", time.Duration(lgbmUpdateInterval)*time.Hour)
+-			if err := UpdateLgbmModelDatabase(); err != nil {
+-				log.Errorln("[Smart] Failed to update LightGBM model: %s", err.Error())
+-				return
+-			}
+-		}
+-
+-		for range ticker.C {
+-			log.Infoln("[Smart] updating model every %d hours", lgbmUpdateInterval)
+-			if err := UpdateLgbmModelDatabase(); err != nil {
+-				log.Errorln("[Smart] Failed to update LightGBM model: %s", err.Error())
++	}
++	for {
++		select {
++		case <-ctx.Done():
++			return
++		case <-ticker.C:
++			if err := updateLgbmModelDatabaseContext(ctx); err != nil && ctx.Err() == nil {
++				log.Errorln("[Smart] Failed to update LightGBM model, will retry: %s", err)
+ 			}
+ 		}
+-	}()
++	}
+ }
+diff --git a/config/config.go b/config/config.go
+index 74fa9d6..13f4c5d 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -778,6 +778,10 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
+ func temporaryUpdateGeneral(general *General) func()
+ 
+ func parseGeneral(cfg *RawConfig) (*General, error) {
++	if cfg.LgbmAutoUpdate && (cfg.LgbmUpdateInterval <= 0 ||
++		cfg.LgbmUpdateInterval > int((1<<63-1)/time.Hour)) {
++		return nil, fmt.Errorf("lgbm-update-interval must be a positive hour count without duration overflow")
++	}
+ 	if cfg.GlobalClientFingerprint != "" {
+ 		log.Errorln("The `global-client-fingerprint` configuration is removed, please set `client-fingerprint` directly on the proxy instead")
+ 	}
+diff --git a/config/smart_updater_test.go b/config/smart_updater_test.go
+new file mode 100644
+index 0000000..8de14fe
+--- /dev/null
++++ b/config/smart_updater_test.go
+@@ -0,0 +1,23 @@
++package config
++
++import (
++	"testing"
++	"time"
++)
++
++func TestSmartModelUpdaterIntervalValidation(t *testing.T) {
++	maximum := int((1<<63 - 1) / time.Hour)
++	for _, hours := range []int{-1, 0, maximum + 1} {
++		if _, err := parseGeneral(&RawConfig{LgbmAutoUpdate: true, LgbmUpdateInterval: hours}); err == nil {
++			t.Fatalf("accepted invalid enabled model interval %d", hours)
++		}
++	}
++	for _, hours := range []int{1, 72, 720, maximum} {
++		if _, err := parseGeneral(&RawConfig{LgbmAutoUpdate: true, LgbmUpdateInterval: hours}); err != nil {
++			t.Fatalf("rejected valid model interval %d: %v", hours, err)
++		}
++	}
++	if _, err := parseGeneral(&RawConfig{LgbmAutoUpdate: false, LgbmUpdateInterval: 0}); err != nil {
++		t.Fatalf("cannot disable model updater: %v", err)
++	}
++}
+diff --git a/constant/path.go b/constant/path.go
+index fdc1a15..a9e3d62 100644
+--- a/constant/path.go
++++ b/constant/path.go
+@@ -253,7 +253,6 @@ func (p *path) SmartModel() string {
+ 			continue
+ 		} else {
+ 			if strings.EqualFold(fi.Name(), "Model.bin") {
+-				SmartmodelName = fi.Name()
+ 				return P.Join(p.homeDir, fi.Name())
+ 			}
+ 		}
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+index 8b64e4f..7c89b1e 100644
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -135,6 +135,7 @@ func GetGeneral() *config.General {
+ 		authenticator = auth.Users()
+ 	}
+ 
++	lgbmEnabled, lgbmInterval := updater.LgbmUpdatePolicy()
+ 	general := &config.General{
+ 		Inbound: config.Inbound{
+ 			Port:              ports.Port,
+@@ -180,8 +181,8 @@ func GetGeneral() *config.General {
+ 		KeepAliveInterval:  int(keepalive.KeepAliveInterval() / time.Second),
+ 		KeepAliveIdle:      int(keepalive.KeepAliveIdle() / time.Second),
+ 		DisableKeepAlive:   keepalive.DisableKeepAlive(),
+-		LgbmAutoUpdate:     updater.LgbmAutoUpdate(),
+-		LgbmUpdateInterval: updater.LgbmUpdateInterval(),
++		LgbmAutoUpdate:     lgbmEnabled,
++		LgbmUpdateInterval: lgbmInterval,
+ 		LgbmUrl:            lightgbm.LgbmUrl(),
+ 	}
+ 
+@@ -381,8 +382,7 @@ func updateUpdater(cfg *config.Config) {
+ 	updater.SetGeoAutoUpdate(general.GeoAutoUpdate)
+ 	updater.SetGeoUpdateInterval(general.GeoUpdateInterval)
+ 
+-	updater.SetLgbmAutoUpdate(general.LgbmAutoUpdate)
+-	updater.SetLgbmUpdateInterval(general.LgbmUpdateInterval)
++	updater.ConfigureLgbmUpdater(general.LgbmAutoUpdate, general.LgbmUpdateInterval)
+ 
+ 	controller := cfg.Controller
+ 	updater.DefaultUiUpdater = updater.NewUiUpdater(controller.ExternalUI, controller.ExternalUIURL, controller.ExternalUIName)

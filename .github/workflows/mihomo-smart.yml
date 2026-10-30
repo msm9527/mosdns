@@ -45,7 +45,7 @@ jobs:
           fi
           {
             echo "commit=${commit}"
-            echo "version=alpha-smart-${commit:0:12}-msm.1"
+            echo "version=alpha-smart-${commit:0:12}-msm.3"
             echo "published_at=$(date -d "$published" '+%Y-%m-%d')"
           } >> "$GITHUB_OUTPUT"
           matrix="$(python3 - <<'PY'
@@ -92,7 +92,7 @@ jobs:
           go-version: stable
           check-latest: true
 
-      - name: Verify native routing and ANYTLS stream isolation
+      - name: Verify native routing, stream isolation and Smart feature lifecycle
         shell: bash
         run: |
           set -euo pipefail
@@ -177,8 +177,11 @@ jobs:
           body: |
             更新 [mihomo Smart 版](https://github.com/vernesong/mihomo/tree/Prerelease-Alpha) 至 ${{ needs.source.outputs.version }}，发布于 ${{ needs.source.outputs.published_at }}
 
-            Native MSM features: direct-system, tun.system-route-mark (msm.1).
+            Native MSM patch revision: msm.3; direct-system, tun.system-route-mark, group.selection-concurrency.
             ANYTLS: shared TLS session isolation fix with a required regression test.
+            Smart: recoverable and validated model loading, lossless collector lifecycle,
+            safe ASN fallback and recovery, and maintenance that survives configuration reloads.
+            Automatic model update toggles and intervals apply on live reload without duplicate workers.
             Upstream repository: https://github.com/vernesong/mihomo
             Upstream ref: Prerelease-Alpha
             Upstream commit: ${{ needs.source.outputs.commit }}
