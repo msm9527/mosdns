@@ -1,0 +1,584 @@
+diff --git a/adapter/outbound/direct.go b/adapter/outbound/direct.go
+index 1e2b2ef..75d7e73 100644
+--- a/adapter/outbound/direct.go
++++ b/adapter/outbound/direct.go
+@@ -12,7 +12,8 @@ import (
+ 
+ type Direct struct {
+ 	*Base
+-	loopBack *loopback.Detector
++	loopBack    *loopback.Detector
++	systemRoute bool
+ }
+ 
+ type DirectOption struct {
+@@ -20,6 +21,14 @@ type DirectOption struct {
+ 	Name string `proxy:"name"`
+ }
+ 
++func (d *Direct) DialOptions() []dialer.Option {
++	opts := d.Base.DialOptions()
++	if d.systemRoute {
++		opts = append(opts, dialer.WithSystemRoute(true))
++	}
++	return opts
++}
++
+ // DialContext implements C.ProxyAdapter
+ func (d *Direct) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn, error) {
+ 	if err := d.loopBack.CheckConn(metadata); err != nil {
+@@ -81,6 +90,15 @@ func NewDirectWithOption(option DirectOption) *Direct {
+ 	}
+ }
+ 
++// NewDirectSystemWithOption explicitly opts one direct outbound into kernel
++// routing without changing the global interface used by other outbounds.
++func NewDirectSystemWithOption(option DirectOption) *Direct {
++	option.Interface = ""
++	direct := NewDirectWithOption(option)
++	direct.systemRoute = true
++	return direct
++}
++
+ func NewDirect() *Direct {
+ 	return &Direct{
+ 		Base: NewBase(BaseOption{
+diff --git a/adapter/parser.go b/adapter/parser.go
+index 68bccdb..405fdbb 100644
+--- a/adapter/parser.go
++++ b/adapter/parser.go
+@@ -125,13 +125,20 @@ func ParseProxy(mapping map[string]any, options ...ProxyOption) (C.Proxy, error)
+ 			break
+ 		}
+ 		proxy, err = outbound.NewGostRelay(*relayOption)
+-	case "direct":
++	case "direct", "direct-system":
+ 		directOption := &outbound.DirectOption{BasicOption: basicOption}
+ 		err = decoder.Decode(mapping, directOption)
+ 		if err != nil {
+ 			break
+ 		}
+-		proxy = outbound.NewDirectWithOption(*directOption)
++		if proxyType == "direct-system" {
++			if directOption.RoutingMark <= 0 || uint64(directOption.RoutingMark) > uint64(^uint32(0)) {
++				return nil, fmt.Errorf("direct-system requires an explicit routing-mark in 1..4294967295")
++			}
++			proxy = outbound.NewDirectSystemWithOption(*directOption)
++		} else {
++			proxy = outbound.NewDirectWithOption(*directOption)
++		}
+ 	case "dns":
+ 		dnsOptions := &outbound.DnsOption{BasicOption: basicOption}
+ 		err = decoder.Decode(mapping, dnsOptions)
+diff --git a/component/dialer/dialer.go b/component/dialer/dialer.go
+index 6a05c8b..a26c674 100644
+--- a/component/dialer/dialer.go
++++ b/component/dialer/dialer.go
+@@ -103,10 +103,10 @@ func listenConfig(network, address string, rAddrPort netip.AddrPort, opt option)
+ 	if DefaultSocketHook != nil { // ignore interfaceName, routingMark when DefaultSocketHook not null (in CMFA)
+ 		socketHookToListenConfig(lc)
+ 	} else {
+-		if opt.interfaceName == "" {
++		if !opt.systemRoute && opt.interfaceName == "" {
+ 			opt.interfaceName = DefaultInterface.Load()
+ 		}
+-		if opt.interfaceName == "" {
++		if !opt.systemRoute && opt.interfaceName == "" {
+ 			if finder := DefaultInterfaceFinder.Load(); finder != nil {
+ 				opt.interfaceName = finder.FindInterfaceName(rAddrPort.Addr().Unmap())
+ 			}
+@@ -115,7 +115,7 @@ func listenConfig(network, address string, rAddrPort netip.AddrPort, opt option)
+ 			// avoid "The requested address is not valid in its context."
+ 			opt.interfaceName = ""
+ 		}
+-		if opt.interfaceName != "" {
++		if !opt.systemRoute && opt.interfaceName != "" {
+ 			bind := bindIfaceToListenConfig
+ 			if opt.fallbackBind {
+ 				bind = fallbackBindIfaceToListenConfig
+@@ -160,15 +160,15 @@ func dialContext(ctx context.Context, network string, destination netip.Addr, po
+ 	if DefaultSocketHook != nil { // ignore interfaceName, routingMark and tfo when DefaultSocketHook not null (in CMFA)
+ 		socketHookToToDialer(dialer)
+ 	} else {
+-		if opt.interfaceName == "" {
++		if !opt.systemRoute && opt.interfaceName == "" {
+ 			opt.interfaceName = DefaultInterface.Load()
+ 		}
+-		if opt.interfaceName == "" {
++		if !opt.systemRoute && opt.interfaceName == "" {
+ 			if finder := DefaultInterfaceFinder.Load(); finder != nil {
+ 				opt.interfaceName = finder.FindInterfaceName(destination)
+ 			}
+ 		}
+-		if opt.interfaceName != "" {
++		if !opt.systemRoute && opt.interfaceName != "" {
+ 			bind := bindIfaceToDialer
+ 			if opt.fallbackBind {
+ 				bind = fallbackBindIfaceToDialer
+diff --git a/component/dialer/options.go b/component/dialer/options.go
+index c1c622d..15a44e6 100644
+--- a/component/dialer/options.go
++++ b/component/dialer/options.go
+@@ -32,6 +32,7 @@ func (f NetDialerFunc) DialContext(ctx context.Context, network, address string)
+ 
+ type option struct {
+ 	interfaceName string
++	systemRoute   bool
+ 	fallbackBind  bool
+ 	addrReuse     bool
+ 	routingMark   int
+@@ -51,6 +52,15 @@ func WithInterface(name string) Option {
+ 	}
+ }
+ 
++// WithSystemRoute leaves interface selection to the operating system, even
++// when a global interface or TUN interface finder is configured. Routing marks
++// and platform socket hooks still apply.
++func WithSystemRoute(enabled bool) Option {
++	return func(opt *option) {
++		opt.systemRoute = enabled
++	}
++}
++
+ func WithFallbackBind(fallback bool) Option {
+ 	return func(opt *option) {
+ 		opt.fallbackBind = fallback
+diff --git a/config/config.go b/config/config.go
+--- a/config/config.go
++++ b/config/config.go
+@@ -909,8 +909,14 @@
+ 			return nil, nil, fmt.Errorf("proxy %s is the duplicate name", proxy.Name())
+ 		}
+ 		proxies[proxy.Name()] = proxy
+-		proxyList = append(proxyList, proxy.Name())
+-		AllProxies = append(AllProxies, proxy.Name())
++		// System-route adapters are explicit routing targets for managed
++		// listeners, never candidates for automatic subscription selection.
++		// Keep map lookup for deliberate references without polluting
++		// include-all-proxies, compatible health checks or default GLOBAL.
++		if mapping["type"] != "direct-system" {
++			proxyList = append(proxyList, proxy.Name())
++			AllProxies = append(AllProxies, proxy.Name())
++		}
+ 	}
+ 
+ 	// keep the original order of ProxyGroups in config file
+diff --git a/adapter/parser_direct_system_test.go b/adapter/parser_direct_system_test.go
+new file mode 100644
+index 0000000..9f37d69
+--- /dev/null
++++ b/adapter/parser_direct_system_test.go
+@@ -0,0 +1,47 @@
++package adapter
++
++import (
++	"strconv"
++	"testing"
++
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestParseDirectSystemPreservesOrdinaryDirect(t *testing.T) {
++	invalidMarks := []int{0, -1}
++	if strconv.IntSize == 64 {
++		oversized := uint64(1) << 32
++		invalidMarks = append(invalidMarks, int(oversized))
++	}
++	for _, mark := range invalidMarks {
++		if _, err := ParseProxy(map[string]any{"name": "home", "type": "direct-system", "routing-mark": mark}); err == nil {
++			t.Fatal("direct-system requires an explicit routing mark")
++		}
++	}
++	for _, proxyType := range []string{"direct", "direct-system"} {
++		t.Run(proxyType, func(t *testing.T) {
++			proxy, err := ParseProxy(map[string]any{
++				"name": "home", "type": proxyType,
++				"interface-name": "user_wan", "routing-mark": 17,
++				"ip-version": "ipv6-prefer",
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			if proxy.Type() != C.Direct || !proxy.SupportUDP() {
++				t.Fatal("direct-system must retain direct TCP/UDP behavior")
++			}
++			info := proxy.ProxyInfo()
++			wantInterface := "user_wan"
++			if proxyType == "direct-system" {
++				wantInterface = ""
++			}
++			if info.Interface != wantInterface || info.RoutingMark != 17 {
++				t.Fatalf("interface = %q, mark = %d", info.Interface, info.RoutingMark)
++			}
++		})
++	}
++	if _, err := ParseProxy(map[string]any{"name": "home", "type": "direct-system-unknown"}); err == nil {
++		t.Fatal("unknown native proxy types must fail closed")
++	}
++}
+diff --git a/adapter/parser_direct_system_linux_test.go b/adapter/parser_direct_system_linux_test.go
+new file mode 100644
+index 0000000..b688fa0
+--- /dev/null
++++ b/adapter/parser_direct_system_linux_test.go
+@@ -0,0 +1,94 @@
++//go:build linux
++
++package adapter
++
++import (
++	"context"
++	"io"
++	"net"
++	"net/netip"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/dialer"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++// Exercise the parser, Direct adapter, and both socket paths together so a
++// missing forwarding of WithSystemRoute cannot pass a parser-only test.
++func TestParsedDirectSystemUsesKernelRoute(t *testing.T) {
++	addresses, err := net.InterfaceAddrs()
++	if err != nil {
++		t.Fatal(err)
++	}
++	var addr netip.Addr
++	for _, address := range addresses {
++		if prefix, err := netip.ParsePrefix(address.String()); err == nil && prefix.Addr().Is4() && prefix.Addr().IsGlobalUnicast() {
++			addr = prefix.Addr()
++			break
++		}
++	}
++	if !addr.IsValid() {
++		t.Skip("requires a non-loopback local IPv4 address")
++	}
++	previous := dialer.DefaultInterface.Load()
++	dialer.DefaultInterface.Store("msm_missing_if")
++	t.Cleanup(func() { dialer.DefaultInterface.Store(previous) })
++	proxy, err := ParseProxy(map[string]any{"name": "home", "type": "direct-system", "interface-name": "msm_missing_if", "routing-mark": 17})
++	if err != nil {
++		t.Fatal(err)
++	}
++	listener, err := net.Listen("tcp4", net.JoinHostPort(addr.String(), "0"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	go func() {
++		conn, err := listener.Accept()
++		if err == nil {
++			defer conn.Close()
++			_, _ = io.Copy(conn, conn)
++		}
++	}()
++	remote := netip.MustParseAddrPort(listener.Addr().String())
++	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++	defer cancel()
++	conn, err := proxy.DialContext(ctx, &C.Metadata{NetWork: C.TCP, DstIP: addr, DstPort: remote.Port()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	_ = conn.SetDeadline(time.Now().Add(time.Second))
++	if _, err := conn.Write([]byte("tcp")); err != nil {
++		t.Fatal(err)
++	}
++	payload := make([]byte, 3)
++	if _, err := io.ReadFull(conn, payload); err != nil || string(payload) != "tcp" {
++		t.Fatalf("TCP echo = %q, error = %v", payload, err)
++	}
++	peer, err := net.ListenPacket("udp4", net.JoinHostPort(addr.String(), "0"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer peer.Close()
++	go func() {
++		buffer := make([]byte, 32)
++		n, source, err := peer.ReadFrom(buffer)
++		if err == nil {
++			_, _ = peer.WriteTo(buffer[:n], source)
++		}
++	}()
++	remote = netip.MustParseAddrPort(peer.LocalAddr().String())
++	pc, err := proxy.ListenPacketContext(ctx, &C.Metadata{NetWork: C.UDP, DstIP: addr, DstPort: remote.Port()})
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer pc.Close()
++	_ = pc.SetDeadline(time.Now().Add(time.Second))
++	if _, err := pc.WriteTo([]byte("udp"), peer.LocalAddr()); err != nil {
++		t.Fatal(err)
++	}
++	if n, _, err := pc.ReadFrom(payload); err != nil || string(payload[:n]) != "udp" {
++		t.Fatalf("UDP echo = %q, error = %v", payload[:n], err)
++	}
++}
+diff --git a/component/dialer/system_route_linux_test.go b/component/dialer/system_route_linux_test.go
+new file mode 100644
+index 0000000..1838772
+--- /dev/null
++++ b/component/dialer/system_route_linux_test.go
+@@ -0,0 +1,186 @@
++//go:build linux
++
++package dialer
++
++import (
++	"context"
++	"errors"
++	"io"
++	"net"
++	"net/netip"
++	"syscall"
++	"testing"
++	"time"
++
++	"golang.org/x/sys/unix"
++)
++
++type systemRouteTestFinder struct{ calls int }
++
++func (f *systemRouteTestFinder) FindInterfaceName(netip.Addr) string {
++	f.calls++
++	return "msm_missing_if"
++}
++
++func systemRouteTestAddress(t *testing.T) netip.Addr {
++	t.Helper()
++	addresses, err := net.InterfaceAddrs()
++	if err != nil {
++		t.Fatal(err)
++	}
++	for _, address := range addresses {
++		prefix, err := netip.ParsePrefix(address.String())
++		if err == nil && prefix.Addr().Is4() && prefix.Addr().IsGlobalUnicast() {
++			return prefix.Addr()
++		}
++	}
++	t.Skip("requires a non-loopback local IPv4 address")
++	return netip.Addr{}
++}
++
++func systemRouteTestGlobals(t *testing.T) {
++	t.Helper()
++	iface, finder, mark, hook := DefaultInterface.Load(), DefaultInterfaceFinder.Load(), DefaultRoutingMark.Load(), DefaultSocketHook
++	DefaultInterface.Store("")
++	DefaultInterfaceFinder.Store(nil)
++	DefaultRoutingMark.Store(0)
++	DefaultSocketHook = nil
++	t.Cleanup(func() {
++		DefaultInterface.Store(iface)
++		DefaultInterfaceFinder.Store(finder)
++		DefaultRoutingMark.Store(mark)
++		DefaultSocketHook = hook
++	})
++}
++
++// An invalid binding must still break ordinary sockets, while the explicitly
++// opted-in socket reaches the same non-loopback peer through kernel routing.
++func TestSystemRouteSkipsOnlyInterfaceBinding(t *testing.T) {
++	systemRouteTestGlobals(t)
++	addr := systemRouteTestAddress(t)
++	listener, err := net.Listen("tcp4", net.JoinHostPort(addr.String(), "0"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	go func() {
++		for {
++			conn, err := listener.Accept()
++			if err != nil {
++				return
++			}
++			go func() { defer conn.Close(); _, _ = io.Copy(conn, conn) }()
++		}
++	}()
++	for _, source := range []string{"outbound", "global", "tun-finder"} {
++		t.Run(source, func(t *testing.T) {
++			DefaultInterface.Store("")
++			finder := &systemRouteTestFinder{}
++			DefaultInterfaceFinder.Store(nil)
++			var options []Option
++			switch source {
++			case "outbound":
++				options = append(options, WithInterface("msm_missing_if"))
++			case "global":
++				DefaultInterface.Store("msm_missing_if")
++			case "tun-finder":
++				DefaultInterfaceFinder.Store(finder)
++			}
++			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
++			defer cancel()
++			if conn, err := DialContext(ctx, "tcp4", listener.Addr().String(), options...); err == nil {
++				conn.Close()
++				t.Fatal("ordinary dial unexpectedly ignored its interface binding")
++			}
++			finder.calls = 0
++			options = append(options, WithSystemRoute(true))
++			conn, err := DialContext(ctx, "tcp4", listener.Addr().String(), options...)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer conn.Close()
++			_ = conn.SetDeadline(time.Now().Add(time.Second))
++			if _, err := conn.Write([]byte("system-route")); err != nil {
++				t.Fatal(err)
++			}
++			payload := make([]byte, len("system-route"))
++			if _, err := io.ReadFull(conn, payload); err != nil || string(payload) != "system-route" {
++				t.Fatalf("echo = %q, error = %v", payload, err)
++			}
++			remote := netip.MustParseAddrPort(listener.Addr().String())
++			pc, err := ListenPacket(ctx, "udp4", "", remote, options...)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer pc.Close()
++			if got := socketInterface(t, pc.(syscall.Conn)); got != "" {
++				t.Fatalf("UDP socket inherited interface %q", got)
++			}
++			if finder.calls != 0 {
++				t.Fatalf("system-route consulted the TUN finder %d times", finder.calls)
++			}
++		})
++	}
++}
++
++func socketInterface(t *testing.T, conn syscall.Conn) string {
++	t.Helper()
++	raw, err := conn.SyscallConn()
++	if err != nil {
++		t.Fatal(err)
++	}
++	var value string
++	var optionErr error
++	if err := raw.Control(func(fd uintptr) {
++		value, optionErr = unix.GetsockoptString(int(fd), unix.SOL_SOCKET, unix.SO_BINDTODEVICE)
++	}); err != nil {
++		t.Fatal(err)
++	}
++	if optionErr != nil {
++		t.Fatal(optionErr)
++	}
++	return value
++}
++
++func TestSystemRoutePreservesRoutingMark(t *testing.T) {
++	systemRouteTestGlobals(t)
++	addr := systemRouteTestAddress(t)
++	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer unix.Close(fd)
++	if err := unix.SetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_MARK, 17); err != nil {
++		if errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
++			t.Skip("requires CAP_NET_ADMIN or CAP_NET_RAW for SO_MARK")
++		}
++		t.Fatal(err)
++	}
++	for _, source := range []string{"outbound", "global"} {
++		t.Run(source, func(t *testing.T) {
++			DefaultRoutingMark.Store(0)
++			options := []Option{WithSystemRoute(true), WithInterface("msm_missing_if")}
++			if source == "global" {
++				DefaultRoutingMark.Store(17)
++			} else {
++				options = append(options, WithRoutingMark(17))
++			}
++			pc, err := ListenPacket(context.Background(), "udp4", "", netip.AddrPortFrom(addr, 53), options...)
++			if err != nil {
++				t.Fatal(err)
++			}
++			defer pc.Close()
++			raw, err := pc.(syscall.Conn).SyscallConn()
++			if err != nil {
++				t.Fatal(err)
++			}
++			var mark int
++			var optionErr error
++			if err := raw.Control(func(fd uintptr) {
++				mark, optionErr = unix.GetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK)
++			}); err != nil || optionErr != nil || mark != 17 {
++				t.Fatalf("routing mark = %d, errors = %v / %v", mark, err, optionErr)
++			}
++		})
++	}
++}
+diff --git a/config/direct_system_proxy_test.go b/config/direct_system_proxy_test.go
+new file mode 100644
+index 0000000..a4ec52d
+--- /dev/null
++++ b/config/direct_system_proxy_test.go
+@@ -0,0 +1,68 @@
++package config
++
++import (
++	"slices"
++	"testing"
++
++	"github.com/metacubex/mihomo/adapter/provider"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestDirectSystemExcludedFromAutomaticProxyGroups(t *testing.T) {
++	for _, helper := range []string{"MSM-HOME-DIRECT", "custom-system-route"} {
++		t.Run(helper, func(t *testing.T) {
++			proxies, providers, err := parseProxies(&RawConfig{
++				Proxy: []map[string]any{
++					{"name": helper, "type": "direct-system", "routing-mark": 17},
++					{"name": "user-direct", "type": "direct", "interface-name": "designated-wan"},
++					{"name": "user-node", "type": "socks5", "server": "127.0.0.1", "port": 1080},
++				},
++				ProxyGroup: []map[string]any{
++					{"name": "automatic", "type": "url-test", "include-all-proxies": true, "url": "https://example.invalid", "interval": 0},
++					{"name": "include-everything", "type": "select", "include-all": true},
++					{"name": "deliberate", "type": "select", "proxies": []string{helper}},
++				},
++			})
++			if err != nil {
++				t.Fatal(err)
++			}
++			if proxies[helper] == nil || proxies[helper].ProxyInfo().RoutingMark != 17 {
++				t.Fatal("explicit system-route target must remain available to listener/rule lookups")
++			}
++			if proxies["user-direct"].ProxyInfo().Interface != "designated-wan" {
++				t.Fatal("ordinary direct binding changed")
++			}
++			for _, group := range []string{"automatic", "include-everything", "GLOBAL"} {
++				members := directSystemTestGroupMembers(t, proxies[group])
++				if slices.Contains(members, helper) || !slices.Contains(members, "user-direct") || !slices.Contains(members, "user-node") {
++					t.Fatalf("%s automatic members include helper or lost ordinary nodes: %v", group, members)
++				}
++			}
++			members := directSystemTestProxyNames(providers[provider.ReservedName].Proxies())
++			if slices.Contains(members, helper) || !slices.Contains(members, "user-direct") || !slices.Contains(members, "user-node") {
++				t.Fatalf("compatible health-check inventory changed: %v", members)
++			}
++			members = directSystemTestGroupMembers(t, proxies["deliberate"])
++			if len(members) != 1 || members[0] != helper {
++				t.Fatalf("explicit group reference must remain usable: %v", members)
++			}
++		})
++	}
++}
++
++func directSystemTestGroupMembers(t *testing.T, proxy C.Proxy) []string {
++	t.Helper()
++	group, ok := proxy.Adapter().(interface{ GetProxies(bool) []C.Proxy })
++	if !ok {
++		t.Fatalf("%s is not an inspectable proxy group", proxy.Name())
++	}
++	return directSystemTestProxyNames(group.GetProxies(false))
++}
++
++func directSystemTestProxyNames(proxies []C.Proxy) []string {
++	names := make([]string, 0, len(proxies))
++	for _, proxy := range proxies {
++		names = append(names, proxy.Name())
++	}
++	return names
++}

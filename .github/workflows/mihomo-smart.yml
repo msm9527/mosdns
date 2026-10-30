@@ -1,0 +1,188 @@
+name: Release mihomo Smart
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '45 21 * * *'
+
+permissions:
+  contents: write
+
+env:
+  TZ: Asia/Shanghai
+  MIHOMO_TAGS: with_gvisor
+  MIHOMO_SMART_TAG: mihomo-smart
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  source:
+    runs-on: ubuntu-latest
+    outputs:
+      commit: ${{ steps.source.outputs.commit }}
+      version: ${{ steps.source.outputs.version }}
+      published_at: ${{ steps.source.outputs.published_at }}
+      matrix: ${{ steps.source.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Resolve official Smart release and immutable source
+        id: source
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          release_json="$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -H 'Accept: application/vnd.github+json' https://api.github.com/repos/vernesong/mihomo/releases/tags/Prerelease-Alpha)"
+          commit="$(bash scripts/mihomo/resolve-ref.sh vernesong/mihomo refs/tags/Prerelease-Alpha)"
+          asset_commit="$(echo "$release_json" | jq -r '[.assets[].name | capture("^mihomo-linux-amd64-v1-alpha-smart-(?<commit>[0-9a-f]{7,40})\\.gz$").commit][0] // empty')"
+          published="$(echo "$release_json" | jq -r '.published_at // .created_at // empty')"
+          if ! [[ "$asset_commit" =~ ^[0-9a-f]{7,40}$ ]] || [[ "$commit" != "$asset_commit"* ]] || [ -z "$published" ]; then
+            echo 'official Smart release assets and source tag disagree' >&2
+            exit 1
+          fi
+          {
+            echo "commit=${commit}"
+            echo "version=alpha-smart-${commit:0:12}-msm.1"
+            echo "published_at=$(date -d "$published" '+%Y-%m-%d')"
+          } >> "$GITHUB_OUTPUT"
+          matrix="$(python3 - <<'PY'
+          import json
+          targets = [
+              {"goos": "linux", "goarch": "amd64", "goamd64": "v1", "asset_suffix": "linux-amd64-v1"},
+              {"goos": "linux", "goarch": "amd64", "goamd64": "v3", "asset_suffix": "linux-amd64-v3"},
+              {"goos": "linux", "goarch": "386", "asset_suffix": "linux-386"},
+              {"goos": "linux", "goarch": "arm", "goarm": "5", "asset_suffix": "linux-armv5"},
+              {"goos": "linux", "goarch": "arm", "goarm": "6", "asset_suffix": "linux-armv6"},
+              {"goos": "linux", "goarch": "arm", "goarm": "7", "asset_suffix": "linux-armv7"},
+              {"goos": "linux", "goarch": "arm64", "asset_suffix": "linux-arm64"},
+              {"goos": "darwin", "goarch": "amd64", "goamd64": "v1", "asset_suffix": "darwin-amd64-v1"},
+              {"goos": "darwin", "goarch": "amd64", "goamd64": "v3", "asset_suffix": "darwin-amd64-v3"},
+              {"goos": "darwin", "goarch": "arm64", "asset_suffix": "darwin-arm64"},
+          ]
+          print(json.dumps({"include": targets}, separators=(",", ":")))
+          PY
+          )"
+          echo "matrix=${matrix}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build Smart / ${{ matrix.asset_suffix }}
+    runs-on: ubuntu-latest
+    needs: source
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.source.outputs.matrix) }}
+    steps:
+      - name: Checkout exact official Smart source
+        uses: actions/checkout@v6
+        with:
+          repository: vernesong/mihomo
+          ref: ${{ needs.source.outputs.commit }}
+
+      - name: Checkout native patches and build scripts
+        uses: actions/checkout@v6
+        with:
+          path: msm-build
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          check-latest: true
+
+      - name: Verify native routing and ANYTLS stream isolation
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ip
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s msm-build/scripts/mihomo -p 'test_*.py'
+          python3 msm-build/scripts/mihomo/verify-source.py smart "$PWD" --sudo-tests
+
+      - name: Build Smart artifact
+        id: build
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOAMD64: ${{ matrix.goamd64 }}
+          GOARM: ${{ matrix.goarm }}
+          CGO_ENABLED: '0'
+          CHANNEL: smart
+          CHANNEL_VERSION: ${{ needs.source.outputs.version }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          PACKAGE_FORMAT: gz
+          OUTPUT_DIR: ${{ github.workspace }}/dist
+        run: bash msm-build/scripts/mihomo/build-artifact.sh
+
+      - name: Upload Smart artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.build.outputs.asset_name }}
+          path: ./dist/*
+          if-no-files-found: error
+
+  release:
+    runs-on: ubuntu-latest
+    needs: [source, build]
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Download verified Smart artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: ./mihomo-smart
+          merge-multiple: true
+
+      - name: Generate Smart checksums
+        shell: bash
+        working-directory: mihomo-smart
+        run: |
+          set -euo pipefail
+          sha256sum -- * > SHA256SUMS
+
+      - name: Delete only the existing Smart release and tag
+        uses: actions/github-script@v8
+        env:
+          TAG_NAME: ${{ env.MIHOMO_SMART_TAG }}
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const tag = process.env.TAG_NAME;
+            if (tag !== 'mihomo-smart') throw new Error('refuse to replace a non-Smart release');
+            const { owner, repo } = context.repo;
+            try {
+              const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.data.id });
+            } catch (error) {
+              if (error.status !== 404) throw error;
+            }
+            try {
+              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
+            } catch (error) {
+              if (error.status !== 404 && error.status !== 422) throw error;
+            }
+
+      - name: Publish independent native Smart release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.MIHOMO_SMART_TAG }}
+          target_commitish: ${{ github.sha }}
+          name: mihomo-smart ${{ needs.source.outputs.version }}
+          files: ./mihomo-smart/*
+          make_latest: false
+          prerelease: false
+          generate_release_notes: false
+          body: |
+            更新 [mihomo Smart 版](https://github.com/vernesong/mihomo/tree/Prerelease-Alpha) 至 ${{ needs.source.outputs.version }}，发布于 ${{ needs.source.outputs.published_at }}
+
+            Native MSM features: direct-system, tun.system-route-mark (msm.1).
+            ANYTLS: shared TLS session isolation fix with a required regression test.
+            Upstream repository: https://github.com/vernesong/mihomo
+            Upstream ref: Prerelease-Alpha
+            Upstream commit: ${{ needs.source.outputs.commit }}
+            Verified patch fingerprints and regression gates: mihomo-smart-source.json.
+            Integrity: GitHub asset SHA-256 digest and SHA256SUMS.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

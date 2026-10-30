@@ -1,0 +1,20 @@
+package session
+
+import (
+	"net"
+	"testing"
+
+	"github.com/metacubex/sing/common"
+	"github.com/metacubex/sing/common/network"
+)
+
+type fixtureSharedConn struct{ net.Conn }
+
+func (*fixtureSharedConn) CloseWrite() error { return nil }
+
+func TestStreamDoesNotExposeSharedSessionCloseWrite(t *testing.T) {
+	stream := newStream(1, &Session{conn: &fixtureSharedConn{}})
+	if _, ok := common.Cast[network.WriteCloser](stream); ok {
+		t.Fatal("closing one relayed stream can close the shared TLS session through NetConn")
+	}
+}

@@ -37,7 +37,10 @@ jobs:
     outputs:
       version: ${{ steps.meta.outputs.version }}
       published_at: ${{ steps.meta.outputs.published_at }}
+      source_commit: ${{ steps.meta.outputs.source_commit }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Resolve Meta version
         id: meta
         shell: bash
@@ -56,15 +59,22 @@ jobs:
             echo "failed to resolve mihomo Meta publish time" >&2
             exit 1
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          source_commit="$(bash scripts/mihomo/resolve-ref.sh MetaCubeX/mihomo "refs/tags/${version}")"
+          {
+            echo "source_commit=${source_commit}"
+            echo "version=${version}-msm.1"
+            echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')"
+          } >> "$GITHUB_OUTPUT"
 
   alpha-info:
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.alpha.outputs.version }}
       published_at: ${{ steps.alpha.outputs.published_at }}
+      source_commit: ${{ steps.alpha.outputs.source_commit }}
     steps:
+      - uses: actions/checkout@v6
+
       - name: Resolve Alpha version
         id: alpha
         shell: bash
@@ -84,8 +94,17 @@ jobs:
             echo "failed to resolve mihomo Alpha publish time" >&2
             exit 1
           fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')" >> "$GITHUB_OUTPUT"
+          source_commit="$(bash scripts/mihomo/resolve-ref.sh MetaCubeX/mihomo refs/tags/Prerelease-Alpha)"
+          asset_commit="${version#alpha-}"
+          if ! [[ "$asset_commit" =~ ^[0-9a-f]{7,40}$ ]] || [[ "$source_commit" != "$asset_commit"* ]]; then
+            echo "Alpha release assets and source tag disagree" >&2
+            exit 1
+          fi
+          {
+            echo "source_commit=${source_commit}"
+            echo "version=${version}-msm.1"
+            echo "published_at=$(date -d "${published_raw} +8 hours" '+%Y-%m-%d')"
+          } >> "$GITHUB_OUTPUT"
 
   build-meta:
     runs-on: ubuntu-latest
@@ -98,13 +117,26 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: MetaCubeX/mihomo
-          ref: Meta
+          ref: ${{ needs.meta-info.outputs.source_commit }}
+
+      - name: Checkout native patch and build scripts
+        uses: actions/checkout@v6
+        with:
+          path: msm-build
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version: stable
           check-latest: true
+
+      - name: Verify native home routing patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ip
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s msm-build/scripts/mihomo -p 'test_*.py'
+          python3 msm-build/scripts/mihomo/verify-source.py meta "$PWD" --sudo-tests
 
       - name: Build Meta artifact
         id: build
@@ -118,37 +150,18 @@ jobs:
           CGO_ENABLED: '0'
           CHANNEL: meta
           CHANNEL_VERSION: ${{ needs.meta-info.outputs.version }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          PACKAGE_FORMAT: ${{ matrix.package }}
+          OUTPUT_DIR: ${{ github.workspace }}/dist
         run: |
           set -euo pipefail
-          build_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-          bin_name="mihomo"
-          asset_name="mihomo-${CHANNEL}-${{ matrix.asset_suffix }}"
-          if [ "${GOOS}" = "windows" ]; then
-            bin_name="${bin_name}.exe"
-            asset_name="${asset_name}.exe"
-          else
-            asset_name="${asset_name}.tar.gz"
-          fi
-
-          go build -v -trimpath \
-            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${CHANNEL_VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' -s -w -buildid=" \
-            -tags "${MIHOMO_TAGS}" \
-            -o "${bin_name}"
-
-          if [ "${{ matrix.package }}" = "tar.gz" ]; then
-            chmod +x "${bin_name}"
-            tar --no-same-owner -czf "${asset_name}" "${bin_name}"
-          else
-            mv "${bin_name}" "${asset_name}"
-          fi
-
-          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+          bash msm-build/scripts/mihomo/build-artifact.sh
 
       - name: Upload Meta artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.build.outputs.asset_name }}
-          path: ./${{ steps.build.outputs.asset_name }}
+          path: ./dist/*
           if-no-files-found: error
 
   build-alpha:
@@ -162,13 +175,26 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: MetaCubeX/mihomo
-          ref: Alpha
+          ref: ${{ needs.alpha-info.outputs.source_commit }}
+
+      - name: Checkout native patch and build scripts
+        uses: actions/checkout@v6
+        with:
+          path: msm-build
 
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
           go-version: stable
           check-latest: true
+
+      - name: Verify native home routing patches
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v ip
+          PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s msm-build/scripts/mihomo -p 'test_*.py'
+          python3 msm-build/scripts/mihomo/verify-source.py alpha "$PWD" --sudo-tests
 
       - name: Build Alpha artifact
         id: build
@@ -182,37 +208,18 @@ jobs:
           CGO_ENABLED: '0'
           CHANNEL: alpha
           CHANNEL_VERSION: ${{ needs.alpha-info.outputs.version }}
+          ASSET_SUFFIX: ${{ matrix.asset_suffix }}
+          PACKAGE_FORMAT: ${{ matrix.package }}
+          OUTPUT_DIR: ${{ github.workspace }}/dist
         run: |
           set -euo pipefail
-          build_time="$(date '+%Y-%m-%d %H:%M:%S %Z')"
-          bin_name="mihomo"
-          asset_name="mihomo-${CHANNEL}-${{ matrix.asset_suffix }}"
-          if [ "${GOOS}" = "windows" ]; then
-            bin_name="${bin_name}.exe"
-            asset_name="${asset_name}.exe"
-          else
-            asset_name="${asset_name}.tar.gz"
-          fi
-
-          go build -v -trimpath \
-            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=${CHANNEL_VERSION}' -X 'github.com/metacubex/mihomo/constant.BuildTime=${build_time}' -s -w -buildid=" \
-            -tags "${MIHOMO_TAGS}" \
-            -o "${bin_name}"
-
-          if [ "${{ matrix.package }}" = "tar.gz" ]; then
-            chmod +x "${bin_name}"
-            tar --no-same-owner -czf "${asset_name}" "${bin_name}"
-          else
-            mv "${bin_name}" "${asset_name}"
-          fi
-
-          echo "asset_name=${asset_name}" >> "$GITHUB_OUTPUT"
+          bash msm-build/scripts/mihomo/build-artifact.sh
 
       - name: Upload Alpha artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.build.outputs.asset_name }}
-          path: ./${{ steps.build.outputs.asset_name }}
+          path: ./dist/*
           if-no-files-found: error
 
   release:
@@ -232,6 +239,13 @@ jobs:
         run: |
           set -euo pipefail
           ls -lh ./mihomo
+
+      - name: Generate release checksums
+        shell: bash
+        working-directory: mihomo
+        run: |
+          set -euo pipefail
+          sha256sum -- * > SHA256SUMS
 
       - name: Delete existing release and tag
         uses: actions/github-script@v8
@@ -268,6 +282,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ env.MIHOMO_TAG_NAME }}
+          target_commitish: ${{ github.sha }}
           name: ${{ env.MIHOMO_TAG_NAME }}
           files: ./mihomo/*
           make_latest: false
@@ -276,6 +291,12 @@ jobs:
           body: |
             更新 [mihomo Meta 版](https://github.com/MetaCubeX/mihomo/tree/Meta) 至 ${{ needs.meta-info.outputs.version }}，发布于 ${{ needs.meta-info.outputs.published_at }}
             更新 [mihomo Alpha 版](https://github.com/MetaCubeX/mihomo/tree/Alpha) 至 ${{ needs.alpha-info.outputs.version }}，发布于 ${{ needs.alpha-info.outputs.published_at }}
+
+            Native MSM features: direct-system, tun.system-route-mark (msm.1).
+            Meta upstream: ${{ needs.meta-info.outputs.source_commit }}
+            Alpha upstream: ${{ needs.alpha-info.outputs.source_commit }}
+            Source and verified patch fingerprints: mihomo-meta-source.json / mihomo-alpha-source.json.
+            Integrity: GitHub asset SHA-256 digest and SHA256SUMS.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
