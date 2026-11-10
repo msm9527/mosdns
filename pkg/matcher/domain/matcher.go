@@ -54,6 +54,11 @@ func tryFastNormalize(s string) string {
 	return NormalizeDomain(s)
 }
 
+// NormalizeForMatch prepares a query name once for callers that need to run
+// several matcher types. MatchNormalized methods below intentionally skip this
+// check so a mixed matcher does not scan the same name four times.
+func NormalizeForMatch(s string) string { return tryFastNormalize(s) }
+
 // 内部高性能匹配接口
 type internalMatcher[T any] interface {
 	matchNormalized(s string) (T, bool)
@@ -71,12 +76,17 @@ func (m *SubDomainMatcher[T]) Match(s string) (T, bool) {
 	return m.matchNormalized(tryFastNormalize(s))
 }
 
+func (m *SubDomainMatcher[T]) MatchNormalized(s string) (T, bool) {
+	return m.matchNormalized(s)
+}
+
 func (m *SubDomainMatcher[T]) matchNormalized(s string) (T, bool) {
-	ds := NewReverseDomainScanner(s)
+	s = TrimDot(s)
 	currentNode := m.root
 	v, ok := currentNode.getValue()
-	for ds.Scan() {
-		label := ds.NextLabel()
+	for end := len(s); end > 0; {
+		start := strings.LastIndexByte(s[:end], '.') + 1
+		label := s[start:end]
 		if nextNode := currentNode.getChild(label); nextNode != nil {
 			if nextNode.hasValue() {
 				v, ok = nextNode.getValue()
@@ -85,6 +95,10 @@ func (m *SubDomainMatcher[T]) matchNormalized(s string) (T, bool) {
 		} else {
 			break
 		}
+		if start == 0 {
+			break
+		}
+		end = start - 1
 	}
 	return v, ok
 }
@@ -133,6 +147,10 @@ func (m *FullMatcher[T]) Match(s string) (v T, ok bool) {
 	return m.matchNormalized(tryFastNormalize(s))
 }
 
+func (m *FullMatcher[T]) MatchNormalized(s string) (v T, ok bool) {
+	return m.matchNormalized(s)
+}
+
 func (m *FullMatcher[T]) matchNormalized(s string) (v T, ok bool) {
 	v, ok = m.m[s]
 	return
@@ -163,6 +181,10 @@ func (m *KeywordMatcher[T]) Add(keyword string, v T) error {
 
 func (m *KeywordMatcher[T]) Match(s string) (v T, ok bool) {
 	return m.matchNormalized(tryFastNormalize(s))
+}
+
+func (m *KeywordMatcher[T]) MatchNormalized(s string) (v T, ok bool) {
+	return m.matchNormalized(s)
 }
 
 func (m *KeywordMatcher[T]) matchNormalized(s string) (v T, ok bool) {
@@ -230,6 +252,10 @@ func (m *RegexMatcher[T]) Match(s string) (v T, ok bool) {
 	return m.matchNormalized(tryFastNormalize(s))
 }
 
+func (m *RegexMatcher[T]) MatchNormalized(s string) (v T, ok bool) {
+	return m.matchNormalized(s)
+}
+
 func (m *RegexMatcher[T]) matchNormalized(s string) (v T, ok bool) {
 	for _, e := range m.regs {
 		if e.suffix != "" && !strings.HasSuffix(s, e.suffix) {
@@ -264,39 +290,84 @@ func requiredRegexLiteral(reg *regexp.Regexp, expr string) string {
 	if prefix, _ := reg.LiteralPrefix(); len(prefix) >= 3 {
 		return prefix
 	}
-	const boundary = `(^|\.)`
-	if !strings.HasPrefix(expr, boundary) {
+	parsed, err := syntax.Parse(expr, syntax.Perl)
+	if err != nil {
 		return ""
 	}
-	rest := expr[len(boundary):]
-	if strings.ContainsAny(rest, "|()") {
-		return ""
-	}
-	best := ""
-	for i := 0; i < len(rest); {
-		if rest[i] == '\\' && i+1 < len(rest) {
-			i += 2
-			continue
-		}
-		start := i
-		for i < len(rest) {
-			c := rest[i]
-			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
-				(c >= '0' && c <= '9') || c == '_' || c == '-' {
-				i++
-				continue
-			}
-			break
-		}
-		if i-start > len(best) {
-			best = rest[start:i]
-		}
-		if i < len(rest) {
-			i++
-		}
-	}
+	best := requiredSyntaxLiteral(parsed)
 	if len(best) < 3 {
 		return ""
+	}
+	return best
+}
+
+// requiredSyntaxLiteral returns a literal substring present in every string
+// accepted by the syntax node. It is deliberately conservative: optional
+// branches and alternations without a common literal produce no hint. A hint
+// is only used to reject a rule early, so a false negative is safe while a
+// false positive would change matching behavior.
+func requiredSyntaxLiteral(r *syntax.Regexp) string {
+	if r == nil {
+		return ""
+	}
+	switch r.Op {
+	case syntax.OpLiteral:
+		if r.Flags&syntax.FoldCase != 0 || len(r.Rune) == 0 {
+			return ""
+		}
+		return string(r.Rune)
+	case syntax.OpCapture:
+		if len(r.Sub) == 1 {
+			return requiredSyntaxLiteral(r.Sub[0])
+		}
+	case syntax.OpConcat:
+		best := ""
+		for _, sub := range r.Sub {
+			if candidate := requiredSyntaxLiteral(sub); len(candidate) > len(best) {
+				best = candidate
+			}
+		}
+		return best
+	case syntax.OpAlternate:
+		if len(r.Sub) == 0 {
+			return ""
+		}
+		common := requiredSyntaxLiteral(r.Sub[0])
+		for _, sub := range r.Sub[1:] {
+			common = longestCommonSubstring(common, requiredSyntaxLiteral(sub))
+			if common == "" {
+				return ""
+			}
+		}
+		return common
+	case syntax.OpPlus:
+		if len(r.Sub) == 1 {
+			return requiredSyntaxLiteral(r.Sub[0])
+		}
+	case syntax.OpRepeat:
+		if r.Min > 0 && len(r.Sub) == 1 {
+			return requiredSyntaxLiteral(r.Sub[0])
+		}
+	}
+	return ""
+}
+
+func longestCommonSubstring(a, b string) string {
+	if len(a) == 0 || len(b) == 0 {
+		return ""
+	}
+	if len(a) > len(b) {
+		a, b = b, a
+	}
+	best := ""
+	for start := 0; start < len(a); start++ {
+		for end := len(a); end > start+len(best); end-- {
+			candidate := a[start:end]
+			if strings.Contains(b, candidate) {
+				best = candidate
+				break
+			}
+		}
 	}
 	return best
 }
@@ -384,9 +455,164 @@ func fastRegexpMatcher(expr string) func(string) bool {
 			}
 			return len(s)-i-4 >= len(".zjcdn.com") && strings.HasSuffix(s, ".zjcdn.com")
 		}
+	case `.+\.awsdns-[0-9][0-9]\.(co\.uk|com|net|org)$`:
+		return func(s string) bool {
+			const prefix = ".awsdns-"
+			for start := 0; ; {
+				i := strings.Index(s[start:], prefix)
+				if i < 0 {
+					return false
+				}
+				i += start
+				if i > 0 && i+len(prefix)+2 < len(s) &&
+					s[i+len(prefix)] >= '0' && s[i+len(prefix)] <= '9' &&
+					s[i+len(prefix)+1] >= '0' && s[i+len(prefix)+1] <= '9' &&
+					hasOneOfSuffix(s[i+len(prefix)+2:], ".co.uk", ".com", ".net", ".org") {
+					return true
+				}
+				start = i + 1
+			}
+		}
+	case `.+\.dkr\.ecr\.[^\.]+\.amazonaws\.com$`:
+		return func(s string) bool {
+			const prefix = ".dkr.ecr."
+			const suffix = ".amazonaws.com"
+			for start := 0; ; {
+				i := strings.Index(s[start:], prefix)
+				if i < 0 {
+					return false
+				}
+				i += start
+				middleStart := i + len(prefix)
+				if i > 0 {
+					if end := len(s) - len(suffix); end > middleStart && strings.HasSuffix(s, suffix) && !strings.Contains(s[middleStart:end], ".") {
+						return true
+					}
+				}
+				start = i + 1
+			}
+		}
+	case `^[0-9]+vod-adaptive\.akamaized\.net$`:
+		return func(s string) bool {
+			const suffix = "vod-adaptive.akamaized.net"
+			i := len(s) - len(suffix)
+			if i <= 0 || !strings.HasSuffix(s, suffix) {
+				return false
+			}
+			return allASCIIDigits(s[:i])
+		}
+	case `^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$`:
+		return func(s string) bool {
+			const prefix = "chatgpt-async-webps-prod-"
+			const suffix = ".webpubsub.azure.com"
+			if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, suffix) {
+				return false
+			}
+			body := s[len(prefix) : len(s)-len(suffix)]
+			i := strings.LastIndexByte(body, '-')
+			return i > 0 && i+1 < len(body) && allNonSpace(body[:i]) && allASCIIDigits(body[i+1:])
+		}
+	case `^epicgames-download\d\.akamaized\.net$`:
+		return func(s string) bool {
+			const prefix = "epicgames-download"
+			const suffix = ".akamaized.net"
+			return len(s) == len(prefix)+1+len(suffix) && strings.HasPrefix(s, prefix) &&
+				s[len(prefix)] >= '0' && s[len(prefix)] <= '9' && strings.HasSuffix(s, suffix)
+		}
+	case `^ewcdn[0-9]+\.nowe\.com$`:
+		return func(s string) bool {
+			const prefix = "ewcdn"
+			const suffix = ".nowe.com"
+			if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, suffix) {
+				return false
+			}
+			return allASCIIDigits(s[len(prefix) : len(s)-len(suffix)])
+		}
+	case `^github-production-release-asset-[0-9a-zA-Z]{6}\.s3\.amazonaws\.com$`:
+		return func(s string) bool {
+			const prefix = "github-production-release-asset-"
+			const suffix = ".s3.amazonaws.com"
+			if len(s) != len(prefix)+6+len(suffix) || !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, suffix) {
+				return false
+			}
+			return allASCIIAlphaNumeric(s[len(prefix) : len(s)-len(suffix)])
+		}
+	case `^hses[1-7]?\.akamaized\.net$`:
+		return func(s string) bool {
+			const prefix = "hses"
+			const suffix = ".akamaized.net"
+			if !strings.HasPrefix(s, prefix) || !strings.HasSuffix(s, suffix) {
+				return false
+			}
+			body := s[len(prefix) : len(s)-len(suffix)]
+			return body == "" || len(body) == 1 && body[0] >= '1' && body[0] <= '7'
+		}
+	case `javdb\d+\.com$`:
+		return func(s string) bool {
+			const prefix = "javdb"
+			const suffix = ".com"
+			for start := 0; ; {
+				i := strings.Index(s[start:], prefix)
+				if i < 0 {
+					return false
+				}
+				i += start
+				middleStart := i + len(prefix)
+				if middleStart < len(s) && strings.HasSuffix(s, suffix) && allASCIIDigits(s[middleStart:len(s)-len(suffix)]) {
+					return true
+				}
+				start = i + 1
+			}
+		}
 	default:
 		return compileBoundaryMatcher(expr)
 	}
+}
+
+func allASCIIDigits(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func allASCIIAlphaNumeric(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) {
+			return false
+		}
+	}
+	return true
+}
+
+func allNonSpace(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] == ' ' || s[i] == '\t' || s[i] == '\r' || s[i] == '\n' {
+			return false
+		}
+	}
+	return true
+}
+
+func hasOneOfSuffix(s string, suffixes ...string) bool {
+	for _, suffix := range suffixes {
+		if strings.HasSuffix(s, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // boundaryMatcher is a small, allocation-free matcher for the regular

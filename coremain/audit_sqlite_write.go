@@ -64,7 +64,13 @@ func (s *SQLiteAuditStorage) writeBatchWithBudgetLocked(logs []AuditLog, maxByte
 			logs[i].ID = id
 		}
 	}
-	if err := s.insertAuditLogs(tx, logs); err != nil {
+	// A blocked advertisement can be requested thousands of times while a
+	// client retries. Keep one representative raw row per identical blocked
+	// query in this flush, while still feeding every event into the aggregate
+	// counters below. This preserves QPS/error statistics and avoids turning
+	// SQLite index maintenance into the dominant DNS cost.
+	rawLogs := coalesceBlockedAuditLogs(logs)
+	if err := s.insertAuditLogs(tx, rawLogs); err != nil {
 		return err, nil
 	}
 	if err := s.upsertAggregates(tx, logs); err != nil {
@@ -93,6 +99,48 @@ func (s *SQLiteAuditStorage) writeBatchWithBudgetLocked(logs []AuditLog, maxByte
 	}
 	s.evictionTargetBytes = target
 	return nil, maintenanceErr
+}
+
+type blockedAuditKey struct {
+	clientIP     string
+	queryType    string
+	queryName    string
+	queryClass   string
+	responseCode string
+	domainSet    string
+	upstreamTag  string
+	transport    string
+	serverName   string
+	urlPath      string
+	cacheStatus  string
+	answerCount  int
+}
+
+func coalesceBlockedAuditLogs(logs []AuditLog) []AuditLog {
+	var keys map[blockedAuditKey]struct{}
+	result := make([]AuditLog, 0, len(logs))
+	for _, log := range logs {
+		if log.CacheStatus != AuditCacheBypass {
+			result = append(result, log)
+			continue
+		}
+		if keys == nil {
+			keys = make(map[blockedAuditKey]struct{})
+		}
+		key := blockedAuditKey{
+			clientIP: log.ClientIP, queryType: log.QueryType, queryName: log.QueryName,
+			queryClass: log.QueryClass, responseCode: log.ResponseCode,
+			domainSet: log.DomainSetNorm, upstreamTag: log.UpstreamTag,
+			transport: log.Transport, serverName: log.ServerName, urlPath: log.URLPath,
+			cacheStatus: log.CacheStatus, answerCount: log.AnswerCount,
+		}
+		if _, exists := keys[key]; exists {
+			continue
+		}
+		keys[key] = struct{}{}
+		result = append(result, log)
+	}
+	return result
 }
 
 func (s *SQLiteAuditStorage) insertAuditLogs(tx txPreparer, logs []AuditLog) error {

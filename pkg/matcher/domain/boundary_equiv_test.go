@@ -179,3 +179,40 @@ func TestBoundaryMatcherEquivalentGenerated(t *testing.T) {
 		}
 	}
 }
+
+func TestBuiltinMatcherEquivalentGeneratedNonBoundary(t *testing.T) {
+	patterns := []string{
+		`.+\.awsdns-[0-9][0-9]\.(co\.uk|com|net|org)$`,
+		`.+\.dkr\.ecr\.[^\.]+\.amazonaws\.com$`,
+		`^[0-9]+vod-adaptive\.akamaized\.net$`,
+		`^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$`,
+		`^epicgames-download\d\.akamaized\.net$`,
+		`^ewcdn[0-9]+\.nowe\.com$`,
+		`^github-production-release-asset-[0-9a-zA-Z]{6}\.s3\.amazonaws\.com$`,
+		`^hses[1-7]?\.akamaized\.net$`,
+		`javdb\d+\.com$`,
+	}
+	r := rand.New(rand.NewSource(11))
+	labels := []string{"x", "12", "awsdns-12", "dkr.ecr.us", "javdb123", "chatgpt-async-webps-prod-a-2", "unknown"}
+	suffixes := []string{".com", ".net", ".amazonaws.com", ".nowe.com", ".akamaized.net", ".webpubsub.azure.com"}
+	for _, expr := range patterns {
+		re, err := regexp.Compile(expr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		fn := fastRegexpMatcher(expr)
+		if fn == nil {
+			t.Fatalf("not compiled: %s", expr)
+		}
+		cases := []string{"", "com", "x.awsdns-12.com", "x.dkr.ecr.us.amazonaws.com", "xjavdb123.com"}
+		for i := 0; i < 300; i++ {
+			cases = append(cases, labels[r.Intn(len(labels))]+suffixes[r.Intn(len(suffixes))])
+		}
+		for _, s := range cases {
+			want, got := re.MatchString(s), fn(s)
+			if want != got {
+				t.Fatalf("%s on %q: want %v got %v", expr, s, want, got)
+			}
+		}
+	}
+}

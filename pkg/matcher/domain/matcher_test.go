@@ -267,3 +267,38 @@ func TestRegexMatcherRequiredHintsPreserveMatches(t *testing.T) {
 		}
 	}
 }
+
+func TestRegexMatcherBuiltinFastPaths(t *testing.T) {
+	tests := []struct {
+		expr string
+		in   string
+		want bool
+	}{
+		{`.+\.awsdns-[0-9][0-9]\.(co\.uk|com|net|org)$`, "x.awsdns-12.com", true},
+		{`.+\.awsdns-[0-9][0-9]\.(co\.uk|com|net|org)$`, "awsdns-12.com", false},
+		{`.+\.dkr\.ecr\.[^\.]+\.amazonaws\.com$`, "x.dkr.ecr.us-east-1.amazonaws.com", true},
+		{`.+\.dkr\.ecr\.[^\.]+\.amazonaws\.com$`, "x.dkr.ecr..amazonaws.com", false},
+		{`^[0-9]+vod-adaptive\.akamaized\.net$`, "12vod-adaptive.akamaized.net", true},
+		{`^[0-9]+vod-adaptive\.akamaized\.net$`, "vod-adaptive.akamaized.net", false},
+		{`^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$`, "chatgpt-async-webps-prod-a1-2.webpubsub.azure.com", true},
+		{`^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$`, "chatgpt-async-webps-prod-a.webpubsub.azure.com", false},
+		{`^epicgames-download\d\.akamaized\.net$`, "epicgames-download7.akamaized.net", true},
+		{`^ewcdn[0-9]+\.nowe\.com$`, "ewcdn123.nowe.com", true},
+		{`^github-production-release-asset-[0-9a-zA-Z]{6}\.s3\.amazonaws\.com$`, "github-production-release-asset-aB12z9.s3.amazonaws.com", true},
+		{`^github-production-release-asset-[0-9a-zA-Z]{6}\.s3\.amazonaws\.com$`, "github-production-release-asset-aB12.s3.amazonaws.com", false},
+		{`^hses[1-7]?\.akamaized\.net$`, "hses7.akamaized.net", true},
+		{`^hses[1-7]?\.akamaized\.net$`, "hses8.akamaized.net", false},
+		{`javdb\d+\.com$`, "xjavdb123.com", true},
+		{`javdb\d+\.com$`, "javdb.com", false},
+	}
+	for _, tt := range tests {
+		m := NewRegexMatcher[struct{}]()
+		if err := m.Add(tt.expr, struct{}{}); err != nil {
+			t.Fatalf("Add(%q): %v", tt.expr, err)
+		}
+		_, got := m.Match(tt.in)
+		if got != tt.want {
+			t.Errorf("Match(%q, %q) = %v, want %v", tt.expr, tt.in, got, tt.want)
+		}
+	}
+}
