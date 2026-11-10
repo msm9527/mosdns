@@ -100,7 +100,10 @@ func (s *SQLiteAuditStorage) insertAuditLogs(tx txPreparer, logs []AuditLog) err
 }
 
 // Keep each statement below SQLite's conservative 999-parameter limit.
-const auditInsertChunkRows = 32
+// There are 22 bind parameters per row. SQLite accepts at most 999 bind
+// parameters in the default build, so 45 rows (990 parameters) is the largest
+// safe chunk and avoids needless statement executions for large audit flushes.
+const auditInsertChunkRows = 45
 const auditInsertRowValues = "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 
 func insertAuditLogsInto(tx txPreparer, table string, logs []AuditLog) error {

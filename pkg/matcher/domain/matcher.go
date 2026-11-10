@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"regexp/syntax"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/utils"
 )
@@ -179,30 +181,45 @@ func (m *KeywordMatcher[T]) Len() int {
 // RegexMatcher contains regexp rules.
 // Note: the regexp rule is expect to match a lower-case non fqdn.
 type RegexMatcher[T any] struct {
-	regs map[string]*regElem[T]
+	// byExpr keeps Add idempotent while regs avoids map iteration and hash
+	// overhead on every query. Rules are built during configuration loading
+	// and then matched concurrently without mutation.
+	byExpr map[string]*regElem[T]
+	regs   []*regElem[T]
 }
 
 type regElem[T any] struct {
-	reg *regexp.Regexp
-	v   T
+	reg    *regexp.Regexp
+	v      T
+	suffix string
+	hint   string
+	// fast is an allocation-free equivalent for the small set of regular
+	// expressions emitted by the built-in DNS rule lists. Other expressions
+	// continue to use the regexp engine as the source of truth.
+	fast func(string) bool
 }
 
 func NewRegexMatcher[T any]() *RegexMatcher[T] {
-	return &RegexMatcher[T]{regs: make(map[string]*regElem[T])}
+	return &RegexMatcher[T]{byExpr: make(map[string]*regElem[T]), regs: make([]*regElem[T], 0)}
 }
 
 func (m *RegexMatcher[T]) Add(expr string, v T) error {
-	e := m.regs[expr]
+	e := m.byExpr[expr]
 	if e == nil {
 		expr = strings.Clone(expr)
 		reg, err := regexp.Compile(expr)
 		if err != nil {
 			return err
 		}
-		m.regs[expr] = &regElem[T]{
-			reg: reg,
-			v:   v,
+		e = &regElem[T]{
+			reg:    reg,
+			v:      v,
+			suffix: requiredRegexSuffix(expr),
+			hint:   requiredRegexLiteral(reg, expr),
+			fast:   fastRegexpMatcher(expr),
 		}
+		m.byExpr[expr] = e
+		m.regs = append(m.regs, e)
 	} else {
 		e.v = v
 	}
@@ -215,6 +232,18 @@ func (m *RegexMatcher[T]) Match(s string) (v T, ok bool) {
 
 func (m *RegexMatcher[T]) matchNormalized(s string) (v T, ok bool) {
 	for _, e := range m.regs {
+		if e.suffix != "" && !strings.HasSuffix(s, e.suffix) {
+			continue
+		}
+		if e.hint != "" && !strings.Contains(s, e.hint) {
+			continue
+		}
+		if e.fast != nil {
+			if e.fast(s) {
+				return e.v, true
+			}
+			continue
+		}
 		if e.reg.MatchString(s) {
 			return e.v, true
 		}
@@ -224,7 +253,372 @@ func (m *RegexMatcher[T]) matchNormalized(s string) (v T, ok bool) {
 }
 
 func (m *RegexMatcher[T]) Len() int {
-	return len(m.regs)
+	return len(m.byExpr)
+}
+
+// requiredRegexLiteral extracts a conservative required substring. A literal
+// prefix reported by regexp is always required; for the common (^|\.) domain
+// boundary form we also accept the longest plain run when the expression has
+// no alternation or grouping that could make it optional.
+func requiredRegexLiteral(reg *regexp.Regexp, expr string) string {
+	if prefix, _ := reg.LiteralPrefix(); len(prefix) >= 3 {
+		return prefix
+	}
+	const boundary = `(^|\.)`
+	if !strings.HasPrefix(expr, boundary) {
+		return ""
+	}
+	rest := expr[len(boundary):]
+	if strings.ContainsAny(rest, "|()") {
+		return ""
+	}
+	best := ""
+	for i := 0; i < len(rest); {
+		if rest[i] == '\\' && i+1 < len(rest) {
+			i += 2
+			continue
+		}
+		start := i
+		for i < len(rest) {
+			c := rest[i]
+			if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+				(c >= '0' && c <= '9') || c == '_' || c == '-' {
+				i++
+				continue
+			}
+			break
+		}
+		if i-start > len(best) {
+			best = rest[start:i]
+		}
+		if i < len(rest) {
+			i++
+		}
+	}
+	if len(best) < 3 {
+		return ""
+	}
+	return best
+}
+
+// requiredRegexSuffix extracts a literal suffix from an expression anchored
+// at the end. The conservative parser only accepts a final escaped dot plus
+// plain label characters, so a false negative falls back to regexp matching.
+func requiredRegexSuffix(expr string) string {
+	if !strings.HasSuffix(expr, "$") {
+		return ""
+	}
+	body := strings.TrimSuffix(expr, "$")
+	index := strings.LastIndex(body, `\.`)
+	if index < 0 || index+2 >= len(body) {
+		return ""
+	}
+	for i := index + 2; i < len(body); i++ {
+		c := body[i]
+		if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-' || c == '.' {
+			continue
+		}
+		return ""
+	}
+	return "." + body[index+2:]
+}
+
+// fastRegexpMatcher returns only byte-for-byte equivalent shortcuts for
+// expressions shipped in the built-in rule files.
+func fastRegexpMatcher(expr string) func(string) bool {
+	switch expr {
+	case `[^a-zA-Z0-9._-]`:
+		return func(s string) bool {
+			for i := 0; i < len(s); i++ {
+				c := s[i]
+				if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+					(c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-' {
+					continue
+				}
+				return true
+			}
+			return false
+		}
+	case `^[^.]+$`:
+		return func(s string) bool {
+			return len(s) > 0 && !strings.Contains(s, ".")
+		}
+	case `^.*.lan$`:
+		return func(s string) bool { return len(s) >= 4 && strings.HasSuffix(s, "lan") }
+	case `^.*.arpa$`:
+		return func(s string) bool { return len(s) >= 5 && strings.HasSuffix(s, "arpa") }
+	case `^time[1-5]?\..*\.com$`:
+		return func(s string) bool {
+			if !strings.HasPrefix(s, "time") {
+				return false
+			}
+			i := len("time")
+			if i < len(s) && s[i] >= '1' && s[i] <= '5' {
+				i++
+			}
+			return i < len(s) && s[i] == '.' && len(s)-i-1 >= len(".com") && strings.HasSuffix(s, ".com")
+		}
+	case `^ntp[1-2]?\..*\.com$`:
+		return func(s string) bool {
+			if !strings.HasPrefix(s, "ntp") {
+				return false
+			}
+			i := len("ntp")
+			if i < len(s) && s[i] >= '1' && s[i] <= '2' {
+				i++
+			}
+			return i < len(s) && s[i] == '.' && len(s)-i-1 >= len(".com") && strings.HasSuffix(s, ".com")
+		}
+	case `^v[0-9]+-dy-.*\.zjcdn\.com$`:
+		return func(s string) bool {
+			if !strings.HasPrefix(s, "v") {
+				return false
+			}
+			i := 1
+			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+				i++
+			}
+			if i == 1 || !strings.HasPrefix(s[i:], "-dy-") {
+				return false
+			}
+			return len(s)-i-4 >= len(".zjcdn.com") && strings.HasSuffix(s, ".zjcdn.com")
+		}
+	default:
+		return compileBoundaryMatcher(expr)
+	}
+}
+
+// boundaryMatcher is a small, allocation-free matcher for the regular
+// expressions used by the geolocation rule list. Those expressions all have
+// the form (^|\.)<pattern>$: the pattern is tested at the start of the name or
+// immediately after a dot and must consume the rest of the name. Compiling
+// the limited regexp syntax into atoms avoids invoking regexp's general
+// machine for every query while unsupported expressions retain the regexp
+// implementation as the source of truth.
+type boundaryMatcher struct {
+	variants [][]boundaryAtom
+}
+
+type boundaryAtom struct {
+	literal string
+	runes   []rune
+	any     bool
+	min     int
+	max     int // -1 means unbounded.
+}
+
+func compileBoundaryMatcher(expr string) func(string) bool {
+	const prefix = `(^|\.)`
+	if !strings.HasPrefix(expr, prefix) || !strings.HasSuffix(expr, "$") {
+		return nil
+	}
+	body := strings.TrimSuffix(expr[len(prefix):], "$")
+	parsed, err := syntax.Parse(body, syntax.Perl)
+	if err != nil {
+		return nil
+	}
+	variants, ok := compileBoundaryVariants(parsed)
+	if !ok || len(variants) == 0 || len(variants) > 256 {
+		return nil
+	}
+	m := &boundaryMatcher{variants: variants}
+	return m.match
+}
+
+func compileBoundaryVariants(r *syntax.Regexp) ([][]boundaryAtom, bool) {
+	switch r.Op {
+	case syntax.OpEmptyMatch:
+		return [][]boundaryAtom{{}}, true
+	case syntax.OpBeginText, syntax.OpEndText, syntax.OpBeginLine, syntax.OpEndLine:
+		// The outer expression already owns the end-of-name anchor. Anchors
+		// appearing inside the body are deliberately left to regexp so this
+		// shortcut cannot silently broaden an unusual user expression.
+		return nil, false
+	case syntax.OpCapture:
+		if len(r.Sub) != 1 {
+			return nil, false
+		}
+		return compileBoundaryVariants(r.Sub[0])
+	case syntax.OpLiteral:
+		if r.Flags&syntax.FoldCase != 0 || len(r.Rune) == 0 {
+			return nil, false
+		}
+		return [][]boundaryAtom{{{literal: string(r.Rune), min: 1, max: 1}}}, true
+	case syntax.OpCharClass:
+		if len(r.Rune) == 0 {
+			return nil, false
+		}
+		return [][]boundaryAtom{{{runes: append([]rune(nil), r.Rune...), min: 1, max: 1}}}, true
+	case syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return [][]boundaryAtom{{{any: true, min: 1, max: 1}}}, true
+	case syntax.OpConcat:
+		variants := [][]boundaryAtom{{}}
+		for _, sub := range r.Sub {
+			subVariants, ok := compileBoundaryVariants(sub)
+			if !ok || len(variants)*len(subVariants) > 256 {
+				return nil, false
+			}
+			next := make([][]boundaryAtom, 0, len(variants)*len(subVariants))
+			for _, left := range variants {
+				for _, right := range subVariants {
+					merged := make([]boundaryAtom, 0, len(left)+len(right))
+					merged = append(merged, left...)
+					merged = append(merged, right...)
+					next = append(next, merged)
+				}
+			}
+			variants = next
+		}
+		return variants, true
+	case syntax.OpAlternate:
+		variants := make([][]boundaryAtom, 0, len(r.Sub))
+		for _, sub := range r.Sub {
+			subVariants, ok := compileBoundaryVariants(sub)
+			if !ok || len(variants)+len(subVariants) > 256 {
+				return nil, false
+			}
+			variants = append(variants, subVariants...)
+		}
+		return variants, true
+	case syntax.OpQuest:
+		if len(r.Sub) != 1 {
+			return nil, false
+		}
+		variants, ok := compileBoundaryVariants(r.Sub[0])
+		if !ok || len(variants)+1 > 256 {
+			return nil, false
+		}
+		return append([][]boundaryAtom{{}}, variants...), true
+	case syntax.OpStar, syntax.OpPlus, syntax.OpRepeat:
+		if len(r.Sub) != 1 {
+			return nil, false
+		}
+		atom, ok := compileBoundaryAtom(r.Sub[0])
+		if !ok {
+			return nil, false
+		}
+		switch r.Op {
+		case syntax.OpQuest:
+			atom.min, atom.max = 0, 1
+		case syntax.OpStar:
+			atom.min, atom.max = 0, -1
+		case syntax.OpPlus:
+			atom.min, atom.max = 1, -1
+		case syntax.OpRepeat:
+			atom.min, atom.max = r.Min, r.Max
+		}
+		return [][]boundaryAtom{{atom}}, true
+	default:
+		return nil, false
+	}
+}
+
+func compileBoundaryAtom(r *syntax.Regexp) (boundaryAtom, bool) {
+	if r.Op == syntax.OpCapture {
+		if len(r.Sub) != 1 {
+			return boundaryAtom{}, false
+		}
+		return compileBoundaryAtom(r.Sub[0])
+	}
+	switch r.Op {
+	case syntax.OpLiteral:
+		if r.Flags&syntax.FoldCase != 0 || len(r.Rune) == 0 {
+			return boundaryAtom{}, false
+		}
+		return boundaryAtom{literal: string(r.Rune), min: 1, max: 1}, true
+	case syntax.OpCharClass:
+		if len(r.Rune) == 0 {
+			return boundaryAtom{}, false
+		}
+		return boundaryAtom{runes: append([]rune(nil), r.Rune...), min: 1, max: 1}, true
+	case syntax.OpAnyCharNotNL, syntax.OpAnyChar:
+		return boundaryAtom{any: true, min: 1, max: 1}, true
+	default:
+		return boundaryAtom{}, false
+	}
+}
+
+func (m *boundaryMatcher) match(s string) bool {
+	for start := 0; ; {
+		for _, variant := range m.variants {
+			if matchBoundaryVariant(variant, s, start, 0) {
+				return true
+			}
+		}
+		index := strings.IndexByte(s[start:], '.')
+		if index < 0 {
+			return false
+		}
+		start += index + 1
+	}
+}
+
+func matchBoundaryVariant(variant []boundaryAtom, s string, pos, index int) bool {
+	if index == len(variant) {
+		return pos == len(s)
+	}
+	atom := variant[index]
+	max := atom.max
+	if max < 0 || max > len(s)-pos {
+		max = len(s) - pos
+	}
+	count := 0
+	end := pos
+	for count < max {
+		next, ok := matchBoundaryAtom(atom, s, end)
+		if !ok || next <= end {
+			break
+		}
+		end = next
+		count++
+	}
+	if count < atom.min {
+		return false
+	}
+	for n := count; n >= atom.min; n-- {
+		if matchBoundaryVariant(variant, s, posForBoundaryCount(atom, s, pos, n), index+1) {
+			return true
+		}
+		if n > atom.min {
+			end = posForBoundaryCount(atom, s, pos, n-1)
+		}
+	}
+	return false
+}
+
+func posForBoundaryCount(atom boundaryAtom, s string, pos, count int) int {
+	for i := 0; i < count; i++ {
+		next, ok := matchBoundaryAtom(atom, s, pos)
+		if !ok || next <= pos {
+			return pos
+		}
+		pos = next
+	}
+	return pos
+}
+
+func matchBoundaryAtom(atom boundaryAtom, s string, pos int) (int, bool) {
+	if atom.literal != "" {
+		if strings.HasPrefix(s[pos:], atom.literal) {
+			return pos + len(atom.literal), true
+		}
+		return pos, false
+	}
+	if pos >= len(s) {
+		return pos, false
+	}
+	if atom.any {
+		r, size := utf8.DecodeRuneInString(s[pos:])
+		return pos + size, r != '\n'
+	}
+	c, size := utf8.DecodeRuneInString(s[pos:])
+	for i := 0; i+1 < len(atom.runes); i += 2 {
+		if c >= atom.runes[i] && c <= atom.runes[i+1] {
+			return pos + size, true
+		}
+	}
+	return pos, false
 }
 
 const (

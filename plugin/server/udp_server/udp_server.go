@@ -2405,7 +2405,7 @@ func collectFastAuditFromWire(enable bool, start time.Time, question fastQuestio
 	if !ok {
 		return
 	}
-	coremain.GlobalAuditCollector.CollectLogWithShard(log, shardKey)
+	coremain.GlobalAuditCollector.CollectLogWithShardOwned(log, shardKey)
 }
 
 func collectFastAuditFromMsg(enable bool, start time.Time, q *dns.Msg, meta server.QueryMeta, response fastAuditResponseMeta, cacheStatus string) {

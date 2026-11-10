@@ -108,6 +108,18 @@ func (c *AuditCollector) CollectLog(log AuditLog) {
 // CollectLogWithShard records an already-built audit log and uses shardKey to
 // distribute hot UDP cache-hit audit events across collector queues.
 func (c *AuditCollector) CollectLogWithShard(log AuditLog, shardKey uint64) {
+	c.collectLogWithShard(log, shardKey, false)
+}
+
+// CollectLogWithShardOwned records a log whose variable fields are already
+// owned by the caller and will not be mutated after this call. The fast UDP
+// audit path builds a fresh log and answer slice for every event, so cloning it
+// again only doubles allocations and CPU on the hottest cache-hit path.
+func (c *AuditCollector) CollectLogWithShardOwned(log AuditLog, shardKey uint64) {
+	c.collectLogWithShard(log, shardKey, true)
+}
+
+func (c *AuditCollector) collectLogWithShard(log AuditLog, shardKey uint64, owned bool) {
 	if c == nil {
 		return
 	}
@@ -126,7 +138,9 @@ func (c *AuditCollector) CollectLogWithShard(log AuditLog, shardKey uint64) {
 		c.recordIngressDrop(log)
 		return
 	}
-	cloneAuditLog(&log)
+	if !owned {
+		cloneAuditLog(&log)
+	}
 	select {
 	case queue <- auditQueuedLog{generation: generation, log: log, estimatedBytes: size}:
 	default:

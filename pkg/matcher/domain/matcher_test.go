@@ -217,3 +217,53 @@ func Test_RegexMatcher(t *testing.T) {
 	expr = "*"
 	add(expr, nil, true)
 }
+
+func TestRegexMatcherFastPaths(t *testing.T) {
+	tests := []struct {
+		expr string
+		in   string
+		want bool
+	}{
+		{`[^a-zA-Z0-9._-]`, "valid.example", false},
+		{`[^a-zA-Z0-9._-]`, "bad name", true},
+		{`^[^.]+$`, "single-label", true},
+		{`^[^.]+$`, "two.labels", false},
+		{`^.*.lan$`, "router.lan", true},
+		{`^.*.lan$`, "router.com", false},
+		{`^.*.arpa$`, "host.arpa", true},
+		{`^.*.arpa$`, "host.local", false},
+	}
+	for _, tt := range tests {
+		m := NewRegexMatcher[struct{}]()
+		if err := m.Add(tt.expr, struct{}{}); err != nil {
+			t.Fatalf("Add(%q): %v", tt.expr, err)
+		}
+		_, got := m.Match(tt.in)
+		if got != tt.want {
+			t.Errorf("Match(%q, %q) = %v, want %v", tt.expr, tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestRegexMatcherRequiredHintsPreserveMatches(t *testing.T) {
+	tests := []struct {
+		expr string
+		in   string
+		want bool
+	}{
+		{`(^|\.)foo[0-9]+\.com$`, "sub.foo12.com", true},
+		{`(^|\.)foo[0-9]+\.com$`, "sub.bar12.com", false},
+		{`^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$`, "chatgpt-async-webps-prod-a1-2.webpubsub.azure.com", true},
+		{`^chatgpt-async-webps-prod-\S+-\d+\.webpubsub\.azure\.com$`, "example.com", false},
+	}
+	for _, tt := range tests {
+		m := NewRegexMatcher[struct{}]()
+		if err := m.Add(tt.expr, struct{}{}); err != nil {
+			t.Fatalf("Add(%q): %v", tt.expr, err)
+		}
+		_, got := m.Match(tt.in)
+		if got != tt.want {
+			t.Errorf("Match(%q, %q) = %v, want %v", tt.expr, tt.in, got, tt.want)
+		}
+	}
+}
