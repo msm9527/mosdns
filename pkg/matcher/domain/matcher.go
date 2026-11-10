@@ -234,6 +234,13 @@ const (
 	MatcherKeyword = "keyword"
 )
 
+const (
+	matcherHasFull uint8 = 1 << iota
+	matcherHasDomain
+	matcherHasRegexp
+	matcherHasKeyword
+)
+
 type MixMatcher[T any] struct {
 	defaultMatcher string
 
@@ -241,6 +248,7 @@ type MixMatcher[T any] struct {
 	domain  *SubDomainMatcher[T]
 	regex   *RegexMatcher[T]
 	keyword *KeywordMatcher[T]
+	present uint8
 }
 
 func NewMixMatcher[T any]() *MixMatcher[T] {
@@ -256,18 +264,28 @@ func (m *MixMatcher[T]) SetDefaultMatcher(s string) {
 	m.defaultMatcher = s
 }
 
-func (m *MixMatcher[T]) GetSubMatcher(typ string) WriteableMatcher[T] {
+func (m *MixMatcher[T]) getSubMatcher(typ string) (WriteableMatcher[T], uint8) {
 	switch typ {
 	case MatcherFull:
-		return m.full
+		return m.full, matcherHasFull
 	case MatcherDomain:
-		return m.domain
+		return m.domain, matcherHasDomain
 	case MatcherRegexp:
-		return m.regex
+		return m.regex, matcherHasRegexp
 	case MatcherKeyword:
-		return m.keyword
+		return m.keyword, matcherHasKeyword
 	}
-	return nil
+	return nil, 0
+}
+
+func (m *MixMatcher[T]) GetSubMatcher(typ string) WriteableMatcher[T] {
+	sm, present := m.getSubMatcher(typ)
+	if sm != nil {
+		// The caller may add directly through the returned interface. Mark the
+		// matcher type here so Match cannot skip that rule set.
+		m.present |= present
+	}
+	return sm
 }
 
 var ErrNodefaultMatcher = errors.New("default matcher is not set")
@@ -281,28 +299,46 @@ func (m *MixMatcher[T]) Add(s string, v T) error {
 			return ErrNodefaultMatcher
 		}
 	}
-	sm := m.GetSubMatcher(typ)
+	sm, present := m.getSubMatcher(typ)
 	if sm == nil {
 		return fmt.Errorf("unsupported match type [%s]", typ)
 	}
-	return sm.Add(pattern, v)
+	if err := sm.Add(pattern, v); err != nil {
+		return err
+	}
+	m.present |= present
+	return nil
 }
 
 func (m *MixMatcher[T]) Match(s string) (v T, ok bool) {
+	switch m.present {
+	case 0:
+		return v, false
+	case matcherHasDomain:
+		return m.domain.matchNormalized(tryFastNormalize(s))
+	}
 	// 核心性能点：在此处统一计算一次规范化。如果是已经是规范的（比如 google.com），
 	// tryFastNormalize 会返回原字符串引用，实现零内存分配。
 	s = tryFastNormalize(s)
-	if v, ok = m.full.matchNormalized(s); ok {
-		return v, true
+	if m.present&matcherHasFull != 0 {
+		if v, ok = m.full.matchNormalized(s); ok {
+			return v, true
+		}
 	}
-	if v, ok = m.domain.matchNormalized(s); ok {
-		return v, true
+	if m.present&matcherHasDomain != 0 {
+		if v, ok = m.domain.matchNormalized(s); ok {
+			return v, true
+		}
 	}
-	if v, ok = m.regex.matchNormalized(s); ok {
-		return v, true
+	if m.present&matcherHasRegexp != 0 {
+		if v, ok = m.regex.matchNormalized(s); ok {
+			return v, true
+		}
 	}
-	if v, ok = m.keyword.matchNormalized(s); ok {
-		return v, true
+	if m.present&matcherHasKeyword != 0 {
+		if v, ok = m.keyword.matchNormalized(s); ok {
+			return v, true
+		}
 	}
 	return
 }
