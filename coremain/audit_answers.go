@@ -50,5 +50,8 @@ func wrapExactPattern(value string) string {
 	if value == "" {
 		return ""
 	}
+	// answer_search_text stores one answer per line. Escape LIKE metacharacters
+	// so AuditMatchExact remains literal even for values such as "%_".
+	value = strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(value)
 	return "%\n" + value + "\n%"
 }

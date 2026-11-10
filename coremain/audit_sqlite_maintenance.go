@@ -17,22 +17,37 @@ func (s *SQLiteAuditStorage) EnforceRetention(settings AuditSettings) error {
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	connClosed := false
+	defer func() {
+		if !connClosed {
+			_ = conn.Close()
+		}
+	}()
 	rawCutoff := nowTime().AddDate(0, 0, -settings.RawRetentionDays).UnixMilli()
 	aggregateCutoff := nowTime().AddDate(0, 0, -settings.AggregateRetentionDays).Unix()
 
-	if _, err := conn.ExecContext(context.Background(), `DELETE FROM audit_log WHERE query_time_unix_ms < ?`, rawCutoff); err != nil {
+	tx, err := conn.BeginTx(context.Background(), nil)
+	if err != nil {
+		return fmt.Errorf("begin sqlite audit retention tx: %w", err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`DELETE FROM audit_log WHERE query_time_unix_ms < ?`, rawCutoff); err != nil {
 		return fmt.Errorf("trim sqlite audit logs: %w", err)
 	}
-	if _, err := conn.ExecContext(context.Background(), `DELETE FROM audit_minute WHERE bucket_start_unix < ?`, aggregateCutoff); err != nil {
+	if _, err := tx.Exec(`DELETE FROM audit_minute WHERE bucket_start_unix < ?`, aggregateCutoff); err != nil {
 		return fmt.Errorf("trim sqlite audit minute aggregates: %w", err)
 	}
-	if _, err := conn.ExecContext(context.Background(), `DELETE FROM audit_hour WHERE bucket_start_unix < ?`, aggregateCutoff); err != nil {
+	if _, err := tx.Exec(`DELETE FROM audit_hour WHERE bucket_start_unix < ?`, aggregateCutoff); err != nil {
 		return fmt.Errorf("trim sqlite audit hour aggregates: %w", err)
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit sqlite audit retention tx: %w", err)
+	}
 	// Release the retention connection before capacity borrows the sole slot.
-	if err := conn.Close(); err != nil {
-		return fmt.Errorf("return sqlite audit retention connection: %w", err)
+	closeErr := conn.Close()
+	connClosed = true
+	if closeErr != nil {
+		return fmt.Errorf("return sqlite audit retention connection: %w", closeErr)
 	}
 	if err := s.enforceStorageBudgetLocked(int64(settings.MaxStorageMB)*1024*1024, 2048); err != nil {
 		return err

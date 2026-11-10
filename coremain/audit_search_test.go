@@ -51,6 +51,27 @@ func TestAuditSearchSQLiteKeywordAndFilters(t *testing.T) {
 		}
 	})
 
+	t.Run("exact answer escapes like metacharacters", func(t *testing.T) {
+		literal := logs[0]
+		literal.QueryName = "literal-wildcard.example"
+		literal.QueryTime = base.Add(4 * time.Minute)
+		literal.Answers = []AnswerDetail{{Type: "TXT", TTL: 60, Data: `%_\\literal`}}
+		literal.AnswerCount = 1
+		if err := storage.WriteBatch([]AuditLog{literal}); err != nil {
+			t.Fatal(err)
+		}
+		resp := mustQueryAuditLogs(t, storage, AuditLogsQuery{
+			From: base,
+			To:   base.Add(5 * time.Minute),
+			Filters: AuditLogSearchFilters{
+				Answer: AuditTextFilter{Value: `%_\\literal`, Mode: AuditMatchExact},
+			},
+		})
+		if resp.Summary.MatchedCount != 1 || len(resp.Logs) != 1 || resp.Logs[0].QueryName != literal.QueryName {
+			t.Fatalf("literal wildcard matched incorrectly: %+v", resp)
+		}
+	})
+
 	t.Run("combined filters", func(t *testing.T) {
 		maxDuration := 4.0
 		resp := mustQueryAuditLogs(t, storage, AuditLogsQuery{
@@ -104,6 +125,41 @@ func TestAuditSearchSQLiteKeywordAndFilters(t *testing.T) {
 		}
 		if resp.Logs[0].QueryName != "alpha.example" || resp.Logs[1].QueryName != "two.example" {
 			t.Fatalf("unexpected logs = %+v", resp.Logs)
+		}
+		if resp.NextCursor == "" {
+			t.Fatal("duration sort did not return a cursor")
+		}
+		next := mustQueryAuditLogs(t, storage, AuditLogsQuery{
+			From:   base,
+			To:     base.Add(3 * time.Minute),
+			Limit:  2,
+			Cursor: resp.NextCursor,
+			Sort:   AuditLogSearchSort{Field: "duration", Order: "desc"},
+		})
+		if len(next.Logs) != 2 || next.Logs[0].QueryName != "logs.internal" || next.Logs[1].QueryName != "one.example" || next.NextCursor != "" {
+			t.Fatalf("duration cursor page = %+v", next)
+		}
+	})
+
+	t.Run("duration ascending cursor", func(t *testing.T) {
+		resp := mustQueryAuditLogs(t, storage, AuditLogsQuery{
+			From:  base,
+			To:    base.Add(3 * time.Minute),
+			Limit: 2,
+			Sort:  AuditLogSearchSort{Field: "duration", Order: "asc"},
+		})
+		if len(resp.Logs) != 2 || resp.Logs[0].QueryName != "one.example" || resp.Logs[1].QueryName != "logs.internal" || resp.NextCursor == "" {
+			t.Fatalf("duration ascending first page = %+v", resp)
+		}
+		next := mustQueryAuditLogs(t, storage, AuditLogsQuery{
+			From:   base,
+			To:     base.Add(3 * time.Minute),
+			Limit:  2,
+			Cursor: resp.NextCursor,
+			Sort:   AuditLogSearchSort{Field: "duration", Order: "asc"},
+		})
+		if len(next.Logs) != 2 || next.Logs[0].QueryName != "two.example" || next.Logs[1].QueryName != "alpha.example" || next.NextCursor != "" {
+			t.Fatalf("duration ascending cursor page = %+v", next)
 		}
 	})
 }

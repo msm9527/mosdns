@@ -35,13 +35,29 @@ func (s *SQLiteAuditStorage) stageOwnedBufferedLog(log AuditLog) error {
 	return s.stageBufferedLog(log, true)
 }
 
+// stageNormalizedOwnedBufferedLog is used by the collector after
+// recordQueuedLog has normalized the same record. Keeping that precondition
+// explicit avoids repeating the field checks on every audited DNS request.
+func (s *SQLiteAuditStorage) stageNormalizedOwnedBufferedLog(log AuditLog) error {
+	s.bufferMu.Lock()
+	defer s.bufferMu.Unlock()
+	return s.stageBufferedLogLocked(log)
+}
+
 func (s *SQLiteAuditStorage) stageBufferedLog(log AuditLog, owned bool) error {
 	s.bufferMu.Lock()
 	defer s.bufferMu.Unlock()
+	normalizeAuditLog(&log)
+	if !owned {
+		cloneAuditLog(&log)
+	}
+	return s.stageBufferedLogLocked(log)
+}
+
+func (s *SQLiteAuditStorage) stageBufferedLogLocked(log AuditLog) error {
 	if s.DB() == nil {
 		return fmt.Errorf("sqlite audit storage is not open")
 	}
-	normalizeAuditLog(&log)
 	size := estimateAuditBufferBytes(log)
 	if len(s.pending) >= auditBufferMaxLogs || size > auditBufferMaxBytes-s.pendingBytes {
 		return ErrAuditBufferFull
@@ -51,11 +67,6 @@ func (s *SQLiteAuditStorage) stageBufferedLog(log AuditLog, owned bool) error {
 		return err
 	}
 	log.ID = id
-	// Clone variable input so neither mutation nor a large caller backing array
-	// can change or retain memory beyond the accepted record's accounting.
-	if !owned {
-		cloneAuditLog(&log)
-	}
 	s.pending = append(s.pending, log)
 	s.pendingBytes += size
 	s.bufferRevision++
@@ -91,9 +102,9 @@ func estimateAuditLogBytes(log AuditLog) int64 {
 	// Reserve twice the struct size for append's backing-array growth. This is
 	// an estimate of owned Go memory, not a serialization or SQLite size budget.
 	size := int64(2*unsafe.Sizeof(log)) + int64(len(log.Answers))*int64(unsafe.Sizeof(AnswerDetail{}))
-	for _, value := range []string{log.ClientIP, log.QueryType, log.QueryName, log.QueryClass, log.TraceID, log.ResponseCode, log.DomainSetRaw, log.DomainSetNorm, log.UpstreamTag, log.Transport, log.ServerName, log.URLPath, log.CacheStatus} {
-		size += int64(len(value))
-	}
+	size += int64(len(log.ClientIP) + len(log.QueryType) + len(log.QueryName) + len(log.QueryClass))
+	size += int64(len(log.TraceID) + len(log.ResponseCode) + len(log.DomainSetRaw) + len(log.DomainSetNorm))
+	size += int64(len(log.UpstreamTag) + len(log.Transport) + len(log.ServerName) + len(log.URLPath) + len(log.CacheStatus))
 	for _, answer := range log.Answers {
 		size += int64(len(answer.Type) + len(answer.Data))
 	}

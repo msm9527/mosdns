@@ -106,7 +106,7 @@ func (b *auditWhereBuilder) addDurationRange(min, max *float64) {
 
 func buildAuditTextClause(column auditTextColumn, filter AuditTextFilter) (string, any) {
 	if column.exactSetLike && filter.Mode == AuditMatchExact {
-		return column.column + " LIKE ?", wrapExactPattern(filter.Value)
+		return column.column + " LIKE ? ESCAPE '\\'", wrapExactPattern(filter.Value)
 	}
 	if filter.Mode == AuditMatchExact {
 		return column.column + " = ?", filter.Value
