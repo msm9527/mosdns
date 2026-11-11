@@ -125,7 +125,7 @@ jobs:
           path: msm-build
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: stable
           check-latest: true
@@ -183,7 +183,7 @@ jobs:
           path: msm-build
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: stable
           check-latest: true
@@ -248,7 +248,7 @@ jobs:
           sha256sum -- * > SHA256SUMS
 
       - name: Delete existing release and tag
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           TAG_NAME: ${{ env.MIHOMO_TAG_NAME }}
         with:
@@ -279,7 +279,7 @@ jobs:
             }
 
       - name: Publish mihomo release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.MIHOMO_TAG_NAME }}
           target_commitish: ${{ github.sha }}

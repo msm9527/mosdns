@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           check-latest: true
@@ -49,13 +49,13 @@ jobs:
           fetch-depth: 0
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version: stable
           check-latest: true
 
       - name: Set up Python
-        uses: actions/setup-python@v6
+        uses: actions/setup-python@v7
         with:
           python-version: '3.13'
           check-latest: true
@@ -117,7 +117,7 @@ jobs:
           merge-multiple: true
 
       - name: Delete existing beta release and tag
-        uses: actions/github-script@v8
+        uses: actions/github-script@v9
         env:
           TAG_NAME: ${{ env.TAG_NAME }}
         with:
@@ -160,7 +160,7 @@ jobs:
             }
 
       - name: Publish beta release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ env.TAG_NAME }}
           target_commitish: ${{ github.sha }}
