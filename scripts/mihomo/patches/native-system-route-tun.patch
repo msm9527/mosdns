@@ -1,0 +1,2542 @@
+diff --git a/config/config.go b/config/config.go
+index c97ddf0..d7c7bea 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -278,6 +278,7 @@ type RawTun struct {
+ 	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
+ 	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
+ 	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
++	SystemRouteMark     uint32     `yaml:"system-route-mark" json:"system-route-mark,omitempty"`
+ 
+ 	MTU        uint32 `yaml:"mtu" json:"mtu,omitempty"`
+ 	GSO        bool   `yaml:"gso" json:"gso,omitempty"`
+@@ -722,7 +723,11 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
+ 	}
+ 	config.DNS = dnsCfg
+ 
+-	err = parseTun(rawCfg.Tun, dnsCfg, config.General)
++	rawTun, err := resolveTunSystemRouteMark(rawCfg.Tun, rawCfg.Proxy, proxies)
++	if err != nil {
++		return nil, err
++	}
++	err = parseTun(rawTun, dnsCfg, config.General)
+ 	if err != nil {
+ 		return nil, err
+ 	}
+@@ -1690,6 +1695,31 @@ func parseIPV6(rawCfg *RawConfig) {
+ 	}
+ }
+ 
++// Derive the bypass mark from explicit static system-route adapters. Keeping
++// this relationship in the core makes TUN recreation/removal track proxy
++// configuration atomically, without a manager rewriting the user's TUN block.
++func resolveTunSystemRouteMark(rawTun RawTun, rawProxies []map[string]any, proxies map[string]C.Proxy) (RawTun, error) {
++	for _, mapping := range rawProxies {
++		if mapping["type"] != "direct-system" {
++			continue
++		}
++		name, _ := mapping["name"].(string)
++		proxy := proxies[name]
++		if proxy == nil {
++			return rawTun, fmt.Errorf("direct-system proxy %q was not parsed", name)
++		}
++		mark := proxy.ProxyInfo().RoutingMark
++		if mark <= 0 || uint64(mark) > uint64(^uint32(0)) {
++			return rawTun, fmt.Errorf("direct-system proxy %q requires an explicit non-zero uint32 routing-mark", name)
++		}
++		if rawTun.SystemRouteMark != 0 && rawTun.SystemRouteMark != uint32(mark) {
++			return rawTun, fmt.Errorf("direct-system proxy %q routing-mark %#x conflicts with TUN system-route-mark %#x", name, mark, rawTun.SystemRouteMark)
++		}
++		rawTun.SystemRouteMark = uint32(mark)
++	}
++	return rawTun, nil
++}
++
+ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
+ 	tunAddressPrefix := dns.FakeIPRange
+ 	if !tunAddressPrefix.IsValid() {
+@@ -1705,6 +1735,7 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
+ 		DNSHijack:           rawTun.DNSHijack,
+ 		AutoRoute:           rawTun.AutoRoute,
+ 		AutoDetectInterface: rawTun.AutoDetectInterface,
++		SystemRouteMark:     rawTun.SystemRouteMark,
+ 
+ 		MTU:                                   rawTun.MTU,
+ 		GSO:                                   rawTun.GSO,
+@@ -1756,7 +1787,7 @@ func parseTun(rawTun RawTun, dns *DNS, general *General) error {
+ 		ProcessorsPerChannel: rawTun.ProcessorsPerChannel,
+ 	}
+ 
+-	return nil
++	return listener.ValidateTunSystemRouteReplacement(general.Tun)
+ }
+ 
+ func parseTuicServer(rawTuic RawTuicServer, general *General) error {
+diff --git a/listener/config/tun.go b/listener/config/tun.go
+index 3cfa17a..10e6090 100644
+--- a/listener/config/tun.go
++++ b/listener/config/tun.go
+@@ -17,6 +17,7 @@ type Tun struct {
+ 	DNSHijack           []string   `yaml:"dns-hijack" json:"dns-hijack"`
+ 	AutoRoute           bool       `yaml:"auto-route" json:"auto-route"`
+ 	AutoDetectInterface bool       `yaml:"auto-detect-interface" json:"auto-detect-interface"`
++	SystemRouteMark     uint32     `yaml:"system-route-mark" json:"system-route-mark,omitempty"`
+ 
+ 	MTU                                   uint32         `yaml:"mtu" json:"mtu,omitempty"`
+ 	GSO                                   bool           `yaml:"gso" json:"gso,omitempty"`
+@@ -119,6 +120,9 @@ func (t *Tun) Equal(other Tun) bool {
+ 	if t.AutoDetectInterface != other.AutoDetectInterface {
+ 		return false
+ 	}
++	if t.SystemRouteMark != other.SystemRouteMark {
++		return false
++	}
+ 
+ 	if t.MTU != other.MTU {
+ 		return false
+diff --git a/listener/listener.go b/listener/listener.go
+index 3a0a8aa..617f298 100644
+--- a/listener/listener.go
++++ b/listener/listener.go
+@@ -81,6 +81,21 @@ func GetTunConf() LC.Tun {
+ 	return tunLister.Config()
+ }
+ 
++// ValidateTunSystemRouteReplacement rejects a conflicting system-route
++// replacement while parsing, before the executor changes proxy configuration.
++// ReCreateTun repeats this check under the same lock before changing listeners.
++func ValidateTunSystemRouteReplacement(tunConf LC.Tun) error {
++	if err := sing_tun.ValidateSystemRouteOptions(tunConf); err != nil {
++		return err
++	}
++	tunMux.Lock()
++	defer tunMux.Unlock()
++	if tunLister == nil {
++		return nil
++	}
++	return tunLister.CheckSystemRouteReplacement(tunConf)
++}
++
+ func GetTuicConf() LC.TuicServer {
+ 	if tuicListener == nil {
+ 		return LC.TuicServer{Enable: false}
+@@ -499,18 +514,14 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
+ 	tunConf.Sort()
+ 
+ 	tunMux.Lock()
+-	defer func() {
+-		LastTunConf = tunConf
+-		tunMux.Unlock()
+-	}()
+-
+-	var err error
+-	defer func() {
+-		if err != nil {
+-			log.Errorln("Start TUN listening error: %s", err.Error())
+-			tunConf.Enable = false
++	defer tunMux.Unlock()
++	previous := LastTunConf
++	if tunLister == nil && !tunConf.Enable {
++		if err := sing_tun.CleanupSystemRouteJournal(tunConf); err != nil {
++			log.Errorln("TUN crash-state cleanup rejected; existing rules retained: %s", err)
++			return
+ 		}
+-	}()
++	}
+ 
+ 	if tunConf.Equal(LastTunConf) {
+ 		if tunLister != nil { // some default value in dialer maybe changed when config reload, reset at here
+@@ -518,18 +529,39 @@ func ReCreateTun(tunConf LC.Tun, tunnel C.Tunnel) {
+ 		}
+ 		return
+ 	}
++	if tunLister != nil {
++		if err := tunLister.CheckSystemRouteReplacement(tunConf); err != nil {
++			log.Errorln("TUN system-route replacement rejected; existing listener retained: %s", err)
++			return
++		}
++	}
+ 
+ 	closeTunListener()
+ 
+ 	if !tunConf.Enable {
++		LastTunConf = tunConf
+ 		return
+ 	}
+ 
+ 	lister, err := sing_tun.New(tunConf, tunnel)
+ 	if err != nil {
++		log.Errorln("Start TUN listening error: %s", err.Error())
++		if previous.Enable && (previous.SystemRouteMark != 0 || tunConf.SystemRouteMark != 0) {
++			restored, restoreErr := sing_tun.New(previous, tunnel)
++			if restoreErr == nil {
++				tunLister = restored
++				LastTunConf = previous
++				log.Warnln("TUN system-route replacement failed; restored previous listener")
++				return
++			}
++			log.Errorln("Restore previous TUN listener after system-route replacement failure: %s", restoreErr)
++		}
++		tunConf.Enable = false
++		LastTunConf = tunConf
+ 		return
+ 	}
+ 	tunLister = lister
++	LastTunConf = tunConf
+ 
+ 	log.Infoln("[TUN] Tun adapter listening at: %s", tunLister.Address())
+ }
+diff --git a/listener/sing_tun/server.go b/listener/sing_tun/server.go
+index 5415b25..9eebdc5 100644
+--- a/listener/sing_tun/server.go
++++ b/listener/sing_tun/server.go
+@@ -52,6 +52,8 @@ type Listener struct {
+ 	networkUpdateMonitor    tun.NetworkUpdateMonitor
+ 	defaultInterfaceMonitor tun.DefaultInterfaceMonitor
+ 	packageManager          tun.PackageManager
++	systemRouteBypass       io.Closer
++	systemRouteOwnedRules   any
+ 	autoRedirect            tun.AutoRedirect
+ 	autoRedirectOutputMark  int32
+ 
+@@ -483,11 +485,21 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
+ 		err = E.Cause(err, "build android rules")
+ 		return
+ 	}
++	l.systemRouteBypass, err = newSystemRouteBypass(options, tunOptions)
++	if err != nil {
++		err = E.Cause(err, "configure system-route-mark")
++		return
++	}
+ 	tunIf, err := tunNew(tunOptions)
+ 	if err != nil {
+ 		err = E.Cause(err, "configure tun interface")
+ 		return
+ 	}
++	l.tunIf = tunIf
++	if err = recordSystemRouteOwnedRules(l); err != nil {
++		err = E.Cause(err, "record system-route-mark rules")
++		return
++	}
+ 
+ 	l.dnsServerIp = dnsServerIp
+ 	// after tun.New sing-tun has set DNS to TUN interface
+@@ -507,8 +519,6 @@ func New(options LC.Tun, tunnel C.Tunnel, additions ...inbound.Addition) (l *Lis
+ 		TCPCongestionControl:   options.CongestionController,
+ 		EnforceBindInterface:   EnforceBindInterface,
+ 	}
+-	l.tunIf = tunIf
+-
+ 	tunStack, err := tun.NewStack(strings.ToLower(options.Stack.String()), stackOptions)
+ 	if err != nil {
+ 		return
+@@ -687,6 +697,7 @@ func (l *Listener) Close() error {
+ 		l.ruleUpdateCallbackCloser,
+ 		l.tunStack,
+ 		l.tunIf,
++		l.systemRouteBypass,
+ 		l.autoRedirect,
+ 		l.defaultInterfaceMonitor,
+ 		l.networkUpdateMonitor,
+diff --git a/config/tun_system_route_test.go b/config/tun_system_route_test.go
+new file mode 100644
+index 0000000..eda9d84
+--- /dev/null
++++ b/config/tun_system_route_test.go
+@@ -0,0 +1,113 @@
++package config
++
++import (
++	"runtime"
++	"testing"
++
++	"github.com/metacubex/mihomo/adapter"
++	"github.com/metacubex/mihomo/adapter/outbound"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestTunSystemRouteMarkInference(t *testing.T) {
++	proxies := map[string]C.Proxy{}
++	for name, mark := range map[string]int{"home": 17, "same": 17, "other": 18, "zero": 0, "negative": -1} {
++		proxies[name] = adapter.NewProxy(outbound.NewDirectWithOption(outbound.DirectOption{
++			Name: name, BasicOption: outbound.BasicOption{RoutingMark: mark},
++		}))
++	}
++	for _, tc := range []struct {
++		name     string
++		explicit uint32
++		names    []string
++		want     uint32
++		wantErr  bool
++	}{
++		{"none", 0, nil, 0, false},
++		{"explicit-provider-mark", 17, nil, 17, false},
++		{"infer-static-adapter", 0, []string{"home"}, 17, false},
++		{"matching-explicit", 17, []string{"home"}, 17, false},
++		{"matching-adapters", 0, []string{"home", "same"}, 17, false},
++		{"explicit-conflict", 18, []string{"home"}, 0, true},
++		{"adapter-conflict", 0, []string{"home", "other"}, 0, true},
++		{"zero-mark", 0, []string{"zero"}, 0, true},
++		{"negative-mark", 0, []string{"negative"}, 0, true},
++		{"missing-adapter", 0, []string{"missing"}, 0, true},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			initial := RawTun{Enable: true, AutoRoute: true, AutoDetectInterface: true, SystemRouteMark: tc.explicit}
++			rawProxies := []map[string]any{{"name": "ordinary", "type": "direct", "routing-mark": 999}}
++			for _, name := range tc.names {
++				rawProxies = append(rawProxies, map[string]any{"type": "direct-system", "name": name})
++			}
++			resolved, err := resolveTunSystemRouteMark(initial, rawProxies, proxies)
++			if (err != nil) != tc.wantErr {
++				t.Fatalf("error=%v, wantErr=%v", err, tc.wantErr)
++			}
++			if err == nil && (resolved.SystemRouteMark != tc.want || !resolved.AutoDetectInterface || !resolved.AutoRoute || !resolved.Enable) {
++				t.Fatalf("unexpected TUN settings: %+v", resolved)
++			}
++			if initial.SystemRouteMark != tc.explicit {
++				t.Fatal("inference wrote derived state into caller's raw configuration")
++			}
++		})
++	}
++	// Removing the adapter restores the original TUN settings on hot reload.
++	original := RawTun{Enable: true, AutoRoute: true, AutoDetectInterface: true}
++	if resolved, err := resolveTunSystemRouteMark(original, nil, proxies); err != nil || resolved.SystemRouteMark != 0 {
++		t.Fatalf("removed adapter left an inferred mark: %+v %v", resolved, err)
++	}
++}
++
++func TestTunSystemRouteMarkParse(t *testing.T) {
++	proxy := adapter.NewProxy(outbound.NewDirectWithOption(outbound.DirectOption{
++		Name: "home", BasicOption: outbound.BasicOption{RoutingMark: 17},
++	}))
++	rawTun, err := resolveTunSystemRouteMark(RawTun{Enable: true, AutoRoute: true, AutoDetectInterface: true},
++		[]map[string]any{{"name": "home", "type": "direct-system"}}, map[string]C.Proxy{"home": proxy})
++	if err != nil {
++		t.Fatal(err)
++	}
++	general := &General{Interface: "designated-uplink"}
++	if err := parseTun(rawTun, &DNS{}, general); err != nil {
++		if runtime.GOOS != "linux" {
++			return
++		}
++		t.Fatal(err)
++	}
++	if runtime.GOOS != "linux" {
++		t.Fatal("non-Linux marked TUN passed preflight")
++	}
++	if general.Interface != "designated-uplink" || !general.Tun.AutoDetectInterface || general.Tun.SystemRouteMark != 17 {
++		t.Fatalf("inference changed ordinary binding behavior or missed mark: %+v", general)
++	}
++}
++
++func TestTunSystemRouteFreshParseValidation(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		apply   func(*RawTun)
++		wantErr bool
++	}{
++		{"valid", func(o *RawTun) {}, false},
++		{"no-auto-route", func(o *RawTun) { o.AutoRoute = false }, true},
++		{"auto-redirect", func(o *RawTun) { o.AutoRedirect = true }, true},
++		{"borrowed-fd", func(o *RawTun) { o.FileDescriptor = 3 }, true},
++		{"low-index", func(o *RawTun) { o.IPRoute2RuleIndex = 1 }, true},
++		{"high-index", func(o *RawTun) { o.IPRoute2RuleIndex = 32756 }, true},
++		{"disabled", func(o *RawTun) { o.Enable = false; o.AutoRoute = false }, false},
++		{"ordinary", func(o *RawTun) { o.SystemRouteMark = 0; o.AutoRoute = false }, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			raw := RawTun{Enable: true, AutoRoute: true, SystemRouteMark: 17}
++			tc.apply(&raw)
++			err := parseTun(raw, &DNS{}, &General{})
++			if runtime.GOOS != "linux" && raw.Enable && raw.SystemRouteMark != 0 {
++				tc.wantErr = true
++			}
++			if (err != nil) != tc.wantErr {
++				t.Fatalf("fresh parse error=%v wantErr=%v", err, tc.wantErr)
++			}
++		})
++	}
++}
+diff --git a/listener/tun_system_route_linux_test.go b/listener/tun_system_route_linux_test.go
+new file mode 100644
+index 0000000..4de30b6
+--- /dev/null
++++ b/listener/tun_system_route_linux_test.go
+@@ -0,0 +1,152 @@
++//go:build linux
++
++package listener
++
++import (
++	"fmt"
++	"net/netip"
++	"os"
++	"os/exec"
++	"reflect"
++	"testing"
++
++	C "github.com/metacubex/mihomo/constant"
++	_ "github.com/metacubex/mihomo/dns" // Initializes SystemResolver, as the application does.
++	LC "github.com/metacubex/mihomo/listener/config"
++	"github.com/metacubex/mihomo/tunnel"
++	"github.com/sagernet/netlink"
++	"golang.org/x/sys/unix"
++)
++
++func TestTunSystemRouteReloadNamespace(t *testing.T) {
++	if os.Getenv("MIHOMO_TUN_RELOAD_CHILD") == "1" {
++		testTunSystemRouteReload(t)
++		return
++	}
++	if os.Getenv("MIHOMO_TUN_RULES_INTEGRATION") != "1" {
++		t.Skip("set MIHOMO_TUN_RULES_INTEGRATION=1 in an isolated CAP_NET_ADMIN/CAP_SYS_ADMIN container")
++	}
++	ns := fmt.Sprintf("msm-reload-%d", os.Getpid())
++	command := func(args ...string) {
++		t.Helper()
++		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
++			t.Fatalf("%v: %v %s", args, err, out)
++		}
++	}
++	command("ip", "netns", "add", ns)
++	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", ns).Run() })
++	command("ip", "-n", ns, "link", "set", "lo", "up")
++	command("ip", "-n", ns, "link", "add", "uplink", "type", "dummy")
++	command("ip", "-n", ns, "addr", "add", "10.90.0.1/24", "dev", "uplink")
++	command("ip", "-n", ns, "addr", "add", "fd90::1/64", "dev", "uplink", "nodad")
++	command("ip", "-n", ns, "link", "set", "uplink", "up")
++	command("ip", "-n", ns, "route", "add", "default", "via", "10.90.0.254")
++	command("ip", "-n", ns, "-6", "route", "add", "default", "via", "fd90::fe")
++	executable, err := os.Executable()
++	if err != nil {
++		t.Fatal(err)
++	}
++	child := exec.Command("ip", "netns", "exec", ns, executable, "-test.run=^TestTunSystemRouteReloadNamespace$", "-test.v", "-test.timeout=30s")
++	child.Env = append(os.Environ(), "MIHOMO_TUN_RELOAD_CHILD=1")
++	if out, err := child.CombinedOutput(); err != nil {
++		t.Fatalf("reload namespace: %v\n%s", err, out)
++	} else {
++		t.Log(string(out))
++	}
++}
++
++func testTunSystemRouteReload(t *testing.T) {
++	snapshot := func() []netlink.Rule {
++		t.Helper()
++		rules, err := netlink.RuleList(unix.AF_UNSPEC)
++		if err != nil {
++			t.Fatal(err)
++		}
++		return rules
++	}
++	baseline := snapshot()
++	conf := LC.Tun{Enable: true, Device: "reload_tun", Stack: C.TunSystem,
++		AutoRoute: true, AutoDetectInterface: true, SystemRouteMark: 17,
++		IPRoute2RuleIndex: 11000, MTU: 1500,
++		Inet4Address: []netip.Prefix{netip.MustParsePrefix("198.18.0.1/30")},
++		Inet6Address: []netip.Prefix{netip.MustParsePrefix("fdfe:abcd::1/126")},
++		RouteAddress: []netip.Prefix{netip.MustParsePrefix("198.18.0.0/15"), netip.MustParsePrefix("fdfe:abcd::/64")}}
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister == nil || !LastTunConf.Enable {
++		t.Fatal("initial TUN failed")
++	}
++	t.Cleanup(closeTunListener)
++	first := tunLister
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister != first {
++		t.Fatal("unchanged configuration unnecessarily recreated listener")
++	}
++	conf.MTU = 1400
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister == nil || tunLister == first || LastTunConf.MTU != 1400 {
++		t.Fatal("normal hot reload failed")
++	}
++	conflict := netlink.NewRule()
++	conflict.Family, conflict.Priority, conflict.Table = unix.AF_INET, 11005, 201
++	if err := netlink.RuleAdd(conflict); err != nil {
++		t.Fatal(err)
++	}
++	before := snapshot()
++	current := tunLister
++	conf.MTU = 1300
++	if err := ValidateTunSystemRouteReplacement(conf); err == nil {
++		t.Fatal("parse-time validation accepted conflicting user rule")
++	}
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister != current || LastTunConf.MTU != 1400 || !reflect.DeepEqual(before, snapshot()) {
++		t.Fatal("rejected replacement disrupted old listener or user rules")
++	}
++	if err := netlink.RuleDel(conflict); err != nil {
++		t.Fatal(err)
++	}
++	// A replacement of our NOP by a user blackhole differs only in the
++	// kernel action. The dependency's RuleList does not expose that action.
++	nop := netlink.NewRule()
++	nop.Family, nop.Priority = unix.AF_INET, 11010
++	if err := netlink.RuleDel(nop); err != nil {
++		t.Fatal(err)
++	}
++	blackhole := *nop
++	blackhole.Type = unix.FR_ACT_BLACKHOLE
++	if err := netlink.RuleAdd(&blackhole); err != nil {
++		t.Fatal(err)
++	}
++	if err := ValidateTunSystemRouteReplacement(conf); err == nil {
++		t.Fatal("user blackhole replacement was mistaken for owned NOP")
++	}
++	if err := netlink.RuleDel(&blackhole); err != nil {
++		t.Fatal(err)
++	}
++	if err := netlink.RuleAdd(nop); err != nil {
++		t.Fatal(err)
++	}
++	// Force a post-preflight tun.New failure and verify automatic restoration.
++	before = snapshot()
++	broken := conf
++	broken.Device = "invalid/tun/name"
++	ReCreateTun(broken, tunnel.Tunnel)
++	if tunLister == nil || LastTunConf.Device != "reload_tun" || LastTunConf.MTU != 1400 || !reflect.DeepEqual(before, snapshot()) {
++		t.Fatal("failed replacement did not restore old TUN configuration/rules")
++	}
++	conf.MTU = 1400
++	conf.SystemRouteMark = 0
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister == nil || LastTunConf.SystemRouteMark != 0 {
++		t.Fatal("removing system-route adapter failed")
++	}
++	conf.SystemRouteMark = 17
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister == nil || LastTunConf.SystemRouteMark != 17 {
++		t.Fatal("enabling system-route adapter on existing TUN failed")
++	}
++	conf.Enable = false
++	ReCreateTun(conf, tunnel.Tunnel)
++	if tunLister != nil || LastTunConf.Enable || !reflect.DeepEqual(baseline, snapshot()) {
++		t.Fatal("TUN shutdown left residual rules")
++	}
++}
+diff --git a/listener/sing_tun/system_route_identity_linux.go b/listener/sing_tun/system_route_identity_linux.go
+new file mode 100644
+index 0000000..e65372f
+--- /dev/null
++++ b/listener/sing_tun/system_route_identity_linux.go
+@@ -0,0 +1,154 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"encoding/hex"
++	"encoding/json"
++	"errors"
++	"fmt"
++
++	"github.com/sagernet/netlink"
++	"github.com/sagernet/netlink/nl"
++	"golang.org/x/sys/unix"
++)
++
++type systemRouteIdentity struct {
++	Header     string
++	Attributes map[uint16]string
++}
++
++// Only these flags are derived from changing kernel link/goto availability.
++// Invert, the rule action, protocol and every attribute remain part of identity.
++const systemRouteDerivedFlags uint32 = 4 | 8 | 16
++
++func systemRouteIdentityFromRaw(raw string) (string, error) {
++	data := []byte(raw)
++	if len(data) < unix.SizeofRtMsg {
++		return "", errors.New("short routing rule")
++	}
++	header := append([]byte(nil), data[:unix.SizeofRtMsg]...)
++	flags := nl.NativeEndian().Uint32(header[8:12]) &^ systemRouteDerivedFlags
++	nl.NativeEndian().PutUint32(header[8:12], flags)
++	attrs, err := nl.ParseRouteAttr(data[unix.SizeofRtMsg:])
++	if err != nil {
++		return "", err
++	}
++	identity := systemRouteIdentity{Header: hex.EncodeToString(header), Attributes: map[uint16]string{}}
++	for _, attr := range attrs {
++		if _, exists := identity.Attributes[attr.Attr.Type]; exists {
++			return "", errors.New("duplicate routing rule attribute")
++		}
++		identity.Attributes[attr.Attr.Type] = hex.EncodeToString(attr.Value)
++	}
++	// Older kernels do not emit FRA_PROTOCOL; their effective protocol is zero.
++	if _, ok := identity.Attributes[21]; !ok {
++		identity.Attributes[21] = "00"
++	}
++	value, err := json.Marshal(identity)
++	return string(value), err
++}
++
++func systemRouteIdentityFromPlan(r *netlink.Rule) (string, error) {
++	header := make([]byte, unix.SizeofRtMsg)
++	header[0] = byte(r.Family)
++	header[3] = byte(r.Tos)
++	action := r.Type
++	if action == 0 {
++		if r.Table >= 0 {
++			action = unix.FR_ACT_TO_TBL
++		} else if r.Goto >= 0 {
++			action = unix.FR_ACT_GOTO
++		} else {
++			action = unix.FR_ACT_NOP
++		}
++	}
++	header[7] = action
++	table := r.Table
++	if table < 0 {
++		table = 0
++	}
++	if table < 256 {
++		header[4] = byte(table)
++	} else {
++		header[4] = unix.RT_TABLE_COMPAT
++	}
++	if r.Invert {
++		nl.NativeEndian().PutUint32(header[8:12], 2)
++	}
++	attrs := map[uint16]string{}
++	put32 := func(key uint16, value uint32) {
++		b := make([]byte, 4)
++		nl.NativeEndian().PutUint32(b, value)
++		attrs[key] = hex.EncodeToString(b)
++	}
++	put32(nl.FRA_TABLE, uint32(table))
++	put32(nl.FRA_SUPPRESS_PREFIXLEN, uint32(r.SuppressPrefixlen))
++	attrs[21] = "00"
++	if r.Priority >= 0 {
++		put32(nl.FRA_PRIORITY, uint32(r.Priority))
++	}
++	if r.MarkSet {
++		put32(nl.FRA_FWMARK, r.Mark)
++		mask := uint32(r.Mask)
++		if r.Mask < 0 {
++			mask = ^uint32(0)
++		}
++		put32(nl.FRA_FWMASK, mask)
++	} else if r.Mask >= 0 {
++		put32(nl.FRA_FWMASK, uint32(r.Mask))
++	}
++	if r.Goto >= 0 {
++		put32(nl.FRA_GOTO, uint32(r.Goto))
++	}
++	if r.Src.IsValid() {
++		header[2] = byte(r.Src.Bits())
++		attrs[nl.FRA_SRC] = hex.EncodeToString(r.Src.Addr().AsSlice())
++	}
++	if r.Dst.IsValid() {
++		header[1] = byte(r.Dst.Bits())
++		attrs[nl.FRA_DST] = hex.EncodeToString(r.Dst.Addr().AsSlice())
++	}
++	if r.IifName != "" {
++		attrs[nl.FRA_IIFNAME] = hex.EncodeToString([]byte(r.IifName + "\x00"))
++	}
++	if r.OifName != "" {
++		attrs[nl.FRA_OIFNAME] = hex.EncodeToString([]byte(r.OifName + "\x00"))
++	}
++	if r.SuppressIfgroup >= 0 {
++		put32(nl.FRA_SUPPRESS_IFGROUP, uint32(r.SuppressIfgroup))
++	}
++	if r.Flow >= 0 {
++		put32(nl.FRA_FLOW, uint32(r.Flow))
++	}
++	for key, ports := range map[uint16]*netlink.RulePortRange{nl.FRA_DPORT_RANGE: r.Dport, nl.FRA_SPORT_RANGE: r.Sport} {
++		if ports != nil {
++			b := make([]byte, 4)
++			nl.NativeEndian().PutUint16(b[:2], ports.Start)
++			nl.NativeEndian().PutUint16(b[2:], ports.End)
++			attrs[key] = hex.EncodeToString(b)
++		}
++	}
++	if r.UIDRange != nil {
++		b := make([]byte, 8)
++		nl.NativeEndian().PutUint32(b[:4], r.UIDRange.Start)
++		nl.NativeEndian().PutUint32(b[4:], r.UIDRange.End)
++		attrs[nl.FRA_UID_RANGE] = hex.EncodeToString(b)
++	}
++	if r.TunID != 0 || r.IPProto != 0 {
++		return "", fmt.Errorf("unsupported planned routing selector")
++	}
++	result, err := json.Marshal(systemRouteIdentity{Header: hex.EncodeToString(header), Attributes: attrs})
++	return string(result), err
++}
++
++type systemRouteRawMessage []byte
++
++func (m systemRouteRawMessage) Len() int          { return len(m) }
++func (m systemRouteRawMessage) Serialize() []byte { return m }
++func deleteSystemRouteRaw(rule systemRouteKernelRule) error {
++	req := nl.NewNetlinkRequest(unix.RTM_DELRULE, unix.NLM_F_ACK)
++	req.AddData(systemRouteRawMessage(rule.fingerprint))
++	_, err := req.Execute(unix.NETLINK_ROUTE, 0)
++	return err
++}
+diff --git a/listener/sing_tun/system_route_journal_linux.go b/listener/sing_tun/system_route_journal_linux.go
+new file mode 100644
+index 0000000..fe5f702
+--- /dev/null
++++ b/listener/sing_tun/system_route_journal_linux.go
+@@ -0,0 +1,175 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"encoding/json"
++	"errors"
++	"fmt"
++	"io"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++
++	C "github.com/metacubex/mihomo/constant"
++	"golang.org/x/sys/unix"
++)
++
++type systemRouteJournalRule struct {
++	Family   int
++	Priority int
++	Identity string
++	Raw      []byte `json:",omitempty"`
++}
++type systemRouteJournal struct {
++	Version   int
++	Namespace string
++	BootID    string
++	PID       int
++	StartTime string
++	Index     int
++	Device    string
++	Rules     []systemRouteJournalRule
++	Complete  bool
++}
++type systemRouteJournalOwner struct {
++	file  *os.File
++	path  string
++	state systemRouteJournal
++}
++
++func systemRouteProcessStat(pid int) (string, string, error) {
++	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
++	if err != nil {
++		return "", "", err
++	}
++	end := strings.LastIndexByte(string(data), ')')
++	if end < 0 {
++		return "", "", errors.New("invalid process stat")
++	}
++	fields := strings.Fields(string(data[end+1:]))
++	if len(fields) <= 19 {
++		return "", "", errors.New("short process stat")
++	}
++	return fields[19], fields[0], nil
++}
++
++func lockSystemRouteJournal(index int) (*systemRouteJournalOwner, error) {
++	file, err := os.Open("/proc/self/ns/net")
++	if err != nil {
++		return nil, err
++	}
++	if err = unix.Flock(int(file.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
++		file.Close()
++		return nil, fmt.Errorf("system-route namespace already owned: %w", err)
++	}
++	fail := func(err error) (*systemRouteJournalOwner, error) { file.Close(); return nil, err }
++	var stat unix.Stat_t
++	if err = unix.Fstat(int(file.Fd()), &stat); err != nil {
++		return fail(err)
++	}
++	boot, err := os.ReadFile("/proc/sys/kernel/random/boot_id")
++	if err != nil {
++		return fail(err)
++	}
++	start, _, err := systemRouteProcessStat(os.Getpid())
++	if err != nil {
++		return fail(err)
++	}
++	namespace := strconv.FormatUint(uint64(stat.Dev), 10) + "-" + strconv.FormatUint(stat.Ino, 10)
++	return &systemRouteJournalOwner{file: file, path: filepath.Join(C.Path.HomeDir(), fmt.Sprintf(".system-route-%s-%d.json", namespace, index)), state: systemRouteJournal{Version: 1, Namespace: namespace, BootID: strings.TrimSpace(string(boot)), PID: os.Getpid(), StartTime: start, Index: index}}, nil
++}
++
++func (o *systemRouteJournalOwner) read() (*systemRouteJournal, error) {
++	fd, err := unix.Open(o.path, unix.O_RDONLY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
++	if errors.Is(err, os.ErrNotExist) {
++		return nil, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	f := os.NewFile(uintptr(fd), o.path)
++	defer f.Close()
++	info, err := f.Stat()
++	if err != nil {
++		return nil, err
++	}
++	// os.FileInfo uses syscall.Stat_t on Linux; Fstat avoids a package-layout assumption.
++	var st unix.Stat_t
++	if err = unix.Fstat(fd, &st); err != nil {
++		return nil, err
++	}
++	if !info.Mode().IsRegular() || st.Uid != uint32(os.Geteuid()) || info.Mode().Perm()&0o077 != 0 {
++		return nil, errors.New("unsafe system-route journal owner or permissions")
++	}
++	data, err := io.ReadAll(io.LimitReader(f, 4<<20))
++	if err != nil {
++		return nil, err
++	}
++	var state systemRouteJournal
++	if err = json.Unmarshal(data, &state); err != nil {
++		return nil, fmt.Errorf("corrupt system-route journal: %w", err)
++	}
++	if state.Version != 1 || state.Namespace != o.state.Namespace || state.Index != o.state.Index || state.Index <= 1 || state.Index > 32765-systemRouteRuleWindow || state.BootID == "" || state.PID <= 0 || state.StartTime == "" || len(state.Rules) == 0 {
++		return nil, errors.New("system-route journal identity mismatch")
++	}
++	if state.BootID != o.state.BootID {
++		return &state, nil
++	}
++	if start, status, err := systemRouteProcessStat(state.PID); err == nil && start == state.StartTime && status != "Z" && status != "X" {
++		return nil, errors.New("system-route journal owner is still alive")
++	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
++		return nil, fmt.Errorf("cannot verify system-route journal owner: %w", err)
++	}
++	return &state, nil
++}
++
++func (o *systemRouteJournalOwner) write() error {
++	data, err := json.Marshal(o.state)
++	if err != nil {
++		return err
++	}
++	dir := filepath.Dir(o.path)
++	if err = os.MkdirAll(dir, 0o700); err != nil {
++		return err
++	}
++	f, err := os.CreateTemp(dir, ".system-route-tmp-")
++	if err != nil {
++		return err
++	}
++	defer os.Remove(f.Name())
++	if _, err = f.Write(data); err == nil {
++		err = f.Sync()
++	}
++	err = errors.Join(err, f.Close())
++	if err != nil {
++		return err
++	}
++	if err = os.Rename(f.Name(), o.path); err != nil {
++		return err
++	}
++	return syncSystemRouteDir(dir)
++}
++func syncSystemRouteDir(dir string) error {
++	f, err := os.Open(dir)
++	if err != nil {
++		return err
++	}
++	defer f.Close()
++	return f.Sync()
++}
++func (o *systemRouteJournalOwner) remove() error {
++	if err := os.Remove(o.path); err != nil && !errors.Is(err, os.ErrNotExist) {
++		return err
++	}
++	return syncSystemRouteDir(filepath.Dir(o.path))
++}
++func (o *systemRouteJournalOwner) unlock() error {
++	if o.file == nil {
++		return nil
++	}
++	err := o.file.Close()
++	o.file = nil
++	return err
++}
+diff --git a/listener/sing_tun/system_route_journal_namespace_linux_test.go b/listener/sing_tun/system_route_journal_namespace_linux_test.go
+new file mode 100644
+index 0000000..227a7e4
+--- /dev/null
++++ b/listener/sing_tun/system_route_journal_namespace_linux_test.go
+@@ -0,0 +1,299 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"fmt"
++	"net/netip"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"reflect"
++	"testing"
++	"time"
++
++	C "github.com/metacubex/mihomo/constant"
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++	"github.com/metacubex/sing/common/ranges"
++	"github.com/sagernet/netlink"
++)
++
++func TestSystemRouteJournalNamespace(t *testing.T) {
++	if mode := os.Getenv("MIHOMO_JOURNAL_CHILD"); mode != "" {
++		C.SetHomeDir(os.Getenv("MIHOMO_JOURNAL_HOME"))
++		if mode == "suite" {
++			testSystemRouteJournalSuite(t)
++		} else {
++			testSystemRouteJournalCrashOwner(t, mode)
++		}
++		return
++	}
++	if os.Getenv("MIHOMO_TUN_RULES_INTEGRATION") != "1" {
++		t.Skip("requires isolated privileged namespace")
++	}
++	ns := fmt.Sprintf("msm-journal-%d", os.Getpid())
++	command := func(args ...string) {
++		t.Helper()
++		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
++			t.Fatalf("%v: %v %s", args, err, out)
++		}
++	}
++	command("ip", "netns", "add", ns)
++	t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", ns).Run() })
++	command("ip", "-n", ns, "link", "set", "lo", "up")
++	command("ip", "-n", ns, "link", "add", "uplink", "type", "dummy")
++	command("ip", "-n", ns, "addr", "add", "10.91.0.1/24", "dev", "uplink")
++	command("ip", "-n", ns, "link", "set", "uplink", "up")
++	executable, err := os.Executable()
++	if err != nil {
++		t.Fatal(err)
++	}
++	child := exec.Command("ip", "netns", "exec", ns, executable, "-test.run=^TestSystemRouteJournalNamespace$", "-test.v", "-test.timeout=60s")
++	child.Env = append(os.Environ(), "MIHOMO_JOURNAL_CHILD=suite", "MIHOMO_JOURNAL_HOME="+t.TempDir())
++	if out, err := child.CombinedOutput(); err != nil {
++		t.Fatalf("journal namespace: %v\n%s", err, out)
++	} else {
++		t.Log(string(out))
++	}
++}
++
++func journalTestOptions() tun.Options {
++	return tun.Options{Name: "journal_tun", MTU: 1500, AutoRoute: true, IPRoute2TableIndex: 2022, IPRoute2RuleIndex: 12000,
++		Inet4Address: []netip.Prefix{netip.MustParsePrefix("198.18.0.1/30")}, Inet6Address: []netip.Prefix{netip.MustParsePrefix("fdfe:abcd::1/126")}}
++}
++func journalTestListener(o tun.Options, bypass interface{ Close() error }, device tun.Tun) *Listener {
++	return &Listener{options: LC.Tun{Enable: true, AutoRoute: true, SystemRouteMark: 17, IPRoute2RuleIndex: o.IPRoute2RuleIndex, Inet4Address: o.Inet4Address, Inet6Address: o.Inet6Address}, tunIf: device, systemRouteBypass: bypass}
++}
++func journalTestOpen(t *testing.T, o tun.Options) *Listener {
++	t.Helper()
++	bypass, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, o)
++	if err != nil {
++		t.Fatal(err)
++	}
++	device, err := tun.New(o)
++	if err != nil {
++		_ = bypass.Close()
++		t.Fatal(err)
++	}
++	active := journalTestListener(o, bypass, device)
++	if err := recordSystemRouteOwnedRules(active); err != nil {
++		_ = device.Close()
++		_ = bypass.Close()
++		t.Fatal(err)
++	}
++	return active
++}
++func journalTestClose(t *testing.T, active *Listener) {
++	t.Helper()
++	if err := active.tunIf.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if err := active.systemRouteBypass.Close(); err != nil {
++		t.Fatal(err)
++	}
++}
++func journalTestAssertClean(t *testing.T, baseline []netlink.Rule) {
++	t.Helper()
++	if now := systemRouteRuleSnapshot(t); !reflect.DeepEqual(now, baseline) {
++		t.Fatalf("owned residue or changed user rules: before=%v after=%v", baseline, now)
++	}
++	paths, err := systemRouteJournalPaths()
++	if err != nil || len(paths) > 0 {
++		t.Fatalf("journal leaked: %v %v", paths, err)
++	}
++}
++func testSystemRouteJournalSuite(t *testing.T) {
++	baseline := systemRouteRuleSnapshot(t)
++	for _, variant := range []string{"dual", "v4", "v6", "strict-v4", "strict-v6", "ports-uid", "include", "exclude", "all", "all-v4", "all-v6"} {
++		t.Run("plan-"+variant, func(t *testing.T) {
++			o := journalTestOptions()
++			switch variant {
++			case "v4", "strict-v4", "all-v4":
++				o.Inet6Address = nil
++			case "v6", "strict-v6", "all-v6":
++				o.Inet4Address = nil
++			}
++			if variant == "strict-v4" || variant == "strict-v6" {
++				o.StrictRoute = true
++			}
++			if variant == "ports-uid" || variant == "all" || variant == "all-v4" || variant == "all-v6" {
++				o.ExcludeSrcPort = []ranges.Range[uint16]{{Start: 1000, End: 2000}}
++				o.ExcludeDstPort = []ranges.Range[uint16]{{Start: 3000, End: 4000}}
++				o.ExcludeUID = []ranges.Range[uint32]{{Start: 100, End: 200}}
++			}
++			if variant == "include" || variant == "all" || variant == "all-v4" || variant == "all-v6" {
++				o.IncludeInterface = []string{"uplink", "lo"}
++			}
++			if variant == "exclude" {
++				o.ExcludeInterface = []string{"uplink"}
++			}
++			active := journalTestOpen(t, o)
++			journalTestClose(t, active)
++			journalTestAssertClean(t, baseline)
++		})
++	}
++	for _, stage := range []string{"bypass", "partial", "plan", "full"} {
++		for _, recovery := range []string{"restart", "new-index", "disable", "remove-mark"} {
++			t.Run(stage+"-"+recovery, func(t *testing.T) {
++				process := journalTestCrash(t, stage)
++				defer process.Wait() // Deliberately recover while the killed owner is still a zombie.
++				if recovery == "disable" {
++					if err := CleanupSystemRouteJournal(LC.Tun{}); err != nil {
++						t.Fatal(err)
++					}
++				} else if recovery == "remove-mark" {
++					if _, err := newSystemRouteBypass(LC.Tun{}, journalTestOptions()); err != nil {
++						t.Fatal(err)
++					}
++				} else {
++					o := journalTestOptions()
++					if recovery == "new-index" {
++						o.IPRoute2RuleIndex = 13000
++					}
++					active := journalTestOpen(t, o)
++					journalTestClose(t, active)
++				}
++				journalTestAssertClean(t, baseline)
++			})
++		}
++	}
++	t.Run("interrupted-recovery", func(t *testing.T) {
++		process := journalTestCrash(t, "full")
++		defer process.Wait()
++		rules, err := systemRouteKernelRules()
++		if err != nil {
++			t.Fatal(err)
++		}
++		for i, rule := range systemRouteJournalWindow(rules, 12000) {
++			if i%2 == 0 {
++				if err := deleteSystemRouteRaw(rule); err != nil {
++					t.Fatal(err)
++				}
++			}
++		}
++		if err := CleanupSystemRouteJournal(LC.Tun{}); err != nil {
++			t.Fatal(err)
++		}
++		journalTestAssertClean(t, baseline)
++	})
++	t.Run("special-home-directory", func(t *testing.T) {
++		home := C.Path.HomeDir()
++		C.SetHomeDir(filepath.Join(home, "state[prod]"))
++		defer C.SetHomeDir(home)
++		active := journalTestOpen(t, journalTestOptions())
++		journalTestClose(t, active)
++		journalTestAssertClean(t, baseline)
++	})
++	t.Run("ordinary-no-journal", func(t *testing.T) {
++		owner, err := lockSystemRouteJournal(12000)
++		if err != nil {
++			t.Fatal(err)
++		}
++		defer owner.unlock()
++		home := C.Path.HomeDir()
++		missing := filepath.Join(home, "absent")
++		C.SetHomeDir(missing)
++		defer C.SetHomeDir(home)
++		if _, err := newSystemRouteBypass(LC.Tun{}, journalTestOptions()); err != nil {
++			t.Fatal(err)
++		}
++		if _, err := os.Stat(missing); !os.IsNotExist(err) {
++			t.Fatalf("ordinary configuration created state: %v", err)
++		}
++	})
++	testSystemRouteJournalRejections(t, baseline)
++}
++func journalTestCrash(t *testing.T, stage string) *exec.Cmd {
++	t.Helper()
++	ready := filepath.Join(C.Path.HomeDir(), "ready")
++	_ = os.Remove(ready)
++	executable, err := os.Executable()
++	if err != nil {
++		t.Fatal(err)
++	}
++	process := exec.Command(executable, "-test.run=^TestSystemRouteJournalNamespace$", "-test.timeout=30s")
++	process.Env = append(os.Environ(), "MIHOMO_JOURNAL_CHILD="+stage)
++	logFile, err := os.Create(filepath.Join(C.Path.HomeDir(), "child.log"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer logFile.Close()
++	process.Stdout, process.Stderr = logFile, logFile
++	if err := process.Start(); err != nil {
++		t.Fatal(err)
++	}
++	for deadline := time.Now().Add(5 * time.Second); ; {
++		if _, err := os.Stat(ready); err == nil {
++			break
++		}
++		if time.Now().After(deadline) {
++			_ = process.Process.Kill()
++			_ = process.Wait()
++			data, _ := os.ReadFile(logFile.Name())
++			t.Fatalf("crash owner not ready: %s", data)
++		}
++		time.Sleep(time.Millisecond)
++	}
++	if err := process.Process.Kill(); err != nil {
++		t.Fatal(err)
++	}
++	// Do not reap yet. Wait until namespace flock can be reacquired.
++	for deadline := time.Now().Add(time.Second); ; {
++		owner, err := lockSystemRouteJournal(12000)
++		if err == nil {
++			owner.unlock()
++			_, status, statErr := systemRouteProcessStat(process.Process.Pid)
++			// SIGKILL delivery releases files slightly before /proc transitions
++			// to Z. Wait for confirmed death, but deliberately do not reap.
++			if os.IsNotExist(statErr) || statErr == nil && (status == "Z" || status == "X") {
++				break
++			}
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("killed owner retained lock: %v", err)
++		}
++		time.Sleep(time.Millisecond)
++	}
++	return process
++}
++func testSystemRouteJournalCrashOwner(t *testing.T, stage string) {
++	o := journalTestOptions()
++	bypass, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, o)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if stage == "partial" {
++		plan, err := systemRoutePlan(o, 17)
++		if err != nil {
++			t.Fatal(err)
++		}
++		count := 0
++		for _, rule := range plan {
++			if rule.Priority == o.IPRoute2RuleIndex-1 {
++				continue
++			}
++			if err := netlink.RuleAdd(rule); err != nil {
++				t.Fatal(err)
++			}
++			count++
++			if count == 3 {
++				break
++			}
++		}
++	} else if stage == "plan" || stage == "full" {
++		device, err := tun.New(o)
++		if err != nil {
++			t.Fatal(err)
++		}
++		if stage == "full" {
++			if err := recordSystemRouteOwnedRules(journalTestListener(o, bypass, device)); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++	if err := os.WriteFile(filepath.Join(C.Path.HomeDir(), "ready"), []byte("ready"), 0600); err != nil {
++		t.Fatal(err)
++	}
++	select {}
++}
+diff --git a/listener/sing_tun/system_route_journal_rejection_linux_test.go b/listener/sing_tun/system_route_journal_rejection_linux_test.go
+new file mode 100644
+index 0000000..e002e49
+--- /dev/null
++++ b/listener/sing_tun/system_route_journal_rejection_linux_test.go
+@@ -0,0 +1,204 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"encoding/json"
++	"os"
++	"reflect"
++	"testing"
++
++	C "github.com/metacubex/mihomo/constant"
++	LC "github.com/metacubex/mihomo/listener/config"
++	"github.com/sagernet/netlink"
++	"github.com/sagernet/netlink/nl"
++	"golang.org/x/sys/unix"
++)
++
++func testSystemRouteJournalRejections(t *testing.T, baseline []netlink.Rule) {
++	t.Run("live-owner-across-home", func(t *testing.T) {
++		o := journalTestOptions()
++		bypass, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, o)
++		if err != nil {
++			t.Fatal(err)
++		}
++		home := C.Path.HomeDir()
++		C.SetHomeDir(t.TempDir())
++		duplicate, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, o)
++		C.SetHomeDir(home)
++		if err == nil {
++			_ = duplicate.Close()
++			t.Fatal("live namespace owner accepted in different home")
++		}
++		if err := bypass.Close(); err != nil {
++			t.Fatal(err)
++		}
++		journalTestAssertClean(t, baseline)
++	})
++	for _, change := range []string{"extra-v6", "action", "protocol", "corrupt", "namespace", "boot"} {
++		t.Run("reject-"+change, func(t *testing.T) {
++			process := journalTestCrash(t, "full")
++			defer process.Wait()
++			paths, err := systemRouteJournalPaths()
++			if err != nil || len(paths) != 1 {
++				t.Fatalf("journal: %v %v", paths, err)
++			}
++			data, err := os.ReadFile(paths[0])
++			if err != nil {
++				t.Fatal(err)
++			}
++			originalData := append([]byte(nil), data...)
++			var state systemRouteJournal
++			if err := json.Unmarshal(data, &state); err != nil {
++				t.Fatal(err)
++			}
++			var undo func()
++			if change == "extra-v6" {
++				rule := netlink.NewRule()
++				rule.Family, rule.Priority, rule.Table = unix.AF_INET6, 12005, 201
++				if err := netlink.RuleAdd(rule); err != nil {
++					t.Fatal(err)
++				}
++				undo = func() {
++					if err := netlink.RuleDel(rule); err != nil {
++						t.Fatal(err)
++					}
++				}
++			} else if change == "action" || change == "protocol" {
++				rules, err := systemRouteKernelRules()
++				if err != nil {
++					t.Fatal(err)
++				}
++				var original systemRouteKernelRule
++				for _, rule := range rules {
++					if rule.family == unix.AF_INET && rule.priority == 12010 {
++						original = rule
++						break
++					}
++				}
++				if original.fingerprint == "" {
++					t.Fatal("NOP missing")
++				}
++				if err := deleteSystemRouteRaw(original); err != nil {
++					t.Fatal(err)
++				}
++				raw := []byte(original.fingerprint)
++				if change == "action" {
++					raw[7] = unix.FR_ACT_BLACKHOLE
++				} else {
++					// FRA_PROTOCOL is kept in canonical identity, never inferred from RuleList.
++					for i := 12; i+4 <= len(raw); {
++						length := int(raw[i]) | int(raw[i+1])<<8
++						key := int(raw[i+2]) | int(raw[i+3])<<8
++						if key == 21 {
++							raw[i+4] = 99
++							break
++						}
++						i += (length + 3) &^ 3
++					}
++				}
++				if err := journalTestAddRaw(raw); err != nil {
++					t.Fatal(err)
++				}
++				changed := original
++				changed.fingerprint = string(raw)
++				undo = func() {
++					if err := deleteSystemRouteRaw(changed); err != nil {
++						t.Fatal(err)
++					}
++					if err := journalTestAddRaw([]byte(original.fingerprint)); err != nil {
++						t.Fatal(err)
++					}
++				}
++			} else {
++				switch change {
++				case "corrupt":
++					data = []byte("invalid")
++				case "namespace":
++					state.Namespace = "other"
++					data, _ = json.Marshal(state)
++				case "boot":
++					state.BootID = "other-boot"
++					data, _ = json.Marshal(state)
++				}
++				if err := os.WriteFile(paths[0], data, 0600); err != nil {
++					t.Fatal(err)
++				}
++				undo = func() {
++					if err := os.WriteFile(paths[0], originalData, 0600); err != nil {
++						t.Fatal(err)
++					}
++				}
++			}
++			before := systemRouteRuleSnapshot(t)
++			rawBefore, err := systemRouteKernelRules()
++			if err != nil {
++				t.Fatal(err)
++			}
++			if err := CleanupSystemRouteJournal(LC.Tun{}); err == nil {
++				t.Fatal("unsafe recovery accepted")
++			}
++			rawAfter, err := systemRouteKernelRules()
++			if err != nil {
++				t.Fatal(err)
++			}
++			if !reflect.DeepEqual(before, systemRouteRuleSnapshot(t)) || !reflect.DeepEqual(rawBefore, rawAfter) {
++				t.Fatal("rejected recovery changed kernel rules")
++			}
++			undo()
++			if err := CleanupSystemRouteJournal(LC.Tun{}); err != nil {
++				t.Fatal(err)
++			}
++			journalTestAssertClean(t, baseline)
++		})
++	}
++	t.Run("single-family-cold-hot-other-family", func(t *testing.T) {
++		o := journalTestOptions()
++		o.Inet6Address = nil
++		user := netlink.NewRule()
++		user.Family, user.Priority, user.Table = unix.AF_INET6, 12005, 201
++		if err := netlink.RuleAdd(user); err != nil {
++			t.Fatal(err)
++		}
++		before := systemRouteRuleSnapshot(t)
++		if bypass, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, o); err == nil {
++			_ = bypass.Close()
++			t.Fatal("v4 startup accepted owned-window IPv6 rule")
++		}
++		if !reflect.DeepEqual(before, systemRouteRuleSnapshot(t)) {
++			t.Fatal("cold reject changed IPv6 user rule")
++		}
++		if err := netlink.RuleDel(user); err != nil {
++			t.Fatal(err)
++		}
++		active := journalTestOpen(t, o)
++		if err := netlink.RuleAdd(user); err != nil {
++			t.Fatal(err)
++		}
++		before = systemRouteRuleSnapshot(t)
++		replacement := active.options
++		replacement.IPRoute2RuleIndex = 13000
++		if err := active.CheckSystemRouteReplacement(replacement); err == nil {
++			t.Fatal("changed-index reload accepted old-window IPv6 rule")
++		}
++		replacement.Enable = false
++		if err := active.CheckSystemRouteReplacement(replacement); err == nil {
++			t.Fatal("disable accepted old-window IPv6 rule")
++		}
++		if !reflect.DeepEqual(before, systemRouteRuleSnapshot(t)) {
++			t.Fatal("hot reject changed IPv6 user rule")
++		}
++		if err := netlink.RuleDel(user); err != nil {
++			t.Fatal(err)
++		}
++		journalTestClose(t, active)
++		journalTestAssertClean(t, baseline)
++	})
++}
++
++func journalTestAddRaw(raw []byte) error {
++	req := nl.NewNetlinkRequest(unix.RTM_NEWRULE, unix.NLM_F_CREATE|unix.NLM_F_EXCL|unix.NLM_F_ACK)
++	req.AddData(systemRouteRawMessage(raw))
++	_, err := req.Execute(unix.NETLINK_ROUTE, 0)
++	return err
++}
+diff --git a/listener/sing_tun/system_route_linux.go b/listener/sing_tun/system_route_linux.go
+new file mode 100644
+index 0000000..459b028
+--- /dev/null
++++ b/listener/sing_tun/system_route_linux.go
+@@ -0,0 +1,181 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"errors"
++	"fmt"
++	"io"
++	"sync"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++	"github.com/sagernet/netlink"
++	"golang.org/x/sys/unix"
++)
++
++// sing-tun v0.4.28's NativeTun.rules reserves [IPRoute2RuleIndex,
++// IPRoute2RuleIndex+10], including its final no-op rule. Its unsetRules uses
++// exactly the same interval. Keep this boundary in sync when updating that
++// dependency; the integration test creates a real TUN and checks its rules.
++// Jump to its final no-op rule, so user policy rules after it still apply.
++// The target must exist: Linux leaves a goto to an absent priority unresolved.
++
++type systemRouteBypass struct {
++	mu      sync.Mutex
++	rules   []*netlink.Rule
++	journal *systemRouteJournalOwner
++}
++
++func newSystemRouteBypass(options LC.Tun, tunOptions tun.Options) (io.Closer, error) {
++	if options.SystemRouteMark == 0 {
++		return nil, cleanupSystemRouteJournal(options)
++	}
++	if !tunOptions.AutoRoute || options.AutoRedirect || options.FileDescriptor != 0 {
++		return nil, errors.New("system-route-mark requires auto-route without auto-redirect or file-descriptor")
++	}
++	start := tunOptions.IPRoute2RuleIndex
++	if start <= 1 || start > 32765-systemRouteRuleWindow {
++		return nil, errors.New("system-route-mark requires a rule index between 2 and 32755")
++	}
++	plan, err := systemRoutePlan(tunOptions, options.SystemRouteMark)
++	if err != nil {
++		return nil, err
++	}
++	if len(plan) == 0 {
++		return nil, cleanupSystemRouteJournal(options)
++	}
++	owner, err := prepareSystemRouteJournal(tunOptions, plan)
++	if err != nil {
++		return nil, err
++	}
++	bypass := &systemRouteBypass{journal: owner}
++	families := make([]int, 0, 2)
++	if len(tunOptions.Inet4Address) > 0 {
++		families = append(families, unix.AF_INET)
++	}
++	if len(tunOptions.Inet6Address) > 0 {
++		families = append(families, unix.AF_INET6)
++	}
++	for _, family := range families {
++		rule := netlink.NewRule()
++		rule.Family = family
++		rule.Priority = start - 1
++		rule.Mark = options.SystemRouteMark
++		rule.MarkSet = true
++		exactMask := ^uint32(0)
++		rule.Mask = int(exactMask) // -1 on 32-bit: the kernel's exact default mask.
++		rule.Goto = start + systemRouteRuleWindow
++		if err := netlink.RuleAdd(rule); err != nil {
++			return nil, errors.Join(err, bypass.Close())
++		}
++		bypass.rules = append(bypass.rules, rule)
++	}
++	return bypass, nil
++}
++
++func checkSystemRouteRules(rules []netlink.Rule, start int) error {
++	for _, rule := range rules {
++		if rule.Priority >= start-1 && rule.Priority <= start+systemRouteRuleWindow {
++			return fmt.Errorf("routing rule priority %d is already in use", rule.Priority)
++		}
++	}
++	return nil
++}
++
++func recordSystemRouteOwnedRules(l *Listener) error {
++	if !l.options.AutoRoute || l.options.AutoRedirect || l.options.FileDescriptor != 0 {
++		return nil
++	}
++	start := l.options.IPRoute2RuleIndex
++	if start == 0 {
++		start = tun.DefaultIPRoute2RuleIndex
++	}
++	rules, err := systemRouteKernelRules()
++	if err != nil {
++		if l.options.SystemRouteMark != 0 {
++			return err
++		}
++		return nil
++	}
++	owned := make([]systemRouteKernelRule, 0)
++	for _, rule := range rules {
++		if (rule.family == unix.AF_INET || rule.family == unix.AF_INET6) &&
++			(rule.priority >= start && rule.priority <= start+systemRouteRuleWindow ||
++				(l.options.SystemRouteMark != 0 && rule.priority == start-1)) {
++			owned = append(owned, rule)
++		}
++	}
++	l.systemRouteOwnedRules = owned
++	if bypass, ok := l.systemRouteBypass.(*systemRouteBypass); ok {
++		return bypass.finishJournal(owned)
++	}
++	return nil
++}
++
++// CheckSystemRouteReplacement runs before the old listener is closed. Ignore
++// only its exact kernel-rule snapshot, so external modifications or a new
++// conflicting user rule fail without disrupting the existing listener.
++func (l *Listener) CheckSystemRouteReplacement(options LC.Tun) error {
++	if options.SystemRouteMark == 0 && l.options.SystemRouteMark == 0 {
++		return nil
++	}
++	if options.Enable && options.SystemRouteMark != 0 && (!options.AutoRoute || options.AutoRedirect || options.FileDescriptor != 0) {
++		return errors.New("system-route-mark requires auto-route without auto-redirect or file-descriptor")
++	}
++	start := options.IPRoute2RuleIndex
++	if start == 0 {
++		start = tun.DefaultIPRoute2RuleIndex
++	}
++	if start <= 1 || start > 32765-systemRouteRuleWindow {
++		return errors.New("system-route-mark requires a rule index between 2 and 32755")
++	}
++	rules, err := systemRouteKernelRules()
++	if err != nil {
++		return err
++	}
++	oldStart := l.options.IPRoute2RuleIndex
++	if oldStart == 0 {
++		oldStart = tun.DefaultIPRoute2RuleIndex
++	}
++	owned, _ := l.systemRouteOwnedRules.([]systemRouteKernelRule)
++	remaining := make(map[systemRouteKernelRule]int, len(owned))
++	for _, rule := range owned {
++		remaining[rule]++
++	}
++	for _, rule := range rules {
++		if remaining[rule] > 0 {
++			remaining[rule]--
++			continue
++		}
++		if (rule.family == unix.AF_INET || rule.family == unix.AF_INET6) &&
++			((rule.priority >= start-1 && rule.priority <= start+systemRouteRuleWindow) ||
++				(rule.priority >= oldStart-1 && rule.priority <= oldStart+systemRouteRuleWindow)) {
++			return fmt.Errorf("routing rule priority %d is already in use", rule.priority)
++		}
++	}
++	return nil
++}
++
++func (b *systemRouteBypass) Close() error {
++	b.mu.Lock()
++	defer b.mu.Unlock()
++	if b.journal != nil {
++		err := b.journal.recover(&b.journal.state)
++		err = errors.Join(err, b.journal.unlock())
++		b.journal = nil
++		b.rules = nil
++		return err
++	}
++	var errs []error
++	remaining := b.rules[:0]
++	for _, rule := range b.rules {
++		// Delete the full selector we added, never a priority-only match.
++		if err := netlink.RuleDel(rule); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ESRCH) {
++			errs = append(errs, err)
++			remaining = append(remaining, rule)
++		}
++	}
++	b.rules = remaining
++	return errors.Join(errs...)
++}
+diff --git a/listener/sing_tun/system_route_linux_test.go b/listener/sing_tun/system_route_linux_test.go
+new file mode 100644
+index 0000000..7d56fb4
+--- /dev/null
++++ b/listener/sing_tun/system_route_linux_test.go
+@@ -0,0 +1,67 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"testing"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++	"github.com/sagernet/netlink"
++)
++
++func TestSystemRouteRuleConflicts(t *testing.T) {
++	for _, tc := range []struct {
++		name string
++		rule func() netlink.Rule
++		want bool
++	}{
++		{"ordinary-main", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 32766; r.Table = 254; return *r }, false},
++		{"later-user-policy", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 12000; r.Table = 201; return *r }, false},
++		{"same-mark", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 100; r.Mark = 17; return *r }, false},
++		{"overlap-mask", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 100; r.Mark = 16; r.Mask = 0xf0; return *r }, false},
++		{"other-mark", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 100; r.Mark = 1; return *r }, false},
++		{"zero-mark-mask", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 100; r.Mask = 0xf0; return *r }, false},
++		{"inverted-mark", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 100; r.Mark = 1; r.Invert = true; return *r }, false},
++		{"bypass-priority", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 8999; return *r }, true},
++		{"tun-priority", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 9005; return *r }, true},
++		{"last-tun-priority", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 9010; return *r }, true},
++		{"first-later-priority", func() netlink.Rule { r := netlink.NewRule(); r.Priority = 9011; return *r }, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			err := checkSystemRouteRules([]netlink.Rule{tc.rule()}, 9000)
++			if (err != nil) != tc.want {
++				t.Fatalf("checkSystemRouteRules error = %v, want conflict = %v", err, tc.want)
++			}
++		})
++	}
++}
++
++func TestSystemRouteOptionsValidation(t *testing.T) {
++	if closer, err := newSystemRouteBypass(LC.Tun{}, tun.Options{}); err != nil || closer != nil {
++		t.Fatalf("disabled feature changed behavior: %v %v", closer, err)
++	}
++	for _, tc := range []struct {
++		name string
++		raw  LC.Tun
++		tun  tun.Options
++	}{
++		{"no-auto-route", LC.Tun{SystemRouteMark: 17}, tun.Options{IPRoute2RuleIndex: 9000}},
++		{"auto-redirect", LC.Tun{SystemRouteMark: 17, AutoRedirect: true}, tun.Options{AutoRoute: true, IPRoute2RuleIndex: 9000}},
++		{"borrowed-fd", LC.Tun{SystemRouteMark: 17, FileDescriptor: 1}, tun.Options{AutoRoute: true, IPRoute2RuleIndex: 9000}},
++		{"too-low", LC.Tun{SystemRouteMark: 17}, tun.Options{AutoRoute: true, IPRoute2RuleIndex: 1}},
++		{"too-high", LC.Tun{SystemRouteMark: 17}, tun.Options{AutoRoute: true, IPRoute2RuleIndex: 32756}},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			if _, err := newSystemRouteBypass(tc.raw, tc.tun); err == nil {
++				t.Fatal("unsafe combination accepted")
++			}
++		})
++	}
++	base := LC.Tun{}
++	changed := base
++	changed.SystemRouteMark = 17
++	if base.Equal(changed) || changed.Equal(base) {
++		t.Fatal("changing system-route-mark did not trigger TUN recreation")
++	}
++}
+diff --git a/listener/sing_tun/system_route_namespace_linux_test.go b/listener/sing_tun/system_route_namespace_linux_test.go
+new file mode 100644
+index 0000000..c8f78d2
+--- /dev/null
++++ b/listener/sing_tun/system_route_namespace_linux_test.go
+@@ -0,0 +1,313 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"bytes"
++	"context"
++	"fmt"
++	"net"
++	"net/netip"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"reflect"
++	"strings"
++	"syscall"
++	"testing"
++	"time"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++	"github.com/sagernet/netlink"
++	"golang.org/x/sys/unix"
++)
++
++func TestSystemRouteBypassNamespace(t *testing.T) {
++	if os.Getenv("MIHOMO_SYSTEM_ROUTE_CHILD") == "1" {
++		testSystemRoutePackets(t)
++		return
++	}
++	if os.Getenv("MIHOMO_TUN_RULES_INTEGRATION") != "1" {
++		t.Skip("set MIHOMO_TUN_RULES_INTEGRATION=1 in an isolated CAP_NET_ADMIN/CAP_SYS_ADMIN container")
++	}
++	if os.Geteuid() != 0 {
++		t.Fatal("namespace integration requires root")
++	}
++	mainNS, peerNS := fmt.Sprintf("msm-sys-%d", os.Getpid()), fmt.Sprintf("msm-peer-%d", os.Getpid())
++	command := func(args ...string) {
++		t.Helper()
++		if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil {
++			t.Fatalf("%v: %v: %s", args, err, out)
++		}
++	}
++	for _, ns := range []string{mainNS, peerNS} {
++		command("ip", "netns", "add", ns)
++		ns := ns
++		t.Cleanup(func() { _ = exec.Command("ip", "netns", "del", ns).Run() })
++		command("ip", "-n", ns, "link", "set", "lo", "up")
++		command("ip", "netns", "exec", ns, "sysctl", "-qw", "net.ipv4.conf.all.rp_filter=0", "net.ipv4.conf.default.rp_filter=0")
++	}
++	command("ip", "-n", mainNS, "link", "add", "sysroute0", "type", "veth", "peer", "name", "sysroute1")
++	command("ip", "-n", mainNS, "link", "set", "sysroute1", "netns", peerNS)
++	for _, endpoint := range []struct{ ns, dev, v4, v6 string }{
++		{mainNS, "sysroute0", "10.70.0.1/24", "fd70::1/64"},
++		{peerNS, "sysroute1", "10.70.0.2/24", "fd70::2/64"},
++	} {
++		command("ip", "-n", endpoint.ns, "addr", "add", endpoint.v4, "dev", endpoint.dev)
++		command("ip", "-n", endpoint.ns, "addr", "add", endpoint.v6, "dev", endpoint.dev, "nodad")
++		command("ip", "-n", endpoint.ns, "link", "set", endpoint.dev, "up")
++	}
++	command("ip", "-n", peerNS, "addr", "add", "203.0.113.10/32", "dev", "lo")
++	command("ip", "-n", peerNS, "addr", "add", "2001:db8:70::10/128", "dev", "lo", "nodad")
++	// A dead main default makes the later user policy necessary to reach the
++	// peer; forcing marked traffic straight to main would fail this test.
++	command("ip", "-n", mainNS, "route", "add", "default", "via", "10.70.0.254")
++	command("ip", "-n", mainNS, "-6", "route", "add", "default", "via", "fd70::fe")
++	for _, family := range []struct{ flag, destination, gateway string }{
++		{"-4", "203.0.113.10/32", "10.70.0.2"},
++		{"-6", "2001:db8:70::10/128", "fd70::2"},
++	} {
++		command("ip", "-n", mainNS, family.flag, "route", "add", "table", "201", family.destination, "via", family.gateway, "dev", "sysroute0")
++		command("ip", "-n", mainNS, family.flag, "rule", "add", "priority", "10020", "fwmark", "17", "to", family.destination, "lookup", "201")
++	}
++	peerCode := `import pathlib, socket, sys, threading, time
++def echo(s):
++ while True:
++  data,peer=s.recvfrom(2048);s.sendto(data,peer)
++for family,address in [(socket.AF_INET,'203.0.113.10'),(socket.AF_INET6,'2001:db8:70::10')]:
++ s=socket.socket(family,socket.SOCK_DGRAM)
++ if family==socket.AF_INET6:s.setsockopt(socket.IPPROTO_IPV6,socket.IPV6_V6ONLY,1)
++ s.bind((address,19090))
++ threading.Thread(target=echo,args=(s,),daemon=True).start()
++pathlib.Path(sys.argv[1]).write_text('ready')
++time.sleep(60)
++`
++	readyPath := filepath.Join(t.TempDir(), "peer-ready")
++	peer := exec.Command("ip", "netns", "exec", peerNS, "python3", "-c", peerCode, readyPath)
++	var peerLog bytes.Buffer
++	peer.Stdout, peer.Stderr = &peerLog, &peerLog
++	if err := peer.Start(); err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() { _ = peer.Process.Kill(); _ = peer.Wait() })
++	for deadline := time.Now().Add(3 * time.Second); ; {
++		if _, err := os.Stat(readyPath); err == nil {
++			break
++		}
++		if time.Now().After(deadline) {
++			t.Fatal("UDP peer did not become ready")
++		}
++		time.Sleep(5 * time.Millisecond)
++	}
++	executable, err := os.Executable()
++	if err != nil {
++		t.Fatal(err)
++	}
++	child := exec.Command("ip", "netns", "exec", mainNS, executable, "-test.run=^TestSystemRouteBypassNamespace$", "-test.v", "-test.timeout=30s")
++	child.Env = append(os.Environ(), "MIHOMO_SYSTEM_ROUTE_CHILD=1")
++	if out, err := child.CombinedOutput(); err != nil {
++		t.Fatalf("namespace test: %v\n%s\npeer: %s", err, out, peerLog.String())
++	} else {
++		t.Log(string(out))
++	}
++}
++
++func testSystemRoutePackets(t *testing.T) {
++	const start = 10000
++	options := tun.Options{
++		Name: "system_route", MTU: 1500, AutoRoute: true,
++		IPRoute2TableIndex: 2022, IPRoute2RuleIndex: start,
++		Inet4Address:      []netip.Prefix{netip.MustParsePrefix("198.18.0.1/30")},
++		Inet6Address:      []netip.Prefix{netip.MustParsePrefix("fdfe:abcd::1/126")},
++		Inet4RouteAddress: []netip.Prefix{netip.MustParsePrefix("203.0.113.10/32")},
++		Inet6RouteAddress: []netip.Prefix{netip.MustParsePrefix("2001:db8:70::10/128")},
++	}
++	baseline := systemRouteRuleSnapshot(t)
++	for iteration := 0; iteration < 3; iteration++ {
++		bypass, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, options)
++		if err != nil {
++			t.Fatal(err)
++		}
++		// A second owner cannot reuse or delete the first owner's rules.
++		if duplicate, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, options); err == nil {
++			_ = duplicate.Close()
++			t.Fatal("duplicate mark owner accepted")
++		}
++		device, err := tun.New(options)
++		if err != nil {
++			_ = bypass.Close()
++			t.Fatal(err)
++		}
++		activeOptions := LC.Tun{Enable: true, AutoRoute: true, SystemRouteMark: 17, IPRoute2RuleIndex: start,
++			Inet4Address: options.Inet4Address, Inet6Address: options.Inet6Address}
++		active := &Listener{options: activeOptions, tunIf: device, systemRouteBypass: bypass}
++		if err := recordSystemRouteOwnedRules(active); err != nil {
++			t.Fatal(err)
++		}
++		if err := active.CheckSystemRouteReplacement(activeOptions); err != nil {
++			t.Fatal("own rules incorrectly rejected on hot reload:", err)
++		}
++		conflict := netlink.NewRule()
++		conflict.Family, conflict.Priority, conflict.Table = unix.AF_INET, start+5, 201
++		if err := netlink.RuleAdd(conflict); err != nil {
++			t.Fatal(err)
++		}
++		before := systemRouteRuleSnapshot(t)
++		if err := active.CheckSystemRouteReplacement(activeOptions); err == nil {
++			t.Fatal("hot reload preflight accepted conflicting user rule")
++		}
++		if after := systemRouteRuleSnapshot(t); !reflect.DeepEqual(before, after) {
++			t.Fatal("hot reload preflight disrupted active rules")
++		}
++		if err := netlink.RuleDel(conflict); err != nil {
++			t.Fatal(err)
++		}
++		for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
++			rules, err := netlink.RuleList(family)
++			if err != nil {
++				t.Fatal(err)
++			}
++			foundLast, foundBypass := false, false
++			for _, rule := range rules {
++				if rule.Priority == start+systemRouteRuleWindow {
++					foundLast = true
++				}
++				if rule.Priority == start-1 && rule.Mark == 17 && uint32(rule.Mask) == ^uint32(0) && rule.Goto == start+systemRouteRuleWindow {
++					foundBypass = true
++				}
++				if rule.Table == options.IPRoute2TableIndex && (rule.Priority < start || rule.Priority > start+systemRouteRuleWindow) {
++					t.Fatalf("sing-tun dependency changed rule window: %#v", rule)
++				}
++			}
++			if !foundLast || !foundBypass {
++				t.Fatalf("missing sing-tun boundary or exact bypass rule: %#v", rules)
++			}
++		}
++		captured := make(chan netip.Addr, 16)
++		go func() {
++			packet := make([]byte, 2048)
++			for {
++				n, err := device.Read(packet)
++				if err != nil {
++					return
++				}
++				var destination netip.Addr
++				if n >= 20 && packet[0]>>4 == 4 {
++					destination = netip.AddrFrom4([4]byte(packet[16:20]))
++				} else if n >= 40 && packet[0]>>4 == 6 {
++					destination = netip.AddrFrom16([16]byte(packet[24:40]))
++				}
++				select {
++				case captured <- destination:
++				default:
++				}
++			}
++		}()
++		for _, target := range []string{"203.0.113.10", "2001:db8:70::10"} {
++			testSystemRouteUDP(t, target, 17, true)
++			testSystemRouteUDP(t, target, 0, false)
++			deadline := time.After(time.Second)
++			found := false
++			for !found {
++				select {
++				case destination := <-captured:
++					found = destination.String() == target
++				case <-deadline:
++					t.Fatalf("unmarked packet to %s did not enter TUN", target)
++				}
++			}
++		}
++		if err := device.Close(); err != nil {
++			t.Fatal(err)
++		}
++		if err := bypass.Close(); err != nil {
++			t.Fatal(err)
++		}
++		if err := bypass.Close(); err != nil {
++			t.Fatal("duplicate cleanup:", err)
++		}
++		if current := systemRouteRuleSnapshot(t); !reflect.DeepEqual(baseline, current) {
++			t.Fatalf("rules leaked or user policy changed after restart %d:\nbefore=%#v\nafter=%#v", iteration, baseline, current)
++		}
++	}
++	// A real TUN creation failure still rolls back only our preparatory rules.
++	bypass, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, options)
++	if err != nil {
++		t.Fatal(err)
++	}
++	invalid := options
++	invalid.Name = "invalid/tun/name"
++	if device, err := tun.New(invalid); err == nil {
++		_ = device.Close()
++		t.Fatal("invalid device name was accepted")
++	}
++	if err := bypass.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if current := systemRouteRuleSnapshot(t); !reflect.DeepEqual(baseline, current) {
++		t.Fatal("pre-start rollback changed user rules")
++	}
++	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
++		for _, priority := range []int{start - 1, start + 5} {
++			rule := netlink.NewRule()
++			rule.Family, rule.Priority, rule.Table = family, priority, 201
++			if priority == start-1 {
++				rule.Mark, rule.MarkSet = 17, true
++			}
++			if err := netlink.RuleAdd(rule); err != nil {
++				t.Fatal(err)
++			}
++			before := systemRouteRuleSnapshot(t)
++			if added, err := newSystemRouteBypass(LC.Tun{SystemRouteMark: 17}, options); err == nil {
++				_ = added.Close()
++				t.Fatal("conflicting user rule accepted")
++			}
++			if after := systemRouteRuleSnapshot(t); !reflect.DeepEqual(before, after) {
++				t.Fatal("failed preflight modified user's rules")
++			}
++			if err := netlink.RuleDel(rule); err != nil {
++				t.Fatal(err)
++			}
++		}
++	}
++}
++
++func systemRouteRuleSnapshot(t *testing.T) []netlink.Rule {
++	t.Helper()
++	rules, err := netlink.RuleList(unix.AF_UNSPEC)
++	if err != nil {
++		t.Fatal(err)
++	}
++	return rules
++}
++
++func testSystemRouteUDP(t *testing.T, target string, mark int, wantEcho bool) {
++	t.Helper()
++	dialer := net.Dialer{Timeout: time.Second, Control: func(_, _ string, raw syscall.RawConn) error {
++		var inner error
++		err := raw.Control(func(fd uintptr) { inner = unix.SetsockoptInt(int(fd), unix.SOL_SOCKET, unix.SO_MARK, mark) })
++		if err != nil {
++			return err
++		}
++		return inner
++	}}
++	conn, err := dialer.DialContext(context.Background(), "udp", net.JoinHostPort(target, "19090"))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	_ = conn.SetDeadline(time.Now().Add(500 * time.Millisecond))
++	payload := []byte("system-route-mark-integration")
++	if _, err := conn.Write(payload); err != nil {
++		t.Fatal(err)
++	}
++	buffer := make([]byte, 2048)
++	n, err := conn.Read(buffer)
++	if wantEcho && (err != nil || !strings.EqualFold(string(buffer[:n]), string(payload))) {
++		t.Fatalf("marked %s did not follow later user route: %v %q", target, err, buffer[:n])
++	}
++	if !wantEcho && err == nil {
++		t.Fatalf("unmarked %s bypassed TUN", target)
++	}
++}
+diff --git a/listener/sing_tun/system_route_options_linux.go b/listener/sing_tun/system_route_options_linux.go
+new file mode 100644
+index 0000000..193608e
+--- /dev/null
++++ b/listener/sing_tun/system_route_options_linux.go
+@@ -0,0 +1,32 @@
++package sing_tun
++
++import (
++	"errors"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++)
++
++// sing-tun v0.4.28 reserves the final NOP at start+10. Keep the dependency
++// namespace gates in sync when changing the pinned version.
++const systemRouteRuleWindow = 10
++
++// ValidateSystemRouteOptions also runs in fresh -t processes, before there is
++// any live listener or kernel state. Invalid combinations must not pass the
++// manager's preflight and fail only after it has stopped a working core.
++func ValidateSystemRouteOptions(options LC.Tun) error {
++	if !options.Enable || options.SystemRouteMark == 0 {
++		return nil
++	}
++	if !options.AutoRoute || options.AutoRedirect || options.FileDescriptor != 0 {
++		return errors.New("system-route-mark requires auto-route without auto-redirect or file-descriptor")
++	}
++	index := options.IPRoute2RuleIndex
++	if index == 0 {
++		index = tun.DefaultIPRoute2RuleIndex
++	}
++	if index <= 1 || index > 32765-systemRouteRuleWindow {
++		return errors.New("system-route-mark requires a rule index between 2 and 32755")
++	}
++	return nil
++}
+diff --git a/listener/sing_tun/system_route_options_other_test.go b/listener/sing_tun/system_route_options_other_test.go
+new file mode 100644
+index 0000000..6f13bcb
+--- /dev/null
++++ b/listener/sing_tun/system_route_options_other_test.go
+@@ -0,0 +1,36 @@
++//go:build !linux
++
++package sing_tun
++
++import (
++	"strings"
++	"testing"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++)
++
++func TestSystemRouteNonLinuxStaticValidation(t *testing.T) {
++	for _, tc := range []struct {
++		name    string
++		options LC.Tun
++		wantErr bool
++	}{
++		{"marked-enabled", LC.Tun{Enable: true, AutoRoute: true, SystemRouteMark: 17}, true},
++		{"marked-disabled", LC.Tun{Enable: false, SystemRouteMark: 17}, false},
++		{"ordinary-enabled", LC.Tun{Enable: true}, false},
++		{"ordinary-disabled", LC.Tun{}, false},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			err := ValidateSystemRouteOptions(tc.options)
++			if (err != nil) != tc.wantErr {
++				t.Fatalf("preflight error=%v wantErr=%v", err, tc.wantErr)
++			}
++			if replacementErr := (&Listener{}).CheckSystemRouteReplacement(tc.options); (replacementErr != nil) != tc.wantErr {
++				t.Fatalf("replacement error=%v wantErr=%v", replacementErr, tc.wantErr)
++			}
++			if tc.wantErr && !strings.Contains(err.Error(), "only supported on Linux") {
++				t.Fatalf("unclear platform error: %v", err)
++			}
++		})
++	}
++}
+diff --git a/listener/sing_tun/system_route_other.go b/listener/sing_tun/system_route_other.go
+new file mode 100644
+index 0000000..e94c8be
+--- /dev/null
++++ b/listener/sing_tun/system_route_other.go
+@@ -0,0 +1,35 @@
++//go:build !linux
++
++package sing_tun
++
++import (
++	"errors"
++	"io"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++)
++
++// ValidateSystemRouteOptions rejects unsupported marked TUN configurations
++// during cold -t preflight, before a manager stops any running core.
++func ValidateSystemRouteOptions(options LC.Tun) error {
++	if options.Enable && options.SystemRouteMark != 0 {
++		return errors.New("system-route-mark is only supported on Linux")
++	}
++	return nil
++}
++
++func newSystemRouteBypass(options LC.Tun, _ tun.Options) (io.Closer, error) {
++	if options.SystemRouteMark != 0 {
++		return nil, errors.New("system-route-mark is only supported on Linux")
++	}
++	return nil, nil
++}
++
++func recordSystemRouteOwnedRules(_ *Listener) error { return nil }
++
++func (l *Listener) CheckSystemRouteReplacement(options LC.Tun) error {
++	return ValidateSystemRouteOptions(options)
++}
++
++func CleanupSystemRouteJournal(_ LC.Tun) error { return nil }
+diff --git a/listener/sing_tun/system_route_plan_linux.go b/listener/sing_tun/system_route_plan_linux.go
+new file mode 100644
+index 0000000..375b23e
+--- /dev/null
++++ b/listener/sing_tun/system_route_plan_linux.go
+@@ -0,0 +1,166 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"fmt"
++	"net/netip"
++
++	tun "github.com/metacubex/sing-tun"
++	"github.com/sagernet/netlink"
++	"golang.org/x/sys/unix"
++)
++
++// A write-ahead plan for the supported Linux auto-route branch of pinned
++// sing-tun v0.4.28 NativeTun.rules. The namespace gate compares this plan with
++// the actual kernel rules, including every selector/action/protocol, so a
++// dependency change cannot silently broaden recovery ownership.
++func systemRoutePlan(o tun.Options, mark uint32) ([]*netlink.Rule, error) {
++	if !o.AutoRoute || o.AutoRedirectMarkMode || o.FileDescriptor != 0 {
++		return nil, fmt.Errorf("unsupported system-route rule plan")
++	}
++	var rules []*netlink.Rule
++	families := []int{}
++	if len(o.Inet4Address) > 0 {
++		families = append(families, unix.AF_INET)
++	}
++	if len(o.Inet6Address) > 0 {
++		families = append(families, unix.AF_INET6)
++	}
++	if len(families) == 0 {
++		return nil, nil
++	}
++	for _, family := range families {
++		p := o.IPRoute2RuleIndex
++		nop := p + systemRouteRuleWindow
++		add := func() *netlink.Rule {
++			r := netlink.NewRule()
++			r.Family = family
++			r.Priority = p
++			rules = append(rules, r)
++			return r
++		}
++		r := add()
++		r.Priority = p - 1
++		r.Mark = mark
++		r.MarkSet = true
++		exactMask := ^uint32(0)
++		r.Mask = int(exactMask)
++		r.Goto = nop
++		for _, port := range o.ExcludeSrcPort {
++			r := add()
++			r.Sport = netlink.NewRulePortRange(port.Start, port.End)
++			r.Goto = nop
++		}
++		for _, port := range o.ExcludeDstPort {
++			r := add()
++			r.Dport = netlink.NewRulePortRange(port.Start, port.End)
++			r.Goto = nop
++		}
++		excluded := o.ExcludedRanges()
++		for _, ids := range excluded {
++			r := add()
++			r.UIDRange = netlink.NewRuleUIDRange(ids.Start, ids.End)
++			r.Goto = nop
++		}
++		if len(o.ExcludeSrcPort)+len(o.ExcludeDstPort)+len(excluded) > 0 {
++			p++
++		}
++		if len(o.IncludeInterface) > 0 {
++			matched := p + 2
++			// Pinned upstream computes the common include target from IPv4
++			// priority, even in IPv6-only configurations. Preserve that plan.
++			if len(o.Inet4Address) == 0 {
++				matched = o.IPRoute2RuleIndex + 2
++			}
++			for _, iface := range o.IncludeInterface {
++				r := add()
++				r.IifName = iface
++				r.Goto = matched
++			}
++			p++
++			r := add()
++			r.Goto = nop
++			p++
++			r = add()
++			r.Priority = matched
++			p++
++		} else if len(o.ExcludeInterface) > 0 {
++			for _, iface := range o.ExcludeInterface {
++				r := add()
++				r.IifName = iface
++				r.Goto = nop
++			}
++			p++
++		}
++		if family == unix.AF_INET {
++			for _, address := range o.Inet4Address {
++				r := add()
++				r.Dst = address.Masked()
++				r.Table = o.IPRoute2TableIndex
++			}
++			p++
++		}
++		r = add()
++		r.Invert = true
++		r.Dport = netlink.NewRulePortRange(53, 53)
++		r.Table = unix.RT_TABLE_MAIN
++		r.SuppressPrefixlen = 0
++		r = add()
++		r.IifName = o.Name
++		r.Goto = nop
++		if family == unix.AF_INET {
++			p++
++			r = add()
++			r.Invert = true
++			r.IifName = "lo"
++			r.Table = o.IPRoute2TableIndex
++			r = add()
++			r.IifName = "lo"
++			r.Src = netip.PrefixFrom(netip.IPv4Unspecified(), 32)
++			r.Table = o.IPRoute2TableIndex
++			for _, address := range o.Inet4Address {
++				r := add()
++				r.IifName = "lo"
++				r.Src = address.Masked()
++				r.Table = o.IPRoute2TableIndex
++			}
++		} else {
++			for _, address := range []netip.Prefix{netip.MustParsePrefix("::/1"), netip.MustParsePrefix("8000::/1")} {
++				r := add()
++				r.IifName = "lo"
++				r.Src = address
++				r.Goto = nop
++			}
++			p++
++			for _, address := range o.Inet6Address {
++				r := add()
++				r.IifName = "lo"
++				r.Src = address.Masked()
++				r.Table = o.IPRoute2TableIndex
++			}
++			p++
++			r = add()
++			r.Table = o.IPRoute2TableIndex
++		}
++		p = nop
++		add()
++	}
++	if o.StrictRoute {
++		for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
++			if (family == unix.AF_INET && len(o.Inet4Address) == 0) || (family == unix.AF_INET6 && len(o.Inet6Address) == 0) {
++				r := netlink.NewRule()
++				r.Family = family
++				r.Priority = o.IPRoute2RuleIndex
++				r.Type = unix.FR_ACT_UNREACHABLE
++				rules = append(rules, r)
++			}
++		}
++	}
++	for _, r := range rules {
++		if r.Priority < o.IPRoute2RuleIndex-1 || r.Priority > o.IPRoute2RuleIndex+systemRouteRuleWindow {
++			return nil, fmt.Errorf("rule plan exceeds reserved priority window")
++		}
++	}
++	return rules, nil
++}
+diff --git a/listener/sing_tun/system_route_recovery_linux.go b/listener/sing_tun/system_route_recovery_linux.go
+new file mode 100644
+index 0000000..aef70de
+--- /dev/null
++++ b/listener/sing_tun/system_route_recovery_linux.go
+@@ -0,0 +1,235 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"errors"
++	"fmt"
++	C "github.com/metacubex/mihomo/constant"
++	"os"
++	"path/filepath"
++	"strconv"
++	"strings"
++
++	LC "github.com/metacubex/mihomo/listener/config"
++	tun "github.com/metacubex/sing-tun"
++	"github.com/sagernet/netlink"
++	"golang.org/x/sys/unix"
++)
++
++func systemRouteJournalWindow(rules []systemRouteKernelRule, index int) []systemRouteKernelRule {
++	var result []systemRouteKernelRule
++	for _, rule := range rules {
++		if (rule.family == unix.AF_INET || rule.family == unix.AF_INET6) && rule.priority >= index-1 && rule.priority <= index+systemRouteRuleWindow {
++			result = append(result, rule)
++		}
++	}
++	return result
++}
++
++func validateSystemRouteJournalRules(state *systemRouteJournal, current []systemRouteKernelRule, complete bool) error {
++	remaining := make(map[string]int)
++	for _, rule := range state.Rules {
++		if rule.Family != unix.AF_INET && rule.Family != unix.AF_INET6 || rule.Priority < state.Index-1 || rule.Priority > state.Index+systemRouteRuleWindow || rule.Identity == "" {
++			return errors.New("invalid system-route journal rule")
++		}
++		if state.Complete {
++			identity, err := systemRouteIdentityFromRaw(string(rule.Raw))
++			if err != nil || identity != rule.Identity {
++				return errors.New("corrupt system-route journal fingerprint")
++			}
++		}
++		remaining[rule.Identity]++
++	}
++	for _, rule := range systemRouteJournalWindow(current, state.Index) {
++		identity, err := systemRouteIdentityFromRaw(rule.fingerprint)
++		if err != nil {
++			return err
++		}
++		if remaining[identity] == 0 {
++			return fmt.Errorf("unowned or changed routing rule priority %d; existing rules retained", rule.priority)
++		}
++		remaining[identity]--
++	}
++	if complete {
++		for _, count := range remaining {
++			if count != 0 {
++				return errors.New("kernel routing rules differ from the pinned sing-tun write-ahead plan")
++			}
++		}
++	}
++	return nil
++}
++
++func (o *systemRouteJournalOwner) recover(state *systemRouteJournal) error {
++	current, err := systemRouteKernelRules()
++	if err != nil {
++		return err
++	}
++	if state.BootID != o.state.BootID {
++		if len(systemRouteJournalWindow(current, state.Index)) > 0 {
++			return errors.New("new boot has unowned routing rules; existing rules retained")
++		}
++		return o.remove()
++	}
++	if err = validateSystemRouteJournalRules(state, current, false); err != nil {
++		return err
++	}
++	// Validation of the entire window precedes the first deletion. Delete each
++	// full raw kernel message, never by priority. Missing owned rules are safe:
++	// recovery itself may have been interrupted between individual deletions.
++	for _, rule := range systemRouteJournalWindow(current, state.Index) {
++		if err = deleteSystemRouteRaw(rule); err != nil && !errors.Is(err, unix.ENOENT) && !errors.Is(err, unix.ESRCH) {
++			return err
++		}
++	}
++	return o.remove()
++}
++
++// Scan only this data directory and network namespace. Other directories'
++// journal-enabled instances remain protected by the namespace-wide lock.
++func systemRouteJournalPaths() ([]string, error) {
++	var stat unix.Stat_t
++	if err := unix.Stat("/proc/self/ns/net", &stat); err != nil {
++		return nil, err
++	}
++	namespace := strconv.FormatUint(uint64(stat.Dev), 10) + "-" + strconv.FormatUint(stat.Ino, 10)
++	entries, err := os.ReadDir(C.Path.HomeDir())
++	if errors.Is(err, os.ErrNotExist) {
++		return nil, nil
++	}
++	if err != nil {
++		return nil, err
++	}
++	prefix := ".system-route-" + namespace + "-"
++	var paths []string
++	for _, entry := range entries {
++		if strings.HasPrefix(entry.Name(), prefix) && strings.HasSuffix(entry.Name(), ".json") {
++			paths = append(paths, filepath.Join(C.Path.HomeDir(), entry.Name()))
++		}
++	}
++	return paths, nil
++}
++
++func recoverSystemRouteJournals(owner *systemRouteJournalOwner) error {
++	paths, err := systemRouteJournalPaths()
++	if err != nil {
++		return err
++	}
++	type recovery struct {
++		owner systemRouteJournalOwner
++		state *systemRouteJournal
++	}
++	var pending []recovery
++	current, err := systemRouteKernelRules()
++	if err != nil {
++		return err
++	}
++	for _, path := range paths {
++		prefix := ".system-route-" + owner.state.Namespace + "-"
++		index, err := strconv.Atoi(strings.TrimSuffix(strings.TrimPrefix(filepath.Base(path), prefix), ".json"))
++		if err != nil {
++			return errors.New("invalid system-route journal filename")
++		}
++		previous := *owner
++		previous.path, previous.state.Index = path, index
++		state, err := previous.read()
++		if err != nil {
++			return err
++		}
++		if state == nil {
++			continue
++		}
++		if state.BootID != owner.state.BootID {
++			if len(systemRouteJournalWindow(current, state.Index)) > 0 {
++				return errors.New("new boot has unowned routing rules; existing rules retained")
++			}
++		} else if err = validateSystemRouteJournalRules(state, current, false); err != nil {
++			return err
++		}
++		pending = append(pending, recovery{previous, state})
++	}
++	// Every journal is validated before recovering any window.
++	for _, item := range pending {
++		if err := item.owner.recover(item.state); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
++func prepareSystemRouteJournal(o tun.Options, plan []*netlink.Rule) (*systemRouteJournalOwner, error) {
++	owner, err := lockSystemRouteJournal(o.IPRoute2RuleIndex)
++	if err != nil {
++		return nil, err
++	}
++	fail := func(err error) (*systemRouteJournalOwner, error) { owner.unlock(); return nil, err }
++	if err = recoverSystemRouteJournals(owner); err != nil {
++		return fail(err)
++	}
++	current, err := systemRouteKernelRules()
++	if err != nil {
++		return fail(err)
++	}
++	if window := systemRouteJournalWindow(current, o.IPRoute2RuleIndex); len(window) > 0 {
++		return fail(fmt.Errorf("routing rule priority %d is already in use", window[0].priority))
++	}
++	owner.state.Device = o.Name
++	for _, rule := range plan {
++		identity, err := systemRouteIdentityFromPlan(rule)
++		if err != nil {
++			return fail(err)
++		}
++		owner.state.Rules = append(owner.state.Rules, systemRouteJournalRule{Family: rule.Family, Priority: rule.Priority, Identity: identity})
++	}
++	if err = owner.write(); err != nil {
++		return fail(err)
++	}
++	return owner, nil
++}
++
++func (b *systemRouteBypass) finishJournal(owned []systemRouteKernelRule) error {
++	if b.journal == nil {
++		return nil
++	}
++	if err := validateSystemRouteJournalRules(&b.journal.state, owned, true); err != nil {
++		return err
++	}
++	rules := make([]systemRouteJournalRule, 0, len(owned))
++	for _, rule := range owned {
++		identity, err := systemRouteIdentityFromRaw(rule.fingerprint)
++		if err != nil {
++			return err
++		}
++		rules = append(rules, systemRouteJournalRule{Family: rule.family, Priority: rule.priority, Identity: identity, Raw: []byte(rule.fingerprint)})
++	}
++	b.journal.state.Rules = rules
++	b.journal.state.Complete = true
++	return b.journal.write()
++}
++
++func cleanupSystemRouteJournal(options LC.Tun) error {
++	// Ordinary configurations without recovery state acquire no lock, read no
++	// boot/PID metadata and create no directory or journal.
++	paths, err := systemRouteJournalPaths()
++	if err != nil {
++		return err
++	}
++	if len(paths) == 0 {
++		return nil
++	}
++	index := options.IPRoute2RuleIndex
++	if index == 0 {
++		index = tun.DefaultIPRoute2RuleIndex
++	}
++	owner, err := lockSystemRouteJournal(index)
++	if err != nil {
++		return err
++	}
++	defer owner.unlock()
++	return recoverSystemRouteJournals(owner)
++}
++
++// CleanupSystemRouteJournal is used only when a fresh process disables TUN.
++// It removes verified crash residue while leaving all unjournaled rules alone.
++func CleanupSystemRouteJournal(options LC.Tun) error { return cleanupSystemRouteJournal(options) }
+diff --git a/listener/sing_tun/system_route_snapshot_linux.go b/listener/sing_tun/system_route_snapshot_linux.go
+new file mode 100644
+index 0000000..dfa2520
+--- /dev/null
++++ b/listener/sing_tun/system_route_snapshot_linux.go
+@@ -0,0 +1,50 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"errors"
++
++	"github.com/sagernet/netlink/nl"
++	"golang.org/x/sys/unix"
++)
++
++type systemRouteKernelRule struct {
++	family      int
++	priority    int
++	fingerprint string
++}
++
++// netlink.RuleList omits the kernel action/type and protocol. Retain the
++// complete RTM_NEWRULE body so a user replacement (for example, NOP ->
++// blackhole at the same priority) cannot be mistaken for an owned rule.
++func systemRouteKernelRules() ([]systemRouteKernelRule, error) {
++	req := nl.NewNetlinkRequest(unix.RTM_GETRULE, unix.NLM_F_DUMP|unix.NLM_F_REQUEST)
++	req.AddData(nl.NewIfInfomsg(unix.AF_UNSPEC))
++	messages, err := req.Execute(unix.NETLINK_ROUTE, unix.RTM_NEWRULE)
++	if err != nil {
++		return nil, err
++	}
++	rules := make([]systemRouteKernelRule, 0, len(messages))
++	for _, data := range messages {
++		if len(data) < unix.SizeofRtMsg {
++			return nil, errors.New("short kernel routing-rule message")
++		}
++		message := nl.DeserializeRtMsg(data)
++		attributes, err := nl.ParseRouteAttr(data[message.Len():])
++		if err != nil {
++			return nil, err
++		}
++		rule := systemRouteKernelRule{family: int(message.Family), priority: -1, fingerprint: string(data)}
++		for _, attribute := range attributes {
++			if attribute.Attr.Type == nl.FRA_PRIORITY {
++				if len(attribute.Value) < 4 {
++					return nil, errors.New("short kernel routing-rule priority")
++				}
++				rule.priority = int(nl.NativeEndian().Uint32(attribute.Value[:4]))
++			}
++		}
++		rules = append(rules, rule)
++	}
++	return rules, nil
++}

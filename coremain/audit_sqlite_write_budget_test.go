@@ -63,6 +63,37 @@ func TestSQLiteAuditWriteBatchWithBudgetIsBoundedAndKeepsHistory(t *testing.T) {
 	}
 }
 
+func TestSQLiteAuditWriteCoalescesBlockedRowsButKeepsAggregates(t *testing.T) {
+	s := newSQLiteAuditStorage(filepath.Join(t.TempDir(), "audit.db"))
+	if err := s.Open(); err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := time.Now().Add(-time.Minute)
+	logs := []AuditLog{
+		testAuditLog("blocked.example", base, 1, "NXDOMAIN", "广告屏蔽", AuditCacheBypass),
+		testAuditLog("blocked.example", base.Add(time.Second), 2, "NXDOMAIN", "广告屏蔽", AuditCacheBypass),
+		testAuditLog("blocked.example", base.Add(2*time.Second), 3, "NXDOMAIN", "广告屏蔽", AuditCacheBypass),
+		testAuditLog("other.example", base.Add(3*time.Second), 4, "NXDOMAIN", "广告屏蔽", AuditCacheBypass),
+	}
+	if err := s.WriteBatch(logs); err != nil {
+		t.Fatal(err)
+	}
+	var rawCount, aggregateCount int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&rawCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().QueryRow(`SELECT COALESCE(SUM(query_count), 0) FROM audit_minute`).Scan(&aggregateCount); err != nil {
+		t.Fatal(err)
+	}
+	if rawCount != 2 {
+		t.Fatalf("raw audit count = %d, want 2 representative blocked rows", rawCount)
+	}
+	if aggregateCount != len(logs) {
+		t.Fatalf("aggregate query count = %d, want %d", aggregateCount, len(logs))
+	}
+}
+
 func TestAuditCollectorCapacityFailureKeepsAcceptedBatchAndRollsBackEviction(t *testing.T) {
 	s, logs := newAuditBudgetTestStorage(t, 5000)
 	if _, err := s.DB().Exec(`CREATE TRIGGER fail_later_eviction BEFORE DELETE ON audit_log

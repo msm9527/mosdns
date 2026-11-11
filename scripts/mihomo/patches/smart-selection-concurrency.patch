@@ -1,0 +1,161 @@
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -100,7 +100,7 @@
+ 	closeOnce sync.Once
+ 
+ 	configName     string
+-	selected       string
++	selected       atomic.TypedValue[string]
+ 	testUrl        string
+ 	testUrlHost    string
+ 	expectedStatus string
+@@ -517,9 +517,9 @@
+ 		return proxies[0]
+ 	}
+ 
+-	if s.selected != "" {
++	if selected := s.selected.Load(); selected != "" {
+ 		for _, p := range proxies {
+-			if p.Name() == s.selected {
++			if p.Name() == selected {
+ 				return p
+ 			}
+ 		}
+@@ -624,17 +624,17 @@
+ }
+ 
+ func (s *Smart) ForceSet(name string) {
+-	s.selected = name
++	s.selected.Store(name)
+ }
+ 
+ func (s *Smart) Now() string {
+-	if s.selected != "" {
++	if selected := s.selected.Load(); selected != "" {
+ 		for _, p := range s.GetProxies(false) {
+-			if p.Name() == s.selected {
++			if p.Name() == selected {
+ 				return p.Name()
+ 			}
+ 		}
+-		s.selected = ""
++		s.selected.CompareAndSwap(selected, "")
+ 	}
+ 
+ 	return "Smart - Select"
+@@ -663,7 +663,7 @@
+ 		"all":             all,
+ 		"testUrl":         s.testUrl,
+ 		"expectedStatus":  s.expectedStatus,
+-		"fixed":           s.selected,
++		"fixed":           s.selected.Load(),
+ 		"hidden":          s.Hidden(),
+ 		"icon":            s.Icon(),
+ 		"emptyFallback":   s.EmptyFallback().Name(),
+@@ -932,9 +932,9 @@
+ 		metadata.SmartTarget = smart.SmartTargetKey(s.preferASN, asnNumber, metadata.SmartTarget, wildcardTarget, site, needsASNKey)
+ 	}
+ 
+-	if s.selected != "" {
++	if selected := s.selected.Load(); selected != "" {
+ 		for _, p := range proxies {
+-			if p.Name() == s.selected {
++			if p.Name() == selected {
+ 				return []C.Proxy{p}, true, false
+ 			}
+ 		}
+@@ -1592,7 +1592,7 @@
+ 	// a pinned group and a force-closed connection never reach the host checks, so their
+ 	// snapshot is not read at all
+ 	var state targetState
+-	if s.selected == "" && metadata.SmartBlock != "blocked" && metadata.SmartBlock != "degraded" {
++	if s.selected.Load() == "" && metadata.SmartBlock != "blocked" && metadata.SmartBlock != "degraded" {
+ 		state = s.readTargetState(metadata, proxyName)
+ 	}
+ 	adjWeight, isDegraded, checked, blockCode := s.checkNodeQuality(state, metadata, proxy, connQuality{
+@@ -1973,7 +1973,7 @@
+ // record to write; the store and the exit trackers are read by the caller, so this only
+ // decides.
+ func (s *Smart) checkNodeQuality(state targetState, metadata *C.Metadata, proxy C.Proxy, q connQuality) (float64, bool, bool, int64) {
+-	if s.selected != "" {
++	if selected := s.selected.Load(); selected != "" {
+ 		return q.weight, false, false, 0
+ 	}
+ 
+@@ -2246,7 +2246,7 @@
+ 			return
+ 		}
+ 		s.probeThrottle.ClearUnproven(clone.WildcardTarget, nodeName)
+-		if s.selected != "" || !lo.ContainsBy(s.GetProxies(false), func(p C.Proxy) bool { return p.Name() == nodeName }) {
++		if s.selected.Load() != "" || !lo.ContainsBy(s.GetProxies(false), func(p C.Proxy) bool { return p.Name() == nodeName }) {
+ 			return
+ 		}
+ 		if _, wtBlocked := s.store.GetHostStatus(s.Name(), s.configName, clone.WildcardTarget, int(s.hostFailLimit.Load()), clone.SmartTarget); wtBlocked {
+diff --git a/adapter/outboundgroup/smart_selection_test.go b/adapter/outboundgroup/smart_selection_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_selection_test.go
+@@ -0,0 +1,62 @@
++package outboundgroup
++
++import (
++	"encoding/json"
++	"sync"
++	"testing"
++	"time"
++
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestSmartSelectionConcurrent(t *testing.T) {
++	a := &nativeSelectionProxy{name: "node-a", alive: true}
++	b := &nativeSelectionProxy{name: "node-b", alive: true}
++	group := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b)}
++	group.ForceSet("node-a")
++	var worker sync.WaitGroup
++	worker.Add(1)
++	go func() {
++		defer worker.Done()
++		for i := 0; i < 2000; i++ {
++			metadata := &C.Metadata{Host: "example.com", DstIPASN: "unknown"}
++			proxies, fixed, _ := group.selectProxies(metadata, group.GetProxies(false))
++			if len(proxies) != 1 || !fixed {
++				t.Error("manual selection escaped the native data path")
++				return
++			}
++		}
++	}()
++	exerciseNativeSelection(t, group, false)
++	worker.Wait()
++}
++
++func TestSmartStaleSelectionDoesNotClearNewChoice(t *testing.T) {
++	entered, release := make(chan struct{}), make(chan struct{})
++	var once sync.Once
++	a := &nativeSelectionProxy{name: "node-a", alive: true}
++	b := &nativeSelectionProxy{name: "node-b", alive: true, nameHook: func() {
++		once.Do(func() { close(entered) })
++		<-release
++	}}
++	group := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b)}
++	group.ForceSet("missing")
++	finished := make(chan struct{})
++	go func() { defer close(finished); group.Now() }()
++	select {
++	case <-entered:
++	case <-time.After(5 * time.Second):
++		close(release)
++		t.Fatal("native proxy validation was not reached")
++	}
++	group.ForceSet("node-a")
++	close(release)
++	<-finished
++	data, err := group.MarshalJSON()
++	var state struct {
++		Fixed string `json:"fixed"`
++	}
++	if err != nil || json.Unmarshal(data, &state) != nil || state.Fixed != "node-a" {
++		t.Fatalf("stale proxy validation cleared the newer selection: %s (%v)", data, err)
++	}
++}

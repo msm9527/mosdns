@@ -158,7 +158,7 @@ func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse
 	if err != nil {
 		return AuditLogsResponse{}, err
 	}
-	cursorWhere, cursorArgs, err := buildAuditCursorWhere(params.Cursor)
+	cursorWhere, cursorArgs, err := buildAuditCursorWhere(params.Cursor, params.Sort)
 	if err != nil {
 		return AuditLogsResponse{}, err
 	}
@@ -195,7 +195,7 @@ func (s *SQLiteAuditStorage) QueryLogs(params AuditLogsQuery) (AuditLogsResponse
 	}
 	nextCursor := ""
 	if len(logs) > limit {
-		nextCursor = encodeAuditCursor(logs[limit-1])
+		nextCursor = encodeAuditCursor(logs[limit-1], params.Sort)
 		logs = logs[:limit]
 	}
 	return AuditLogsResponse{
@@ -322,18 +322,64 @@ func clampAuditLimit(limit int) int {
 	return limit
 }
 
-func encodeAuditCursor(log AuditLog) string {
-	raw := strconv.FormatInt(log.QueryTime.UnixMilli(), 10) + ":" + strconv.FormatInt(log.ID, 10)
-	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+type auditCursorPayload struct {
+	Version    int     `json:"v"`
+	Field      string  `json:"field"`
+	Order      string  `json:"order"`
+	DurationMs float64 `json:"duration_ms,omitempty"`
+	TimeMs     int64   `json:"time_ms"`
+	ID         int64   `json:"id"`
 }
 
-func buildAuditCursorWhere(cursor string) (string, []any, error) {
+func encodeAuditCursor(log AuditLog, sort AuditLogSearchSort) string {
+	sort = defaultAuditSearchSort(sort)
+	payload := auditCursorPayload{
+		Version: 2,
+		Field:   sort.Field,
+		Order:   sort.Order,
+		TimeMs:  log.QueryTime.UnixMilli(),
+		ID:      log.ID,
+	}
+	if sort.Field == "duration" {
+		payload.DurationMs = log.DurationMs
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+func buildAuditCursorWhere(cursor string, sort AuditLogSearchSort) (string, []any, error) {
 	if strings.TrimSpace(cursor) == "" {
 		return "", nil, nil
 	}
+	sort = defaultAuditSearchSort(sort)
 	raw, err := base64.RawURLEncoding.DecodeString(cursor)
 	if err != nil {
 		return "", nil, fmt.Errorf("decode audit cursor: %w", err)
+	}
+	var payload auditCursorPayload
+	if json.Unmarshal(raw, &payload) == nil && payload.Version == 2 {
+		if payload.Field != sort.Field || payload.Order != sort.Order {
+			return "", nil, fmt.Errorf("audit cursor sort does not match request")
+		}
+		if sort.Field == "duration" {
+			if sort.Order == "asc" {
+				return `(duration_ms > ? OR (duration_ms = ? AND (query_time_unix_ms < ? OR (query_time_unix_ms = ? AND id < ?))))`, []any{payload.DurationMs, payload.DurationMs, payload.TimeMs, payload.TimeMs, payload.ID}, nil
+			}
+			return `(duration_ms < ? OR (duration_ms = ? AND (query_time_unix_ms < ? OR (query_time_unix_ms = ? AND id < ?))))`, []any{payload.DurationMs, payload.DurationMs, payload.TimeMs, payload.TimeMs, payload.ID}, nil
+		}
+		if sort.Order == "asc" {
+			return `(query_time_unix_ms > ? OR (query_time_unix_ms = ? AND id > ?))`, []any{payload.TimeMs, payload.TimeMs, payload.ID}, nil
+		}
+		return `(query_time_unix_ms < ? OR (query_time_unix_ms = ? AND id < ?))`, []any{payload.TimeMs, payload.TimeMs, payload.ID}, nil
+	}
+	// Cursors emitted before v2 encoded only time/id and were valid for the
+	// default descending time order. Reject ambiguous legacy combinations rather
+	// than silently skipping or duplicating records after a sort change.
+	if sort.Field != "time" || sort.Order != "desc" {
+		return "", nil, fmt.Errorf("legacy audit cursor requires descending time sort")
 	}
 	parts := strings.SplitN(string(raw), ":", 2)
 	if len(parts) != 2 {
@@ -347,7 +393,19 @@ func buildAuditCursorWhere(cursor string) (string, []any, error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("parse audit cursor id: %w", err)
 	}
-	return "(query_time_unix_ms < ? OR (query_time_unix_ms = ? AND id < ?))", []any{timeMs, timeMs, id}, nil
+	return `(query_time_unix_ms < ? OR (query_time_unix_ms = ? AND id < ?))`, []any{timeMs, timeMs, id}, nil
+}
+
+func defaultAuditSearchSort(sort AuditLogSearchSort) AuditLogSearchSort {
+	field := strings.ToLower(strings.TrimSpace(sort.Field))
+	if field == "" {
+		field = "time"
+	}
+	order := strings.ToLower(strings.TrimSpace(sort.Order))
+	if order == "" {
+		order = "desc"
+	}
+	return AuditLogSearchSort{Field: field, Order: order}
 }
 
 func auditRankColumn(rankType RankType) (string, error) {

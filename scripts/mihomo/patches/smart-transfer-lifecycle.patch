@@ -1,0 +1,489 @@
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -122,6 +122,7 @@
+ 	tolerance      uint16
+ 
+ 	freshNodesGroup singleflight.Group[nodeResult]
++	pinDials        sync.Map // per-network target -> *smartPinDial, only while its first dial runs
+ 
+ 	ruleCountCache    xsync.Map[string, int]
+ 	geoSiteCountCache xsync.Map[string, int]
+@@ -254,7 +255,7 @@
+ 		return batch, timeout
+ 	}
+ 
+-	tryDial := func(proxies []C.Proxy, pinned bool, keepPin bool) (C.Conn, error) {
++	tryDial := func(proxies []C.Proxy, pinned bool, keepPin bool, manual bool) (C.Conn, error) {
+ 		var finalErr error
+ 		for i := 0; i < maxRetries; i++ {
+ 			batch, timeout := getBatch(proxies, i, pinned)
+@@ -281,22 +282,37 @@
+ 			}
+ 		}
+ 
+-		s.store.DeleteUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata))
++		if !manual {
++			s.store.DeleteUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata))
++		}
+ 
+ 		s.groupDialFailed(proxies, finalErr)
+ 
+ 		return nil, finalErr
+ 	}
+ 
+-	proxies, pinned, keepPin := s.selectProxies(metadata, s.GetProxies(true))
+-
+-	return tryDial(proxies, pinned, keepPin)
++	selection, err := s.selectDialProxies(ctx, metadata)
++	if err != nil {
++		return nil, err
++	}
++	if selection.release != nil {
++		defer selection.release()
++	}
++
++	return tryDial(selection.proxies, selection.pinned, selection.keepPin, selection.manual)
+ }
+ 
+ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (pc C.PacketConn, err error) {
+ 	var finalErr error
+ 
+-	proxies, _, keepPin := s.selectProxies(metadata, s.GetProxies(true))
++	selection, err := s.selectDialProxies(ctx, metadata)
++	if err != nil {
++		return nil, err
++	}
++	if selection.release != nil {
++		defer selection.release()
++	}
++	proxies, keepPin := selection.proxies, selection.keepPin
+ 
+ 	limit := len(proxies)
+ 	if limit > maxSelected {
+@@ -341,7 +357,9 @@
+ 		}
+ 	}
+ 
+-	s.store.DeleteUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata))
++	if !selection.manual {
++		s.store.DeleteUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata))
++	}
+ 
+ 	s.groupDialFailed(proxies, finalErr)
+ 
+@@ -495,7 +513,6 @@
+ }
+ 
+ func (s *Smart) adoptUnwrapWinner(metadata *C.Metadata, p C.Proxy) {
+-	target := metadata.SmartTarget
+ 	key := s.unwrapKey(metadata)
+ 	existing, _ := s.store.GetUnwrapResult(s.Name(), s.configName, key)
+ 
+@@ -507,7 +524,8 @@
+ 		s.store.DeleteUnwrapResult(s.Name(), s.configName, key)
+ 		s.store.StoreUnwrapResult(s.Name(), s.configName, key, []C.Proxy{p})
+ 	}
+-	s.closeSameConnection(metadata, p.Name(), target, false)
++	// A new pin only chooses future connections. Healthy established streams must
++	// finish on their original exit; closing them here truncates responses.
+ }
+ 
+ func (s *Smart) Unwrap(metadata *C.Metadata, touch bool) C.Proxy {
+@@ -903,9 +921,14 @@
+ }
+ 
+ // selectProxies returns the nodes to dial and whether the target is already pinned to
+-// one node: a pinned target is dialed node by node, an unpinned one may race on its
+-// first dial, which is the only moment a key can show more than one exit.
++// one node: a pinned target is dialed node by node. selectDialProxies coordinates
++// concurrent first dials so each connection reads the committed winner.
+ func (s *Smart) selectProxies(metadata *C.Metadata, proxies []C.Proxy) ([]C.Proxy, bool, bool) {
++	selected, pinned, keepPin, _ := s.selectProxyCandidates(metadata, proxies)
++	return selected, pinned, keepPin
++}
++
++func (s *Smart) selectProxyCandidates(metadata *C.Metadata, proxies []C.Proxy) ([]C.Proxy, bool, bool, bool) {
+ 	asnNumber := s.getASNCode(metadata)
+ 	dstIP := ""
+ 	if metadata.Host == "" {
+@@ -935,7 +958,7 @@
+ 	if selected := s.selected.Load(); selected != "" {
+ 		for _, p := range proxies {
+ 			if p.Name() == selected {
+-				return []C.Proxy{p}, true, false
++				return []C.Proxy{p}, true, true, true
+ 			}
+ 		}
+ 	}
+@@ -1014,7 +1037,7 @@
+ 	}
+ 
+ 	filtered, softSkipped := s.filterProxies(metadata, wildcardTarget, resultNames, resultWeights, proxies, maxSelected, isUDP)
+-	return filtered, pinned, pinned && softSkipped
++	return filtered, pinned, pinned && softSkipped, false
+ }
+ 
+ func (s *Smart) getPriorityFactor(proxyName string) float64 {
+diff --git a/adapter/outboundgroup/smart_transfer.go b/adapter/outboundgroup/smart_transfer.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_transfer.go
+@@ -0,0 +1,89 @@
++package outboundgroup
++
++import (
++	"context"
++	"errors"
++	"sync"
++
++	C "github.com/metacubex/mihomo/constant"
++)
++
++type smartPinDial struct {
++	done chan struct{}
++	once sync.Once
++}
++
++// acquirePinDial owns only the first-dial decision, never a physical connection.
++// Waiters must reselect after it completes, so they read the committed pin and
++// create their own connection. Entries disappear on success and failure alike.
++func (s *Smart) acquirePinDial(ctx context.Context, key string) (release func(), err error) {
++	if err := ctx.Err(); err != nil {
++		return nil, err
++	}
++	var closed <-chan struct{}
++	if s.ctx != nil {
++		closed = s.ctx.Done()
++		if err := s.ctx.Err(); err != nil {
++			return nil, err
++		}
++	}
++	next := &smartPinDial{done: make(chan struct{})}
++	active, loaded := s.pinDials.LoadOrStore(key, next)
++	if !loaded {
++		return func() {
++			next.once.Do(func() {
++				s.pinDials.CompareAndDelete(key, next)
++				close(next.done)
++			})
++		}, nil
++	}
++	select {
++	case <-ctx.Done():
++		return nil, ctx.Err()
++	case <-closed:
++		return nil, s.ctx.Err()
++	case <-active.(*smartPinDial).done:
++		return nil, nil
++	}
++}
++
++type smartDialSelection struct {
++	proxies                 []C.Proxy
++	pinned, keepPin, manual bool
++	release                 func()
++}
++
++func (s *Smart) selectDialProxies(ctx context.Context, metadata *C.Metadata) (smartDialSelection, error) {
++	for attempt := 0; attempt < maxRetries; attempt++ {
++		if err := ctx.Err(); err != nil {
++			return smartDialSelection{}, err
++		}
++		if s.ctx != nil && s.ctx.Err() != nil {
++			return smartDialSelection{}, s.ctx.Err()
++		}
++		proxies, pinned, keepPin, manual := s.selectProxyCandidates(metadata, s.GetProxies(true))
++		if pinned || keepPin {
++			return smartDialSelection{proxies: proxies, pinned: pinned, keepPin: keepPin, manual: manual}, nil
++		}
++		key := s.unwrapKey(metadata)
++		release, err := s.acquirePinDial(ctx, key)
++		if err != nil {
++			return smartDialSelection{}, err
++		}
++		if release == nil {
++			continue // another caller finished; read its committed pin
++		}
++		// A winner may have committed between our first selection and acquisition.
++		proxies, pinned, keepPin, manual = s.selectProxyCandidates(metadata, s.GetProxies(true))
++		if !pinned && !keepPin && s.unwrapKey(metadata) != key {
++			release()
++			continue // site/ASN ownership changed while this decision was acquired
++		}
++		if pinned || keepPin {
++			release()
++			release = nil
++		}
++		return smartDialSelection{proxies: proxies, pinned: pinned, keepPin: keepPin, manual: manual, release: release}, nil
++	}
++	return smartDialSelection{}, errors.New("Smart first-dial retry budget exhausted")
++}
+diff --git a/adapter/outboundgroup/smart_transfer_test.go b/adapter/outboundgroup/smart_transfer_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_transfer_test.go
+@@ -0,0 +1,263 @@
++package outboundgroup
++
++import (
++	"context"
++	"errors"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++	"github.com/metacubex/mihomo/tunnel/statistic"
++)
++
++type smartTransferTracker struct {
++	C.Connection
++	id     string
++	info   statistic.TrackerInfo
++	closed int
++}
++
++func (t *smartTransferTracker) ID() string                   { return t.id }
++func (t *smartTransferTracker) Info() *statistic.TrackerInfo { return &t.info }
++func (t *smartTransferTracker) Chains() C.Chain              { return t.info.Chain }
++func (t *smartTransferTracker) Close() error                 { t.closed++; return nil }
++
++func TestSmartAutomaticWinnerPreservesHealthyStream(t *testing.T) {
++	smart.InitCache()
++	s := &Smart{GroupBase: NewGroupBase(GroupBaseOption{Name: t.Name(), Type: C.Smart}), store: &smart.Store{}, configName: t.Name()}
++	a, b := &nativeSelectionProxy{name: "A"}, &nativeSelectionProxy{name: "B"}
++	metadata := &C.Metadata{SmartTarget: t.Name(), UUID: "new", NetWork: C.TCP}
++	s.adoptUnwrapWinner(metadata, a)
++	tracker := &smartTransferTracker{id: t.Name(), info: statistic.TrackerInfo{Metadata: &C.Metadata{SmartTarget: t.Name()}, Chain: C.Chain{"A", s.Name()}}}
++	statistic.DefaultManager.Join(tracker)
++	defer statistic.DefaultManager.Leave(tracker)
++	s.adoptUnwrapWinner(metadata, b)
++	if tracker.closed != 0 {
++		t.Fatalf("new automatic winner closed %d healthy in-flight streams", tracker.closed)
++	}
++	names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata))
++	if len(names) != 1 || names[0] != "B" {
++		t.Fatalf("future connections did not adopt B: %v", names)
++	}
++	s.closeSameConnection(metadata, "", metadata.SmartTarget, true)
++	if tracker.closed != 1 || tracker.info.Metadata.SmartBlock != "degraded" {
++		t.Fatal("confirmed degradation no longer closes affected streams")
++	}
++}
++
++func TestSmartManualSelectionKeepsAutomaticPin(t *testing.T) {
++	smart.InitCache()
++	a, b := &nativeSelectionProxy{name: "A", alive: true}, &nativeSelectionProxy{name: "B", alive: true}
++	s := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b), store: &smart.Store{}, configName: t.Name()}
++	metadata := &C.Metadata{Host: t.Name() + ".example", DstIPASN: "unknown", NetWork: C.TCP}
++	s.ForceSet("B")
++	selection, err := s.selectDialProxies(context.Background(), metadata)
++	if err != nil || len(selection.proxies) != 1 || selection.proxies[0] != b || !selection.pinned || !selection.keepPin || !selection.manual || selection.release != nil {
++		t.Fatalf("manual selection altered automatic pin lifecycle: %v %v %v %v", selection.proxies, selection.pinned, selection.keepPin, err)
++	}
++	s.adoptUnwrapWinner(metadata, a)
++	s.ForceSet("A")
++	selection, err = s.selectDialProxies(context.Background(), metadata)
++	if err != nil || !selection.keepPin || !selection.manual {
++		t.Fatal("manual TCP selection may rewrite automatic pin")
++	}
++	metadata.NetWork = C.UDP
++	selection, err = s.selectDialProxies(context.Background(), metadata)
++	if err != nil || !selection.keepPin || !selection.manual {
++		t.Fatal("manual UDP selection may rewrite automatic pin")
++	}
++}
++
++func TestSmartUDPWinnerDoesNotCloseTCPStream(t *testing.T) {
++	smart.InitCache()
++	s := &Smart{GroupBase: NewGroupBase(GroupBaseOption{Name: t.Name(), Type: C.Smart}), store: &smart.Store{}, configName: t.Name()}
++	a, b := &nativeSelectionProxy{name: "A"}, &nativeSelectionProxy{name: "B"}
++	tcp := &C.Metadata{SmartTarget: t.Name(), UUID: "new-tcp", NetWork: C.TCP}
++	udp := &C.Metadata{SmartTarget: t.Name(), UUID: "new-udp", NetWork: C.UDP}
++	s.adoptUnwrapWinner(tcp, a)
++	tracker := &smartTransferTracker{id: t.Name(), info: statistic.TrackerInfo{Metadata: tcp, Chain: C.Chain{"A", s.Name()}}}
++	statistic.DefaultManager.Join(tracker)
++	defer statistic.DefaultManager.Leave(tracker)
++	s.adoptUnwrapWinner(udp, b)
++	names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(tcp))
++	udpNames, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(udp))
++	if tracker.closed != 0 || len(names) != 1 || names[0] != "A" || len(udpNames) != 1 || udpNames[0] != "B" {
++		t.Fatalf("UDP winner damaged TCP stream/pin: closes=%d TCP=%v UDP=%v", tracker.closed, names, udpNames)
++	}
++}
++
++func smartTransferGroup(t *testing.T) (*Smart, C.Proxy) {
++	t.Helper()
++	smart.InitCache()
++	a, b := &nativeSelectionProxy{name: "A", alive: true}, &nativeSelectionProxy{name: "B", alive: true}
++	s := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b), store: &smart.Store{}, configName: t.Name(), ctx: context.Background()}
++	s.exitWatch = smart.NewExitWatcher(smart.ExitWatcherOptions{Name: s.Name(), Config: s.configName, Store: s.store})
++	return s, b
++}
++
++func TestSmartFirstDialWaitersReadCommittedWinner(t *testing.T) {
++	s, b := smartTransferGroup(t)
++	metadata := func() *C.Metadata {
++		return &C.Metadata{Host: t.Name() + ".example", DstIPASN: "unknown", NetWork: C.TCP}
++	}
++	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
++	defer cancel()
++	first := metadata()
++	selection, err := s.selectDialProxies(ctx, first)
++	if err != nil || selection.pinned || selection.release == nil {
++		t.Fatalf("missing initial-dial leader: %v %v", selection.pinned, err)
++	}
++	defer selection.release()
++	var workers sync.WaitGroup
++	workers.Add(32)
++	results := make(chan error, 32)
++	for i := 0; i < 32; i++ {
++		go func() {
++			defer workers.Done()
++			selected, err := s.selectDialProxies(ctx, metadata())
++			if selected.release != nil {
++				selected.release()
++			}
++			if err != nil {
++				results <- err
++				return
++			}
++			if len(selected.proxies) != 1 || selected.proxies[0] != b || !selected.pinned || selected.release != nil {
++				results <- errors.New("waiter did not read the committed first-dial winner")
++			}
++		}()
++	}
++	s.adoptUnwrapWinner(first, b)
++	selection.release()
++	workers.Wait()
++	close(results)
++	for err := range results {
++		t.Error(err)
++	}
++	s.pinDials.Range(func(_, _ any) bool { t.Error("completed dial retained a coordination entry"); return true })
++}
++
++func TestSmartFirstDialCancellationAndFailureCleanup(t *testing.T) {
++	s := &Smart{}
++	leader, err := s.acquirePinDial(context.Background(), "target")
++	if err != nil || leader == nil {
++		t.Fatal(err)
++	}
++	canceled, cancel := context.WithCancel(context.Background())
++	waiter := make(chan error, 1)
++	go func() { _, err := s.acquirePinDial(canceled, "target"); waiter <- err }()
++	cancel()
++	select {
++	case err := <-waiter:
++		if !errors.Is(err, context.Canceled) {
++			t.Fatal(err)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("caller cancellation left a blocked first-dial waiter")
++	}
++	// TCP and UDP own independent decisions even while the other network waits.
++	udp, err := s.acquirePinDial(context.Background(), smart.NetScopedTarget("target", true))
++	if err != nil || udp == nil {
++		t.Fatal("TCP first dial blocked UDP")
++	}
++	udp()
++	leader() // A failed leader releases just as a successful leader does.
++	leader() // Duplicate cleanup must not remove or panic another owner's entry.
++	replacement, err := s.acquirePinDial(context.Background(), "target")
++	if err != nil || replacement == nil {
++		t.Fatal("failed first dial blocked its successor")
++	}
++	defer replacement()
++	leader()
++	if _, ok := s.pinDials.Load("target"); !ok {
++		t.Fatal("stale cleanup deleted the successor")
++	}
++	groupCtx, stopGroup := context.WithCancel(context.Background())
++	s.ctx = groupCtx
++	go func() { _, err := s.acquirePinDial(context.Background(), "target"); waiter <- err }()
++	stopGroup()
++	select {
++	case err := <-waiter:
++		if !errors.Is(err, context.Canceled) {
++			t.Fatal(err)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("group reload left a blocked first-dial waiter")
++	}
++}
++
++type smartTransferFailProxy struct{ nativeSelectionProxy }
++
++func (p *smartTransferFailProxy) Type() C.AdapterType { return C.Reject }
++func (p *smartTransferFailProxy) SupportUDP() bool    { return true }
++func (p *smartTransferFailProxy) DialContext(context.Context, *C.Metadata) (C.Conn, error) {
++	return nil, errors.New("fixture dial failed")
++}
++func (p *smartTransferFailProxy) ListenPacketContext(context.Context, *C.Metadata) (C.PacketConn, error) {
++	return nil, errors.New("fixture packet dial failed")
++}
++
++func TestSmartManualDialFailurePreservesAutomaticPin(t *testing.T) {
++	for _, network := range []C.NetWork{C.TCP, C.UDP} {
++		t.Run(network.String(), func(t *testing.T) {
++			smart.InitCache()
++			a := &smartTransferFailProxy{nativeSelectionProxy: nativeSelectionProxy{name: "A", alive: true}}
++			b := &smartTransferFailProxy{nativeSelectionProxy: nativeSelectionProxy{name: "B", alive: true}}
++			s := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b), store: &smart.Store{}, configName: t.Name(), ctx: context.Background()}
++			metadata := &C.Metadata{Host: t.Name() + ".example", DstIPASN: "unknown", NetWork: network}
++			s.ForceSet("B")
++			selected, err := s.selectDialProxies(context.Background(), metadata)
++			if err != nil || !selected.manual {
++				t.Fatal("missing manual snapshot")
++			}
++			s.store.StoreUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata), []C.Proxy{a})
++			if network == C.UDP {
++				_, err = s.ListenPacketContext(context.Background(), metadata)
++			} else {
++				_, err = s.DialContext(context.Background(), metadata)
++			}
++			if err == nil {
++				t.Fatal("failing proxy unexpectedly connected")
++			}
++			names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata))
++			if len(names) != 1 || names[0] != "A" {
++				t.Fatalf("manual failure deleted automatic pin: %v", names)
++			}
++		})
++	}
++}
++
++func TestSmartAutomaticSoftSkippedFailureClearsPin(t *testing.T) {
++	for _, network := range []C.NetWork{C.TCP, C.UDP} {
++		t.Run(network.String(), func(t *testing.T) {
++			smart.InitCache()
++			a := &smartTransferFailProxy{nativeSelectionProxy: nativeSelectionProxy{name: "A", alive: true}}
++			b := &smartTransferFailProxy{nativeSelectionProxy: nativeSelectionProxy{name: "B", alive: true}}
++			s := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b), store: &smart.Store{}, configName: t.Name(), ctx: context.Background()}
++			s.hostFailLimit.Store(2)
++			s.exitWatch = smart.NewExitWatcher(smart.ExitWatcherOptions{Name: s.Name(), Config: s.configName, Store: s.store})
++			metadata := &C.Metadata{Host: t.Name() + ".example", DstIPASN: "unknown", NetWork: network}
++			s.selectProxies(metadata, s.GetProxies(false))
++			s.store.StoreUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata), []C.Proxy{a, b})
++			target, _ := failLookupTargets(metadata, network == C.UDP)
++			s.store.UpdateHostStatus(s.Name(), s.configName, target, metadata, a.Name(), 1, 2, true, true, blockCodeManual, time.Minute)
++			selected, err := s.selectDialProxies(context.Background(), metadata)
++			if err != nil || !selected.pinned || !selected.keepPin || selected.manual || len(selected.proxies) != 1 || selected.proxies[0] != b {
++				t.Fatalf("fixture did not soft-skip cached A: %+v %v", selected, err)
++			}
++			if network == C.UDP {
++				_, err = s.ListenPacketContext(context.Background(), metadata)
++			} else {
++				_, err = s.DialContext(context.Background(), metadata)
++			}
++			if err == nil {
++				t.Fatal("failing fallback unexpectedly connected")
++			}
++			if names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(metadata)); len(names) != 0 {
++				t.Fatalf("failed automatic fallback retained stale pin: %v", names)
++			}
++		})
++	}
++}

@@ -3,6 +3,7 @@ package coremain
 import (
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSQLiteAuditPeriodicCapacityRollsBackEarlierDeleteSteps(t *testing.T) {
@@ -19,6 +20,36 @@ func TestSQLiteAuditPeriodicCapacityRollsBackEarlierDeleteSteps(t *testing.T) {
 	assertAuditBudgetCounts(t, s, 1000, 1000)
 	if s.evictionTargetBytes != before {
 		t.Fatalf("failed maintenance changed target = %d, want %d", s.evictionTargetBytes, before)
+	}
+}
+
+func TestSQLiteAuditRetentionRollsBackRawWhenAggregateDeleteFails(t *testing.T) {
+	s := newAuditBufferTestStorage(t)
+	old := auditBufferFixture()[0]
+	old.QueryTime = time.Now().Add(-48 * time.Hour)
+	if err := s.WriteBatch([]AuditLog{old}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.DB().Exec(`CREATE TRIGGER deny_audit_retention_minute BEFORE DELETE ON audit_minute
+		BEGIN SELECT RAISE(ABORT, 'retention minute delete denied'); END`); err != nil {
+		t.Fatal(err)
+	}
+	err := s.EnforceRetention(AuditSettings{RawRetentionDays: 1, AggregateRetentionDays: 1, MaxStorageMB: 128})
+	if err == nil || !strings.Contains(err.Error(), "trim sqlite audit minute aggregates") {
+		t.Fatalf("retention error = %v, want aggregate delete failure", err)
+	}
+	var raw, minute, hour int
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM audit_log`).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM audit_minute`).Scan(&minute); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DB().QueryRow(`SELECT COUNT(*) FROM audit_hour`).Scan(&hour); err != nil {
+		t.Fatal(err)
+	}
+	if raw != 1 || minute != 1 || hour != 1 {
+		t.Fatalf("retention partially committed raw=%d minute=%d hour=%d", raw, minute, hour)
 	}
 }
 

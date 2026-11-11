@@ -9,6 +9,8 @@ on:
       - main
     paths:
       - '.github/workflows/sing-box-ref1nd.yml'
+      - 'scripts/verify_singbox_runtime.py'
+      - 'scripts/singbox/**'
 
 permissions:
   contents: write
@@ -29,6 +31,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
+      channels: ${{ steps.matrix.outputs.channels }}
     steps:
       - name: Generate build matrix
         id: matrix
@@ -37,6 +40,31 @@ jobs:
           set -euo pipefail
           matrix="$(python3 - <<'PY'
           import json
+          import os
+          import re
+          import subprocess
+
+          repository = 'https://github.com/' + os.environ['SINGBOX_SOURCE_REPOSITORY'] + '.git'
+          refs = ['reF1nd-stable', 'reF1nd-testing']
+          resolved = subprocess.check_output(['git', 'ls-remote', repository, *['refs/heads/' + ref for ref in refs]], text=True)
+          commits = dict(line.split()[::-1] for line in resolved.splitlines())
+          subprocess.run(['git', 'init', '-q', 'source-metadata'], check=True)
+          subprocess.run(['git', '-C', 'source-metadata', 'remote', 'add', 'origin', repository], check=True)
+          subprocess.run(['git', '-C', 'source-metadata', 'fetch', '--quiet', '--filter=blob:none', '--tags',
+                          'origin', *commits.values()], check=True)
+
+          def source_metadata(channel):
+              commit = commits['refs/heads/' + channel['source_ref']]
+              if not re.fullmatch(r'[0-9a-f]{40}', commit):
+                  raise ValueError('expected immutable source SHA')
+              version = subprocess.check_output(['git', '-C', 'source-metadata', 'describe', '--tags', '--always',
+                                                  '--match', 'v*', commit], text=True).strip().removeprefix('v')
+              if re.fullmatch(r'[0-9a-f]{7,40}', version):
+                  version = '0.0.0-reF1nd-' + commit[:12]
+              if not re.fullmatch(r'[0-9A-Za-z._+-]+', version):
+                  raise ValueError('invalid source version')
+              version += '-msm.1'
+              return {**channel, 'source_commit': commit, 'source_version': version}
 
           targets = [
               {"name": "linux-amd64", "goos": "linux", "goarch": "amd64", "goamd64": "v1", "package": "tar.gz", "asset_suffix": "linux-amd64"},
@@ -56,9 +84,12 @@ jobs:
               {"name": "darwin-arm64", "goos": "darwin", "goarch": "arm64", "package": "tar.gz", "asset_suffix": "darwin-arm64"},
           ]
           channels = [
-              {"channel": "stable", "source_ref": "reF1nd-stable", "release_tag": "sing-box-reF1nd", "asset_prefix": "sing-box-reF1nd"},
-              {"channel": "testing", "source_ref": "reF1nd-testing", "release_tag": "sing-box-reF1nd-testing", "asset_prefix": "sing-box-testing-reF1nd"},
+              {"channel": "stable", "source_ref": "reF1nd-stable", "release_tag": "sing-box-reF1nd", "asset_prefix": "sing-box-reF1nd", "prerelease": False},
+              {"channel": "testing", "source_ref": "reF1nd-testing", "release_tag": "sing-box-reF1nd-testing", "asset_prefix": "sing-box-testing-reF1nd", "prerelease": True},
           ]
+          channels = [source_metadata(channel) for channel in channels]
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write('channels=' + json.dumps({'include': channels}, separators=(',', ':')) + '\n')
           print(json.dumps({"include": [{**channel, **target} for channel in channels for target in targets]}, separators=(",", ":")))
           PY
           )"
@@ -83,8 +114,13 @@ jobs:
         uses: actions/checkout@v6
         with:
           repository: reF1nd/sing-box
-          ref: ${{ matrix.source_ref }}
+          ref: ${{ matrix.source_commit }}
           fetch-depth: 0
+
+      - name: Checkout MSM runtime gate
+        uses: actions/checkout@v6
+        with:
+          path: msm-build
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -92,20 +128,43 @@ jobs:
           go-version: stable
           check-latest: true
 
-      - name: Resolve source metadata
-        id: meta
+      - name: Apply audited native repairs to exact source and isolated dependency
         shell: bash
         run: |
           set -euo pipefail
+          bash msm-build/scripts/singbox/apply-patches.sh
+
+      - name: Verify instance services, cancellation and UDP family isolation
+        if: matrix.name == 'linux-amd64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          CGO_ENABLED=1 go test -race -json ./experimental/clashapi github.com/sagernet/sing-shadowsocks/... \
+            -run '^Test(APIRequestsInheritInstanceServicesAndCancellation|.*UDPNAT|2022SplitSessionConcurrentReplies)' \
+            -count=1 | tee native-repair-tests.jsonl
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          passed = {event.get('Test') for line in Path('native-repair-tests.jsonl').read_text().splitlines()
+                    if (event := json.loads(line)).get('Action') == 'pass'}
+          required = {'TestAPIRequestsInheritInstanceServicesAndCancellation', 'TestUDPNATSeparatesDestinationFamilies',
+                      'Test2022UDPNATSeparatesDestinationFamilies', 'Test2022SplitSessionConcurrentReplies'}
+          assert required <= passed, 'required native regressions were skipped: ' + str(required - passed)
+          PY
+
+      - name: Resolve source metadata
+        id: meta
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ matrix.source_commit }}
+          SOURCE_VERSION: ${{ matrix.source_version }}
+        run: |
+          set -euo pipefail
           commit="$(git rev-parse HEAD)"
-          commit_short="$(git rev-parse --short=12 HEAD)"
-          version="$(git describe --tags --always --dirty --match 'v*' | sed 's/^v//')"
-          if [ -z "${version}" ] || [ "${version}" = "unknown" ]; then
-            version="0.0.0-reF1nd-${commit_short}"
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          test "$commit" = "$EXPECTED_COMMIT"
+          echo "version=${SOURCE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
-          echo "commit_short=${commit_short}" >> "$GITHUB_OUTPUT"
+          echo "commit_short=${commit:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Build sing-box
         shell: bash
@@ -120,6 +179,28 @@ jobs:
             output='sing-box.exe'
           fi
           go build -v -trimpath -ldflags "${ldflags}" -tags "${tags}" -o "${output}" ./cmd/sing-box
+          go version -m "${output}" | tee binary-build-info.txt
+          test "$(sed -n 's/.*vcs.revision=//p' binary-build-info.txt)" = '${{ matrix.source_commit }}'
+
+      - name: Gate actual Linux baseline runtime before publishing either channel
+        if: matrix.name == 'linux-amd64'
+        shell: bash
+        env:
+          EXPECTED_VERSION: ${{ matrix.source_version }}
+        run: |
+          set -euo pipefail
+          test "$(./sing-box version | sed -n '1p')" = "sing-box version ${EXPECTED_VERSION}"
+          python3 msm-build/scripts/verify_singbox_runtime.py ./sing-box --work-dir runtime-gate
+
+      - name: Preserve runtime gate evidence
+        if: always() && matrix.name == 'linux-amd64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: singbox-runtime-gate-${{ matrix.channel }}
+          path: |
+            runtime-gate/
+            native-repair-tests.jsonl
+          if-no-files-found: error
 
       - name: Package artifact
         id: package
@@ -146,48 +227,25 @@ jobs:
   release:
     name: Publish ${{ matrix.channel }} release
     runs-on: ubuntu-latest
-    needs: [build]
+    needs: [prepare-matrix, build]
     strategy:
       fail-fast: false
-      matrix:
-        include:
-          - channel: stable
-            source_ref: reF1nd-stable
-            release_tag: sing-box-reF1nd
-            asset_prefix: sing-box-reF1nd
-            prerelease: false
-          - channel: testing
-            source_ref: reF1nd-testing
-            release_tag: sing-box-reF1nd-testing
-            asset_prefix: sing-box-testing-reF1nd
-            prerelease: true
+      matrix: ${{ fromJson(needs.prepare-matrix.outputs.channels) }}
     steps:
       - name: Checkout mosdns workflow scripts
         uses: actions/checkout@v6
 
-      - name: Checkout ${{ matrix.source_ref }} source metadata
-        uses: actions/checkout@v6
-        with:
-          repository: reF1nd/sing-box
-          ref: ${{ matrix.source_ref }}
-          fetch-depth: 0
-          path: singbox-source
-
       - name: Resolve source metadata
         id: meta
         shell: bash
-        working-directory: singbox-source
+        env:
+          SOURCE_COMMIT: ${{ matrix.source_commit }}
+          SOURCE_VERSION: ${{ matrix.source_version }}
         run: |
           set -euo pipefail
-          commit="$(git rev-parse HEAD)"
-          commit_short="$(git rev-parse --short=12 HEAD)"
-          version="$(git describe --tags --always --dirty --match 'v*' | sed 's/^v//')"
-          if [ -z "${version}" ] || [ "${version}" = "unknown" ]; then
-            version="0.0.0-reF1nd-${commit_short}"
-          fi
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
-          echo "commit=${commit}" >> "$GITHUB_OUTPUT"
-          echo "commit_short=${commit_short}" >> "$GITHUB_OUTPUT"
+          echo "version=${SOURCE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "commit=${SOURCE_COMMIT}" >> "$GITHUB_OUTPUT"
+          echo "commit_short=${SOURCE_COMMIT:0:12}" >> "$GITHUB_OUTPUT"
 
       - name: Download ${{ matrix.channel }} artifacts
         uses: actions/download-artifact@v8
@@ -201,6 +259,29 @@ jobs:
         run: |
           set -euo pipefail
           ls -lh ./sing-box
+
+      - name: Record immutable source and archive checksums
+        shell: bash
+        env:
+          SOURCE_COMMIT: ${{ matrix.source_commit }}
+          SOURCE_VERSION: ${{ matrix.source_version }}
+          SOURCE_CHANNEL: ${{ matrix.channel }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          directory = Path('sing-box')
+          assets = sorted(directory.iterdir())
+          assert len(assets) == 15, 'missing or unexpected release artifacts'
+          (directory / 'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in assets))
+          metadata = {'repository': os.environ['SINGBOX_SOURCE_REPOSITORY'], 'commit': os.environ['SOURCE_COMMIT'],
+                      'version': os.environ['SOURCE_VERSION'], 'channel': os.environ['SOURCE_CHANNEL'],
+                      'patch_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path('scripts/singbox/patches').glob('*.patch'))},
+                      'dependencies': {'github.com/sagernet/sing-shadowsocks': 'v0.2.9-0.20260929204512-65740e0f0e3e'},
+                      'gates': ['native-check', 'provider', 'shadowsocks-tcp-udp', 'dns-ipv4-ipv6', 'clash-api-instance-context', 'udp-multiple-families', 'reload-restart-cache']}
+          (directory / 'source.json').write_text(json.dumps(metadata, indent=2))
+          PY
 
       - name: Delete existing fixed release and tag
         uses: actions/github-script@v8
@@ -236,7 +317,7 @@ jobs:
           body: |
             Version: ${{ steps.meta.outputs.version }}
             Channel: ${{ matrix.channel }}
-            Source: https://github.com/${{ env.SINGBOX_SOURCE_REPOSITORY }}/tree/${{ matrix.source_ref }}
+            Source: https://github.com/${{ env.SINGBOX_SOURCE_REPOSITORY }}/tree/${{ matrix.source_commit }}
             Commit: ${{ steps.meta.outputs.commit }}
             Source commit: ${{ steps.meta.outputs.commit_short }}
         env:
@@ -253,7 +334,7 @@ jobs:
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           ARTIFACT_DIR: ./sing-box
-          ARTIFACT_PATTERN: ${{ matrix.asset_prefix }}-*
+          ARTIFACT_PATTERN: '*'
           DEPLOY_SERVERS: ${{ secrets.DEPLOY_SERVERS }}
           TARGET_PATH_OVERRIDE: ${{ env.SINGBOX_SERVER_PATH }}/${{ matrix.channel }}
           WRITE_VERSION_FILE: 'true'

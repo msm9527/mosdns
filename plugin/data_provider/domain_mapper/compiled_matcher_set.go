@@ -9,11 +9,15 @@ import (
 )
 
 type compiledMatcherSet struct {
-	full    *domain.FullMatcher[*compiledMatch]
-	domain  *domain.SubDomainMatcher[*compiledMatch]
-	regex   *domain.RegexMatcher[*compiledMatch]
-	keyword *domain.KeywordMatcher[*compiledMatch]
-	cache   atomic.Pointer[compiledMatchCache]
+	full       *domain.FullMatcher[*compiledMatch]
+	domain     *domain.SubDomainMatcher[*compiledMatch]
+	regex      *domain.RegexMatcher[*compiledMatch]
+	keyword    *domain.KeywordMatcher[*compiledMatch]
+	cache      atomic.Pointer[compiledMatchCache]
+	hasFull    bool
+	hasDomain  bool
+	hasRegex   bool
+	hasKeyword bool
 }
 
 func newCompiledMatcherSet() *compiledMatcherSet {
@@ -42,13 +46,29 @@ func (m *compiledMatcherSet) Add(rule string, compiled *compiledMatch) error {
 	}
 	switch typ {
 	case domain.MatcherFull:
-		return m.full.Add(pattern, compiled)
+		err := m.full.Add(pattern, compiled)
+		if err == nil {
+			m.hasFull = true
+		}
+		return err
 	case domain.MatcherDomain:
-		return m.domain.Add(pattern, compiled)
+		err := m.domain.Add(pattern, compiled)
+		if err == nil {
+			m.hasDomain = true
+		}
+		return err
 	case domain.MatcherRegexp:
-		return m.regex.Add(pattern, compiled)
+		err := m.regex.Add(pattern, compiled)
+		if err == nil {
+			m.hasRegex = true
+		}
+		return err
 	case domain.MatcherKeyword:
-		return m.keyword.Add(pattern, compiled)
+		err := m.keyword.Add(pattern, compiled)
+		if err == nil {
+			m.hasKeyword = true
+		}
+		return err
 	default:
 		return fmt.Errorf("unsupported match type [%s]", typ)
 	}
@@ -67,14 +87,23 @@ func (m *compiledMatcherSet) Match(qname string) (*compiledMatch, bool) {
 
 func (m *compiledMatcherSet) matchUncached(qname string) (*compiledMatch, bool) {
 	var combined *compiledMatch
-	fullMatch, fullOK := m.full.Match(qname)
-	combined = appendCompiledMatch(combined, fullMatch, fullOK)
-	domainMatch, domainOK := m.domain.Match(qname)
-	combined = appendCompiledMatch(combined, domainMatch, domainOK)
-	regexMatch, regexOK := m.regex.Match(qname)
-	combined = appendCompiledMatch(combined, regexMatch, regexOK)
-	keywordMatch, keywordOK := m.keyword.Match(qname)
-	combined = appendCompiledMatch(combined, keywordMatch, keywordOK)
+	qname = domain.NormalizeForMatch(qname)
+	if m.hasFull {
+		fullMatch, fullOK := m.full.MatchNormalized(qname)
+		combined = appendCompiledMatch(combined, fullMatch, fullOK)
+	}
+	if m.hasDomain {
+		domainMatch, domainOK := m.domain.MatchNormalized(qname)
+		combined = appendCompiledMatch(combined, domainMatch, domainOK)
+	}
+	if m.hasRegex {
+		regexMatch, regexOK := m.regex.MatchNormalized(qname)
+		combined = appendCompiledMatch(combined, regexMatch, regexOK)
+	}
+	if m.hasKeyword {
+		keywordMatch, keywordOK := m.keyword.MatchNormalized(qname)
+		combined = appendCompiledMatch(combined, keywordMatch, keywordOK)
+	}
 	if combined == nil {
 		return nil, false
 	}
