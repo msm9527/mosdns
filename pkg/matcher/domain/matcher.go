@@ -258,19 +258,16 @@ func (m *RegexMatcher[T]) MatchNormalized(s string) (v T, ok bool) {
 
 func (m *RegexMatcher[T]) matchNormalized(s string) (v T, ok bool) {
 	for _, e := range m.regs {
-		// Built-in fast matchers already implement the complete expression.
-		// Running the generic suffix/literal filters first would scan the same
-		// query a second time before calling the equivalent shortcut.
-		if e.fast != nil {
-			if e.fast(s) {
-				return e.v, true
-			}
-			continue
-		}
 		if e.suffix != "" && !strings.HasSuffix(s, e.suffix) {
 			continue
 		}
 		if e.hint != "" && !strings.Contains(s, e.hint) {
+			continue
+		}
+		if e.fast != nil {
+			if e.fast(s) {
+				return e.v, true
+			}
 			continue
 		}
 		if e.reg.MatchString(s) {
