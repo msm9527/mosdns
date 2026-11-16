@@ -359,10 +359,9 @@ index 0000000..eda9d84
 +}
 diff --git a/listener/tun_system_route_linux_test.go b/listener/tun_system_route_linux_test.go
 new file mode 100644
-index 0000000..4de30b6
 --- /dev/null
 +++ b/listener/tun_system_route_linux_test.go
-@@ -0,0 +1,152 @@
+@@ -0,0 +1,154 @@
 +//go:build linux
 +
 +package listener
@@ -379,6 +378,7 @@ index 0000000..4de30b6
 +	_ "github.com/metacubex/mihomo/dns" // Initializes SystemResolver, as the application does.
 +	LC "github.com/metacubex/mihomo/listener/config"
 +	"github.com/metacubex/mihomo/tunnel"
++	tun "github.com/metacubex/sing-tun"
 +	"github.com/sagernet/netlink"
 +	"golang.org/x/sys/unix"
 +)
@@ -430,7 +430,8 @@ index 0000000..4de30b6
 +		return rules
 +	}
 +	baseline := snapshot()
-+	conf := LC.Tun{Enable: true, Device: "reload_tun", Stack: C.TunSystem,
++	// A network namespace does not isolate the host's systemd-resolved bus.
++	conf := LC.Tun{Enable: true, Device: "reload_tun", Stack: C.TunSystem, DNSMode: tun.DNSModeDisabled,
 +		AutoRoute: true, AutoDetectInterface: true, SystemRouteMark: 17,
 +		IPRoute2RuleIndex: 11000, MTU: 1500,
 +		Inet4Address: []netip.Prefix{netip.MustParsePrefix("198.18.0.1/30")},
@@ -871,10 +872,9 @@ index 0000000..fe5f702
 +}
 diff --git a/listener/sing_tun/system_route_journal_namespace_linux_test.go b/listener/sing_tun/system_route_journal_namespace_linux_test.go
 new file mode 100644
-index 0000000..227a7e4
 --- /dev/null
 +++ b/listener/sing_tun/system_route_journal_namespace_linux_test.go
-@@ -0,0 +1,299 @@
+@@ -0,0 +1,300 @@
 +//go:build linux
 +
 +package sing_tun
@@ -936,7 +936,8 @@ index 0000000..227a7e4
 +}
 +
 +func journalTestOptions() tun.Options {
-+	return tun.Options{Name: "journal_tun", MTU: 1500, AutoRoute: true, IPRoute2TableIndex: 2022, IPRoute2RuleIndex: 12000,
++	// A network namespace does not isolate the host's systemd-resolved bus.
++	return tun.Options{Name: "journal_tun", MTU: 1500, AutoRoute: true, DNSMode: tun.DNSModeDisabled, IPRoute2TableIndex: 2022, IPRoute2RuleIndex: 12000,
 +		Inet4Address: []netip.Prefix{netip.MustParsePrefix("198.18.0.1/30")}, Inet6Address: []netip.Prefix{netip.MustParsePrefix("fdfe:abcd::1/126")}}
 +}
 +func journalTestListener(o tun.Options, bypass interface{ Close() error }, device tun.Tun) *Listener {
@@ -1176,10 +1177,9 @@ index 0000000..227a7e4
 +}
 diff --git a/listener/sing_tun/system_route_journal_rejection_linux_test.go b/listener/sing_tun/system_route_journal_rejection_linux_test.go
 new file mode 100644
-index 0000000..e002e49
 --- /dev/null
 +++ b/listener/sing_tun/system_route_journal_rejection_linux_test.go
-@@ -0,0 +1,204 @@
+@@ -0,0 +1,217 @@
 +//go:build linux
 +
 +package sing_tun
@@ -1196,6 +1196,25 @@ index 0000000..e002e49
 +	"github.com/sagernet/netlink/nl"
 +	"golang.org/x/sys/unix"
 +)
++
++func journalTestRuleIdentities(t *testing.T) []string {
++	t.Helper()
++	rules, err := systemRouteKernelRules()
++	if err != nil {
++		t.Fatal(err)
++	}
++	identities := make([]string, 0, len(rules))
++	for _, rule := range rules {
++		// Device removal after SIGKILL may still change detached-link flags.
++		// Preserve rule order, action, protocol and every selector in the check.
++		identity, err := systemRouteIdentityFromRaw(rule.fingerprint)
++		if err != nil {
++			t.Fatal(err)
++		}
++		identities = append(identities, identity)
++	}
++	return identities
++}
 +
 +func testSystemRouteJournalRejections(t *testing.T, baseline []netlink.Rule) {
 +	t.Run("live-owner-across-home", func(t *testing.T) {
@@ -1312,26 +1331,20 @@ index 0000000..e002e49
 +					}
 +				}
 +			}
-+			before := systemRouteRuleSnapshot(t)
-+			rawBefore, err := systemRouteKernelRules()
-+			if err != nil {
-+				t.Fatal(err)
-+			}
++			t.Cleanup(func() {
++				undo()
++				if err := CleanupSystemRouteJournal(LC.Tun{}); err != nil {
++					t.Fatal(err)
++				}
++				journalTestAssertClean(t, baseline)
++			})
++			before := journalTestRuleIdentities(t)
 +			if err := CleanupSystemRouteJournal(LC.Tun{}); err == nil {
 +				t.Fatal("unsafe recovery accepted")
 +			}
-+			rawAfter, err := systemRouteKernelRules()
-+			if err != nil {
-+				t.Fatal(err)
-+			}
-+			if !reflect.DeepEqual(before, systemRouteRuleSnapshot(t)) || !reflect.DeepEqual(rawBefore, rawAfter) {
++			if after := journalTestRuleIdentities(t); !reflect.DeepEqual(before, after) {
 +				t.Fatal("rejected recovery changed kernel rules")
 +			}
-+			undo()
-+			if err := CleanupSystemRouteJournal(LC.Tun{}); err != nil {
-+				t.Fatal(err)
-+			}
-+			journalTestAssertClean(t, baseline)
 +		})
 +	}
 +	t.Run("single-family-cold-hot-other-family", func(t *testing.T) {
@@ -1646,7 +1659,6 @@ index 0000000..7d56fb4
 +}
 diff --git a/listener/sing_tun/system_route_namespace_linux_test.go b/listener/sing_tun/system_route_namespace_linux_test.go
 new file mode 100644
-index 0000000..c8f78d2
 --- /dev/null
 +++ b/listener/sing_tun/system_route_namespace_linux_test.go
 @@ -0,0 +1,313 @@
@@ -1768,7 +1780,7 @@ index 0000000..c8f78d2
 +func testSystemRoutePackets(t *testing.T) {
 +	const start = 10000
 +	options := tun.Options{
-+		Name: "system_route", MTU: 1500, AutoRoute: true,
++		Name: "system_route", MTU: 1500, AutoRoute: true, DNSMode: tun.DNSModeDisabled,
 +		IPRoute2TableIndex: 2022, IPRoute2RuleIndex: start,
 +		Inet4Address:      []netip.Prefix{netip.MustParsePrefix("198.18.0.1/30")},
 +		Inet6Address:      []netip.Prefix{netip.MustParsePrefix("fdfe:abcd::1/126")},

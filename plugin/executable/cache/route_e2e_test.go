@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/coremain"
+	"github.com/IrineSistiana/mosdns/v5/pkg/concurrent_map"
 	"github.com/IrineSistiana/mosdns/v5/pkg/query_context"
 	domainmapper "github.com/IrineSistiana/mosdns/v5/plugin/data_provider/domain_mapper"
 	_ "github.com/IrineSistiana/mosdns/v5/plugin/executable/cache_route_tag"
@@ -118,7 +119,9 @@ func TestRouteChangeEndToEndBypassesCachedResponse(t *testing.T) {
 }
 
 func TestRouteDependencyEndToEndIsolatesSharedMainCache(t *testing.T) {
-	cachePlugin := NewCache(&Args{Size: 64}, Opts{})
+	// Keep both routes cached even when their randomized hashes share a
+	// backend shard; eviction is independent of route isolation.
+	cachePlugin := NewCache(&Args{Size: 2 * concurrent_map.MapShardSize}, Opts{})
 	defer cachePlugin.Close()
 
 	domestic := newE2EAnswerExec(net.IPv4(223, 5, 5, 5))

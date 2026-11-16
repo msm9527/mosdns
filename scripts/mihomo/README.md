@@ -119,6 +119,13 @@ The gate also compiles and executes the actual non-Linux validation stub with
 explicit Go source files, so unsupported marked TUN configurations must fail
 preflight while ordinary and disabled TUN configurations remain accepted.
 
+Namespace routing fixtures explicitly disable system DNS integration: a network
+namespace does not isolate the host's systemd-resolved bus, and asynchronous
+resolver commands can retain the test TUN during rapid close/reopen cycles.
+Recovery rejection checks compare canonical rule identities, retaining rule
+order, actions, protocols and selectors while ignoring kernel-derived link flags
+that may change after a crashed process releases its device.
+
 `--unit-only` and `--apply-only` help local development but cannot authorize
 packaging. The build script requires a successful full verification record for
 the exact channel, upstream SHA, and patch fingerprints. An unknown upstream
