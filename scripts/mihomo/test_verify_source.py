@@ -114,6 +114,17 @@ class NativeTestGateTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "missing=.*TestTunSystemRouteFreshParseValidation"):
             self.run_gate(events, channel="smart")
 
+    def test_smart_missing_dependency_regression_is_rejected(self):
+        for name in ("TestSmartOptionalDependenciesLifecycle",
+                     "TestSmartStagedGroupsPreserveActiveDependencyOwners",
+                     "TestSmartModelUpdatesBoundedAndCancellable",
+                     "TestSmartASNDownloadValidationAndCancellation",
+                     "TestSmartParsingDoesNotDownloadOptionalDependencies"):
+            with self.subTest(name=name):
+                events = [event for event in self.smart_events() if event["Test"] != name]
+                with self.assertRaisesRegex(RuntimeError, "missing=.*" + name):
+                    self.run_gate(events, channel="smart")
+
 
 class SmartPatchSafetyTest(unittest.TestCase):
     def test_all_channels_require_selection_patch_and_advance_revision(self):
@@ -124,7 +135,7 @@ class SmartPatchSafetyTest(unittest.TestCase):
             self.assertNotIn("smart-feature-lifecycle.patch", verify.patch_files(channel))
             self.assertNotIn("smart-selection-concurrency.patch", verify.patch_files(channel))
             self.assertNotIn("smart-sampling.patch", verify.patch_files(channel))
-        self.assertEqual(verify.patch_revision("smart"), "msm.5")
+        self.assertEqual(verify.patch_revision("smart"), "msm.6")
         self.assertIn("smart-feature-lifecycle.patch", verify.patch_files("smart"))
         self.assertIn("smart-selection-concurrency.patch", verify.patch_files("smart"))
         self.assertIn("smart.feature-lifecycle", verify.features("smart"))
@@ -133,6 +144,9 @@ class SmartPatchSafetyTest(unittest.TestCase):
         self.assertIn("smart.transfer-lifecycle", verify.features("smart"))
         self.assertIn("smart-sampling.patch", verify.patch_files("smart"))
         self.assertIn("smart.zero-sampling", verify.features("smart"))
+        self.assertIn("smart-dependency-recovery.patch", verify.patch_files("smart"))
+        self.assertIn("smart.dependency-recovery", verify.features("smart"))
+        self.assertIn("smart.request-failover", verify.features("smart"))
         for name in verify.SMART_TRANSFER_TESTS:
             self.assertIn(f"{verify.MODULE}/adapter/outboundgroup:{name}", verify.selection_test_names("smart"))
 

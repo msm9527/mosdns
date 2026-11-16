@@ -36,17 +36,23 @@ BASE_TESTS = {
 SMART_TESTS = {
     "transport/anytls/session": ["TestStreamDoesNotExposeSharedSessionCloseWrite"],
     "component/smart/lightgbm": ["TestSmartModelRecoveryAndAtomicDownload",
-                                "TestSmartCollectorConfigurationLifecycle"],
+                                "TestSmartCollectorConfigurationLifecycle",
+                                "TestSmartModelUpdatesBoundedAndCancellable",
+                                "TestSmartNonFiniteModelPredictionFallsBack"],
+    "component/geodata": ["TestSmartASNDownloadValidationAndCancellation"],
     "adapter/outboundgroup": ["TestSmartASNUnavailableFallback",
                               "TestSmartGlobalTasksSurviveGroupReplacement",
                               "TestSmartDialBudgetAllowsTransientJitter",
                               "TestSmartSampleRateConfiguration",
-                              "TestSmartSampleRateZeroSkipsCollection"],
+                              "TestSmartSampleRateZeroSkipsCollection",
+                              "TestSmartOptionalDependenciesLifecycle",
+                              "TestSmartStagedGroupsPreserveActiveDependencyOwners"],
     "component/updater": ["TestSmartModelAutoUpdaterRetriesMissingAndFailedModel",
                           "TestSmartModelUpdaterHotReload",
                           "TestSmartModelUpdaterCancellationAndIdempotence",
                           "TestSmartModelUpdaterPolicyConcurrentRegistration"],
-    "config": ["TestSmartModelUpdaterIntervalValidation"],
+    "config": ["TestSmartModelUpdaterIntervalValidation",
+               "TestSmartParsingDoesNotDownloadOptionalDependencies"],
 }
 SELECTION_TESTS = ["TestNativeGroupSelectionConcurrent",
                    "TestSelectorDefaultSelection",
@@ -60,22 +66,30 @@ SMART_TRANSFER_TESTS = ["TestSmartAutomaticWinnerPreservesHealthyStream",
                         "TestSmartFirstDialWaitersReadCommittedWinner",
                         "TestSmartFirstDialCancellationAndFailureCleanup",
                         "TestSmartManualDialFailurePreservesAutomaticPin",
-                        "TestSmartAutomaticSoftSkippedFailureClearsPin"]
+                        "TestSmartAutomaticSoftSkippedFailureClearsPin",
+                        "TestSmartFailedAutomaticPinRecoversCurrentRequest"]
 
 
 def patch_revision(channel):
-    return "msm.5" if channel == "smart" else "msm.3"
+    return "msm.6" if channel == "smart" else "msm.3"
 
 
 def features(channel):
     return ["direct-system", "tun.system-route-mark", "group.selection-concurrency"] + (
         ["smart.feature-lifecycle", "smart.selection-concurrency", "smart.transfer-lifecycle",
-         "smart.zero-sampling"] if channel == "smart" else [])
+         "smart.zero-sampling", "smart.dependency-recovery", "smart.request-failover"] if channel == "smart" else [])
 
 
 def selection_test_names(channel):
     tests = SELECTION_TESTS + (SMART_SELECTION_TESTS + SMART_TRANSFER_TESTS if channel == "smart" else [])
-    return sorted(f"{MODULE}/adapter/outboundgroup:{test}" for test in tests)
+    result = [f"{MODULE}/adapter/outboundgroup:{test}" for test in tests]
+    if channel == "smart":
+        result += [f"{MODULE}/adapter/outboundgroup:TestSmartOptionalDependenciesLifecycle",
+                   f"{MODULE}/adapter/outboundgroup:TestSmartStagedGroupsPreserveActiveDependencyOwners",
+                   f"{MODULE}/component/smart/lightgbm:TestSmartModelUpdatesBoundedAndCancellable",
+                   f"{MODULE}/component/geodata:TestSmartASNDownloadValidationAndCancellation",
+                   f"{MODULE}/config:TestSmartParsingDoesNotDownloadOptionalDependencies"]
+    return sorted(result)
 
 
 def run(*command, **kwargs):
@@ -131,7 +145,8 @@ def patch_files(channel):
     if channel == "smart":
         files.extend(["smart-anytls-isolation.patch", "smart-anytls-isolation_test.go.txt",
                       "smart-feature-lifecycle.patch", "smart-selection-concurrency.patch",
-                      "smart-transfer-lifecycle.patch", "smart-sampling.patch"])
+                      "smart-transfer-lifecycle.patch", "smart-sampling.patch",
+                      "smart-dependency-recovery.patch"])
     return files
 
 
@@ -216,8 +231,9 @@ def verify_selection_concurrency(source, channel):
     # Race tests execute on the CI host, independently of the packaged target.
     env["CGO_ENABLED"] = "1"
     names = "^(" + "|".join(re.escape(test) for _, test in sorted(required)) + ")$"
+    packages = sorted({"./" + package.removeprefix(MODULE + "/") for package, _ in required})
     command = ["go", "test", "-json", "-race", "-count=1", "-tags",
-               env.get("MIHOMO_TAGS", "with_gvisor"), "-run", names, "./adapter/outboundgroup"]
+               env.get("MIHOMO_TAGS", "with_gvisor"), "-run", names, *packages]
     return run_test_gate(source, command, env, required, ".msm-selection-race-tests.jsonl")
 
 
@@ -269,6 +285,7 @@ def main():
         apply_patch(source, "smart-selection-concurrency.patch")
         apply_patch(source, "smart-transfer-lifecycle.patch")
         apply_patch(source, "smart-sampling.patch")
+        apply_patch(source, "smart-dependency-recovery.patch")
     if args.apply_only:
         return
     source_hashes = source_fingerprints(source, args.channel)

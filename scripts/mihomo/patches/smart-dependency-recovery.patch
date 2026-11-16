@@ -1,0 +1,1279 @@
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+index 3e45132..95aa08b 100644
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -94,10 +94,11 @@ type Smart struct {
+ 	*GroupBase
+ 	store *smart.Store
+ 
+-	wg        sync.WaitGroup
+-	ctx       context.Context
+-	cancel    context.CancelFunc
+-	closeOnce sync.Once
++	wg                 sync.WaitGroup
++	ctx                context.Context
++	cancel             context.CancelFunc
++	closeOnce          sync.Once
++	dependenciesActive bool // guarded by smartGlobals
+ 
+ 	configName     string
+ 	selected       atomic.TypedValue[string]
+@@ -299,12 +300,17 @@ func (s *Smart) DialContext(ctx context.Context, metadata *C.Metadata) (C.Conn,
+ 		defer selection.release()
+ 	}
+ 
+-	return tryDial(selection.proxies, selection.pinned, selection.keepPin, selection.manual)
++	conn, err := tryDial(selection.proxies, selection.pinned, selection.keepPin, selection.manual)
++	if retry, ok := s.recoverFailedPin(ctx, metadata, selection, err); ok {
++		if retry.release != nil {
++			defer retry.release()
++		}
++		return tryDial(retry.proxies, retry.pinned, retry.keepPin, retry.manual)
++	}
++	return conn, err
+ }
+ 
+ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (pc C.PacketConn, err error) {
+-	var finalErr error
+-
+ 	selection, err := s.selectDialProxies(ctx, metadata)
+ 	if err != nil {
+ 		return nil, err
+@@ -312,6 +318,18 @@ func (s *Smart) ListenPacketContext(ctx context.Context, metadata *C.Metadata) (
+ 	if selection.release != nil {
+ 		defer selection.release()
+ 	}
++	pc, err = s.listenPacketSelection(ctx, metadata, selection)
++	if retry, ok := s.recoverFailedPin(ctx, metadata, selection, err); ok {
++		if retry.release != nil {
++			defer retry.release()
++		}
++		return s.listenPacketSelection(ctx, metadata, retry)
++	}
++	return pc, err
++}
++
++func (s *Smart) listenPacketSelection(ctx context.Context, metadata *C.Metadata, selection smartDialSelection) (pc C.PacketConn, err error) {
++	var finalErr error
+ 	proxies, keepPin := selection.proxies, selection.keepPin
+ 
+ 	limit := len(proxies)
+@@ -2332,19 +2350,14 @@ func (s *Smart) InitSmart() {
+ 	s.store = cachefile.GetSmartStore()
+ 
+ 	s.ctx, s.cancel = context.WithCancel(context.Background())
+-	// Every ASN-enabled group must validate its optional database. A failed or
+-	// corrupt download must never reach ASNInstance(), which is fatal on open.
++	// Validate local optional data without starting network requests while
++	// parsing configurations. Shared workers initialize it after listeners run.
+ 	if s.preferASN {
+ 		s.asnLastCheck = time.Now()
+-		if err := geodata.InitASN(); err != nil {
+-			s.asnError = err.Error()
+-		} else if !mmdb.Verify(C.Path.ASN()) {
+-			s.asnError = "downloaded ASN database is invalid"
+-		} else {
++		if mmdb.Verify(C.Path.ASN()) {
+ 			s.asnReady = true
+-		}
+-		if !s.asnReady {
+-			log.Warnln("[Smart] ASN preference unavailable for %s: %s", s.Name(), s.asnError)
++		} else {
++			s.asnError = "ASN database unavailable; initialization pending"
+ 		}
+ 	}
+ 
+diff --git a/adapter/outboundgroup/smart_dependencies.go b/adapter/outboundgroup/smart_dependencies.go
+new file mode 100644
+index 0000000..4476f60
+--- /dev/null
++++ b/adapter/outboundgroup/smart_dependencies.go
+@@ -0,0 +1,111 @@
++package outboundgroup
++
++import (
++	"context"
++	"sync"
++	"time"
++
++	"github.com/metacubex/mihomo/component/geodata"
++	"github.com/metacubex/mihomo/component/smart/lightgbm"
++	"github.com/metacubex/mihomo/log"
++	"github.com/metacubex/mihomo/tunnel"
++)
++
++type smartDependency struct {
++	sync.Mutex
++	users  int
++	ctx    context.Context
++	cancel context.CancelFunc
++	wake   chan struct{}
++}
++
++func (d *smartDependency) acquire(parent context.Context) {
++	d.Lock()
++	defer d.Unlock()
++	if d.users == 0 {
++		d.ctx, d.cancel = context.WithCancel(parent)
++	}
++	d.users++
++	select {
++	case d.wake <- struct{}{}:
++	default:
++	}
++}
++
++func (d *smartDependency) release() {
++	d.Lock()
++	defer d.Unlock()
++	d.users--
++	if d.users == 0 {
++		d.cancel()
++	}
++}
++
++func (d *smartDependency) current() context.Context {
++	d.Lock()
++	defer d.Unlock()
++	if d.users == 0 {
++		return nil
++	}
++	return d.ctx
++}
++
++func (s *Smart) startOptionalDependencies() {
++	s.startDependencyWorker(&smartGlobals.model, func(ctx context.Context) {
++		if err := lightgbm.EnsureModel(ctx); err != nil && ctx.Err() == nil {
++			log.Warnln("[Smart] Model unavailable, using formula scoring: %v", err)
++		}
++	})
++	s.startDependencyWorker(&smartGlobals.asn, func(ctx context.Context) {
++		if err := geodata.InitASNContext(ctx); err != nil {
++			if ctx.Err() == nil {
++				smartGlobals.asnError.Store(err.Error())
++				log.Warnln("[Smart] ASN unavailable, using ordinary target selection: %v", err)
++			}
++		} else {
++			smartGlobals.asnError.Store("")
++		}
++	})
++}
++
++// Validation never sets tunnel.Running, so it performs no optional downloads.
++// Closing the last group cancels in-flight requests as well as pending retries.
++func (s *Smart) startDependencyWorker(dependency *smartDependency, task func(context.Context)) {
++	dependency.wake = make(chan struct{}, 1)
++	wake := dependency.wake
++	s.wg.Add(1)
++	go func() {
++		defer s.wg.Done()
++		startup := time.NewTicker(100 * time.Millisecond)
++		defer startup.Stop()
++		for tunnel.Status() != tunnel.Running {
++			select {
++			case <-s.ctx.Done():
++				return
++			case <-startup.C:
++			}
++		}
++		select {
++		case <-wake:
++		default:
++		}
++		retry := time.NewTicker(time.Minute)
++		defer retry.Stop()
++		for {
++			if s.ctx.Err() != nil {
++				return
++			}
++			if tunnel.Status() == tunnel.Running {
++				if ctx := dependency.current(); ctx != nil {
++					task(ctx)
++				}
++			}
++			select {
++			case <-s.ctx.Done():
++				return
++			case <-wake:
++			case <-retry.C:
++			}
++		}
++	}()
++}
+diff --git a/adapter/outboundgroup/smart_dependencies_test.go b/adapter/outboundgroup/smart_dependencies_test.go
+new file mode 100644
+index 0000000..90a3905
+--- /dev/null
++++ b/adapter/outboundgroup/smart_dependencies_test.go
+@@ -0,0 +1,96 @@
++package outboundgroup
++
++import (
++	"context"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++	"github.com/metacubex/mihomo/tunnel"
++)
++
++func TestSmartOptionalDependenciesLifecycle(t *testing.T) {
++	previous := tunnel.Status()
++	tunnel.OnSuspend()
++	defer func() {
++		switch previous {
++		case tunnel.Running:
++			tunnel.OnRunning()
++		case tunnel.Inner:
++			tunnel.OnInnerLoading()
++		default:
++			tunnel.OnSuspend()
++		}
++	}()
++	ctx, cancel := context.WithCancel(context.Background())
++	worker := &Smart{ctx: ctx}
++	defer func() { cancel(); worker.wg.Wait() }()
++	dependency := &smartDependency{}
++	started := make(chan context.Context, 4)
++	worker.startDependencyWorker(dependency, func(ctx context.Context) {
++		started <- ctx
++		<-ctx.Done()
++	})
++	dependency.acquire(ctx)
++	select {
++	case <-started:
++		t.Fatal("configuration validation started an optional network task")
++	case <-time.After(150 * time.Millisecond):
++	}
++	tunnel.OnRunning()
++	var first context.Context
++	select {
++	case first = <-started:
++	case <-time.After(2 * time.Second):
++		t.Fatal("dependency did not initialize after the proxy started")
++	}
++	// A reload parses replacements before closing the old groups.
++	dependency.acquire(ctx)
++	dependency.release()
++	if first.Err() != nil {
++		t.Fatal("closing an old group cancelled its replacement's request")
++	}
++	select {
++	case <-started:
++		t.Fatal("replacement spawned a duplicate download")
++	default:
++	}
++	dependency.release()
++	select {
++	case <-first.Done():
++	case <-time.After(time.Second):
++		t.Fatal("disabling the last user did not cancel its download")
++	}
++	dependency.acquire(ctx)
++	select {
++	case next := <-started:
++		if next == first || next.Err() != nil {
++			t.Fatal("re-enabling the feature reused a cancelled request")
++		}
++	case <-time.After(time.Second):
++		t.Fatal("re-enabling the dependency did not retry")
++	}
++	dependency.release()
++}
++
++func TestSmartStagedGroupsPreserveActiveDependencyOwners(t *testing.T) {
++	group := func() *Smart {
++		ctx, cancel := context.WithCancel(context.Background())
++		return &Smart{GroupBase: NewGroupBase(GroupBaseOption{Name: t.Name(), Type: C.Smart}), store: &smart.Store{}, ctx: ctx, cancel: cancel, useLightGBM: true, preferASN: true}
++	}
++	active, staged := group(), group()
++	active.acquireGlobalTasks()
++	active.ActivateDependencies()
++	defer active.Close()
++	modelContext, asnContext := smartGlobals.model.current(), smartGlobals.asn.current()
++	staged.acquireGlobalTasks()
++	_ = staged.Close()
++	if smartGlobals.model.current() != modelContext || smartGlobals.asn.current() != asnContext || modelContext.Err() != nil || asnContext.Err() != nil {
++		t.Fatal("closing an unapplied configuration changed active dependency ownership")
++	}
++	_ = active.Close()
++	if modelContext.Err() == nil || asnContext.Err() == nil || smartGlobals.worker != nil {
++		t.Fatal("closing the final active group leaked its optional workers")
++	}
++}
+diff --git a/adapter/outboundgroup/smart_feature_lifecycle.go b/adapter/outboundgroup/smart_feature_lifecycle.go
+index 1ac2ada..b7e250c 100644
+--- a/adapter/outboundgroup/smart_feature_lifecycle.go
++++ b/adapter/outboundgroup/smart_feature_lifecycle.go
+@@ -3,6 +3,7 @@ package outboundgroup
+ import (
+ 	"context"
+ 	"sync"
++	"sync/atomic"
+ 	"time"
+ 
+ 	"github.com/metacubex/mihomo/component/mmdb"
+@@ -12,8 +13,11 @@ import (
+ 
+ var smartGlobals struct {
+ 	sync.Mutex
+-	users  int
+-	worker *Smart
++	users    int
++	worker   *Smart
++	asnError atomic.Value
++	model    smartDependency
++	asn      smartDependency
+ }
+ 
+ // Millisecond LAN history is an estimate, not a safe handshake deadline. Keep
+@@ -42,22 +46,46 @@ func (s *Smart) acquireGlobalTasks() {
+ 	smartGlobals.Lock()
+ 	defer smartGlobals.Unlock()
+ 	smartGlobals.users++
+-	if smartGlobals.worker != nil {
++	if smartGlobals.worker == nil {
++		ctx, cancel := context.WithCancel(context.Background())
++		worker := &Smart{GroupBase: s.GroupBase, store: s.store, ctx: ctx, cancel: cancel}
++		smartGlobals.worker = worker
++		smartGlobals.asnError.Store("")
++		worker.startOptionalDependencies()
++		worker.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment", worker.store.AdjustCacheParameters, false)
++		worker.startTimedTask(5*time.Minute, flushQueueInterval, "Global queues flush", func() {
++			worker.store.FlushQueue(true)
++		}, false)
++	}
++}
++
++// Only committed groups may request optional downloads. Parsing another config
++// while a core is already running must not change its dependency policy.
++func (s *Smart) ActivateDependencies() {
++	smartGlobals.Lock()
++	defer smartGlobals.Unlock()
++	if s.dependenciesActive || s.ctx.Err() != nil || smartGlobals.worker == nil {
+ 		return
+ 	}
+-	ctx, cancel := context.WithCancel(context.Background())
+-	worker := &Smart{GroupBase: s.GroupBase, store: s.store, ctx: ctx, cancel: cancel}
+-	smartGlobals.worker = worker
+-	worker.startTimedTask(5*time.Second, cacheParamAdjustInterval, "Global cache parameters adjustment", worker.store.AdjustCacheParameters, false)
+-	worker.startTimedTask(5*time.Minute, flushQueueInterval, "Global queues flush", func() {
+-		worker.store.FlushQueue(true)
+-	}, false)
++	s.dependenciesActive = true
++	if s.useLightGBM {
++		smartGlobals.model.acquire(smartGlobals.worker.ctx)
++	}
++	if s.preferASN {
++		smartGlobals.asn.acquire(smartGlobals.worker.ctx)
++	}
+ }
+ 
+ func (s *Smart) releaseGlobalTasks() {
+ 	smartGlobals.Lock()
+ 	defer smartGlobals.Unlock()
+ 	smartGlobals.users--
++	if s.dependenciesActive && s.useLightGBM {
++		smartGlobals.model.release()
++	}
++	if s.dependenciesActive && s.preferASN {
++		smartGlobals.asn.release()
++	}
+ 	if smartGlobals.users != 0 || smartGlobals.worker == nil {
+ 		return
+ 	}
+@@ -84,5 +112,10 @@ func (s *Smart) asnStatus() (bool, string) {
+ 			log.Infoln("[Smart] ASN preference recovered for %s", s.Name())
+ 		}
+ 	}
++	if !s.asnReady {
++		if message, ok := smartGlobals.asnError.Load().(string); ok && message != "" {
++			return false, message
++		}
++	}
+ 	return s.asnReady, s.asnError
+ }
+diff --git a/adapter/outboundgroup/smart_recovery_test.go b/adapter/outboundgroup/smart_recovery_test.go
+new file mode 100644
+index 0000000..d20eeb9
+--- /dev/null
++++ b/adapter/outboundgroup/smart_recovery_test.go
+@@ -0,0 +1,106 @@
++package outboundgroup
++
++import (
++	"context"
++	"io"
++	"net"
++	"net/netip"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/adapter/outbound"
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++type smartRecoveryProxy struct {
++	nativeSelectionProxy
++	direct *outbound.Direct
++}
++
++func (p *smartRecoveryProxy) Type() C.AdapterType { return C.Direct }
++func (p *smartRecoveryProxy) SupportUDP() bool    { return true }
++func (p *smartRecoveryProxy) DialContext(ctx context.Context, m *C.Metadata) (C.Conn, error) {
++	return p.direct.DialContext(ctx, m)
++}
++func (p *smartRecoveryProxy) ListenPacketContext(ctx context.Context, m *C.Metadata) (C.PacketConn, error) {
++	return p.direct.ListenPacketContext(ctx, m)
++}
++
++func TestSmartFailedAutomaticPinRecoversCurrentRequest(t *testing.T) {
++	for _, network := range []C.NetWork{C.TCP, C.UDP} {
++		t.Run(network.String(), func(t *testing.T) {
++			smart.InitCache()
++			a := &smartTransferFailProxy{nativeSelectionProxy: nativeSelectionProxy{name: "A", alive: true}}
++			b := &smartRecoveryProxy{nativeSelectionProxy: nativeSelectionProxy{name: "B", alive: true}, direct: outbound.NewDirectWithOption(outbound.DirectOption{Name: "B"})}
++			s := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b), store: &smart.Store{}, configName: t.Name(), ctx: context.Background()}
++			s.exitWatch = smart.NewExitWatcher(smart.ExitWatcherOptions{Name: s.Name(), Config: s.configName, Store: s.store})
++			m := &C.Metadata{DstIP: netip.MustParseAddr("127.0.0.1"), DstIPASN: "unknown", NetWork: network}
++			s.selectProxies(m, s.GetProxies(false))
++			s.store.StoreUnwrapResult(s.Name(), s.configName, s.unwrapKey(m), []C.Proxy{a})
++			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
++			defer cancel()
++			payload := []byte("smart-recovered")
++			if network == C.TCP {
++				listener, err := net.Listen("tcp", "127.0.0.1:0")
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer listener.Close()
++				go func() {
++					conn, err := listener.Accept()
++					if err != nil {
++						return
++					}
++					defer conn.Close()
++					_, _ = io.Copy(conn, conn)
++				}()
++				m.DstPort = uint16(listener.Addr().(*net.TCPAddr).Port)
++				conn, err := s.DialContext(ctx, m)
++				if err != nil {
++					t.Fatal("same request did not recover:", err)
++				}
++				defer conn.Close()
++				_ = conn.SetDeadline(time.Now().Add(time.Second))
++				if _, err = conn.Write(payload); err != nil {
++					t.Fatal(err)
++				}
++				buffer := make([]byte, len(payload))
++				if _, err = io.ReadFull(conn, buffer); err != nil || string(buffer) != string(payload) {
++					t.Fatalf("TCP recovery lost application data: %q %v", buffer, err)
++				}
++			} else {
++				server, err := net.ListenPacket("udp", "127.0.0.1:0")
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer server.Close()
++				go func() {
++					buffer := make([]byte, 128)
++					n, address, err := server.ReadFrom(buffer)
++					if err == nil {
++						_, _ = server.WriteTo(buffer[:n], address)
++					}
++				}()
++				m.DstPort = uint16(server.LocalAddr().(*net.UDPAddr).Port)
++				conn, err := s.ListenPacketContext(ctx, m)
++				if err != nil {
++					t.Fatal("same packet request did not recover:", err)
++				}
++				defer conn.Close()
++				_ = conn.SetDeadline(time.Now().Add(time.Second))
++				if _, err = conn.WriteTo(payload, server.LocalAddr()); err != nil {
++					t.Fatal(err)
++				}
++				buffer := make([]byte, 128)
++				n, _, err := conn.ReadFrom(buffer)
++				if err != nil || string(buffer[:n]) != string(payload) {
++					t.Fatalf("UDP recovery lost application data: %q %v", buffer[:n], err)
++				}
++			}
++			if names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(m)); len(names) != 1 || names[0] != "B" {
++				t.Fatalf("successful recovery did not update future connections: %v", names)
++			}
++		})
++	}
++}
+diff --git a/adapter/outboundgroup/smart_transfer.go b/adapter/outboundgroup/smart_transfer.go
+index 60db5c1..c82f3f8 100644
+--- a/adapter/outboundgroup/smart_transfer.go
++++ b/adapter/outboundgroup/smart_transfer.go
+@@ -6,6 +6,7 @@ import (
+ 	"sync"
+ 
+ 	C "github.com/metacubex/mihomo/constant"
++	"github.com/metacubex/mihomo/tunnel"
+ )
+ 
+ type smartPinDial struct {
+@@ -54,6 +55,37 @@ type smartDialSelection struct {
+ }
+ 
+ func (s *Smart) selectDialProxies(ctx context.Context, metadata *C.Metadata) (smartDialSelection, error) {
++	return s.selectDialProxiesExcluding(ctx, metadata, nil)
++}
++
++// Retry only failed automatic pins, once, before any application bytes have
++// been sent. A manual selection and caller cancellation remain authoritative.
++func (s *Smart) recoverFailedPin(ctx context.Context, metadata *C.Metadata, failed smartDialSelection, err error) (smartDialSelection, bool) {
++	if err == nil || !failed.pinned || failed.manual || ctx.Err() != nil || tunnel.ShouldStopRetry(err) {
++		return smartDialSelection{}, false
++	}
++	excluded := make(map[string]bool, len(failed.proxies))
++	for _, proxy := range failed.proxies {
++		excluded[proxy.Name()] = true
++	}
++	selection, selectErr := s.selectDialProxiesExcluding(ctx, metadata, excluded)
++	return selection, selectErr == nil
++}
++
++func (s *Smart) selectDialProxiesExcluding(ctx context.Context, metadata *C.Metadata, excluded map[string]bool) (smartDialSelection, error) {
++	available := func() []C.Proxy {
++		all := s.GetProxies(true)
++		if len(excluded) == 0 || s.selected.Load() != "" {
++			return all
++		}
++		result := make([]C.Proxy, 0, len(all))
++		for _, proxy := range all {
++			if !excluded[proxy.Name()] {
++				result = append(result, proxy)
++			}
++		}
++		return result
++	}
+ 	for attempt := 0; attempt < maxRetries; attempt++ {
+ 		if err := ctx.Err(); err != nil {
+ 			return smartDialSelection{}, err
+@@ -61,7 +93,11 @@ func (s *Smart) selectDialProxies(ctx context.Context, metadata *C.Metadata) (sm
+ 		if s.ctx != nil && s.ctx.Err() != nil {
+ 			return smartDialSelection{}, s.ctx.Err()
+ 		}
+-		proxies, pinned, keepPin, manual := s.selectProxyCandidates(metadata, s.GetProxies(true))
++		all := available()
++		if len(all) == 0 {
++			return smartDialSelection{}, errors.New("Smart has no remaining proxy candidates")
++		}
++		proxies, pinned, keepPin, manual := s.selectProxyCandidates(metadata, all)
+ 		if pinned || keepPin {
+ 			return smartDialSelection{proxies: proxies, pinned: pinned, keepPin: keepPin, manual: manual}, nil
+ 		}
+@@ -74,7 +110,12 @@ func (s *Smart) selectDialProxies(ctx context.Context, metadata *C.Metadata) (sm
+ 			continue // another caller finished; read its committed pin
+ 		}
+ 		// A winner may have committed between our first selection and acquisition.
+-		proxies, pinned, keepPin, manual = s.selectProxyCandidates(metadata, s.GetProxies(true))
++		all = available()
++		if len(all) == 0 {
++			release()
++			return smartDialSelection{}, errors.New("Smart has no remaining proxy candidates")
++		}
++		proxies, pinned, keepPin, manual = s.selectProxyCandidates(metadata, all)
+ 		if !pinned && !keepPin && s.unwrapKey(metadata) != key {
+ 			release()
+ 			continue // site/ASN ownership changed while this decision was acquired
+diff --git a/component/geodata/asn_recovery_test.go b/component/geodata/asn_recovery_test.go
+new file mode 100644
+index 0000000..961d2ff
+--- /dev/null
++++ b/component/geodata/asn_recovery_test.go
+@@ -0,0 +1,55 @@
++package geodata
++
++import (
++	"context"
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"path/filepath"
++	"testing"
++	"time"
++
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestSmartASNDownloadValidationAndCancellation(t *testing.T) {
++	previousHome, previousURL := C.Path.HomeDir(), ASNUrl()
++	C.SetHomeDir(t.TempDir())
++	defer func() { C.SetHomeDir(previousHome); SetASNUrl(previousURL) }()
++	const original = "keep existing data on download failure"
++	if err := os.WriteFile(C.Path.ASN(), []byte(original), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	for _, name := range []string{"http-error", "invalid", "empty", "oversized", "cancelled"} {
++		t.Run(name, func(t *testing.T) {
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				switch name {
++				case "http-error":
++					w.WriteHeader(http.StatusServiceUnavailable)
++				case "invalid":
++					_, _ = w.Write([]byte("not a database"))
++				case "empty":
++				case "oversized":
++					w.Header().Set("Content-Length", fmt.Sprint((128<<20)+1))
++				case "cancelled":
++					<-r.Context().Done()
++				}
++			}))
++			defer server.Close()
++			SetASNUrl(server.URL)
++			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
++			defer cancel()
++			if err := InitASNContext(ctx); err == nil {
++				t.Fatal("invalid ASN download accepted")
++			}
++			if data, err := os.ReadFile(C.Path.ASN()); err != nil || string(data) != original {
++				t.Fatalf("failed download replaced existing data: %q %v", data, err)
++			}
++			staged, err := filepath.Glob(filepath.Join(C.Path.HomeDir(), ".ASN.mmdb-*"))
++			if err != nil || len(staged) != 0 {
++				t.Fatalf("staging files leaked: %v %v", staged, err)
++			}
++		})
++	}
++}
+diff --git a/component/geodata/init.go b/component/geodata/init.go
+index 7b87844..0f1d587 100644
+--- a/component/geodata/init.go
++++ b/component/geodata/init.go
+@@ -25,6 +25,7 @@ var (
+ 	initGeoSiteMutex sync.Mutex
+ 	initGeoIPMutex   sync.Mutex
+ 	initASNMutex     sync.Mutex
++	asnURLMutex      sync.RWMutex
+ 
+ 	geoIpEnable   atomic.Bool
+ 	geoSiteEnable atomic.Bool
+@@ -61,10 +62,14 @@ func SetGeoSiteUrl(url string) {
+ }
+ 
+ func ASNUrl() string {
++	asnURLMutex.RLock()
++	defer asnURLMutex.RUnlock()
+ 	return asnUrl
+ }
+ 
+ func SetASNUrl(url string) {
++	asnURLMutex.Lock()
++	defer asnURLMutex.Unlock()
+ 	asnUrl = url
+ }
+ 
+@@ -166,29 +171,75 @@ func InitGeoIP() error {
+ }
+ 
+ func InitASN() error {
++	return InitASNContext(context.Background())
++}
++
++// InitASNContext installs only verified data and preserves the previous file
++// on failed, interrupted or malformed downloads.
++func InitASNContext(parent context.Context) error {
+ 	asnEnable.Store(true)
+-	initASNMutex.Lock()
+-	defer initASNMutex.Unlock()
+-	if _, err := os.Stat(C.Path.ASN()); os.IsNotExist(err) {
+-		log.Infoln("Can't find ASN.mmdb, start download")
+-		if err := downloadToPath(ASNUrl(), C.Path.ASN()); err != nil {
+-			return fmt.Errorf("can't download ASN.mmdb: %s", err.Error())
+-		}
+-		log.Infoln("Download ASN.mmdb finish")
+-		initASN = false
+-	}
+-	if !initASN {
+-		if !mmdb.Verify(C.Path.ASN()) {
+-			log.Warnln("ASN invalid, remove and download")
+-			if err := os.Remove(C.Path.ASN()); err != nil {
+-				return fmt.Errorf("can't remove invalid ASN: %s", err.Error())
+-			}
+-			if err := downloadToPath(ASNUrl(), C.Path.ASN()); err != nil {
+-				return fmt.Errorf("can't download ASN: %s", err.Error())
+-			}
++	for !initASNMutex.TryLock() {
++		select {
++		case <-parent.Done():
++			return parent.Err()
++		case <-time.After(10 * time.Millisecond):
+ 		}
++	}
++	defer initASNMutex.Unlock()
++	if err := parent.Err(); err != nil {
++		return err
++	}
++	if mmdb.Verify(C.Path.ASN()) {
+ 		initASN = true
++		return nil
++	}
++	const maximum = 128 << 20
++	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
++	defer cancel()
++	downloadURL := ASNUrl()
++	response, err := mihomoHttp.HttpRequest(ctx, downloadURL, http.MethodGet, nil, nil)
++	if err != nil {
++		return fmt.Errorf("can't download ASN: %w", err)
++	}
++	defer response.Body.Close()
++	if response.StatusCode != http.StatusOK {
++		return fmt.Errorf("ASN download returned HTTP %d", response.StatusCode)
++	}
++	if response.ContentLength > maximum {
++		return fmt.Errorf("ASN download exceeds %d bytes", maximum)
++	}
++	file, err := os.CreateTemp(C.Path.HomeDir(), ".ASN.mmdb-*")
++	if err != nil {
++		return err
++	}
++	defer os.Remove(file.Name())
++	defer file.Close()
++	written, err := io.Copy(file, io.LimitReader(response.Body, maximum+1))
++	if err != nil {
++		return err
++	}
++	if written == 0 || written > maximum {
++		return fmt.Errorf("ASN download has invalid size %d", written)
++	}
++	if err := file.Sync(); err != nil {
++		return err
++	}
++	if err := file.Close(); err != nil {
++		return err
++	}
++	if !mmdb.Verify(file.Name()) {
++		return fmt.Errorf("downloaded ASN database is invalid")
++	}
++	if err := os.Chmod(file.Name(), 0o644); err != nil {
++		return err
++	}
++	if downloadURL != ASNUrl() {
++		return fmt.Errorf("ASN download settings changed; retry with the current URL")
++	}
++	if err := os.Rename(file.Name(), C.Path.ASN()); err != nil {
++		return err
+ 	}
++	initASN = true
+ 	return nil
+ }
+ 
+diff --git a/component/smart/lightgbm/dependency_test.go b/component/smart/lightgbm/dependency_test.go
+new file mode 100644
+index 0000000..b8f57ec
+--- /dev/null
++++ b/component/smart/lightgbm/dependency_test.go
+@@ -0,0 +1,107 @@
++package lightgbm
++
++import (
++	"context"
++	"errors"
++	"math"
++	"net/http"
++	"net/http/httptest"
++	"os"
++	"strings"
++	"sync"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestSmartModelUpdatesBoundedAndCancellable(t *testing.T) {
++	lifecycleHome(t)
++	oldURL := LgbmUrl()
++	smartModel, modelOnce = nil, sync.Once{}
++	t.Cleanup(func() { smartModel, modelOnce = nil, sync.Once{}; SetLgbmUrl(oldURL) })
++	if err := os.WriteFile(C.Path.SmartModel(), []byte(lifecycleModel), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	m := GetModel()
++	for _, name := range []string{"oversized", "cancelled"} {
++		t.Run(name, func(t *testing.T) {
++			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++				if name == "oversized" {
++					w.Header().Set("Content-Length", "67108865")
++				} else {
++					<-r.Context().Done()
++				}
++			}))
++			defer server.Close()
++			SetLgbmUrl(server.URL)
++			ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
++			defer cancel()
++			if err := UpdateModel(ctx); err == nil {
++				t.Fatal("unsafe model update accepted")
++			}
++			if ready, _ := m.Status(); !ready {
++				t.Fatal("failed update disabled working inference")
++			}
++			if data, err := os.ReadFile(C.Path.SmartModel()); err != nil || string(data) != lifecycleModel {
++				t.Fatalf("working model replaced: %v", err)
++			}
++		})
++	}
++	entered, release := make(chan struct{}), make(chan struct{})
++	var releaseOnce sync.Once
++	unblock := func() { releaseOnce.Do(func() { close(release) }) }
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		close(entered)
++		select {
++		case <-release:
++			_, _ = w.Write([]byte(lifecycleModel))
++		case <-r.Context().Done():
++		}
++	}))
++	defer server.Close()
++	defer unblock()
++	SetLgbmUrl(server.URL)
++	ctx, cancel := context.WithCancel(context.Background())
++	defer cancel()
++	finished := make(chan error, 1)
++	go func() { finished <- UpdateModel(ctx) }()
++	select {
++	case <-entered:
++	case <-time.After(time.Second):
++		t.Fatal("update did not start")
++	}
++	waiter, stop := context.WithTimeout(context.Background(), 50*time.Millisecond)
++	defer stop()
++	if err := UpdateModel(waiter); !errors.Is(err, context.DeadlineExceeded) {
++		t.Fatalf("queued update ignored cancellation: %v", err)
++	}
++	// An old response must not overwrite settings from a newly applied config.
++	SetLgbmUrl(server.URL + "/new-config")
++	unblock()
++	select {
++	case err := <-finished:
++		if err == nil || !strings.Contains(err.Error(), "settings changed") {
++			t.Fatalf("obsolete update was installed: %v", err)
++		}
++	case <-time.After(time.Second):
++		t.Fatal("update did not release its worker")
++	}
++}
++
++func TestSmartNonFiniteModelPredictionFallsBack(t *testing.T) {
++	lifecycleHome(t)
++	data := strings.Replace(lifecycleModel, "leaf_value=0.43 0.59", "leaf_value=+Inf +Inf", 1)
++	if err := os.WriteFile(C.Path.SmartModel(), []byte(data), 0o600); err != nil {
++		t.Fatal(err)
++	}
++	m := &WeightModel{}
++	if err := m.loadModel(C.Path.SmartModel()); err != nil {
++		t.Fatal(err)
++	}
++	input := &smart.ModelInput{Success: 3, IsTCP: true, ConnectTime: 5, Latency: 10}
++	if weight, used := m.PredictWeight(input, 1); used || math.IsInf(weight, 0) || math.IsNaN(weight) {
++		t.Fatalf("non-finite inference escaped to node scoring: %v %v", weight, used)
++	}
++}
+diff --git a/component/smart/lightgbm/lifecycle_test.go b/component/smart/lightgbm/lifecycle_test.go
+index 5fbdbdd..b599a75 100644
+--- a/component/smart/lightgbm/lifecycle_test.go
++++ b/component/smart/lightgbm/lifecycle_test.go
+@@ -1,6 +1,7 @@
+ package lightgbm
+ 
+ import (
++	"context"
+ 	"encoding/csv"
+ 	"fmt"
+ 	"net/http"
+@@ -73,6 +74,12 @@ func TestSmartModelRecoveryAndAtomicDownload(t *testing.T) {
+ 	if m == nil {
+ 		t.Fatal("failed first download must retain a recoverable model handle")
+ 	}
++	if requests != 0 {
++		t.Fatal("configuration access started an optional download")
++	}
++	if err := EnsureModel(context.Background()); err == nil {
++		t.Fatal("failed initial download must report its error")
++	}
+ 	if ready, err := m.Status(); ready || !strings.Contains(err, "503") {
+ 		t.Fatalf("first failure status: %v %q", ready, err)
+ 	}
+diff --git a/component/smart/lightgbm/lightgbm.go b/component/smart/lightgbm/lightgbm.go
+index 671b231..727b1f1 100644
+--- a/component/smart/lightgbm/lightgbm.go
++++ b/component/smart/lightgbm/lightgbm.go
+@@ -51,6 +51,7 @@ var (
+ 	modelOnce    sync.Once
+ 	lgbmURLMutex sync.RWMutex
+ 	lgbmUrl      string
++	modelUpdates = make(chan struct{}, 1)
+ 
+ 	domainRegex = regexp.MustCompile(`([a-zA-Z0-9-]+)(\.[a-zA-Z0-9-]+)+$`)
+ 
+@@ -540,31 +541,62 @@ func init() {
+ 	}
+ }
+ 
+-// GetModel always returns the same handle, including after a failed first load.
+-// Groups can then recover in place when a later update installs a valid model.
++// GetModel reads local data only. Optional network dependencies must never hold
++// configuration validation or the initial proxy listener hostage.
+ func GetModel() *WeightModel {
+ 	modelOnce.Do(func() {
+ 		smartModel = &WeightModel{}
+-		modelPath := C.Path.SmartModel()
+-		if err := smartModel.loadModel(modelPath); err == nil {
++		if err := smartModel.loadModel(C.Path.SmartModel()); err == nil {
+ 			log.Infoln("[Smart] Model file loaded successfully")
+-			return
+ 		}
+-		log.Infoln("[Smart] Model unavailable, start download")
+-		if err := downloadModel(modelPath); err != nil {
+-			smartModel.setLoadError(err)
+-			log.Errorln("[Smart] Can't download Model.bin: %v", err)
+-			return
+-		}
+-		if err := smartModel.loadModel(modelPath); err != nil {
+-			log.Errorln("[Smart] Failed to load downloaded Model.bin: %v", err)
+-			return
+-		}
+-		log.Infoln("[Smart] Model.bin downloaded and loaded successfully")
+ 	})
+ 	return smartModel
+ }
+ 
++// EnsureModel retries a missing dependency on a cancellable background path.
++// A loaded model is retained; version refresh remains the updater's job.
++func EnsureModel(ctx context.Context) error {
++	return updateModel(ctx, true)
++}
++
++// UpdateModel shares the bounded, validated atomic download path with initial
++// dependency loading. Overlapping updates do not install competing candidates.
++func UpdateModel(ctx context.Context) error {
++	return updateModel(ctx, false)
++}
++
++func updateModel(ctx context.Context, onlyMissing bool) error {
++	m := GetModel()
++	started := time.Now()
++	select {
++	case <-ctx.Done():
++		return ctx.Err()
++	case modelUpdates <- struct{}{}:
++	}
++	defer func() { <-modelUpdates }()
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	m.mutex.RLock()
++	ready, updated := m.model != nil, m.lastUpdate.After(started)
++	m.mutex.RUnlock()
++	if ready && (onlyMissing || updated) {
++		return nil
++	}
++	if onlyMissing {
++		if err := m.loadModel(C.Path.SmartModel()); err == nil {
++			return nil
++		}
++	}
++	if err := downloadModelContext(ctx, C.Path.SmartModel()); err != nil {
++		if ctx.Err() == nil {
++			m.setLoadError(err)
++		}
++		return err
++	}
++	return m.loadModel(C.Path.SmartModel())
++}
++
+ // Status reports effective readiness separately from the configured toggle.
+ func (m *WeightModel) Status() (bool, string) {
+ 	if m == nil {
+@@ -611,6 +643,13 @@ func (m *WeightModel) loadModel(path string) (err error) {
+ 		}
+ 	}()
+ 
++	info, err := os.Stat(path)
++	if err != nil {
++		return err
++	}
++	if info.Size() == 0 || info.Size() > maxModelDownloadBytes {
++		return fmt.Errorf("model has invalid size %d", info.Size())
++	}
+ 	model, err := leaves.LGEnsembleFromFile(path, false)
+ 	if err != nil {
+ 		return fmt.Errorf("failed to load binary model: %v", err)
+@@ -678,11 +717,15 @@ func LgbmUrl() string {
+ }
+ 
+ func downloadModel(path string) error {
++	return downloadModelContext(context.Background(), path)
++}
++
++func downloadModelContext(parent context.Context, path string) error {
+ 	modelURL := LgbmUrl()
+ 	if modelURL == "" {
+ 		modelURL = GetModelDownloadURL()
+ 	}
+-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
++	ctx, cancel := context.WithTimeout(parent, 90*time.Second)
+ 	defer cancel()
+ 	resp, err := mihomoHttp.HttpRequest(ctx, modelURL, http.MethodGet, nil, nil)
+ 	if err != nil {
+@@ -721,6 +764,13 @@ func downloadModel(path string) error {
+ 	if err := os.Chmod(staged, 0o644); err != nil {
+ 		return err
+ 	}
++	currentURL := LgbmUrl()
++	if currentURL == "" {
++		currentURL = GetModelDownloadURL()
++	}
++	if currentURL != modelURL {
++		return fmt.Errorf("model download settings changed; retry with the current URL")
++	}
+ 	return os.Rename(staged, path)
+ }
+ 
+@@ -776,11 +826,15 @@ func (m *WeightModel) PredictWeight(input *smart.ModelInput, priorityFactor floa
+ 
+ 	prediction = model.PredictSingle(features, 0)
+ 
+-	if math.IsNaN(prediction) || prediction <= 0 {
++	if math.IsNaN(prediction) || math.IsInf(prediction, 0) || prediction <= 0 {
+ 		return smart.CalculateWeight(input, priorityFactor)
+ 	}
+ 
+-	return prediction * priorityFactor, true
++	weight = prediction * priorityFactor
++	if math.IsNaN(weight) || math.IsInf(weight, 0) {
++		return smart.CalculateWeight(input, priorityFactor)
++	}
++	return weight, true
+ }
+ 
+ func hashStringToFloat(s string, buckets int) float64 {
+diff --git a/component/updater/update_lgbm.go b/component/updater/update_lgbm.go
+index 1c67a29..e43af17 100644
+--- a/component/updater/update_lgbm.go
++++ b/component/updater/update_lgbm.go
+@@ -9,8 +9,6 @@ import (
+ 	"time"
+ 
+ 	"github.com/metacubex/mihomo/common/atomic"
+-	"github.com/metacubex/mihomo/common/utils"
+-	"github.com/metacubex/mihomo/component/resource"
+ 	"github.com/metacubex/mihomo/component/smart/lightgbm"
+ 	C "github.com/metacubex/mihomo/constant"
+ 	"github.com/metacubex/mihomo/log"
+@@ -23,59 +21,10 @@ func UpdateLgbmModel() (err error) {
+ }
+ 
+ func updateLgbmModelContext(ctx context.Context) (err error) {
+-	modelUrl := lightgbm.LgbmUrl()
+-	if modelUrl == "" {
+-		modelUrl = lightgbm.GetModelDownloadURL()
++	if err := lightgbm.UpdateModel(ctx); err != nil {
++		return fmt.Errorf("can't update LightGBM model: %w", err)
+ 	}
+-
+-	vehicle := resource.NewHTTPVehicle(modelUrl, C.Path.SmartModel(), "", nil, defaultHttpTimeout, 0)
+-	var oldHash utils.HashType
+-	if buf, err := os.ReadFile(vehicle.Path()); err == nil {
+-		oldHash = utils.MakeHash(buf)
+-	}
+-	data, hash, err := vehicle.Read(ctx, oldHash)
+-	if err != nil {
+-		return fmt.Errorf("can't download LightGBM model file: %w", err)
+-	}
+-	if oldHash.Equal(hash) {
+-		// The file can have been restored while the original groups still hold
+-		// an unloaded handle. "Up to date" must also activate that valid file.
+-		if err := lightgbm.ValidateModel(vehicle.Path()); err != nil {
+-			return fmt.Errorf("invalid installed LightGBM model file: %w", err)
+-		}
+-		lightgbm.ReloadModel()
+-		log.Infoln("[Smart] LightGBM model is up to date")
+-		return nil
+-	}
+-	if len(data) == 0 {
+-		return fmt.Errorf("can't download LightGBM model file: no data")
+-	}
+-
+-	tmpFile, err := os.CreateTemp("", "lgbm_model_*.bin")
+-	if err != nil {
+-		return fmt.Errorf("failed to create temp file for validation: %w", err)
+-	}
+-	tmpPath := tmpFile.Name()
+-	tmpFile.Close()
+-	defer os.Remove(tmpPath)
+-
+-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+-		return fmt.Errorf("failed to write temp file: %w", err)
+-	}
+-
+-	if err = lightgbm.ValidateModel(tmpPath); err != nil {
+-		return fmt.Errorf("invalid LightGBM model file: %s", err)
+-	}
+-
+-	if err = vehicle.Write(data); err != nil {
+-		return fmt.Errorf("can't save LightGBM model file: %w", err)
+-	}
+-
+-	defer func() {
+-		log.Infoln("[Smart] LightGBM model update completed")
+-		lightgbm.ReloadModel()
+-	}()
+-
++	log.Infoln("[Smart] LightGBM model update completed")
+ 	return nil
+ }
+ 
+diff --git a/config/config.go b/config/config.go
+index 13f4c5d..2554331 100644
+--- a/config/config.go
++++ b/config/config.go
+@@ -639,6 +639,16 @@ func UnmarshalRawConfig(buf []byte) (*RawConfig, error) {
+ 
+ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
+ 	config := &Config{}
++	complete := false
++	defer func() {
++		if !complete {
++			for _, proxy := range config.Proxies {
++				if group, ok := proxy.Adapter().(*outboundgroup.Smart); ok {
++					_ = group.Close()
++				}
++			}
++		}
++	}()
+ 	log.Infoln("Start initial configuration in progress") //Segment finished in xxm
+ 	startTime := time.Now()
+ 
+@@ -771,6 +781,7 @@ func ParseRawConfig(rawCfg *RawConfig) (*Config, error) {
+ 	elapsedTime := time.Since(startTime) / time.Millisecond                     // duration in ms
+ 	log.Infoln("Initial configuration complete, total time: %dms", elapsedTime) //Segment finished in xxm
+ 
++	complete = true
+ 	return config, nil
+ }
+ 
+@@ -906,6 +917,14 @@ func parseTLS(cfg *RawConfig) (*TLS, error) {
+ }
+ 
+ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[string]P.ProxyProvider, err error) {
++	var smartGroups []*outboundgroup.Smart
++	defer func() {
++		if err != nil {
++			for _, group := range smartGroups {
++				_ = group.Close()
++			}
++		}
++	}()
+ 	proxies = make(map[string]C.Proxy)
+ 	providersMap = make(map[string]P.ProxyProvider)
+ 	proxiesConfig := cfg.Proxy
+@@ -991,6 +1010,9 @@ func parseProxies(cfg *RawConfig) (proxies map[string]C.Proxy, providersMap map[
+ 		}
+ 
+ 		groupName := group.Name()
++		if smartGroup, ok := group.(*outboundgroup.Smart); ok {
++			smartGroups = append(smartGroups, smartGroup)
++		}
+ 		if _, exist := proxies[groupName]; exist {
+ 			return nil, nil, fmt.Errorf("proxy group %s: the duplicate name", groupName)
+ 		}
+diff --git a/config/smart_dependency_test.go b/config/smart_dependency_test.go
+new file mode 100644
+index 0000000..7e807c5
+--- /dev/null
++++ b/config/smart_dependency_test.go
+@@ -0,0 +1,67 @@
++package config_test
++
++import (
++	"fmt"
++	"net/http"
++	"net/http/httptest"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/adapter/outboundgroup"
++	"github.com/metacubex/mihomo/config"
++	C "github.com/metacubex/mihomo/constant"
++	_ "github.com/metacubex/mihomo/hub/executor"
++	"github.com/metacubex/mihomo/tunnel"
++)
++
++func TestSmartParsingDoesNotDownloadOptionalDependencies(t *testing.T) {
++	oldHome, oldStatus := C.Path.HomeDir(), tunnel.Status()
++	C.SetHomeDir(t.TempDir())
++	defer C.SetHomeDir(oldHome)
++	tunnel.OnRunning() // Parsing during a live reload also must remain local.
++	defer func() {
++		switch oldStatus {
++		case tunnel.Running:
++			tunnel.OnRunning()
++		case tunnel.Inner:
++			tunnel.OnInnerLoading()
++		default:
++			tunnel.OnSuspend()
++		}
++	}()
++	var requests atomic.Int32
++	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
++		requests.Add(1)
++		w.WriteHeader(http.StatusServiceUnavailable)
++	}))
++	defer server.Close()
++	content := fmt.Sprintf(`mixed-port: 0
++lgbm-auto-update: false
++lgbm-url: %s/model
++geox-url:
++  asn: %s/asn
++proxy-groups:
++  - name: Smart
++    type: smart
++    proxies: [DIRECT]
++    uselightgbm: true
++    prefer-asn: true
++rules: ['MATCH,Smart']
++`, server.URL, server.URL)
++	cfg, err := config.Parse([]byte(content))
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer func() {
++		for _, proxy := range cfg.Proxies {
++			if group, ok := proxy.Adapter().(*outboundgroup.Smart); ok {
++				_ = group.Close()
++			}
++		}
++	}()
++	time.Sleep(200 * time.Millisecond)
++	if requests.Load() != 0 {
++		t.Fatalf("unapplied configuration started %d downloads", requests.Load())
++	}
++}
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+index 7c89b1e..851169b 100644
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -119,6 +119,11 @@ func ApplyConfig(cfg *config.Config, force bool) {
+ 	loadProvider(cfg.RuleProviders)
+ 	runtime.GC()
+ 	tunnel.OnRunning()
++	for _, proxy := range cfg.Proxies {
++		if group, ok := proxy.Adapter().(*outboundgroup.Smart); ok {
++			group.ActivateDependencies()
++		}
++	}
+ 	updateUpdater(cfg)
+ 
+ 	resolver.ResetConnection()
