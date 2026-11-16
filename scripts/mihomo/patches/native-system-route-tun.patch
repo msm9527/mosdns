@@ -517,10 +517,9 @@ index 0000000..4de30b6
 +}
 diff --git a/listener/sing_tun/system_route_identity_linux.go b/listener/sing_tun/system_route_identity_linux.go
 new file mode 100644
-index 0000000..e65372f
 --- /dev/null
 +++ b/listener/sing_tun/system_route_identity_linux.go
-@@ -0,0 +1,154 @@
+@@ -0,0 +1,168 @@
 +//go:build linux
 +
 +package sing_tun
@@ -567,6 +566,15 @@ index 0000000..e65372f
 +	// Older kernels do not emit FRA_PROTOCOL; their effective protocol is zero.
 +	if _, ok := identity.Attributes[21]; !ok {
 +		identity.Attributes[21] = "00"
++	}
++	// Newer kernels emit explicit exact masks for port selectors. Older
++	// kernels omit them; both mean all 16 bits. Preserve every other mask.
++	for port, mask := range map[uint16]uint16{nl.FRA_SPORT_RANGE: 28, nl.FRA_DPORT_RANGE: 29} {
++		if _, hasPort := identity.Attributes[port]; hasPort {
++			if _, hasMask := identity.Attributes[mask]; !hasMask {
++				identity.Attributes[mask] = "ffff"
++			}
++		}
 +	}
 +	value, err := json.Marshal(identity)
 +	return string(value), err
@@ -650,6 +658,11 @@ index 0000000..e65372f
 +			nl.NativeEndian().PutUint16(b[:2], ports.Start)
 +			nl.NativeEndian().PutUint16(b[2:], ports.End)
 +			attrs[key] = hex.EncodeToString(b)
++			mask := uint16(28) // FRA_SPORT_MASK
++			if key == nl.FRA_DPORT_RANGE {
++				mask = 29 // FRA_DPORT_MASK
++			}
++			attrs[mask] = "ffff"
 +		}
 +	}
 +	if r.UIDRange != nil {
@@ -2073,10 +2086,9 @@ index 0000000..e94c8be
 +func CleanupSystemRouteJournal(_ LC.Tun) error { return nil }
 diff --git a/listener/sing_tun/system_route_plan_linux.go b/listener/sing_tun/system_route_plan_linux.go
 new file mode 100644
-index 0000000..375b23e
 --- /dev/null
 +++ b/listener/sing_tun/system_route_plan_linux.go
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,194 @@
 +//go:build linux
 +
 +package sing_tun
@@ -2084,6 +2096,7 @@ index 0000000..375b23e
 +import (
 +	"fmt"
 +	"net/netip"
++	"runtime/debug"
 +
 +	tun "github.com/metacubex/sing-tun"
 +	"github.com/sagernet/netlink"
@@ -2091,10 +2104,26 @@ index 0000000..375b23e
 +)
 +
 +// A write-ahead plan for the supported Linux auto-route branch of pinned
-+// sing-tun v0.4.28 NativeTun.rules. The namespace gate compares this plan with
++// sing-tun NativeTun.rules. The namespace gate compares this plan with
 +// the actual kernel rules, including every selector/action/protocol, so a
 +// dependency change cannot silently broaden recovery ownership.
 +func systemRoutePlan(o tun.Options, mark uint32) ([]*netlink.Rule, error) {
++	info, ok := debug.ReadBuildInfo()
++	if ok {
++		for _, dep := range info.Deps {
++			if dep.Path == "github.com/metacubex/sing-tun" && dep.Replace == nil {
++				return systemRoutePlanVersion(o, mark, dep.Version)
++			}
++		}
++	}
++	return nil, fmt.Errorf("cannot identify sing-tun routing rule layout")
++}
++
++func systemRoutePlanVersion(o tun.Options, mark uint32, version string) ([]*netlink.Rule, error) {
++	if version != "v0.4.28" && version != "v0.4.29" {
++		return nil, fmt.Errorf("unsupported sing-tun routing rule layout %s", version)
++	}
++	ipv6SourceFirst := version == "v0.4.29"
 +	if !o.AutoRoute || o.AutoRedirectMarkMode || o.FileDescriptor != 0 {
 +		return nil, fmt.Errorf("unsupported system-route rule plan")
 +	}
@@ -2147,9 +2176,9 @@ index 0000000..375b23e
 +		}
 +		if len(o.IncludeInterface) > 0 {
 +			matched := p + 2
-+			// Pinned upstream computes the common include target from IPv4
-+			// priority, even in IPv6-only configurations. Preserve that plan.
-+			if len(o.Inet4Address) == 0 {
++			// v0.4.28 uses the IPv4 priority for both families, even when
++			// only IPv6 is enabled. v0.4.29 uses independent priorities.
++			if !ipv6SourceFirst && len(o.Inet4Address) == 0 {
 +				matched = o.IPRoute2RuleIndex + 2
 +			}
 +			for _, iface := range o.IncludeInterface {
@@ -2185,6 +2214,15 @@ index 0000000..375b23e
 +		r.Dport = netlink.NewRulePortRange(53, 53)
 +		r.Table = unix.RT_TABLE_MAIN
 +		r.SuppressPrefixlen = 0
++		if family == unix.AF_INET6 && ipv6SourceFirst {
++			for _, address := range o.Inet6Address {
++				r := add()
++				r.IifName = "lo"
++				r.Src = address.Masked()
++				r.Table = o.IPRoute2TableIndex
++			}
++			p++
++		}
 +		r = add()
 +		r.IifName = o.Name
 +		r.Goto = nop
@@ -2212,13 +2250,15 @@ index 0000000..375b23e
 +				r.Goto = nop
 +			}
 +			p++
-+			for _, address := range o.Inet6Address {
-+				r := add()
-+				r.IifName = "lo"
-+				r.Src = address.Masked()
-+				r.Table = o.IPRoute2TableIndex
++			if !ipv6SourceFirst {
++				for _, address := range o.Inet6Address {
++					r := add()
++					r.IifName = "lo"
++					r.Src = address.Masked()
++					r.Table = o.IPRoute2TableIndex
++				}
++				p++
 +			}
-+			p++
 +			r = add()
 +			r.Table = o.IPRoute2TableIndex
 +		}
@@ -2539,4 +2579,147 @@ index 0000000..dfa2520
 +		rules = append(rules, rule)
 +	}
 +	return rules, nil
++}
+diff --git a/listener/sing_tun/system_route_port_mask_linux_test.go b/listener/sing_tun/system_route_port_mask_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/listener/sing_tun/system_route_port_mask_linux_test.go
+@@ -0,0 +1,61 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"encoding/hex"
++	"encoding/json"
++	"testing"
++
++	"github.com/sagernet/netlink"
++	"github.com/sagernet/netlink/nl"
++	"golang.org/x/sys/unix"
++)
++
++func TestSystemRoutePortMaskIdentity(t *testing.T) {
++	for _, family := range []int{unix.AF_INET, unix.AF_INET6} {
++		for _, portType := range []uint16{nl.FRA_SPORT_RANGE, nl.FRA_DPORT_RANGE} {
++			rule := netlink.NewRule()
++			rule.Family, rule.Priority, rule.Table = family, 10001, unix.RT_TABLE_MAIN
++			maskType := uint16(28)
++			if portType == nl.FRA_SPORT_RANGE {
++				rule.Sport = netlink.NewRulePortRange(53, 53)
++			} else {
++				rule.Dport = netlink.NewRulePortRange(53, 53)
++				maskType = 29
++			}
++			want, err := systemRouteIdentityFromPlan(rule)
++			if err != nil {
++				t.Fatal(err)
++			}
++			var identity systemRouteIdentity
++			if err := json.Unmarshal([]byte(want), &identity); err != nil {
++				t.Fatal(err)
++			}
++			for _, mask := range []string{"", "ffff", "f0ff"} {
++				delete(identity.Attributes, maskType)
++				if mask != "" {
++					identity.Attributes[maskType] = mask
++				}
++				raw, err := hex.DecodeString(identity.Header)
++				if err != nil {
++					t.Fatal(err)
++				}
++				for key, encoded := range identity.Attributes {
++					value, err := hex.DecodeString(encoded)
++					if err != nil {
++						t.Fatal(err)
++					}
++					raw = append(raw, nl.NewRtAttr(int(key), value).Serialize()...)
++				}
++				got, err := systemRouteIdentityFromRaw(string(raw))
++				if err != nil {
++					t.Fatal(err)
++				}
++				if matches := got == want; matches != (mask == "" || mask == "ffff") {
++					t.Fatalf("family=%d selector=%d mask=%q matches=%t", family, portType, mask, matches)
++				}
++			}
++		}
++	}
++}
+diff --git a/listener/sing_tun/system_route_plan_linux_test.go b/listener/sing_tun/system_route_plan_linux_test.go
+new file mode 100644
+--- /dev/null
++++ b/listener/sing_tun/system_route_plan_linux_test.go
+@@ -0,0 +1,72 @@
++//go:build linux
++
++package sing_tun
++
++import (
++	"net/netip"
++	"testing"
++
++	tun "github.com/metacubex/sing-tun"
++	"github.com/metacubex/sing/common/ranges"
++	"golang.org/x/sys/unix"
++)
++
++func TestSystemRoutePlanDependencyLayouts(t *testing.T) {
++	for _, version := range []string{"v0.4.28", "v0.4.29"} {
++		t.Run(version, func(t *testing.T) {
++			o := tun.Options{Name: "tun0", AutoRoute: true, IPRoute2RuleIndex: 10000,
++				IPRoute2TableIndex: 2022, Inet6Address: []netip.Prefix{netip.MustParsePrefix("fd42::1/126")}}
++			plan, err := systemRoutePlanVersion(o, 17, version)
++			if err != nil {
++				t.Fatal(err)
++			}
++			source, bypass, final := -1, -1, -1
++			for _, r := range plan {
++				if r.Family != unix.AF_INET6 {
++					continue
++				}
++				if r.IifName == "lo" && r.Src == o.Inet6Address[0].Masked() {
++					source = r.Priority
++				}
++				if r.IifName == o.Name {
++					bypass = r.Priority
++				}
++				if r.Table == o.IPRoute2TableIndex && r.IifName == "" {
++					final = r.Priority
++				}
++			}
++			wantSource, wantBypass := 10001, 10000
++			if version == "v0.4.29" {
++				wantSource, wantBypass = 10000, 10001
++			}
++			if source != wantSource || bypass != wantBypass || final != 10002 {
++				t.Fatalf("incorrect IPv6 route order: source=%d bypass=%d final=%d", source, bypass, final)
++			}
++			o.ExcludeSrcPort = []ranges.Range[uint16]{{Start: 1000, End: 2000}}
++			o.IncludeInterface = []string{"uplink"}
++			plan, err = systemRoutePlanVersion(o, 17, version)
++			if err != nil {
++				t.Fatal(err)
++			}
++			wantTarget := 10002
++			if version == "v0.4.29" {
++				wantTarget = 10003
++			}
++			found := false
++			for _, r := range plan {
++				if r.IifName == "uplink" {
++					found = true
++					if r.Priority != 10001 || r.Goto != wantTarget {
++						t.Fatalf("incorrect IPv6 include rule: %+v", r)
++					}
++				}
++			}
++			if !found {
++				t.Fatal("IPv6 include rule missing")
++			}
++		})
++	}
++	if _, err := systemRoutePlanVersion(tun.Options{}, 17, "v0.4.30"); err == nil {
++		t.Fatal("unreviewed dependency layout accepted")
++	}
 +}

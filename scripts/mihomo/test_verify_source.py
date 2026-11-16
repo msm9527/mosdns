@@ -107,12 +107,12 @@ class NativeTestGateTest(unittest.TestCase):
 class SmartPatchSafetyTest(unittest.TestCase):
     def test_all_channels_require_selection_patch_and_advance_revision(self):
         for channel in ("meta", "alpha"):
-            self.assertEqual(verify.patch_revision(channel), "msm.2")
+            self.assertEqual(verify.patch_revision(channel), "msm.3")
             self.assertIn("group-selection-concurrency.patch", verify.patch_files(channel))
             self.assertIn("group.selection-concurrency", verify.features(channel))
             self.assertNotIn("smart-feature-lifecycle.patch", verify.patch_files(channel))
             self.assertNotIn("smart-selection-concurrency.patch", verify.patch_files(channel))
-        self.assertEqual(verify.patch_revision("smart"), "msm.3")
+        self.assertEqual(verify.patch_revision("smart"), "msm.4")
         self.assertIn("smart-feature-lifecycle.patch", verify.patch_files("smart"))
         self.assertIn("smart-selection-concurrency.patch", verify.patch_files("smart"))
         self.assertIn("smart.feature-lifecycle", verify.features("smart"))
@@ -204,7 +204,7 @@ class ArchitecturePackagingTest(unittest.TestCase):
                      "patch_sha256": verify.fingerprints("meta"),
                      "patched_file_sha256": verify.source_fingerprints(root, "meta")}
             environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
-                           "CHANNEL": "meta", "CHANNEL_VERSION": "v1.19.33-msm.2",
+                           "CHANNEL": "meta", "CHANNEL_VERSION": "v1.19.33-msm.3",
                            "ASSET_SUFFIX": "linux-amd64", "PACKAGE_FORMAT": "tar.gz",
                            "OUTPUT_DIR": str(root / "artifacts"), "GOOS": "linux",
                            "GOARCH": "amd64", "GOAMD64": "v1", "CGO_ENABLED": "0",

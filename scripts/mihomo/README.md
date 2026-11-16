@@ -65,17 +65,24 @@ journal. After an interrupted start or abrupt process exit, the next start
 recovers only verified rules from that journal. Unrelated rules and active
 instances are protected by namespace, boot, process, and rule identity checks.
 
+Meta/Alpha revision `msm.3` and Smart revision `msm.4` also support the explicit
+exact port masks emitted by newer Linux kernels. Missing and full (`ffff`) masks
+identify the same rule; partial masks remain distinct. Routing plans preserve
+the reviewed sing-tun v0.4.28 and v0.4.29 layouts, including v0.4.29's IPv6 source
+rule ordering and independent interface-selection priorities. Unknown dependency
+layouts still fail verification instead of claiming unrelated routing rules.
+
 ## Release contracts
 
 - Meta and Alpha retain the existing `mihomo` release, asset names, archive
   formats, and 15-target platform/CPU matrix. Their binary and release-body
-  versions append `-msm.2` to the official upstream version.
+  versions append `-msm.3` to the official upstream version.
 - Smart uses the independent `mihomo-smart` release. Assets preserve the official
   `mihomo-<os>-<arch>-alpha-smart-<12-character-upstream-SHA>.gz` format. AMD64
   variants explicitly use `amd64-v1` and `amd64-v3`; the baseline always builds
   with `GOAMD64=v1`.
 - Smart covers Linux AMD64 v1/v3, 386, ARM v5/v6/v7, ARM64, and Darwin AMD64
-  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.3`.
+  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.4`.
 - Smart sources follow the official `Prerelease-Alpha` release tag, not the
   moving Alpha branch. Release metadata and assets must agree with the resolved
   source commit. All channel checkouts use an immutable full upstream SHA.
@@ -121,7 +128,7 @@ Re-running the verifier on its own already-patched checkout is supported.
 For a verified checkout, build with the environment used in the workflows:
 
 ```sh
-CHANNEL=smart CHANNEL_VERSION='alpha-smart-<12-character-SHA>-msm.3' \
+CHANNEL=smart CHANNEL_VERSION='alpha-smart-<12-character-SHA>-msm.4' \
   ASSET_SUFFIX=linux-amd64-v1 PACKAGE_FORMAT=gz OUTPUT_DIR=/path/to/artifacts \
   GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 \
   bash /path/to/mosdns/scripts/mihomo/build-artifact.sh

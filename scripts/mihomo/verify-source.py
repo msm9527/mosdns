@@ -26,6 +26,8 @@ BASE_TESTS = {
     "listener/sing_tun": [
         "TestSystemRouteRuleConflicts",
         "TestSystemRouteOptionsValidation",
+        "TestSystemRoutePortMaskIdentity",
+        "TestSystemRoutePlanDependencyLayouts",
     ],
     "config": ["TestTunSystemRouteMarkInference", "TestTunSystemRouteMarkParse",
                "TestTunSystemRouteFreshParseValidation",
@@ -60,7 +62,7 @@ SMART_TRANSFER_TESTS = ["TestSmartAutomaticWinnerPreservesHealthyStream",
 
 
 def patch_revision(channel):
-    return "msm.3" if channel == "smart" else "msm.2"
+    return "msm.4" if channel == "smart" else "msm.3"
 
 
 def features(channel):
