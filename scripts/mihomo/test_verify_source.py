@@ -97,6 +97,17 @@ class NativeTestGateTest(unittest.TestCase):
         events = self.smart_events()
         self.assertEqual(len(self.run_gate(events, channel="smart")), len(events))
 
+    def test_smart_missing_or_skipped_sampling_regression_is_rejected(self):
+        for name in ("TestSmartSampleRateConfiguration", "TestSmartSampleRateZeroSkipsCollection"):
+            with self.subTest(name=name):
+                events = [event for event in self.smart_events() if event["Test"] != name]
+                with self.assertRaisesRegex(RuntimeError, "missing=.*" + name):
+                    self.run_gate(events, channel="smart")
+                skipped = {"Package": f"{verify.MODULE}/adapter/outboundgroup",
+                           "Test": name + "/zero", "Action": "skip"}
+                with self.assertRaisesRegex(RuntimeError, "skipped=.*" + name):
+                    self.run_gate(self.smart_events() + [skipped], channel="smart")
+
     def test_smart_additions_do_not_replace_shared_config_regressions(self):
         events = [event for event in self.smart_events()
                   if event["Test"] != "TestTunSystemRouteFreshParseValidation"]
@@ -112,13 +123,16 @@ class SmartPatchSafetyTest(unittest.TestCase):
             self.assertIn("group.selection-concurrency", verify.features(channel))
             self.assertNotIn("smart-feature-lifecycle.patch", verify.patch_files(channel))
             self.assertNotIn("smart-selection-concurrency.patch", verify.patch_files(channel))
-        self.assertEqual(verify.patch_revision("smart"), "msm.4")
+            self.assertNotIn("smart-sampling.patch", verify.patch_files(channel))
+        self.assertEqual(verify.patch_revision("smart"), "msm.5")
         self.assertIn("smart-feature-lifecycle.patch", verify.patch_files("smart"))
         self.assertIn("smart-selection-concurrency.patch", verify.patch_files("smart"))
         self.assertIn("smart.feature-lifecycle", verify.features("smart"))
         self.assertIn("smart.selection-concurrency", verify.features("smart"))
         self.assertIn("smart-transfer-lifecycle.patch", verify.patch_files("smart"))
         self.assertIn("smart.transfer-lifecycle", verify.features("smart"))
+        self.assertIn("smart-sampling.patch", verify.patch_files("smart"))
+        self.assertIn("smart.zero-sampling", verify.features("smart"))
         for name in verify.SMART_TRANSFER_TESTS:
             self.assertIn(f"{verify.MODULE}/adapter/outboundgroup:{name}", verify.selection_test_names("smart"))
 

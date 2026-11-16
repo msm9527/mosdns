@@ -1,0 +1,164 @@
+diff --git a/adapter/outboundgroup/parser.go b/adapter/outboundgroup/parser.go
+--- a/adapter/outboundgroup/parser.go
++++ b/adapter/outboundgroup/parser.go
+@@ -216,7 +216,7 @@
+ 	case "relay":
+ 		return nil, fmt.Errorf("%w: The group [%s] with relay type was removed, please using dialer-proxy instead", errType, groupName)
+ 	case "smart":
+-		opt := SmartOption{}
++		opt := SmartOption{SampleRate: 1}
+ 		err = decoder.Decode(config, &opt)
+ 		if err != nil {
+ 			return nil, err
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -220,7 +220,7 @@
+ 	s.hostFailLimit.Store(int32(s.maxFailedTimes))
+ 	s.testUrlHost = testUrlHostOf(s.testUrl)
+ 
+-	if smartOption.SampleRate > 0 && smartOption.SampleRate <= 1 {
++	if smartOption.SampleRate >= 0 && smartOption.SampleRate <= 1 {
+ 		s.sampleRate = smartOption.SampleRate
+ 	}
+ 
+@@ -1417,7 +1417,7 @@
+ func (s *Smart) collectConnectionData(input *smart.ModelInput, metadata *C.Metadata,
+ 	baseWeight float64, proxyName string, ModelPredicted bool,
+ ) {
+-	if s.sampleRate < 1.0 && rand.Float64() > s.sampleRate {
++	if s.sampleRate <= 0 || (s.sampleRate < 1.0 && rand.Float64() >= s.sampleRate) {
+ 		return
+ 	}
+ 
+diff --git a/adapter/outboundgroup/smart_sample_rate_test.go b/adapter/outboundgroup/smart_sample_rate_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_sample_rate_test.go
+@@ -0,0 +1,126 @@
++package outboundgroup
++
++import (
++	"encoding/csv"
++	"encoding/json"
++	"io"
++	"os"
++	"path/filepath"
++	"testing"
++
++	"github.com/metacubex/mihomo/adapter"
++	"github.com/metacubex/mihomo/adapter/outbound"
++	"github.com/metacubex/mihomo/component/smart"
++	"github.com/metacubex/mihomo/component/smart/lightgbm"
++	C "github.com/metacubex/mihomo/constant"
++	P "github.com/metacubex/mihomo/constant/provider"
++)
++
++func smartSamplingHome(t *testing.T) string {
++	t.Helper()
++	previous := C.Path.HomeDir()
++	directory := t.TempDir()
++	C.SetHomeDir(directory)
++	lightgbm.InitCollector(100)
++	t.Cleanup(func() {
++		lightgbm.CloseAllCollectors()
++		C.SetHomeDir(previous)
++		lightgbm.InitCollector(100)
++	})
++	return directory
++}
++
++func parseSmartSamplingGroup(t *testing.T, rate any) *Smart {
++	t.Helper()
++	config := map[string]any{
++		"name": "sampling", "type": "smart", "empty-fallback": "DIRECT",
++		"proxies": []string{"DIRECT"}, "collectdata": true,
++	}
++	if rate != nil {
++		config["sample-rate"] = rate
++	}
++	providers := map[string]P.ProxyProvider{}
++	group, err := ParseProxyGroup(config,
++		map[string]C.Proxy{"DIRECT": adapter.NewProxy(outbound.NewDirect())}, providers, nil, nil)
++	if err != nil {
++		t.Fatal(err)
++	}
++	t.Cleanup(func() {
++		if err := group.Close(); err != nil {
++			t.Error(err)
++		}
++		for _, provider := range providers {
++			if closer, ok := provider.(io.Closer); ok {
++				_ = closer.Close()
++			}
++		}
++	})
++	return group.(*Smart)
++}
++
++func TestSmartSampleRateConfiguration(t *testing.T) {
++	smartSamplingHome(t)
++	for _, tc := range []struct {
++		name string
++		rate any
++		want float64
++	}{
++		{"omitted", nil, 1},
++		{"zero", float64(0), 0},
++		{"fraction", 0.25, 0.25},
++		{"one", float64(1), 1},
++	} {
++		t.Run(tc.name, func(t *testing.T) {
++			group := parseSmartSamplingGroup(t, tc.rate)
++			data, err := group.MarshalJSON()
++			if err != nil {
++				t.Fatal(err)
++			}
++			var status struct {
++				SampleRate float64 `json:"sampleRate"`
++			}
++			if err := json.Unmarshal(data, &status); err != nil {
++				t.Fatal(err)
++			}
++			if status.SampleRate != tc.want {
++				t.Fatalf("sampleRate = %v, want %v", status.SampleRate, tc.want)
++			}
++		})
++	}
++}
++
++func TestSmartSampleRateZeroSkipsCollection(t *testing.T) {
++	directory := smartSamplingHome(t)
++	path := filepath.Join(directory, "smart_weight_data.csv")
++	metadata := &C.Metadata{Host: "example.test", DstPort: 443}
++	input := &smart.ModelInput{Success: 3, IsTCP: true, ConnectTime: 5, Latency: 10}
++	group := parseSmartSamplingGroup(t, float64(0))
++	for i := 0; i < 100; i++ {
++		group.collectConnectionData(input, metadata, 1, "DIRECT", false)
++	}
++	if err := group.Close(); err != nil {
++		t.Fatal(err)
++	}
++	if _, err := os.Stat(path); !os.IsNotExist(err) {
++		t.Fatalf("zero sampling created a data file: %v", err)
++	}
++	// Omitting the option must retain upstream's default of collecting every
++	// eligible sample, including after the zero-sampling group was closed.
++	group = parseSmartSamplingGroup(t, nil)
++	group.collectConnectionData(input, metadata, 1, "DIRECT", false)
++	if err := group.Close(); err != nil {
++		t.Fatal(err)
++	}
++	file, err := os.Open(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer file.Close()
++	rows, err := csv.NewReader(file).ReadAll()
++	if err != nil {
++		t.Fatal(err)
++	}
++	if len(rows) != 2 {
++		t.Fatalf("default sampling wrote %d rows, want header and one sample", len(rows))
++	}
++}

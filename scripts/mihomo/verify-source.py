@@ -39,7 +39,9 @@ SMART_TESTS = {
                                 "TestSmartCollectorConfigurationLifecycle"],
     "adapter/outboundgroup": ["TestSmartASNUnavailableFallback",
                               "TestSmartGlobalTasksSurviveGroupReplacement",
-                              "TestSmartDialBudgetAllowsTransientJitter"],
+                              "TestSmartDialBudgetAllowsTransientJitter",
+                              "TestSmartSampleRateConfiguration",
+                              "TestSmartSampleRateZeroSkipsCollection"],
     "component/updater": ["TestSmartModelAutoUpdaterRetriesMissingAndFailedModel",
                           "TestSmartModelUpdaterHotReload",
                           "TestSmartModelUpdaterCancellationAndIdempotence",
@@ -62,12 +64,13 @@ SMART_TRANSFER_TESTS = ["TestSmartAutomaticWinnerPreservesHealthyStream",
 
 
 def patch_revision(channel):
-    return "msm.4" if channel == "smart" else "msm.3"
+    return "msm.5" if channel == "smart" else "msm.3"
 
 
 def features(channel):
     return ["direct-system", "tun.system-route-mark", "group.selection-concurrency"] + (
-        ["smart.feature-lifecycle", "smart.selection-concurrency", "smart.transfer-lifecycle"] if channel == "smart" else [])
+        ["smart.feature-lifecycle", "smart.selection-concurrency", "smart.transfer-lifecycle",
+         "smart.zero-sampling"] if channel == "smart" else [])
 
 
 def selection_test_names(channel):
@@ -128,7 +131,7 @@ def patch_files(channel):
     if channel == "smart":
         files.extend(["smart-anytls-isolation.patch", "smart-anytls-isolation_test.go.txt",
                       "smart-feature-lifecycle.patch", "smart-selection-concurrency.patch",
-                      "smart-transfer-lifecycle.patch"])
+                      "smart-transfer-lifecycle.patch", "smart-sampling.patch"])
     return files
 
 
@@ -265,6 +268,7 @@ def main():
         apply_patch(source, "smart-feature-lifecycle.patch")
         apply_patch(source, "smart-selection-concurrency.patch")
         apply_patch(source, "smart-transfer-lifecycle.patch")
+        apply_patch(source, "smart-sampling.patch")
     if args.apply_only:
         return
     source_hashes = source_fingerprints(source, args.channel)
