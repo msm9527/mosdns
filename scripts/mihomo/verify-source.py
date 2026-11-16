@@ -33,7 +33,14 @@ BASE_TESTS = {
                "TestTunSystemRouteFreshParseValidation",
                "TestDirectSystemExcludedFromAutomaticProxyGroups"],
 }
+SMART_PROVIDER_TESTS = {
+    "component/resource": ["TestSmartRetiredFetcherCannotOverwriteCache",
+                           "TestSmartFetcherCloseDrainsCacheCommit"],
+    "hub/executor": ["TestSmartProviderReplacementRetiresRefreshers",
+                     "TestSmartProviderReplacementPreservesRetainedProviders"],
+}
 SMART_TESTS = {
+    **SMART_PROVIDER_TESTS,
     "transport/anytls/session": ["TestStreamDoesNotExposeSharedSessionCloseWrite"],
     "component/smart/lightgbm": ["TestSmartModelRecoveryAndAtomicDownload",
                                 "TestSmartCollectorConfigurationLifecycle",
@@ -71,19 +78,21 @@ SMART_TRANSFER_TESTS = ["TestSmartAutomaticWinnerPreservesHealthyStream",
 
 
 def patch_revision(channel):
-    return "msm.6" if channel == "smart" else "msm.3"
+    return "msm.7" if channel == "smart" else "msm.3"
 
 
 def features(channel):
     return ["direct-system", "tun.system-route-mark", "group.selection-concurrency"] + (
         ["smart.feature-lifecycle", "smart.selection-concurrency", "smart.transfer-lifecycle",
-         "smart.zero-sampling", "smart.dependency-recovery", "smart.request-failover"] if channel == "smart" else [])
+         "smart.zero-sampling", "smart.dependency-recovery", "smart.request-failover", "smart.provider-lifecycle"] if channel == "smart" else [])
 
 
 def selection_test_names(channel):
     tests = SELECTION_TESTS + (SMART_SELECTION_TESTS + SMART_TRANSFER_TESTS if channel == "smart" else [])
     result = [f"{MODULE}/adapter/outboundgroup:{test}" for test in tests]
     if channel == "smart":
+        result += [f"{MODULE}/{package}:{test}" for package, tests in SMART_PROVIDER_TESTS.items()
+                   for test in tests]
         result += [f"{MODULE}/adapter/outboundgroup:TestSmartOptionalDependenciesLifecycle",
                    f"{MODULE}/adapter/outboundgroup:TestSmartStagedGroupsPreserveActiveDependencyOwners",
                    f"{MODULE}/component/smart/lightgbm:TestSmartModelUpdatesBoundedAndCancellable",
@@ -146,7 +155,7 @@ def patch_files(channel):
         files.extend(["smart-anytls-isolation.patch", "smart-anytls-isolation_test.go.txt",
                       "smart-feature-lifecycle.patch", "smart-selection-concurrency.patch",
                       "smart-transfer-lifecycle.patch", "smart-sampling.patch",
-                      "smart-dependency-recovery.patch"])
+                      "smart-dependency-recovery.patch", "smart-provider-lifecycle.patch"])
     return files
 
 
@@ -286,6 +295,7 @@ def main():
         apply_patch(source, "smart-transfer-lifecycle.patch")
         apply_patch(source, "smart-sampling.patch")
         apply_patch(source, "smart-dependency-recovery.patch")
+        apply_patch(source, "smart-provider-lifecycle.patch")
     if args.apply_only:
         return
     source_hashes = source_fingerprints(source, args.channel)

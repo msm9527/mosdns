@@ -119,7 +119,8 @@ class NativeTestGateTest(unittest.TestCase):
                      "TestSmartStagedGroupsPreserveActiveDependencyOwners",
                      "TestSmartModelUpdatesBoundedAndCancellable",
                      "TestSmartASNDownloadValidationAndCancellation",
-                     "TestSmartParsingDoesNotDownloadOptionalDependencies"):
+                     "TestSmartParsingDoesNotDownloadOptionalDependencies",
+                     *[name for names in verify.SMART_PROVIDER_TESTS.values() for name in names]):
             with self.subTest(name=name):
                 events = [event for event in self.smart_events() if event["Test"] != name]
                 with self.assertRaisesRegex(RuntimeError, "missing=.*" + name):
@@ -135,7 +136,7 @@ class SmartPatchSafetyTest(unittest.TestCase):
             self.assertNotIn("smart-feature-lifecycle.patch", verify.patch_files(channel))
             self.assertNotIn("smart-selection-concurrency.patch", verify.patch_files(channel))
             self.assertNotIn("smart-sampling.patch", verify.patch_files(channel))
-        self.assertEqual(verify.patch_revision("smart"), "msm.6")
+        self.assertEqual(verify.patch_revision("smart"), "msm.7")
         self.assertIn("smart-feature-lifecycle.patch", verify.patch_files("smart"))
         self.assertIn("smart-selection-concurrency.patch", verify.patch_files("smart"))
         self.assertIn("smart.feature-lifecycle", verify.features("smart"))
@@ -147,6 +148,8 @@ class SmartPatchSafetyTest(unittest.TestCase):
         self.assertIn("smart-dependency-recovery.patch", verify.patch_files("smart"))
         self.assertIn("smart.dependency-recovery", verify.features("smart"))
         self.assertIn("smart.request-failover", verify.features("smart"))
+        self.assertIn("smart-provider-lifecycle.patch", verify.patch_files("smart"))
+        self.assertIn("smart.provider-lifecycle", verify.features("smart"))
         for name in verify.SMART_TRANSFER_TESTS:
             self.assertIn(f"{verify.MODULE}/adapter/outboundgroup:{name}", verify.selection_test_names("smart"))
 

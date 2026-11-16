@@ -1,0 +1,336 @@
+diff --git a/component/resource/fetcher.go b/component/resource/fetcher.go
+--- a/component/resource/fetcher.go
++++ b/component/resource/fetcher.go
+@@ -50,7 +50,15 @@
+ }
+ 
+ func (f *Fetcher[V]) UpdatedAt() time.Time {
++	f.loadBufMutex.Lock()
++	defer f.loadBufMutex.Unlock()
+ 	return f.updatedAt
++}
++
++func (f *Fetcher[V]) setUpdatedAt(updatedAt time.Time) {
++	f.loadBufMutex.Lock()
++	defer f.loadBufMutex.Unlock()
++	f.updatedAt = updatedAt
+ }
+ 
+ func (f *Fetcher[V]) Initial() (V, error) {
+@@ -59,7 +67,7 @@
+ 		buf, err := os.ReadFile(f.vehicle.Path())
+ 		modTime := stat.ModTime()
+ 		contents, _, err := f.loadBuf(buf, utils.MakeHash(buf), false)
+-		f.updatedAt = modTime // reset updatedAt to file's modTime
++		f.setUpdatedAt(modTime) // reset updatedAt to file's modTime
+ 
+ 		if err == nil {
+ 			err = f.startPullLoop(time.Since(modTime) > f.interval)
+@@ -81,7 +89,7 @@
+ 				modTime = stat.ModTime()
+ 			}
+ 			contents, _, err := f.loadBuf(buf, utils.MakeHash(buf), true)
+-			f.updatedAt = modTime // reset updatedAt to file's modTime
++			f.setUpdatedAt(modTime) // reset updatedAt to file's modTime
+ 
+ 			if err == nil {
+ 				log.Infoln("[Provider] %s extract successful from bundle file", f.Name())
+@@ -114,7 +122,13 @@
+ }
+ 
+ func (f *Fetcher[V]) Update() (V, bool, error) {
+-	buf, hash, err := f.vehicle.Read(f.ctx, f.hash)
++	if err := f.ctx.Err(); err != nil {
++		return lo.Empty[V](), false, err
++	}
++	f.loadBufMutex.Lock()
++	oldHash := f.hash
++	f.loadBufMutex.Unlock()
++	buf, hash, err := f.vehicle.Read(f.ctx, oldHash)
+ 	if err != nil {
+ 		f.backoff.AddAttempt() // add a failed attempt to backoff
+ 		return lo.Empty[V](), false, err
+@@ -129,6 +143,9 @@
+ func (f *Fetcher[V]) loadBuf(buf []byte, hash utils.HashType, updateFile bool) (V, bool, error) {
+ 	f.loadBufMutex.Lock()
+ 	defer f.loadBufMutex.Unlock()
++	if err := f.ctx.Err(); err != nil {
++		return lo.Empty[V](), false, err
++	}
+ 
+ 	now := time.Now()
+ 	if f.hash.Equal(hash) {
+@@ -149,6 +166,9 @@
+ 		f.backoff.AddAttempt() // add a failed attempt to backoff
+ 		return lo.Empty[V](), false, err
+ 	}
++	if err := f.ctx.Err(); err != nil {
++		return lo.Empty[V](), false, err
++	}
+ 	f.backoff.Reset() // no error, reset backoff
+ 
+ 	if updateFile {
+@@ -168,6 +188,10 @@
+ 
+ func (f *Fetcher[V]) Close() error {
+ 	f.ctxCancel()
++	// Drain a commit already in progress before the replacement initializes
++	// its cache. Late HTTP responses and SideUpdate must not write after Close.
++	f.loadBufMutex.Lock()
++	f.loadBufMutex.Unlock()
+ 	if f.watcher != nil {
+ 		_ = f.watcher.Close()
+ 	}
+@@ -175,7 +199,7 @@
+ }
+ 
+ func (f *Fetcher[V]) pullLoop(forceUpdate bool) {
+-	initialInterval := f.interval - time.Since(f.updatedAt)
++	initialInterval := f.interval - time.Since(f.UpdatedAt())
+ 	if initialInterval > f.interval {
+ 		initialInterval = f.interval
+ 	}
+diff --git a/hub/executor/executor.go b/hub/executor/executor.go
+--- a/hub/executor/executor.go
++++ b/hub/executor/executor.go
+@@ -97,6 +97,8 @@
+ 	}
+ 
+ 	closeSmart()
++	closeReplacedProviders(tunnel.Providers(), cfg.Providers)
++	closeReplacedProviders(tunnel.RuleProviders(), cfg.RuleProviders)
+ 	updateExperimental(cfg.Experimental)
+ 	updateUsers(cfg.Users)
+ 	updateProxies(cfg.Proxies, cfg.Providers)
+@@ -322,6 +324,22 @@
+ 	tunnel.UpdateProxies(proxies, providers)
+ }
+ 
++// Stop retired refreshers before new providers initialize the same cache path.
++// Finalizers cannot guarantee this: connections and groups may retain providers
++// long after a successful hot reload.
++func closeReplacedProviders[T P.Provider](current, next map[string]T) {
++	for name, provider := range current {
++		if replacement, ok := next[name]; ok && P.Provider(provider) == P.Provider(replacement) {
++			continue
++		}
++		if closer, ok := any(provider).(interface{ Close() error }); ok {
++			if err := closer.Close(); err != nil {
++				log.Warnln("[Provider] %s close error: %v", name, err)
++			}
++		}
++	}
++}
++
+ func updateRules(rules []C.Rule, subRules map[string][]C.Rule, ruleProviders map[string]P.RuleProvider) {
+ 	tunnel.UpdateRules(rules, subRules, ruleProviders)
+ }
+@@ -561,6 +579,8 @@
+ 	resolver.StoreFakePoolState()
+ 
+ 	closeSmart()
++	closeReplacedProviders(tunnel.Providers(), map[string]P.ProxyProvider(nil))
++	closeReplacedProviders(tunnel.RuleProviders(), map[string]P.RuleProvider(nil))
+ 
+ 	log.Warnln("Mihomo shutting down")
+ }
+diff --git a/component/resource/smart_provider_lifecycle_test.go b/component/resource/smart_provider_lifecycle_test.go
+new file mode 100644
+--- /dev/null
++++ b/component/resource/smart_provider_lifecycle_test.go
+@@ -0,0 +1,126 @@
++package resource
++
++import (
++	"context"
++	"errors"
++	"os"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/common/utils"
++	P "github.com/metacubex/mihomo/constant/provider"
++)
++
++type smartCacheVehicle struct {
++	path         string
++	body         []byte
++	readStarted  chan struct{}
++	releaseRead  chan struct{}
++	writeStarted chan struct{}
++	releaseWrite chan struct{}
++	reads        atomic.Int32
++}
++
++func (v *smartCacheVehicle) Type() P.VehicleType { return P.HTTP }
++func (v *smartCacheVehicle) Path() string        { return v.path }
++func (v *smartCacheVehicle) Url() string         { return "https://provider.invalid/sub" }
++func (v *smartCacheVehicle) Proxy() string       { return "DIRECT" }
++func (v *smartCacheVehicle) Read(context.Context, utils.HashType) ([]byte, utils.HashType, error) {
++	v.reads.Add(1)
++	if v.readStarted != nil {
++		close(v.readStarted)
++		<-v.releaseRead
++	}
++	// Deliberately deliver a late successful result after cancellation.
++	return v.body, utils.MakeHash(v.body), nil
++}
++func (v *smartCacheVehicle) Write(body []byte) error {
++	if v.writeStarted != nil {
++		close(v.writeStarted)
++		<-v.releaseWrite
++	}
++	return os.WriteFile(v.path, body, 0600)
++}
++func smartCacheParser(body []byte) (string, error) { return string(body), nil }
++
++func TestSmartRetiredFetcherCannotOverwriteCache(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "provider.yaml")
++	old := &smartCacheVehicle{path: path, body: []byte("old"), readStarted: make(chan struct{}), releaseRead: make(chan struct{})}
++	var updates atomic.Int32
++	f := NewFetcher("old", time.Hour, old, nil, smartCacheParser, func(string) { updates.Add(1) })
++	done := make(chan error, 1)
++	go func() { _, _, err := f.Update(); done <- err }()
++	<-old.readStarted
++	if err := f.Close(); err != nil {
++		t.Fatal(err)
++	}
++	fresh := NewFetcher("new", time.Hour, &smartCacheVehicle{path: path, body: []byte("new")}, nil, smartCacheParser, nil)
++	defer fresh.Close()
++	if _, _, err := fresh.Update(); err != nil {
++		t.Fatal(err)
++	}
++	stat, err := os.Stat(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	close(old.releaseRead)
++	if err := <-done; !errors.Is(err, context.Canceled) {
++		t.Fatalf("late response: %v", err)
++	}
++	if _, _, err := f.SideUpdate([]byte("stale push")); !errors.Is(err, context.Canceled) {
++		t.Fatalf("retired side update: %v", err)
++	}
++	if _, _, err := f.Update(); !errors.Is(err, context.Canceled) {
++		t.Fatalf("retired pull: %v", err)
++	}
++	if old.reads.Load() != 1 || updates.Load() != 0 {
++		t.Fatal("retired provider kept working")
++	}
++	body, err := os.ReadFile(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	after, err := os.Stat(path)
++	if err != nil {
++		t.Fatal(err)
++	}
++	if string(body) != "new" || !after.ModTime().Equal(stat.ModTime()) {
++		t.Fatal("retired provider changed active cache")
++	}
++}
++
++func TestSmartFetcherCloseDrainsCacheCommit(t *testing.T) {
++	path := filepath.Join(t.TempDir(), "provider.yaml")
++	vehicle := &smartCacheVehicle{path: path, body: []byte("old"), writeStarted: make(chan struct{}), releaseWrite: make(chan struct{})}
++	f := NewFetcher("old", time.Hour, vehicle, nil, smartCacheParser, nil)
++	updated := make(chan struct{})
++	go func() { defer close(updated); _, _, _ = f.Update() }()
++	<-vehicle.writeStarted
++	closed := make(chan struct{})
++	go func() { _ = f.Close(); close(closed) }()
++	<-f.ctx.Done()
++	select {
++	case <-closed:
++		t.Fatal("Close returned during an active cache commit")
++	default:
++	}
++	close(vehicle.releaseWrite)
++	<-closed
++	<-updated
++	fresh := NewFetcher("new", time.Hour, &smartCacheVehicle{path: path, body: []byte("new")}, nil, smartCacheParser, nil)
++	defer fresh.Close()
++	if _, _, err := fresh.Update(); err != nil {
++		t.Fatal(err)
++	}
++	// Repeated Close and same-hash SideUpdate must not touch the active file.
++	_ = f.Close()
++	if _, _, err := f.SideUpdate([]byte("old")); !errors.Is(err, context.Canceled) {
++		t.Fatalf("closed update: %v", err)
++	}
++	body, err := os.ReadFile(path)
++	if err != nil || string(body) != "new" {
++		t.Fatalf("cache lost: %q %v", body, err)
++	}
++}
+diff --git a/hub/executor/smart_provider_lifecycle_test.go b/hub/executor/smart_provider_lifecycle_test.go
+new file mode 100644
+--- /dev/null
++++ b/hub/executor/smart_provider_lifecycle_test.go
+@@ -0,0 +1,64 @@
++package executor
++
++import (
++	"context"
++	"errors"
++	"path/filepath"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/component/resource"
++	P "github.com/metacubex/mihomo/constant/provider"
++)
++
++type smartLifecycleProvider struct {
++	*resource.Fetcher[string]
++	closed atomic.Int32
++}
++
++func (p *smartLifecycleProvider) Type() P.ProviderType { return P.Proxy }
++func (p *smartLifecycleProvider) Initial() error       { _, err := p.Fetcher.Initial(); return err }
++func (p *smartLifecycleProvider) Update() error        { _, _, err := p.Fetcher.Update(); return err }
++func (p *smartLifecycleProvider) Close() error         { p.closed.Add(1); return p.Fetcher.Close() }
++func newSmartLifecycleProvider(t *testing.T, name string) *smartLifecycleProvider {
++	f := resource.NewFetcher(name, time.Hour, resource.NewFileVehicle(filepath.Join(t.TempDir(), name)), nil, func(b []byte) (string, error) { return string(b), nil }, nil)
++	return &smartLifecycleProvider{Fetcher: f}
++}
++
++func TestSmartProviderReplacementRetiresRefreshers(t *testing.T) {
++	// Keep a strong reference: correctness cannot depend on GC/finalizer timing.
++	old := newSmartLifecycleProvider(t, "sub")
++	removed := newSmartLifecycleProvider(t, "removed")
++	next := newSmartLifecycleProvider(t, "sub")
++	defer next.Close()
++	closeReplacedProviders(map[string]P.Provider{"sub": old, "removed": removed}, map[string]P.Provider{"sub": next})
++	if old.closed.Load() != 1 || removed.closed.Load() != 1 || next.closed.Load() != 0 {
++		t.Fatal("wrong provider lifecycle")
++	}
++	if _, _, err := old.SideUpdate([]byte("old")); !errors.Is(err, context.Canceled) {
++		t.Fatalf("retired provider writable: %v", err)
++	}
++	if _, _, err := next.SideUpdate([]byte("new")); err != nil {
++		t.Fatalf("replacement unusable: %v", err)
++	}
++}
++
++func TestSmartProviderReplacementPreservesRetainedProviders(t *testing.T) {
++	retained := newSmartLifecycleProvider(t, "sub")
++	current := map[string]P.Provider{"sub": retained}
++	closeReplacedProviders(current, map[string]P.Provider{"sub": retained})
++	if retained.closed.Load() != 0 {
++		t.Fatal("retained provider was canceled")
++	}
++	if _, _, err := retained.SideUpdate([]byte("retained")); err != nil {
++		t.Fatal(err)
++	}
++	closeReplacedProviders(current, map[string]P.Provider(nil))
++	if retained.closed.Load() != 1 {
++		t.Fatal("shutdown did not retire provider")
++	}
++	if _, _, err := retained.SideUpdate([]byte("after shutdown")); !errors.Is(err, context.Canceled) {
++		t.Fatal(err)
++	}
++}
