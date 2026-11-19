@@ -75,6 +75,19 @@ retired providers cannot overwrite the active cache; an in-progress cache commit
 is drained before reusing its path. Retained provider objects remain active.
 This prevents old subscription nodes from returning after a reload and restart.
 
+Smart revision `msm.8` detects completed TCP requests that sent up to 64 KiB,
+waited more than four seconds and received no response, on every destination
+port. A successful generic probe or proxy handshake no longer hides a blackholed
+HTTP destination. The existing temporary, host-scoped exclusion is reused; this
+evidence does not close other healthy connections or widen to a rule/ASN target.
+Large uploads, internal probes, UDP, short requests, connections with received
+data, manual selections and group-forced closes keep their existing policy.
+Smart TCP metrics now wait for full close: an upload half-close is forwarded to
+the underlying connection and cannot finalize statistics before its delayed
+response. The shared callback implementation and UDP metrics are unchanged.
+The new selection and half-close regressions are required both normally and
+with the race detector before artifact generation.
+
 The marked system-route bypass is a Linux feature. MSM must generate its
 `direct-system` helpers only on Linux; enabling a nonzero TUN
 `system-route-mark` on another OS is rejected. The other release targets retain
@@ -102,7 +115,7 @@ layouts still fail verification instead of claiming unrelated routing rules.
   variants explicitly use `amd64-v1` and `amd64-v3`; the baseline always builds
   with `GOAMD64=v1`.
 - Smart covers Linux AMD64 v1/v3, 386, ARM v5/v6/v7, ARM64, and Darwin AMD64
-  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.7`.
+  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.8`.
 - Smart sources follow the official `Prerelease-Alpha` release tag, not the
   moving Alpha branch. Release metadata and assets must agree with the resolved
   source commit. All channel checkouts use an immutable full upstream SHA.
@@ -155,7 +168,7 @@ Re-running the verifier on its own already-patched checkout is supported.
 For a verified checkout, build with the environment used in the workflows:
 
 ```sh
-CHANNEL=smart CHANNEL_VERSION='alpha-smart-<12-character-SHA>-msm.7' \
+CHANNEL=smart CHANNEL_VERSION='alpha-smart-<12-character-SHA>-msm.8' \
   ASSET_SUFFIX=linux-amd64-v1 PACKAGE_FORMAT=gz OUTPUT_DIR=/path/to/artifacts \
   GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 \
   bash /path/to/mosdns/scripts/mihomo/build-artifact.sh

@@ -1,0 +1,251 @@
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -1703,7 +1703,7 @@
+ }
+ 
+ func (s *Smart) registerClosureMetricsCallback(c C.Conn, proxy C.Proxy, metadata *C.Metadata, connectTime int64, firstReadLatency *atomic.Int64, firstReadErr *atomic.TypedValue[error], observedReadErr *atomic.TypedValue[error], observedWriteErr *atomic.TypedValue[error]) C.Conn {
+-	return callback.NewCloseCallbackConn(c, func() {
++	return newSmartCloseCallbackConn(c, func() {
+ 		tracker := statistic.DefaultManager.Get(metadata.UUID)
+ 		if tracker != nil {
+ 			info := tracker.Info()
+@@ -2048,9 +2048,9 @@
+ 		return q.weight, false, false, 0
+ 	}
+ 
+-	// probes need a Host, so a silent answer on an IP-only target counts on every port
+-	if q.duration > stalledConnectionGrace.Milliseconds() && q.uploadMB > 0 && q.downloadMB == 0 &&
+-		metadata.NetWork != C.UDP && (metadata.DstPort == 443 || metadata.Host == "") {
++	// Only finished streams are sampled. A blackholed destination can use
++	// any TCP port, even when the proxy handshake and generic probes succeed.
++	if smartConnectionStalled(metadata, q) {
+ 		log.Debugln("[Smart] Connection Group: [%s] - Node: [%s] - Network: [%s] - Address: [%s] stalled without a response...",
+ 			s.Name(), proxyName, metadata.NetWork.String(), q.address)
+ 		return q.weight, true, true, blockCodeStalled
+diff --git a/adapter/outboundgroup/smart_stalled.go b/adapter/outboundgroup/smart_stalled.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_stalled.go
+@@ -0,0 +1,51 @@
++package outboundgroup
++
++import (
++	"sync"
++
++	C "github.com/metacubex/mihomo/constant"
++	"github.com/metacubex/sing/common"
++	"github.com/metacubex/sing/common/network"
++)
++
++// A finished TCP stream that sent a small request supplies bounded failure
++// evidence. Large uploads and internal probes need their own response/error
++// semantics; silence alone must not classify those as a failed destination.
++const smartStalledMaxUploadMB = 64.0 / 1024
++
++func smartConnectionStalled(metadata *C.Metadata, q connQuality) bool {
++	return metadata.NetWork == C.TCP && metadata.Type != C.INNER &&
++		q.duration > stalledConnectionGrace.Milliseconds() &&
++		q.uploadMB > 0 && q.uploadMB <= smartStalledMaxUploadMB && q.downloadMB == 0
++}
++
++// A half-close finishes only the upload. Sampling at that point would record a
++// healthy request as unanswered before its server has sent the response.
++// Keep this policy local to Smart TCP metrics; other callback users and UDP
++// retain their existing lifecycle.
++type smartCloseCallbackConn struct {
++	C.Conn
++	closeFunc func()
++	closeOnce sync.Once
++}
++
++func newSmartCloseCallbackConn(conn C.Conn, callback func()) C.Conn {
++	return &smartCloseCallbackConn{Conn: conn, closeFunc: callback}
++}
++
++func (c *smartCloseCallbackConn) Close() error {
++	c.closeOnce.Do(c.closeFunc)
++	return c.Conn.Close()
++}
++
++func (c *smartCloseCallbackConn) CloseWrite() error {
++	if writer, ok := common.Cast[network.WriteCloser](c.Conn); ok {
++		return writer.CloseWrite()
++	}
++	// Protocols without half-close support finish the whole stream here.
++	return c.Close()
++}
++
++func (c *smartCloseCallbackConn) ReaderReplaceable() bool { return true }
++func (c *smartCloseCallbackConn) WriterReplaceable() bool { return true }
++func (c *smartCloseCallbackConn) Upstream() any           { return c.Conn }
+diff --git a/adapter/outboundgroup/smart_stalled_test.go b/adapter/outboundgroup/smart_stalled_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_stalled_test.go
+@@ -0,0 +1,59 @@
++package outboundgroup
++
++import (
++	"fmt"
++	"testing"
++	"time"
++
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestSmartStalledConnectionsRecoverAllTCPPorts(t *testing.T) {
++	for _, port := range []uint16{80, 443, 8080, 8443} {
++		t.Run(fmt.Sprint(port), func(t *testing.T) {
++			proxy := &nativeSelectionProxy{name: "blackhole", alive: true}
++			group := &Smart{GroupBase: nativeSelectionBase(C.Smart, proxy)}
++			metadata := &C.Metadata{Host: "example.test", NetWork: C.TCP, DstPort: port}
++			// A successful proxy handshake is not proof that this completed
++			// application request received any answer. The caller timed out.
++			for _, uploadBytes := range []float64{128, 65536} {
++				quality := connQuality{weight: 1, oldWeight: 1, duration: 6000, uploadMB: uploadBytes / (1024 * 1024)}
++				weight, degraded, checked, code := group.checkNodeQuality(targetState{}, metadata, proxy, quality)
++				if !degraded || !checked || code != blockCodeStalled || weight != quality.weight {
++					t.Fatalf("unanswered TCP request on port %d was not isolated: weight=%v degraded=%v checked=%v code=%v", port, weight, degraded, checked, code)
++				}
++			}
++		})
++	}
++}
++
++func TestSmartStalledConnectionsPreserveHealthyTraffic(t *testing.T) {
++	for _, test := range []struct {
++		name   string
++		change func(*C.Metadata, *connQuality, *Smart)
++	}{
++		{"no_upload", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.uploadMB = 0 }},
++		{"short_request", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.duration = 3999 }},
++		{"grace_boundary", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.duration = 4000 }},
++		{"received_answer", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.downloadMB = 1.0 / (1024 * 1024) }},
++		{"large_upload", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.uploadMB = 1 }},
++		{"upload_boundary", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.uploadMB = 65537.0 / (1024 * 1024) }},
++		{"long_upload", func(_ *C.Metadata, q *connQuality, _ *Smart) { q.uploadMB = 10; q.duration = time.Hour.Milliseconds() }},
++		{"udp", func(m *C.Metadata, _ *connQuality, _ *Smart) { m.NetWork = C.UDP }},
++		{"internal_probe", func(m *C.Metadata, _ *connQuality, _ *Smart) { m.Type = C.INNER }},
++		{"manual_choice", func(_ *C.Metadata, _ *connQuality, s *Smart) { s.ForceSet("selected") }},
++		{"group_closed_connection", func(m *C.Metadata, _ *connQuality, _ *Smart) { m.SmartBlock = "degraded" }},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			proxy := &nativeSelectionProxy{name: "selected", alive: true}
++			group := &Smart{GroupBase: nativeSelectionBase(C.Smart, proxy)}
++			metadata := &C.Metadata{Host: "example.test", NetWork: C.TCP, DstPort: 80}
++			quality := connQuality{weight: 1, oldWeight: 1, duration: 6000, uploadMB: 128.0 / (1024 * 1024)}
++			test.change(metadata, &quality, group)
++			_, degraded, checked, code := group.checkNodeQuality(targetState{}, metadata, proxy, quality)
++			if degraded || checked || code != 0 {
++				t.Fatalf("insufficient failure evidence caused isolation: degraded=%v checked=%v code=%v", degraded, checked, code)
++			}
++		})
++	}
++}
+diff --git a/adapter/outboundgroup/smart_close_test.go b/adapter/outboundgroup/smart_close_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_close_test.go
+@@ -0,0 +1,101 @@
++package outboundgroup
++
++import (
++	"io"
++	"net"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/adapter/outbound"
++	"github.com/metacubex/mihomo/common/callback"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestSmartMetricsWaitForResponseAfterHalfClose(t *testing.T) {
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	var samples atomic.Int32
++	uploaded, reply := make(chan struct{}), make(chan struct{})
++	defer close(reply)
++	serverDone := make(chan error, 1)
++	go func() {
++		conn, err := listener.Accept()
++		if err != nil {
++			serverDone <- err
++			return
++		}
++		defer conn.Close()
++		_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
++		_, err = io.ReadAll(conn)
++		close(uploaded)
++		if err == nil {
++			<-reply
++			_, err = conn.Write([]byte("accepted"))
++		}
++		serverDone <- err
++	}()
++	conn, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer conn.Close()
++	_ = conn.SetDeadline(time.Now().Add(3 * time.Second))
++	// The real Smart chain has an observer between its close callback and the
++	// outbound TCP conn. Half-close must traverse that wrapper too.
++	observed := callback.NewFirstReadCallBackConn(outbound.NewConn(conn, outbound.NewDirect()), func(error) {})
++	wrapped := newSmartCloseCallbackConn(observed, func() { samples.Add(1) })
++	defer wrapped.Close()
++	if _, err = wrapped.Write([]byte("upload")); err != nil {
++		t.Fatal(err)
++	}
++	if err = wrapped.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
++		t.Fatal(err)
++	}
++	select {
++	case <-uploaded:
++	case <-time.After(time.Second):
++		t.Fatal("half-close did not reach the server")
++	}
++	if samples.Load() != 0 {
++		t.Fatal("upload half-close recorded an unanswered request before the response")
++	}
++	reply <- struct{}{}
++	data, err := io.ReadAll(wrapped)
++	if err != nil || string(data) != "accepted" {
++		t.Fatalf("half-close lost the delayed response: %q %v", data, err)
++	}
++	if err := <-serverDone; err != nil {
++		t.Fatal(err)
++	}
++	if samples.Load() != 0 {
++		t.Fatal("metrics were finalized before full Close")
++	}
++	_ = wrapped.Close()
++	_ = wrapped.Close()
++	if samples.Load() != 1 {
++		t.Fatalf("full close sampled %d times", samples.Load())
++	}
++}
++
++type smartNoHalfCloseConn struct {
++	C.Conn
++	closed atomic.Int32
++}
++
++func (c *smartNoHalfCloseConn) Close() error { c.closed.Add(1); return nil }
++
++func TestSmartMetricsCloseUnsupportedHalfClose(t *testing.T) {
++	conn := &smartNoHalfCloseConn{}
++	var samples atomic.Int32
++	wrapped := newSmartCloseCallbackConn(conn, func() { samples.Add(1) })
++	if err := wrapped.(interface{ CloseWrite() error }).CloseWrite(); err != nil {
++		t.Fatal(err)
++	}
++	if samples.Load() != 1 || conn.closed.Load() != 1 {
++		t.Fatal("a protocol without half-close must finalize its stream and metrics")
++	}
++}
