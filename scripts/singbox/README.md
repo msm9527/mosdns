@@ -1,37 +1,27 @@
-# Sing-Box native release checks
+# Sing-Box upstream source releases
 
-The stable and testing channels resolve their upstream branch to an immutable
-commit before building. Binary versions and release metadata use that commit's
-version plus `-msm.1`. All platforms in one channel share the same source commit
-and patch set. A native Linux runtime failure prevents publishing either channel.
+Stable and testing releases build the author's unmodified `reF1nd/sing-box`
+branches. Each channel resolves its branch to one immutable commit, uses the
+upstream version without an MSM suffix, and retains the upstream build tags,
+linker settings and dependency files. The author currently provides no GitHub
+release binaries, so these are source builds rather than mirrored binaries.
 
-`apply-patches.sh` runs inside the upstream source checkout and applies:
+`build-upstream.sh` rejects a dirty checkout, builds outside the source tree with
+read-only module resolution, verifies the module cache, and checks the embedded
+source commit and `vcs.modified=false`. It records the Go build information,
+build tags and hashes of the unchanged `go.mod` and `go.sum` for every platform.
+The release contains this evidence in `source.json` and archive checksums in
+`SHA256SUMS`. Uploaded files are verified before the release metadata is updated.
 
-- `clash-api-context.patch`: API requests inherit the instance's certificate
-  roots and measurement policy while retaining request/lifecycle cancellation.
-- `shadowsocks-udp-family.patch`: Shadowsocks server NAT sessions separate IPv4,
-  IPv6 and unresolved hostnames, preserving multiple targets within one family.
-  The script copies the pinned dependency before patching it; it never changes
-  the shared Go module cache.
-
-The native repairs do not change the global dialer's interface binding,
-source-address selection, route marks or firewall policy. The dependency patch
-requires its exact reviewed module version. An upstream dependency change must
-be reviewed and validated before updating that pin.
-
-The CI baseline runs the instance-context and UDP tests, including the race
-detector. `verify_singbox_runtime.py` then runs the compiled binary against local
-HTTP/HTTPS/DNS/UDP fixtures and a real encrypted Shadowsocks relay. It verifies:
+The Linux release gate runs `verify_singbox_runtime.py` against local fixtures:
 
 - remote provider loading, selection, updates and failed-update preservation;
 - rule/direct/global forwarding and IPv4/IPv6 domain and literal destinations;
 - TCP/UDP DNS, both FakeIP families and encrypted UDP forwarding;
-- one UDP association alternating both families and multiple targets;
-- instance-configured certificate trust and rejection when that trust is removed;
-- rejected invalid reloads, valid hot reloads, full restarts and persistent state;
-- concurrent payload integrity and local throughput.
+- the HTTPS delay API with a process-scoped fixture certificate, rejected invalid reloads and valid hot reloads;
+- full restarts, persistent selection/FakeIP state and concurrent payload integrity.
 
-Run the native gate from this repository with a new private working directory:
+Run the gate with a new private working directory:
 
 ```sh
 python3 scripts/verify_singbox_runtime.py /path/to/sing-box \
@@ -39,8 +29,13 @@ python3 scripts/verify_singbox_runtime.py /path/to/sing-box \
 ```
 
 Python 3, OpenSSL and working loopback IPv4/IPv6 are required. The gate uses no
-external network, TUN device, host route, firewall modification or production
-credentials. It writes native configurations, process logs and a successful
-`runtime-result.json` into that directory. Throughput measures the local fixture,
-not an Internet connection. `source.json` records source, dependency and patch
-identities, and `SHA256SUMS` covers every published platform archive.
+external network, production subscription, TUN device, host route or firewall
+modification. Logs and `runtime-result.json` are written to the work directory.
+Throughput describes only the local fixture.
+
+The historical `apply-patches.sh` and patch files are retained for diagnosis and
+are **not invoked by the release workflow**. The old cross-family UDP association
+and instance-specific TLS certificate regressions can be requested separately
+with `--patch-regressions`; they may fail on upstream builds and are not claimed
+as passing release checks. Release failures must be investigated in MSM's
+integration or reported upstream rather than repaired by patching the core.

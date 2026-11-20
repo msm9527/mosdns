@@ -19,7 +19,6 @@ env:
   TZ: Asia/Shanghai
   SINGBOX_SERVER_PATH: /root/dufs/data/sing-box
   SINGBOX_SOURCE_REPOSITORY: reF1nd/sing-box
-  SINGBOX_BUILD_TAGS_FILE: release/DEFAULT_BUILD_TAGS_OTHERS
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -63,7 +62,6 @@ jobs:
                   version = '0.0.0-reF1nd-' + commit[:12]
               if not re.fullmatch(r'[0-9A-Za-z._+-]+', version):
                   raise ValueError('invalid source version')
-              version += '-msm.1'
               return {**channel, 'source_commit': commit, 'source_version': version}
 
           targets = [
@@ -99,6 +97,9 @@ jobs:
     name: Build ${{ matrix.channel }} / ${{ matrix.name }}
     runs-on: ubuntu-latest
     needs: prepare-matrix
+    defaults:
+      run:
+        working-directory: upstream
     strategy:
       fail-fast: false
       matrix: ${{ fromJson(needs.prepare-matrix.outputs.matrix) }}
@@ -115,6 +116,7 @@ jobs:
         with:
           repository: reF1nd/sing-box
           ref: ${{ matrix.source_commit }}
+          path: upstream
           fetch-depth: 0
 
       - name: Checkout MSM runtime gate
@@ -127,30 +129,7 @@ jobs:
         with:
           go-version: stable
           check-latest: true
-
-      - name: Apply audited native repairs to exact source and isolated dependency
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash msm-build/scripts/singbox/apply-patches.sh
-
-      - name: Verify instance services, cancellation and UDP family isolation
-        if: matrix.name == 'linux-amd64'
-        shell: bash
-        run: |
-          set -euo pipefail
-          CGO_ENABLED=1 go test -race -json ./experimental/clashapi github.com/sagernet/sing-shadowsocks/... \
-            -run '^Test(APIRequestsInheritInstanceServicesAndCancellation|.*UDPNAT|2022SplitSessionConcurrentReplies)' \
-            -count=1 | tee native-repair-tests.jsonl
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-          passed = {event.get('Test') for line in Path('native-repair-tests.jsonl').read_text().splitlines()
-                    if (event := json.loads(line)).get('Action') == 'pass'}
-          required = {'TestAPIRequestsInheritInstanceServicesAndCancellation', 'TestUDPNATSeparatesDestinationFamilies',
-                      'Test2022UDPNATSeparatesDestinationFamilies', 'Test2022SplitSessionConcurrentReplies'}
-          assert required <= passed, 'required native regressions were skipped: ' + str(required - passed)
-          PY
+          cache-dependency-path: upstream/go.sum
 
       - name: Resolve source metadata
         id: meta
@@ -166,21 +145,21 @@ jobs:
           echo "commit=${commit}" >> "$GITHUB_OUTPUT"
           echo "commit_short=${commit:0:12}" >> "$GITHUB_OUTPUT"
 
-      - name: Build sing-box
+      - name: Build unchanged upstream source and dependencies
         shell: bash
         env:
-          SINGBOX_VERSION: ${{ steps.meta.outputs.version }}
-        run: |
-          set -euo pipefail
-          tags="$(tr ',\n' '  ' < "${SINGBOX_BUILD_TAGS_FILE}" | xargs)"
-          ldflags="-X 'github.com/sagernet/sing-box/constant.Version=${SINGBOX_VERSION}' $(cat release/LDFLAGS) -s -w -buildid="
-          output='sing-box'
-          if [ "${{ matrix.package }}" = "exe" ]; then
-            output='sing-box.exe'
-          fi
-          go build -v -trimpath -ldflags "${ldflags}" -tags "${tags}" -o "${output}" ./cmd/sing-box
-          go version -m "${output}" | tee binary-build-info.txt
-          test "$(sed -n 's/.*vcs.revision=//p' binary-build-info.txt)" = '${{ matrix.source_commit }}'
+          EXPECTED_COMMIT: ${{ matrix.source_commit }}
+          SOURCE_VERSION: ${{ matrix.source_version }}
+        run: bash ../msm-build/scripts/singbox/build-upstream.sh "$PWD" "$RUNNER_TEMP/singbox-build"
+
+      - name: Preserve original source build evidence
+        uses: actions/upload-artifact@v7
+        with:
+          name: singbox-build-evidence-${{ matrix.channel }}-${{ matrix.name }}
+          path: |
+            ${{ runner.temp }}/singbox-build/build.json
+            ${{ runner.temp }}/singbox-build/build-info.txt
+          if-no-files-found: error
 
       - name: Gate actual Linux baseline runtime before publishing either channel
         if: matrix.name == 'linux-amd64'
@@ -189,17 +168,15 @@ jobs:
           EXPECTED_VERSION: ${{ matrix.source_version }}
         run: |
           set -euo pipefail
-          test "$(./sing-box version | sed -n '1p')" = "sing-box version ${EXPECTED_VERSION}"
-          python3 msm-build/scripts/verify_singbox_runtime.py ./sing-box --work-dir runtime-gate
+          test "$("$RUNNER_TEMP/singbox-build/sing-box" version | sed -n '1p')" = "sing-box version ${EXPECTED_VERSION}"
+          python3 ../msm-build/scripts/verify_singbox_runtime.py "$RUNNER_TEMP/singbox-build/sing-box" --work-dir "$RUNNER_TEMP/runtime-gate"
 
       - name: Preserve runtime gate evidence
         if: always() && matrix.name == 'linux-amd64'
         uses: actions/upload-artifact@v7
         with:
           name: singbox-runtime-gate-${{ matrix.channel }}
-          path: |
-            runtime-gate/
-            native-repair-tests.jsonl
+          path: ${{ runner.temp }}/runtime-gate/
           if-no-files-found: error
 
       - name: Package artifact
@@ -207,6 +184,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          cd "$RUNNER_TEMP/singbox-build"
           asset_name="${{ matrix.asset_prefix }}-${{ matrix.asset_suffix }}"
           if [ "${{ matrix.package }}" = "tar.gz" ]; then
             chmod +x sing-box
@@ -221,7 +199,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: ${{ steps.package.outputs.asset }}
-          path: ./${{ steps.package.outputs.asset }}
+          path: ${{ runner.temp }}/singbox-build/${{ steps.package.outputs.asset }}
           if-no-files-found: error
 
   release:
@@ -254,11 +232,11 @@ jobs:
           path: ./sing-box
           merge-multiple: true
 
-      - name: Show downloaded assets
-        shell: bash
-        run: |
-          set -euo pipefail
-          ls -lh ./sing-box
+      - name: Download original-source build evidence
+        uses: actions/download-artifact@v8
+        with:
+          pattern: singbox-build-evidence-${{ matrix.channel }}-*
+          path: ./build-evidence
 
       - name: Record immutable source and archive checksums
         shell: bash
@@ -275,53 +253,98 @@ jobs:
           assets = sorted(directory.iterdir())
           assert len(assets) == 15, 'missing or unexpected release artifacts'
           (directory / 'SHA256SUMS').write_text(''.join(hashlib.sha256(p.read_bytes()).hexdigest() + '  ' + p.name + '\n' for p in assets))
+          builds = [json.loads(p.read_text()) for p in sorted(Path('build-evidence').glob('*/build.json'))]
+          assert len(builds) == 15, 'missing original-source build evidence'
+          for build in builds:
+              assert build['commit'] == os.environ['SOURCE_COMMIT']
+              assert build['version'] == os.environ['SOURCE_VERSION']
+              assert build['patched'] is False and build['source_modified'] is False
           metadata = {'repository': os.environ['SINGBOX_SOURCE_REPOSITORY'], 'commit': os.environ['SOURCE_COMMIT'],
                       'version': os.environ['SOURCE_VERSION'], 'channel': os.environ['SOURCE_CHANNEL'],
-                      'patch_sha256': {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(Path('scripts/singbox/patches').glob('*.patch'))},
-                      'dependencies': {'github.com/sagernet/sing-shadowsocks': 'v0.2.9-0.20260929204512-65740e0f0e3e'},
-                      'gates': ['native-check', 'provider', 'shadowsocks-tcp-udp', 'dns-ipv4-ipv6', 'clash-api-instance-context', 'udp-multiple-families', 'reload-restart-cache']}
+                      'delivery': 'unmodified-upstream-source-build', 'patched': False,
+                      'dependencies': 'unmodified upstream go.mod and go.sum', 'builds': builds,
+                      'gates': ['clean-source', 'module-integrity', 'native-check', 'provider',
+                                'shadowsocks-tcp-udp', 'dns-ipv4-ipv6', 'https-delay-process-trust', 'reload-restart-cache'],
+                      'patch_regressions_run': False}
           (directory / 'source.json').write_text(json.dumps(metadata, indent=2))
           PY
 
-      - name: Delete existing fixed release and tag
+      - name: Upload verified upstream-source builds
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ matrix.release_tag }}
+        run: |
+          set -euo pipefail
+          cd sing-box
+          sha256sum -c SHA256SUMS
+          if ! gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft --target "$GITHUB_SHA" --title "$RELEASE_TAG" \
+              --notes 'Preparing builds from unmodified upstream source.'
+          fi
+          gh release upload "$RELEASE_TAG" ./* --repo "$GITHUB_REPOSITORY" --clobber
+
+      - name: Verify published files and update fixed release
         uses: actions/github-script@v9
         env:
-          TAG_NAME: ${{ matrix.release_tag }}
+          RELEASE_TAG: ${{ matrix.release_tag }}
+          PRERELEASE: ${{ matrix.prerelease }}
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const tag = process.env.TAG_NAME;
+            const fs = require('fs');
+            const path = require('path');
+            const crypto = require('crypto');
+            const tag = process.env.RELEASE_TAG;
+            if (!['sing-box-reF1nd', 'sing-box-reF1nd-testing'].includes(tag)) {
+              throw new Error('refuse to update unrelated release');
+            }
+            const directory = 'sing-box';
+            const source = JSON.parse(fs.readFileSync(path.join(directory, 'source.json'), 'utf8'));
+            if (source.delivery !== 'unmodified-upstream-source-build' || source.patched !== false) {
+              throw new Error('only unmodified upstream source builds can be published');
+            }
             const { owner, repo } = context.repo;
+            const { data: release } = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
+            const filenames = new Set(fs.readdirSync(directory));
+            for (const name of filenames) {
+              const bytes = fs.readFileSync(path.join(directory, name));
+              const digest = 'sha256:' + crypto.createHash('sha256').update(bytes).digest('hex');
+              const asset = release.assets.find(asset => asset.name === name);
+              if (!asset || asset.state !== 'uploaded' || asset.size !== bytes.length || asset.digest !== digest) {
+                throw new Error('published asset failed integrity check: ' + name);
+              }
+            }
+            for (const asset of release.assets) {
+              if (!filenames.has(asset.name)) {
+                await github.rest.repos.deleteReleaseAsset({ owner, repo, asset_id: asset.id });
+              }
+            }
             try {
-              const release = await github.rest.repos.getReleaseByTag({ owner, repo, tag });
-              await github.rest.repos.deleteRelease({ owner, repo, release_id: release.data.id });
+              await github.rest.git.updateRef({ owner, repo, ref: 'tags/' + tag, sha: context.sha, force: true });
             } catch (error) {
               if (error.status !== 404) throw error;
+              await github.rest.git.createRef({ owner, repo, ref: 'refs/tags/' + tag, sha: context.sha });
             }
-            try {
-              await github.rest.git.deleteRef({ owner, repo, ref: `tags/${tag}` });
-            } catch (error) {
-              if (error.status !== 404 && error.status !== 422) throw error;
-            }
-
-      - name: Publish fixed release
-        uses: softprops/action-gh-release@v3
-        with:
-          tag_name: ${{ matrix.release_tag }}
-          name: ${{ matrix.release_tag }} ${{ steps.meta.outputs.version }}
-          target_commitish: ${{ github.sha }}
-          files: ./sing-box/*
-          make_latest: false
-          prerelease: ${{ matrix.prerelease }}
-          generate_release_notes: false
-          body: |
-            Version: ${{ steps.meta.outputs.version }}
-            Channel: ${{ matrix.channel }}
-            Source: https://github.com/${{ env.SINGBOX_SOURCE_REPOSITORY }}/tree/${{ matrix.source_commit }}
-            Commit: ${{ steps.meta.outputs.commit }}
-            Source commit: ${{ steps.meta.outputs.commit_short }}
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+            const body = [
+              `Version: ${source.version}`,
+              `Channel: ${source.channel}`,
+              `Source: https://github.com/${source.repository}/tree/${source.commit}`,
+              `Commit: ${source.commit}`,
+              `Source commit: ${source.commit.slice(0, 12)}`,
+              '',
+              '使用 reF1nd 作者原始源码编译，核心源码与依赖均未修改，不含 MSM 补丁。',
+              'Built from unmodified upstream source and dependencies; no MSM patches.',
+              '作者仓库暂无预编译 Release；本发布为原始源码构建，并非复制作者二进制。',
+              '',
+              '构建来源、Go 构建信息和校验摘要见 source.json 与 SHA256SUMS。',
+              '已验证基础订阅、转发、DNS 与重载；历史 MSM 补丁专属回归不属于本发布验证范围。',
+            ].join('\n');
+            await github.rest.repos.updateRelease({
+              owner, repo, release_id: release.id, name: tag + ' ' + source.version, body,
+              draft: false, prerelease: process.env.PRERELEASE === 'true', make_latest: 'false',
+              target_commitish: context.sha,
+            });
 
       - name: Install sshpass and rsync
         shell: bash

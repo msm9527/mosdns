@@ -12,6 +12,7 @@ import http.client
 import http.server
 import ipaddress
 import json
+import os
 from pathlib import Path
 import socket
 import socketserver
@@ -121,6 +122,8 @@ class Fixtures:
 
         class HTTP(http.server.BaseHTTPRequestHandler):
             def do_HEAD(self):
+                # The upstream delay API treats a rounded 0 ms result as failure.
+                time.sleep(0.01)
                 self.send_response(204)
                 self.end_headers()
 
@@ -208,8 +211,9 @@ def dns_query(target_port, domain, kind, tcp=False):
 
 
 class Gate:
-    def __init__(self, binary, directory):
+    def __init__(self, binary, directory, patch_regressions=False):
         self.binary, self.directory = str(Path(binary).resolve()), directory
+        self.patch_regressions = patch_regressions
         self.processes, self.logs, self.results = [], [], []
         self.fixtures = Fixtures()
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -224,7 +228,13 @@ class Gate:
     def start(self, name, config):
         log = (self.directory / (name + ".log")).open("a")
         self.logs.append(log)
-        process = subprocess.Popen([self.binary, "run", "-c", str(config)], cwd=self.directory, stdout=log, stderr=log)
+        env = dict(os.environ)
+        if not self.patch_regressions:
+            # Upstream delay requests use process trust, not instance-only roots.
+            # Trust this fixture only in the child; do not alter the host CA store.
+            env["SSL_CERT_FILE"] = str(self.directory / "fixture.crt")
+        process = subprocess.Popen([self.binary, "run", "-c", str(config)], cwd=self.directory,
+                                   stdout=log, stderr=log, env=env)
         self.processes.append(process)
         return process
 
@@ -330,8 +340,11 @@ class Gate:
                 packet.settimeout(5)
                 packet.sendto(b"\x00\x00\x00" + address(host, origin) + b"gate", ("127.0.0.1", relay_port))
                 require(packet.recv(4096).endswith(b"encrypted-echo:gate"), f"encrypted UDP/FakeIP failed: {host}")
+        # Historical patch-specific assertions remain available as diagnostics.
+        # The release gate uses HTTPS with process-scoped fixture trust.
         delay_url = urllib.parse.urlencode({"url": f"https://127.0.0.1:{f.https}/generate_204", "timeout": 5000})
-        verify_udp_families(self, socks, address, require)
+        if self.patch_regressions:
+            verify_udp_families(self, socks, address, require)
         self.api("/proxies/" + urllib.parse.quote("airport/node2", safe="") + "/delay?" + delay_url)
         f.provider = b"invalid subscription"
         self.api("/providers/proxies/airport", "PUT", expected=503)
@@ -347,14 +360,16 @@ class Gate:
         self.api("/configs", "PUT", {}, 204)
         self.ready()
         require(process.poll() is None, "hot reload exited the process")
-        path.write_text(json.dumps({key: value for key, value in config.items() if key != "certificate"}))
-        self.api("/configs", "PUT", {}, 204)
-        self.ready()
-        self.api("/proxies/" + urllib.parse.quote("airport/node2", safe="") + "/delay?" + delay_url, expected=503)
-        path.write_text(json.dumps(config))
-        self.api("/configs", "PUT", {}, 204)
-        self.ready()
-        self.api("/proxies/" + urllib.parse.quote("airport/node2", safe="") + "/delay?" + delay_url)
+        if self.patch_regressions:
+            path.write_text(json.dumps({key: value for key, value in config.items() if key != "certificate"}))
+            self.api("/configs", "PUT", {}, 204)
+            self.ready()
+            self.api("/proxies/" + urllib.parse.quote("airport/node2", safe="") + "/delay?" + delay_url, expected=503)
+            path.write_text(json.dumps(config))
+            self.api("/configs", "PUT", {}, 204)
+            self.ready()
+            self.api("/proxies/" + urllib.parse.quote("airport/node2", safe="") + "/delay?" + delay_url)
+            self.results.append({"gate": "clash-api-instance-certificate-context", "passed": True})
         self.stop(process)
         process = self.start("client-restart", path)
         self.ready()
@@ -384,14 +399,17 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("binary")
     parser.add_argument("--work-dir", type=Path, required=True)
+    parser.add_argument("--patch-regressions", action="store_true",
+                        help="also diagnose historical MSM patch behaviors (not part of the upstream release gate)")
     args = parser.parse_args()
     args.work_dir.mkdir(parents=True, exist_ok=False, mode=0o700)
-    gate = Gate(args.binary, args.work_dir.resolve())
+    gate = Gate(args.binary, args.work_dir.resolve(), args.patch_regressions)
     try:
         gate.run()
     finally:
         gate.close()
-    result = {"binary_sha256": hashlib.sha256(Path(gate.binary).read_bytes()).hexdigest(), "checks": gate.results}
+    result = {"binary_sha256": hashlib.sha256(Path(gate.binary).read_bytes()).hexdigest(), "checks": gate.results,
+              "patch_regressions_requested": args.patch_regressions}
     (gate.directory / "runtime-result.json").write_text(json.dumps(result, indent=2))
     print(json.dumps(result))
 
