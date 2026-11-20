@@ -131,27 +131,33 @@ func TestFreshRefreshSupersedesOldFastAnswer(t *testing.T) {
 	}
 }
 
-func TestFailedOrStaleRefreshPreservesOldFastAnswer(t *testing.T) {
-	for _, mode := range []string{"nil", "SERVFAIL", "truncated", "malformed", "wrong_id", "wrong_name", "wrong_type", "wrong_class", "not_response", "shared_stale"} {
-		t.Run(mode, func(t *testing.T) {
-			q := refreshTestQuestion()
-			h := &fastHandler{fc: refreshTestCache()}
-			old := refreshTestSeed(t, h, q, server.QueryMeta{}, "1.1.1.1")
-			h.next = refreshTestHandler{resolve: func(q *dns.Msg, _ server.QueryMeta) (*[]byte, bool) {
-				if mode == "nil" {
-					return nil, false
-				}
-				if mode == "malformed" {
-					wire := pool.GetBuf(13)
-					copy(*wire, []byte{0, 1, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 255})
-					return wire, false
-				}
-				return refreshTestPack(t, refreshTestResponse(q, mode)), mode == "shared_stale"
-			}}
-			h.refreshExpiredCache(context.Background(), q.Copy(), server.QueryMeta{}, pool.PackBuffer, old)
-			if got, _ := h.fc.findItem(old.hash, old.qname, old.qtype); got != old {
-				t.Fatal("failed or stale refresh removed/replaced the last useful stale answer")
+func TestFailedRefreshPreservesOldFastAnswer(t *testing.T) {
+	for _, mode := range []string{"nil", "SERVFAIL", "truncated", "malformed", "wrong_id", "wrong_name", "wrong_type", "wrong_class", "not_response"} {
+		for _, stale := range []bool{false, true} {
+			name := mode
+			if stale {
+				name += "/stale"
 			}
-		})
+			t.Run(name, func(t *testing.T) {
+				q := refreshTestQuestion()
+				h := &fastHandler{fc: refreshTestCache()}
+				old := refreshTestSeed(t, h, q, server.QueryMeta{}, "1.1.1.1")
+				h.next = refreshTestHandler{resolve: func(q *dns.Msg, _ server.QueryMeta) (*[]byte, bool) {
+					if mode == "nil" {
+						return nil, stale
+					}
+					if mode == "malformed" {
+						wire := pool.GetBuf(13)
+						copy(*wire, []byte{0, 1, 0x81, 0x80, 0, 1, 0, 0, 0, 0, 0, 0, 255})
+						return wire, stale
+					}
+					return refreshTestPack(t, refreshTestResponse(q, mode)), stale
+				}}
+				h.refreshExpiredCache(context.Background(), q.Copy(), server.QueryMeta{}, pool.PackBuffer, old)
+				if got, _ := h.fc.findItem(old.hash, old.qname, old.qtype); got != old {
+					t.Fatal("failed refresh removed/replaced the last useful stale answer")
+				}
+			})
+		}
 	}
 }

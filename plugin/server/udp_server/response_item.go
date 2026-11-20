@@ -3,7 +3,6 @@ package udp_server
 import (
 	"encoding/binary"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"github.com/IrineSistiana/mosdns/v5/pkg/pool"
@@ -25,8 +24,18 @@ func (fc *fastCache) newResponseItem(qname string, qtype uint16, resp []byte, ds
 	bakedResp := make([]byte, len(resp))
 	copy(bakedResp, resp)
 	offsets := findTTLOffsets(bakedResp)
-	now := time.Now()
+	// Use the hit path's clock so a tick boundary cannot inflate a short TTL.
+	now := time.Unix(fastNowUnix(), 0)
 	authenticatedUntil := fastAuthenticatedUntil(resp, offsets, now)
+	// A client TTL floor must not extend the underlying DNS answer's lifetime.
+	// FakeIP is a local mapping and retains its existing retention policy.
+	var freshUntil int64
+	if !fakeIP {
+		freshUntil = authenticatedUntil
+		if freshUntil <= now.Unix() {
+			return nil
+		}
+	}
 	for _, off := range offsets {
 		if off+4 <= len(bakedResp) {
 			ttl := binary.BigEndian.Uint32(bakedResp[off : off+4])
@@ -43,6 +52,8 @@ func (fc *fastCache) newResponseItem(qname string, qtype uint16, resp []byte, ds
 		audit:                fastAuditResponseMetaFromPayloadIfEnabled(fc.cfg.auditEnabled, strings.TrimSuffix(qname, "."), bakedResp),
 		expire:               now.Add(internalTTL).Unix(),
 		authenticatedUntil:   authenticatedUntil,
+		freshUntil:           freshUntil,
+		ttlOffsets:           offsets,
 		domainSet:            dset,
 		domainMapperRevision: ruleRevision.domainMapper,
 		rewriteRevision:      ruleRevision.rewrite,
@@ -85,7 +96,7 @@ func (fc *fastCache) copyResponseItem(txid uint16, qname string, qtype uint16, a
 	if len(ptr.resp) == 0 {
 		return nil, fastAuditResponseMeta{}, nil
 	}
-	expire, now := atomic.LoadInt64(&ptr.expire), fastNowUnix()
+	expire, now := ptr.freshnessDeadline(), fastNowUnix()
 	if now >= expire && !fc.withinStaleWindow(ptr, expire, now) {
 		return nil, fastAuditResponseMeta{}, nil
 	}

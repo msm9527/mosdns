@@ -43,6 +43,13 @@ func (h *fastHandler) refreshExpiredCache(ctx context.Context, q *dns.Msg, meta 
 		return
 	}
 	defer pool.ReleaseBuf(payload)
+	if stale && cacheableRequest && validFastRefreshResponse(q, *payload) {
+		// The shared cache is already refreshing this answer. Let subsequent
+		// queries see its result instead of pinning our old copy until staleRetry.
+		// Its own stale/singleflight policy still covers an in-flight upstream,
+		// and the CAS cannot discard a newer fast-cache generation.
+		h.fc.replaceRefreshedItem(target, nil)
+	}
 	if !stale && cacheableRequest && validFastRefreshResponse(q, *payload) {
 		stable = stable && revision == h.runtimeRevision()
 		if sourceAware {

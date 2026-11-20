@@ -526,6 +526,8 @@ type fastCacheItem struct {
 	expire             int64
 	authenticatedUntil int64
 	refreshAfter       atomic.Int64
+	freshUntil         int64 // Immutable RR lifetime, separate from retention; zero for FakeIP.
+	ttlOffsets         []int
 
 	resp                 []byte
 	audit                fastAuditResponseMeta
@@ -1230,7 +1232,7 @@ func (fc *fastCache) replyFromItemAt(ptr *fastCacheItem, occupied bool, buf []by
 	if now <= 0 {
 		now = fastNowUnix()
 	}
-	expire := atomic.LoadInt64(&ptr.expire)
+	expire := ptr.freshnessDeadline()
 	if now >= expire {
 		staleAllowed := fc.withinStaleWindow(ptr, expire, now)
 		if fc.stats != nil {
@@ -1829,7 +1831,7 @@ func (h *fastHandler) serveStaleWhileRefresh(ctx context.Context, q *dns.Msg, me
 		h.fc.stats.bypassStaleReply.Add(1)
 	}
 	collectFastAuditFromMsg(h.enableAudit, auditStart, q, meta, auditMeta, coremain.AuditCacheLazy)
-	if atomic.LoadInt64(&item.expire) <= fastNowUnix() {
+	if item.freshnessDeadline() <= fastNowUnix() {
 		go h.refreshExpiredCache(ctx, q.Copy(), meta, pack, item)
 	}
 	return stalePayload
@@ -2839,7 +2841,8 @@ func findTTLOffsets(msg []byte) []int {
 	qdcount := binary.BigEndian.Uint16(msg[4:6])
 	ancount := binary.BigEndian.Uint16(msg[6:8])
 	nscount := binary.BigEndian.Uint16(msg[8:10])
-	totalRRs := int(ancount) + int(nscount)
+	arcount := binary.BigEndian.Uint16(msg[10:12])
+	totalRRs := int(ancount) + int(nscount) + int(arcount)
 	if totalRRs == 0 {
 		return nil
 	}
@@ -2859,9 +2862,11 @@ func findTTLOffsets(msg []byte) []int {
 		if !ok || nextOffset+10 > len(msg) {
 			break
 		}
-		offset = nextOffset
-		offset += 4
-		offsets = append(offsets, offset)
+		rrtype := binary.BigEndian.Uint16(msg[nextOffset : nextOffset+2])
+		offset = nextOffset + 4
+		if rrtype != dns.TypeOPT {
+			offsets = append(offsets, offset)
+		}
 		offset += 4
 		rdlen := int(binary.BigEndian.Uint16(msg[offset : offset+2]))
 		offset += 2

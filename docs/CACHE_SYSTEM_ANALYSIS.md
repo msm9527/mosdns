@@ -259,7 +259,7 @@ L2 基于：
 
 当前实现通过 query context 标记 stale 来源，在 `saveRespToCache` 前拦截这类写入。
 
-标记也会从 `EntryHandler` 传递到 UDP 快路径：解析后的消息与 `ResponsePayload.Stale` 都能保留 stale 来源。UDP 请求返回和 `refreshExpiredCache` 后台刷新均只透传 shared stale，不把它重新存成 fast fresh 记录。这样可避免共享缓存的旧 IP 被重新赋予 `7200s` 或域名集覆盖的内部寿命。
+标记也会从 `EntryHandler` 传递到 UDP 快路径：解析后的消息与 `ResponsePayload.Stale` 都能保留 stale 来源。UDP 请求返回和 `refreshExpiredCache` 后台刷新均不会把 shared stale 重新存成 fast fresh 记录。后台收到有效的 shared stale 时，仅用 CAS 移除本次刷新的旧 fast 条目，让后续请求直接使用共享缓存的更新结果，无需等快路径下一次重试。共享缓存仍提供 stale 响应及合并刷新；并发产生的新 fast 条目不会被误删。
 
 ## 4.9 路由签名与依赖失效
 
@@ -466,7 +466,11 @@ fast 自身命中过期项时，直接回复和 `CopyResponse` 都将非 OPT 记
 - 服务端短期热点缓冲
 - 有上限的 stale-refresh 辅助层
 
-这里的 `internal_ttl` 是独立的 fast fresh 保留时间，并不等于上游 RR TTL。普通无 AD/RRSIG 的短 TTL 正响应仍可能在此窗口内被当作 fresh 使用；高变化域名的 12 小时覆盖也保留。stale 传播保护只阻止已被共享缓存标记为 stale 的结果重新入 fast，不改变这些 fresh 策略。短客户端 TTL 不能单独保证 CDN 地址及时更新。
+`internal_ttl` 控制热点条目的保留和淘汰，不再延长真实解析结果的 fresh 寿命。普通正响应以进入快路径时、快路径 TTL 裁剪前的最短 RR TTL 为刷新边界，且不能超过 `internal_ttl`；返回 TTL 不超过剩余有效时间。高变化域名的 12 小时覆盖同样不能延后此刷新边界。该 TTL 可能已受共享缓存的 `client_ttl_min` 影响，因此并不等于未经治理的上游原始 TTL。
+
+记录到期后的首次查询立即返回最多 5 秒 TTL 的旧结果，同时预约后台刷新；后续请求复用缓存，并按 `stale_retry_seconds` 限制重试频率。`stale_max_seconds` 从记录实际到期开始计算，超过后回落完整解析。成功刷新按缓存代际替换，失败不会给旧记录续期。零 TTL 的真实响应不进入快路径，AD/RRSIG 和负响应继续交给共享缓存。FakeIP 是本地映射，继续使用原有的保留及客户端 TTL 策略。
+
+有效期内的 UDP 命中只复制响应并按预先计算的偏移调整 TTL，不解包 DNS、不分配内存，也不发起额外上游查询。
 
 ## 6. 当前设计的几个关键特征
 
@@ -581,7 +585,7 @@ fast 自身命中过期项时，直接回复和 `CopyResponse` 都将非 OPT 记
 
 这意味着：
 
-- UDP fast path 拒绝负响应和 shared stale 入库；自身的正响应 fresh 保留仍按 `internal_ttl` 和域名集覆盖执行。
+- UDP fast path 拒绝负响应和 shared stale 入库；真实正响应按入库 RR TTL 到期刷新，`internal_ttl` 和域名集保留覆盖不能将旧地址继续标为 fresh。
 - 刷新失败时不会无限返回旧结果。
 
 ## 8.6 路由变化和依赖 revision 变化会绕过旧缓存
@@ -638,8 +642,8 @@ fast 自身命中过期项时，直接回复和 `CopyResponse` 都将非 OPT 记
 但当前默认实现没有做到的是：
 
 - 自动识别“这个域名属于 Apple/App Store，所以绝不直接返 stale”
-- 将所有普通正响应的 fast fresh 寿命自动限制到原始 RR TTL；默认 `7200s` 与高变化域名 `43200s` 策略仍适用。
-- 单凭 stale TTL 上限保证 Apple/CDN 不使用旧地址；共享 fresh 的最小 TTL 和 fast fresh 的内部寿命也会影响更新速度。
+- 将共享缓存已治理的 TTL 还原为上游原始 TTL；共享 fresh 的最小 TTL 仍会影响更新速度。
+- 单凭 stale TTL 上限保证 Apple/CDN 不使用旧地址；客户端自身的 DNS 缓存及现有连接也会影响收敛速度。
 
 因此更准确地说：
 

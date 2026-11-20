@@ -91,6 +91,7 @@ func TestFastStaleRepliesUseShortTTLWithoutChangingFreshPayload(t *testing.T) {
 	payload := makeAnswer(t, name, dns.TypeA, 42, 30)
 	fc.Store(name, dns.TypeA, payload, "", false)
 	item := mustFastCacheItem(t, fc, name, dns.TypeA)
+	stored := append([]byte(nil), item.resp...)
 	atomic.StoreInt64(&item.expire, fastNowUnix()-1)
 	item.refreshAfter.Store(fastNowUnix() + 3600)
 	buf := make([]byte, len(payload))
@@ -111,8 +112,11 @@ func TestFastStaleRepliesUseShortTTLWithoutChangingFreshPayload(t *testing.T) {
 	}
 	atomic.StoreInt64(&item.expire, time.Now().Add(time.Hour).Unix())
 	fresh := readStalePolicyResponse(t, fc.CopyResponse(84, name, dns.TypeA, true))
-	if fresh.Answer[0].Header().Ttl != 120 {
+	if !bytes.Equal(item.resp, stored) {
 		t.Fatal("stale reply modified the stored fresh payload")
+	}
+	if ttl := fresh.Answer[0].Header().Ttl; ttl == 0 || ttl > 30 {
+		t.Fatalf("fresh reply exceeded the record lifetime: TTL=%d", ttl)
 	}
 }
 

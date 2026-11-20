@@ -12,11 +12,13 @@ func applyFastCacheReplyPolicy(payload []byte, item *fastCacheItem, expire, now 
 	clearFastStaleAD(payload, item, expire, now)
 	if now >= expire {
 		capFastStaleTTL(payload)
+	} else {
+		capFastFreshTTL(payload, item, expire, now)
 	}
 }
 
-// Only expired replies need the record scan. Keep stored bytes and the ordinary
-// fresh hit path unchanged; OPT's TTL word contains flags, not an RR lifetime.
+// Only expired replies need the record scan; fresh replies use stored offsets.
+// OPT's TTL word contains flags, not an RR lifetime.
 func capFastStaleTTL(payload []byte) {
 	if len(payload) < dnsHeaderSize {
 		return

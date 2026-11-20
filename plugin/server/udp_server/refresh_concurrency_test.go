@@ -11,7 +11,7 @@ import (
 )
 
 func TestRefreshCannotOverwriteOrDeleteNewerGeneration(t *testing.T) {
-	for _, mode := range []string{"ordinary", "NXDOMAIN", "AD"} {
+	for _, mode := range []string{"ordinary", "NXDOMAIN", "AD", "shared_stale"} {
 		for _, mutation := range []string{"new-answer", "flush"} {
 			t.Run(mode+"/"+mutation, func(t *testing.T) {
 				q := refreshTestQuestion()
@@ -21,7 +21,7 @@ func TestRefreshCannotOverwriteOrDeleteNewerGeneration(t *testing.T) {
 				h.next = refreshTestHandler{resolve: func(q *dns.Msg, _ server.QueryMeta) (*[]byte, bool) {
 					close(started)
 					<-release
-					return refreshTestPack(t, refreshTestResponse(q, mode)), false
+					return refreshTestPack(t, refreshTestResponse(q, mode)), mode == "shared_stale"
 				}}
 				go func() {
 					defer close(done)
@@ -53,7 +53,7 @@ func TestRefreshCannotOverwriteOrDeleteNewerGeneration(t *testing.T) {
 }
 
 func TestRefreshUsesGenerationCapturedBeforeBackgroundLaunch(t *testing.T) {
-	for _, mode := range []string{"ordinary", "NXDOMAIN"} {
+	for _, mode := range []string{"ordinary", "NXDOMAIN", "shared_stale"} {
 		t.Run(mode, func(t *testing.T) {
 			q := refreshTestQuestion()
 			h := &fastHandler{fc: refreshTestCache()}
@@ -66,7 +66,7 @@ func TestRefreshUsesGenerationCapturedBeforeBackgroundLaunch(t *testing.T) {
 			// Another query finishes before the background goroutine is scheduled.
 			newer := refreshTestSeed(t, h, q, server.QueryMeta{}, "3.3.3.3")
 			h.next = refreshTestHandler{resolve: func(q *dns.Msg, _ server.QueryMeta) (*[]byte, bool) {
-				return refreshTestPack(t, refreshTestResponse(q, mode)), false
+				return refreshTestPack(t, refreshTestResponse(q, mode)), mode == "shared_stale"
 			}}
 			h.refreshExpiredCache(context.Background(), q.Copy(), server.QueryMeta{}, pool.PackBuffer, captured)
 			if got, _ := h.fc.findItem(old.hash, old.qname, old.qtype); got != newer {

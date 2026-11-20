@@ -420,7 +420,7 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 		t.Fatalf("ttl should be clamped to 30, got %d", out.Answer[0].Header().Ttl)
 	}
 
-	// Lower-bound clamp
+	// A lower-bound clamp must not outlive the original record.
 	respLow := makeAnswer(t, name, qtype, 0x1111, 1)
 	fc.Store(name, qtype, respLow, "dset", false)
 	buf = make([]byte, len(respLow))
@@ -432,8 +432,8 @@ func TestFastCacheStoreClampTTLAndPreserveTxID(t *testing.T) {
 	if err := out.Unpack(buf[:respLen]); err != nil {
 		t.Fatalf("unpack low ttl response: %v", err)
 	}
-	if out.Answer[0].Header().Ttl != 5 {
-		t.Fatalf("ttl should be clamped to 5, got %d", out.Answer[0].Header().Ttl)
+	if out.Answer[0].Header().Ttl != 1 {
+		t.Fatalf("ttl must respect the original lifetime of 1, got %d", out.Answer[0].Header().Ttl)
 	}
 }
 
