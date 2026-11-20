@@ -1,195 +1,83 @@
-# Patched Mihomo delivery
+# Mihomo delivery
 
-These scripts build the native `direct-system` outbound and
-`tun.system-route-mark` support used by MSM home-access listeners. They preserve
-ordinary Mihomo interface bindings. Smart also receives an ANYTLS stream
-isolation repair so closing one stream cannot close its shared TLS session.
-Smart also repairs optional model/ASN dependencies, data
-collection, and maintenance across configuration reloads. These changes retain
-the upstream selection and weight algorithms.
+## Smart: original upstream artifacts
 
-Meta/Alpha revision `msm.2` and Smart revision `msm.3` synchronize manual
-selection with status, TCP/UDP proxy selection, and background quality checks.
-Selector, URLTest, Fallback, and Smart groups take atomic selection snapshots;
-discarding a stale selection cannot erase a newer user choice. URLTest also
-serializes recalculations that overlap a selection reset, protecting its cached
-fast node while retaining its existing cached fast path and tolerance rules.
+The `mihomo-smart` release mirrors the original binaries from
+[vernesong/mihomo Prerelease-Alpha](https://github.com/vernesong/mihomo/releases/tag/Prerelease-Alpha).
+The scheduled/manual workflow downloads existing archives. It does not check
+out the Smart source, apply patches, invoke Go, or recompress the archives.
+Binary versions and filenames keep the upstream revision without an `msm.N`
+suffix.
 
-Smart manual node changes apply to new connections while healthy existing streams
-finish on their original exits. Automatic winner adoption updates future pins
-without closing in-flight responses; confirmed failure/degradation still closes
-affected connections. Only the first unpinned dial for a target is coordinated,
-independently for TCP and UDP. Followers read its committed winner and open their
-own connections; cached pins and manual selections do not wait on this gate.
-Caller/group cancellation wakes waiters, failed first dials release their entry,
-and retries remain bounded. Manual dial failures preserve automatic pins;
-automatic fallback failures still clear stale pins for recovery.
+The same ten platforms are published: Linux AMD64 v1/v3, 386, ARM v5/v6/v7,
+ARM64, and Darwin AMD64 v1/v3 and ARM64. AMD64 v1 is selected explicitly;
+upstream's unqualified AMD64 archive is not substituted for it.
 
-Smart's default formula-based selection does not require a model or CGO.
-LightGBM inference uses the upstream pure-Go leaves evaluator. When enabled,
-`/proxies/<group>` reports `lightGBMReady` and `lightGBMError` in addition to the
-configured `useLightGBM` switch. A failed initial load falls back to the formula;
-a successful model update activates inference in the same running groups.
-Downloads reject HTTP errors, invalid/empty/truncated models, models over 64 MiB,
-and models requiring more than 4096 feature slots. Candidates are validated
-before replacing the installed model; a failed reload keeps working inference.
-Automatic model updates apply enable/disable and interval changes together on
-configuration reload. One scheduler handles all revisions, cancels its old
-automatic request when policy changes, and keeps manual updates independent.
-Enabling updates checks for a missing or stale model immediately. Repeated
-registration does not create extra workers or reset the timer. Enabled intervals
-must be positive hour counts that fit a Go duration; invalid values are rejected
-before applying configuration.
+`scripts/mihomo/mirror-smart.py` verifies the official HTTPS release origin,
+complete platform set, one common revision, trusted SHA-256 digests, and archive
+sizes. A changing or ambiguous upstream release fails preparation. Each archive
+is copied byte for byte. `mihomo-smart-source.json` records the official URLs,
+digests and version with `patched: false` and `recompiled: false`; `SHA256SUMS`
+also covers that manifest.
 
-`preferASN` likewise remains the configured switch. `asnReady` and `asnError`
-report effective availability. Missing or invalid ASN data disables only that
-enhancement, preserving traffic. A valid database installed later is detected
-within five seconds without a core restart. Existing ready readers retain the
-upstream geodata update behavior.
+Publication uploads all verified replacements before removing stale release
+assets. GitHub's uploaded asset digests must match the local files before the
+old patched binaries are retired and the release metadata is updated. The
+`mihomo-smart` URL and release identity are retained. Its tag follows the
+publishing workflow commit; the mirrored binary's revision comes from upstream
+asset metadata, not this repository's source.
 
-Collectors keep a stable writer through temporary configuration parsing and
-reload, flush every buffered row when groups close, and reopen safely when
-other groups continue. Shared maintenance runs while any Smart group remains;
-replacing the first group no longer cancels maintenance for its replacements.
-Adaptive connection deadlines retain at least one second for transient jitter
-and proxy handshakes, bounded by a shorter explicit caller limit. A previous
-one-millisecond LAN handshake must not reduce future attempts to five milliseconds.
+Local preparation (no publication):
 
-Smart revision `msm.5` honors an explicit `sample-rate: 0`: it records no training
-samples and reports `sampleRate: 0` through the controller API. Omitting the
-option still uses the upstream default of `1`; fractional rates remain unchanged.
-This does not enable model inference or data collection by default.
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s scripts/mihomo -p 'test_mirror_smart.py'
+python3 scripts/mihomo/mirror-smart.py --output-dir /path/to/empty/staging-directory
+```
 
-Smart revision `msm.6` performs no optional network downloads during configuration
-validation. Shared, cancellable workers initialize missing model/ASN data after
-the proxy starts, retry failures once a minute, and follow enabled groups across
-reloads. Disabling the last user cancels its pending request. Failed downloads
-retain formula selection and existing files; model updates use the same bounded,
-validated atomic installation as initial loads. Non-finite predictions fall back
-to formula scoring. Failed automatic pins retry remaining candidates within the
-same TCP/UDP connection setup; manually fixed nodes retain their explicit policy.
+MSM installs Smart directly from the author's release. Both the direct source
+and this mirror contain the same original archives. Original Smart does not
+provide the private `direct-system` or `tun.system-route-mark` extensions;
+configurations using those features require a compatible core or a changed
+home-access deployment. Optional model/ASN preparation and configuration
+integration belong to MSM.
 
-Smart revision `msm.7` stops replaced subscription and rule-provider refreshers
-before their replacements initialize. Delayed responses and pushed updates from
-retired providers cannot overwrite the active cache; an in-progress cache commit
-is drained before reusing its path. Retained provider objects remain active.
-This prevents old subscription nodes from returning after a reload and restart.
+## Meta/Alpha native builds
 
-Smart revision `msm.8` detects completed TCP requests that sent up to 64 KiB,
-waited more than four seconds and received no response, on every destination
-port. A successful generic probe or proxy handshake no longer hides a blackholed
-HTTP destination. The existing temporary, host-scoped exclusion is reused; this
-evidence does not close other healthy connections or widen to a rule/ASN target.
-Large uploads, internal probes, UDP, short requests, connections with received
-data, manual selections and group-forced closes keep their existing policy.
-Smart TCP metrics now wait for full close: an upload half-close is forwarded to
-the underlying connection and cannot finalize statistics before its delayed
-response. The shared callback implementation and UDP metrics are unchanged.
-The new selection and half-close regressions are required both normally and
-with the race detector before artifact generation.
+The separate `mihomo` workflow still builds Meta/Alpha with the native
+`direct-system` outbound and `tun.system-route-mark` support used by MSM
+home-access listeners. Ordinary interface bindings are preserved. The release
+keeps its existing names, archive formats and 15-target platform matrix with
+revision `msm.4`.
 
-Smart revision `msm.9` records genuine dial deadline failures in the existing
-node quality and failure policy. Previously, an expired dial context prevented
-recording the failure, so a node that passed generic probes could repeatedly
-stall application handshakes. Subsequent automatic requests can select another
-node. Requests that are already canceled or expired before dialing, canceled
-parallel attempts, and retired groups do not penalize nodes. Manual selections
-remain fixed, and the caller's deadline is never extended.
+The shared patches synchronize manual selection with status and TCP/UDP
+selection. They preserve health-check thresholds above one and make a threshold
+of one trigger the first eligible check. Linux TUN routing supports exact port
+masks and records only owned routes in a journal for crash recovery. Unknown
+dependency layouts fail verification; existing unrelated rules are protected.
 
-Meta/Alpha revision `msm.4` and Smart revision `msm.9` also honor
-`max-failed-times: 1` on the first eligible failure. Larger thresholds retain
-their existing short-window counting policy and ignored outbound types.
-Both changes have mandatory behavior and race regression gates.
-
-The marked system-route bypass is a Linux feature. MSM must generate its
-`direct-system` helpers only on Linux; enabling a nonzero TUN
-`system-route-mark` on another OS is rejected. The other release targets retain
-their ordinary proxy functionality and interface binding behavior.
-
-The Linux TUN bypass records the exact routing rules it owns in a durable
-journal. After an interrupted start or abrupt process exit, the next start
-recovers only verified rules from that journal. Unrelated rules and active
-instances are protected by namespace, boot, process, and rule identity checks.
-
-Meta/Alpha revision `msm.3` and Smart revision `msm.4` also support the explicit
-exact port masks emitted by newer Linux kernels. Missing and full (`ffff`) masks
-identify the same rule; partial masks remain distinct. Routing plans preserve
-the reviewed sing-tun v0.4.28 and v0.4.29 layouts, including v0.4.29's IPv6 source
-rule ordering and independent interface-selection priorities. Unknown dependency
-layouts still fail verification instead of claiming unrelated routing rules.
-
-## Release contracts
-
-- Meta and Alpha retain the existing `mihomo` release, asset names, archive
-  formats, and 15-target platform/CPU matrix. Their binary and release-body
-  versions append `-msm.4` to the official upstream version.
-- Smart uses the independent `mihomo-smart` release. Assets preserve the official
-  `mihomo-<os>-<arch>-alpha-smart-<12-character-upstream-SHA>.gz` format. AMD64
-  variants explicitly use `amd64-v1` and `amd64-v3`; the baseline always builds
-  with `GOAMD64=v1`.
-- Smart covers Linux AMD64 v1/v3, 386, ARM v5/v6/v7, ARM64, and Darwin AMD64
-  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.9`.
-- Smart sources follow the official `Prerelease-Alpha` release tag, not the
-  moving Alpha branch. Release metadata and assets must agree with the resolved
-  source commit. All channel checkouts use an immutable full upstream SHA.
-- Each release includes SHA256SUMS and source/provenance JSON containing the
-  full upstream SHA, applied patch SHA-256 hashes, features, and passed gates.
-  GitHub's individual asset digest remains the download verification source.
-- MSM must obtain native Smart from this repository's `mihomo-smart` release.
-  Falling back to an unpatched official core would remove the required native
-  capability. The official-style filename alone does not advertise the patch;
-  use the Smart version line in the release body and the binary version.
-
-## Local verification
-
-Use a disposable upstream Git checkout. The verifier changes it in place:
+Use a disposable upstream checkout because the verifier changes it in place:
 
 ```sh
 python3 scripts/mihomo/verify-source.py meta /path/to/mihomo-source --sudo-tests
 python3 scripts/mihomo/verify-source.py alpha /path/to/mihomo-source --sudo-tests
-python3 scripts/mihomo/verify-source.py smart /path/to/mihomo-source --sudo-tests
 ```
 
-Go, Python 3, Git, and Linux iproute2 are required. The integration tests use
-Linux network namespaces and real sockets, so they require CAP_NET_ADMIN,
-CAP_SYS_ADMIN, and CAP_NET_RAW. `--sudo-tests` compiles as the current user and
-runs only test executables with sudo. Omit it inside an appropriately privileged
-test container. Required tests must actually run and pass; skips fail the gate.
-Every channel also runs native group-selection tests with Go's race detector,
-including concurrent selection/status/data-path calls and deterministic stale
-selection cleanup. Smart adds its own group and data-path regressions. These
-host tests require a working C compiler; release binaries remain built with
-`CGO_ENABLED=0`. The proof records the exact required `race_tests`, which the
-packaging script validates together with the source and patch fingerprints.
-The gate also compiles and executes the actual non-Linux validation stub with
-explicit Go source files, so unsupported marked TUN configurations must fail
-preflight while ordinary and disabled TUN configurations remain accepted.
+Go, Python 3, Git and Linux iproute2 are required. Namespace routing tests need
+CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_NET_RAW. Required tests must pass without
+skips, including race tests and the non-Linux validation stub. Packaging requires
+a successful verification record matching the source and patch fingerprints;
+`--unit-only` and `--apply-only` cannot authorize packaging.
 
-Namespace routing fixtures explicitly disable system DNS integration: a network
-namespace does not isolate the host's systemd-resolved bus, and asynchronous
-resolver commands can retain the test TUN during rapid close/reopen cycles.
-Recovery rejection checks compare canonical rule identities, retaining rule
-order, actions, protocols and selectors while ignoring kernel-derived link flags
-that may change after a crashed process releases its device.
-
-`--unit-only` and `--apply-only` help local development but cannot authorize
-packaging. The build script requires a successful full verification record for
-the exact channel, upstream SHA, and patch fingerprints. An unknown upstream
-patch context fails the build; it must be reviewed and rebased before release.
-Re-running the verifier on its own already-patched checkout is supported.
-
-For a verified checkout, build with the environment used in the workflows:
+For a verified checkout:
 
 ```sh
-CHANNEL=smart CHANNEL_VERSION='alpha-smart-<12-character-SHA>-msm.8' \
-  ASSET_SUFFIX=linux-amd64-v1 PACKAGE_FORMAT=gz OUTPUT_DIR=/path/to/artifacts \
+CHANNEL=meta CHANNEL_VERSION='vX.Y.Z-msm.4' \
+  ASSET_SUFFIX=linux-amd64 PACKAGE_FORMAT=tar.gz OUTPUT_DIR=/path/to/artifacts \
   GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 \
   bash /path/to/mosdns/scripts/mihomo/build-artifact.sh
 ```
 
-Changing a shared routing patch requires reviewing all three upstream channels.
-Each changed channel advances its `msm.N` revision and regression requirements.
-The shared selection repair is revision `msm.2` for Meta/Alpha; Smart combines
-it with its lifecycle and Smart-group repairs in revision `msm.3`.
-The workflows run on schedule or explicit dispatch;
-editing or pushing these files does not publish a release.
+Legacy Smart patches and their regression fixtures remain available for
+comparison with prior releases; neither the Smart mirror nor its publishing
+workflow invokes them. They do not describe capabilities of the original
+upstream artifacts now distributed by `mihomo-smart`.
