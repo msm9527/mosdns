@@ -14,7 +14,13 @@ import tempfile
 ASSETS = Path(__file__).resolve().parent / "patches"
 MODULE = "github.com/metacubex/mihomo"
 PROOF_FILE = ".msm-native-verification.json"
+GROUP_FAILURE_TESTS = ["TestNativeGroupFailureThresholdOneChecksFirstFailure",
+                       "TestNativeGroupFailureThresholdPreservesWindowAndCount",
+                       "TestNativeGroupFailureThresholdKeepsIgnoredFailures",
+                       "TestNativeGroupFailureThresholdPreservesCancellationCounting",
+                       "TestNativeGroupFailureThresholdPreservesRefusedFastPath"]
 BASE_TESTS = {
+    "adapter/outboundgroup": GROUP_FAILURE_TESTS,
     "component/dialer": [
         "TestSystemRouteSkipsOnlyInterfaceBinding",
         "TestSystemRoutePreservesRoutingMark",
@@ -43,6 +49,11 @@ SMART_STALLED_TESTS = ["TestSmartStalledConnectionsRecoverAllTCPPorts",
                        "TestSmartStalledConnectionsPreserveHealthyTraffic",
                        "TestSmartMetricsWaitForResponseAfterHalfClose",
                        "TestSmartMetricsCloseUnsupportedHalfClose"]
+SMART_DIAL_TESTS = ["TestSmartDialDeadlineRecordsFailure",
+                    "TestSmartDialDeadlineRecoversLaterRequest",
+                    "TestSmartDialCancellationDoesNotPenalize",
+                    "TestSmartParallelDialCancellationDoesNotPenalizeLoser",
+                    "TestSmartDialDeadlinePreservesManualPin"]
 SMART_TESTS = {
     **SMART_PROVIDER_TESTS,
     "transport/anytls/session": ["TestStreamDoesNotExposeSharedSessionCloseWrite"],
@@ -51,7 +62,7 @@ SMART_TESTS = {
                                 "TestSmartModelUpdatesBoundedAndCancellable",
                                 "TestSmartNonFiniteModelPredictionFallsBack"],
     "component/geodata": ["TestSmartASNDownloadValidationAndCancellation"],
-    "adapter/outboundgroup": [*SMART_STALLED_TESTS, "TestSmartASNUnavailableFallback",
+    "adapter/outboundgroup": [*SMART_STALLED_TESTS, *SMART_DIAL_TESTS, "TestSmartASNUnavailableFallback",
                               "TestSmartGlobalTasksSurviveGroupReplacement",
                               "TestSmartDialBudgetAllowsTransientJitter",
                               "TestSmartSampleRateConfiguration",
@@ -82,17 +93,17 @@ SMART_TRANSFER_TESTS = ["TestSmartAutomaticWinnerPreservesHealthyStream",
 
 
 def patch_revision(channel):
-    return "msm.8" if channel == "smart" else "msm.3"
+    return "msm.9" if channel == "smart" else "msm.4"
 
 
 def features(channel):
-    return ["direct-system", "tun.system-route-mark", "group.selection-concurrency"] + (
+    return ["direct-system", "tun.system-route-mark", "group.selection-concurrency", "group.failure-threshold"] + (
         ["smart.feature-lifecycle", "smart.selection-concurrency", "smart.transfer-lifecycle",
-         "smart.zero-sampling", "smart.dependency-recovery", "smart.request-failover", "smart.provider-lifecycle", "smart.stalled-failover"] if channel == "smart" else [])
+         "smart.zero-sampling", "smart.dependency-recovery", "smart.request-failover", "smart.provider-lifecycle", "smart.stalled-failover", "smart.dial-timeout"] if channel == "smart" else [])
 
 
 def selection_test_names(channel):
-    tests = SELECTION_TESTS + (SMART_SELECTION_TESTS + SMART_TRANSFER_TESTS + SMART_STALLED_TESTS if channel == "smart" else [])
+    tests = SELECTION_TESTS + GROUP_FAILURE_TESTS + (SMART_SELECTION_TESTS + SMART_TRANSFER_TESTS + SMART_STALLED_TESTS + SMART_DIAL_TESTS if channel == "smart" else [])
     result = [f"{MODULE}/adapter/outboundgroup:{test}" for test in tests]
     if channel == "smart":
         result += [f"{MODULE}/{package}:{test}" for package, tests in SMART_PROVIDER_TESTS.items()
@@ -160,7 +171,8 @@ def patch_files(channel):
                       "smart-feature-lifecycle.patch", "smart-selection-concurrency.patch",
                       "smart-transfer-lifecycle.patch", "smart-sampling.patch",
                       "smart-dependency-recovery.patch", "smart-provider-lifecycle.patch",
-                      "smart-stalled-failover.patch"])
+                      "smart-stalled-failover.patch", "smart-dial-timeout.patch"])
+    files.append("group-failure-threshold.patch")
     return files
 
 
@@ -302,6 +314,8 @@ def main():
         apply_patch(source, "smart-dependency-recovery.patch")
         apply_patch(source, "smart-provider-lifecycle.patch")
         apply_patch(source, "smart-stalled-failover.patch")
+        apply_patch(source, "smart-dial-timeout.patch")
+    apply_patch(source, "group-failure-threshold.patch")
     if args.apply_only:
         return
     source_hashes = source_fingerprints(source, args.channel)

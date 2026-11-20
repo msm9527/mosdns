@@ -109,7 +109,7 @@ class NativeTestGateTest(unittest.TestCase):
                     self.run_gate(self.smart_events() + [skipped], channel="smart")
 
     def test_smart_stalled_failover_regressions_cannot_be_missing_or_skipped(self):
-        for name in verify.SMART_STALLED_TESTS:
+        for name in verify.SMART_STALLED_TESTS + verify.SMART_DIAL_TESTS:
             with self.subTest(name=name):
                 events = [event for event in self.smart_events() if event["Test"] != name]
                 with self.assertRaisesRegex(RuntimeError, "missing=.*" + name):
@@ -137,17 +137,28 @@ class NativeTestGateTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "missing=.*" + name):
                     self.run_gate(events, channel="smart")
 
+    def test_group_failure_regressions_cannot_be_missing_or_skipped(self):
+        for name in verify.GROUP_FAILURE_TESTS:
+            with self.subTest(name=name):
+                events = [event for event in self.passed_events() if event["Test"] != name]
+                with self.assertRaisesRegex(RuntimeError, "missing=.*" + name):
+                    self.run_gate(events)
+                skipped = {"Package": f"{verify.MODULE}/adapter/outboundgroup",
+                           "Test": name, "Action": "skip"}
+                with self.assertRaisesRegex(RuntimeError, "skipped=.*" + name):
+                    self.run_gate(self.passed_events() + [skipped])
+
 
 class SmartPatchSafetyTest(unittest.TestCase):
     def test_all_channels_require_selection_patch_and_advance_revision(self):
         for channel in ("meta", "alpha"):
-            self.assertEqual(verify.patch_revision(channel), "msm.3")
+            self.assertEqual(verify.patch_revision(channel), "msm.4")
             self.assertIn("group-selection-concurrency.patch", verify.patch_files(channel))
             self.assertIn("group.selection-concurrency", verify.features(channel))
             self.assertNotIn("smart-feature-lifecycle.patch", verify.patch_files(channel))
             self.assertNotIn("smart-selection-concurrency.patch", verify.patch_files(channel))
             self.assertNotIn("smart-sampling.patch", verify.patch_files(channel))
-        self.assertEqual(verify.patch_revision("smart"), "msm.8")
+        self.assertEqual(verify.patch_revision("smart"), "msm.9")
         self.assertIn("smart-feature-lifecycle.patch", verify.patch_files("smart"))
         self.assertIn("smart-selection-concurrency.patch", verify.patch_files("smart"))
         self.assertIn("smart.feature-lifecycle", verify.features("smart"))
@@ -163,7 +174,14 @@ class SmartPatchSafetyTest(unittest.TestCase):
         self.assertIn("smart.provider-lifecycle", verify.features("smart"))
         self.assertIn("smart-stalled-failover.patch", verify.patch_files("smart"))
         self.assertIn("smart.stalled-failover", verify.features("smart"))
-        for name in verify.SMART_TRANSFER_TESTS + verify.SMART_STALLED_TESTS:
+        self.assertIn("smart-dial-timeout.patch", verify.patch_files("smart"))
+        self.assertIn("smart.dial-timeout", verify.features("smart"))
+        for channel in ("meta", "alpha", "smart"):
+            self.assertIn("group-failure-threshold.patch", verify.patch_files(channel))
+            self.assertIn("group.failure-threshold", verify.features(channel))
+            for name in verify.GROUP_FAILURE_TESTS:
+                self.assertIn(f"{verify.MODULE}/adapter/outboundgroup:{name}", verify.selection_test_names(channel))
+        for name in verify.SMART_TRANSFER_TESTS + verify.SMART_STALLED_TESTS + verify.SMART_DIAL_TESTS:
             self.assertIn(f"{verify.MODULE}/adapter/outboundgroup:{name}", verify.selection_test_names("smart"))
 
     def test_unknown_upstream_method_is_not_removed(self):
@@ -248,7 +266,7 @@ class ArchitecturePackagingTest(unittest.TestCase):
                      "patch_sha256": verify.fingerprints("meta"),
                      "patched_file_sha256": verify.source_fingerprints(root, "meta")}
             environment = {**os.environ, "PATH": str(root) + os.pathsep + os.environ["PATH"],
-                           "CHANNEL": "meta", "CHANNEL_VERSION": "v1.19.33-msm.3",
+                           "CHANNEL": "meta", "CHANNEL_VERSION": "v1.19.33-msm.4",
                            "ASSET_SUFFIX": "linux-amd64", "PACKAGE_FORMAT": "tar.gz",
                            "OUTPUT_DIR": str(root / "artifacts"), "GOOS": "linux",
                            "GOARCH": "amd64", "GOAMD64": "v1", "CGO_ENABLED": "0",

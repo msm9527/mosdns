@@ -1,0 +1,137 @@
+diff --git a/adapter/outboundgroup/groupbase.go b/adapter/outboundgroup/groupbase.go
+--- a/adapter/outboundgroup/groupbase.go
++++ b/adapter/outboundgroup/groupbase.go
+@@ -273,5 +273,6 @@
+ 
+ 	go func() {
+-		if strings.Contains(err.Error(), "connection refused") {
++		// A threshold of one must include the first qualifying dial failure.
++		if gb.maxFailedTimes == 1 || strings.Contains(err.Error(), "connection refused") {
+ 			fn()
+ 			return
+diff --git a/adapter/outboundgroup/native_group_failure_threshold_test.go b/adapter/outboundgroup/native_group_failure_threshold_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/native_group_failure_threshold_test.go
+@@ -0,0 +1,121 @@
++package outboundgroup
++
++import (
++	"context"
++	"fmt"
++	"testing"
++	"time"
++
++	C "github.com/metacubex/mihomo/constant"
++)
++
++func TestNativeGroupFailureThresholdOneChecksFirstFailure(t *testing.T) {
++	group := nativeFailureThresholdGroup(1)
++	checked := make(chan struct{}, 1)
++	group.onDialFailed(C.Shadowsocks, context.DeadlineExceeded, func() { checked <- struct{}{} })
++	nativeFailureThresholdAwaitCheck(t, checked)
++}
++
++func TestNativeGroupFailureThresholdPreservesWindowAndCount(t *testing.T) {
++	t.Run("threshold", func(t *testing.T) {
++		group := nativeFailureThresholdGroup(3)
++		checked := make(chan struct{}, 1)
++		for count := 1; count <= 2; count++ {
++			group.onDialFailed(C.Shadowsocks, context.DeadlineExceeded, func() { checked <- struct{}{} })
++			nativeFailureThresholdAwaitCount(t, group, count)
++			nativeFailureThresholdNoCheck(t, checked)
++		}
++		group.onDialFailed(C.Shadowsocks, context.DeadlineExceeded, func() { checked <- struct{}{} })
++		nativeFailureThresholdAwaitCheck(t, checked)
++	})
++	t.Run("expired window", func(t *testing.T) {
++		group := nativeFailureThresholdGroup(3)
++		group.failedTimes = 2
++		group.failedTime = time.Now().Add(-time.Minute)
++		checked := make(chan struct{}, 1)
++		group.onDialFailed(C.Shadowsocks, context.DeadlineExceeded, func() { checked <- struct{}{} })
++		nativeFailureThresholdAwaitCount(t, group, 0)
++		nativeFailureThresholdNoCheck(t, checked)
++		group.onDialFailed(C.Shadowsocks, context.DeadlineExceeded, func() { checked <- struct{}{} })
++		nativeFailureThresholdAwaitCount(t, group, 1)
++		nativeFailureThresholdNoCheck(t, checked)
++	})
++}
++
++func TestNativeGroupFailureThresholdKeepsIgnoredFailures(t *testing.T) {
++	for _, adapter := range []C.AdapterType{C.Direct, C.Compatible, C.Reject, C.Pass, C.RejectDrop} {
++		t.Run(adapter.String(), func(t *testing.T) {
++			group := nativeFailureThresholdGroup(1)
++			checked := make(chan struct{}, 1)
++			group.onDialFailed(adapter, context.DeadlineExceeded, func() { checked <- struct{}{} })
++			nativeFailureThresholdNoCheck(t, checked)
++		})
++	}
++	t.Run("unsupported", func(t *testing.T) {
++		group := nativeFailureThresholdGroup(1)
++		checked := make(chan struct{}, 1)
++		group.onDialFailed(C.Shadowsocks, fmt.Errorf("dial: %w", C.ErrNotSupport), func() { checked <- struct{}{} })
++		nativeFailureThresholdNoCheck(t, checked)
++	})
++}
++
++func TestNativeGroupFailureThresholdPreservesCancellationCounting(t *testing.T) {
++	// Cancellation already participates in upstream failure counting. Changing
++	// which errors count is independent from honoring a threshold of one.
++	group := nativeFailureThresholdGroup(2)
++	checked := make(chan struct{}, 1)
++	group.onDialFailed(C.Shadowsocks, context.Canceled, func() { checked <- struct{}{} })
++	nativeFailureThresholdAwaitCount(t, group, 1)
++	nativeFailureThresholdNoCheck(t, checked)
++	group.onDialFailed(C.Shadowsocks, context.Canceled, func() { checked <- struct{}{} })
++	nativeFailureThresholdAwaitCheck(t, checked)
++}
++
++func TestNativeGroupFailureThresholdPreservesRefusedFastPath(t *testing.T) {
++	group := nativeFailureThresholdGroup(3)
++	checked := make(chan struct{}, 1)
++	group.onDialFailed(C.Shadowsocks, fmt.Errorf("connect: connection refused"), func() { checked <- struct{}{} })
++	nativeFailureThresholdAwaitCheck(t, checked)
++}
++
++func nativeFailureThresholdGroup(threshold int) *GroupBase {
++	return NewGroupBase(GroupBaseOption{
++		Name: "threshold-test", Type: C.URLTest,
++		TestTimeout: 10000, MaxFailedTimes: threshold,
++	})
++}
++
++func nativeFailureThresholdAwaitCheck(t *testing.T, checked <-chan struct{}) {
++	t.Helper()
++	select {
++	case <-checked:
++	case <-time.After(time.Second):
++		t.Fatal("failure threshold was reached without triggering its health check")
++	}
++}
++
++func nativeFailureThresholdNoCheck(t *testing.T, checked <-chan struct{}) {
++	t.Helper()
++	select {
++	case <-checked:
++		t.Fatal("health check triggered before a qualifying failure threshold")
++	case <-time.After(20 * time.Millisecond):
++	}
++}
++
++func nativeFailureThresholdAwaitCount(t *testing.T, group *GroupBase, expected int) {
++	t.Helper()
++	deadline := time.Now().Add(time.Second)
++	for {
++		group.failedTestMux.Lock()
++		count := group.failedTimes
++		group.failedTestMux.Unlock()
++		if count == expected {
++			return
++		}
++		if time.Now().After(deadline) {
++			t.Fatalf("failure count = %d, want %d", count, expected)
++		}
++		time.Sleep(time.Millisecond)
++	}
++}

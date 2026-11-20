@@ -1,0 +1,255 @@
+diff --git a/adapter/outboundgroup/smart.go b/adapter/outboundgroup/smart.go
+--- a/adapter/outboundgroup/smart.go
++++ b/adapter/outboundgroup/smart.go
+@@ -443,6 +443,14 @@
+ }
+ 
+ func (s *Smart) singleDialContext(ctx context.Context, proxy C.Proxy, metadata *C.Metadata, start time.Time) (c C.Conn, connectTime int64, err error) {
++	// A spent caller/batch budget is not an attempted node connection. In
++	// particular, later retry batches must not turn one deadline into many failures.
++	if err = ctx.Err(); err != nil {
++		return nil, 0, err
++	}
++	if s.ctx != nil && s.ctx.Err() != nil {
++		return nil, 0, s.ctx.Err()
++	}
+ 	c, err = proxy.DialContext(ctx, metadata)
+ 	connectTime = time.Since(start).Milliseconds()
+ 
+@@ -451,9 +459,12 @@
+ 		if tunnel.ShouldStopRetry(err) {
+ 			return nil, connectTime, err
+ 		}
+-		if !errors.Is(err, context.Canceled) && ctx.Err() == nil {
+-			// metadata may be re-written by a later retry's selectProxies.
+-			go s.recordConnectionStats(metadata.Clone(), proxy, connectTime, 0, 0, 0, 0, 0, 0, nil, nil, err)
++		if !errors.Is(err, context.Canceled) && ctx.Err() != context.Canceled && (s.ctx == nil || s.ctx.Err() == nil) {
++			// A deadline reached during an actual dial is node failure evidence,
++			// including adapters returning a socket timeout after ctx expires.
++			// Publish it before the next selection; canceled speculative losers
++			// and group shutdown never enter this path.
++			s.recordConnectionStats(metadata.Clone(), proxy, connectTime, 0, 0, 0, 0, 0, 0, nil, nil, err)
+ 		}
+ 		return nil, connectTime, err
+ 	}
+diff --git a/adapter/outboundgroup/smart_dial_timeout_test.go b/adapter/outboundgroup/smart_dial_timeout_test.go
+new file mode 100644
+--- /dev/null
++++ b/adapter/outboundgroup/smart_dial_timeout_test.go
+@@ -0,0 +1,216 @@
++package outboundgroup
++
++import (
++	"context"
++	"errors"
++	"fmt"
++	"io"
++	"net"
++	"net/netip"
++	"os"
++	"sync/atomic"
++	"testing"
++	"time"
++
++	"github.com/metacubex/mihomo/adapter/outbound"
++	"github.com/metacubex/mihomo/component/smart"
++	C "github.com/metacubex/mihomo/constant"
++)
++
++type smartDeadlineProxy struct {
++	nativeSelectionProxy
++	calls atomic.Int32
++	dial  func(context.Context) (C.Conn, error)
++}
++
++var smartDeadlineFixtureID atomic.Int64
++
++func (p *smartDeadlineProxy) Type() C.AdapterType { return C.Direct }
++func (p *smartDeadlineProxy) SupportUDP() bool    { return true }
++func (p *smartDeadlineProxy) DialContext(ctx context.Context, _ *C.Metadata) (C.Conn, error) {
++	p.calls.Add(1)
++	if p.dial != nil {
++		return p.dial(ctx)
++	}
++	<-ctx.Done()
++	return nil, ctx.Err()
++}
++
++func smartDeadlineGroup(t *testing.T) (*Smart, *smartDeadlineProxy, *C.Metadata) {
++	t.Helper()
++	smart.InitCache()
++	a := &smartDeadlineProxy{nativeSelectionProxy: nativeSelectionProxy{name: "deadline-A", alive: true, delay: 1}}
++	b := &smartRecoveryProxy{nativeSelectionProxy: nativeSelectionProxy{name: "deadline-B", alive: true, delay: 2}, direct: outbound.NewDirectWithOption(outbound.DirectOption{Name: "deadline-B"})}
++	s := &Smart{GroupBase: nativeSelectionBase(C.Smart, a, b), store: &smart.Store{}, configName: fmt.Sprintf("dial-timeout-%d", smartDeadlineFixtureID.Add(1)), ctx: context.Background()}
++	s.maxFailedTimes = 3
++	s.hostFailLimit.Store(10)
++	s.exitWatch = smart.NewExitWatcher(smart.ExitWatcherOptions{Name: s.Name(), Config: s.configName, Store: s.store})
++	m := &C.Metadata{DstIP: netip.MustParseAddr("127.0.0.1"), DstIPASN: "unknown", NetWork: C.TCP, DstPort: 443}
++	s.selectProxies(m, s.GetProxies(false))
++	return s, a, m
++}
++
++func smartDeadlineFailures(s *Smart, p C.Proxy, m *C.Metadata) int64 {
++	key := smart.FormatDBKey(smart.KeyTypeStats, s.configName, s.Name(), m.SmartTarget, p.Name())
++	return s.store.GetOrCreateAtomicRecord(key, s.Name(), s.configName, m.SmartTarget, p.Name()).Failure()
++}
++
++func TestSmartDialDeadlineRecordsFailure(t *testing.T) {
++	for _, wrappedIO := range []bool{false, true} {
++		t.Run(fmt.Sprint("io-timeout=", wrappedIO), func(t *testing.T) {
++			s, a, m := smartDeadlineGroup(t)
++			if wrappedIO {
++				a.dial = func(ctx context.Context) (C.Conn, error) {
++					<-ctx.Done()
++					return nil, &net.OpError{Op: "read", Net: "tcp", Err: os.ErrDeadlineExceeded}
++				}
++			}
++			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
++			defer cancel()
++			_, _, err := s.singleDialContext(ctx, a, m, time.Now())
++			if err == nil || ctx.Err() != context.DeadlineExceeded {
++				t.Fatalf("did not exercise a real dial deadline: %v", err)
++			}
++			if got := smartDeadlineFailures(s, a, m); got != 1 {
++				t.Fatalf("attempted dial deadline recorded %d failures, want 1", got)
++			}
++		})
++	}
++}
++
++func TestSmartDialDeadlineRecoversLaterRequest(t *testing.T) {
++	s, a, m := smartDeadlineGroup(t)
++	listener, err := net.Listen("tcp", "127.0.0.1:0")
++	if err != nil {
++		t.Fatal(err)
++	}
++	defer listener.Close()
++	go func() {
++		conn, err := listener.Accept()
++		if err != nil {
++			return
++		}
++		defer conn.Close()
++		_, _ = io.Copy(conn, conn)
++	}()
++	m.DstPort = uint16(listener.Addr().(*net.TCPAddr).Port)
++	s.adoptUnwrapWinner(m, a)
++	var conn C.Conn
++	for attempt := 0; attempt < 4; attempt++ {
++		ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
++		conn, err = s.DialContext(ctx, m.Clone())
++		cancel()
++		if err == nil {
++			break
++		}
++	}
++	if err != nil {
++		t.Fatalf("later requests keep selecting the timed-out node: dials=%d err=%v", a.calls.Load(), err)
++	}
++	defer conn.Close()
++	_ = conn.SetDeadline(time.Now().Add(time.Second))
++	payload := []byte("deadline-recovered")
++	if _, err = conn.Write(payload); err != nil {
++		t.Fatal(err)
++	}
++	got := make([]byte, len(payload))
++	if _, err = io.ReadFull(conn, got); err != nil || string(got) != string(payload) {
++		t.Fatalf("recovered connection lost data: %q %v", got, err)
++	}
++	names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(m))
++	if len(names) != 1 || names[0] != "deadline-B" {
++		t.Fatalf("recovered winner was not retained: %v", names)
++	}
++	if failures := smartDeadlineFailures(s, a, m); failures != int64(a.calls.Load()) {
++		t.Fatalf("failed deadline attempts lost or duplicated: dials=%d failures=%d", a.calls.Load(), failures)
++	}
++}
++
++func TestSmartDialCancellationDoesNotPenalize(t *testing.T) {
++	for _, scenario := range []string{"already-canceled", "already-expired", "already-closed", "caller-canceled", "group-closed"} {
++		t.Run(scenario, func(t *testing.T) {
++			s, a, m := smartDeadlineGroup(t)
++			ctx, cancel := context.WithCancel(context.Background())
++			defer cancel()
++			wantCalls := int32(1)
++			switch scenario {
++			case "already-canceled":
++				cancel()
++				wantCalls = 0
++			case "already-expired":
++				ctx, cancel = context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
++				defer cancel()
++				wantCalls = 0
++			case "already-closed":
++				var closeGroup context.CancelFunc
++				s.ctx, closeGroup = context.WithCancel(context.Background())
++				closeGroup()
++				wantCalls = 0
++			case "caller-canceled":
++				a.dial = func(context.Context) (C.Conn, error) { cancel(); return nil, os.ErrDeadlineExceeded }
++			case "group-closed":
++				var closeGroup context.CancelFunc
++				s.ctx, closeGroup = context.WithCancel(context.Background())
++				defer closeGroup()
++				a.dial = func(context.Context) (C.Conn, error) { closeGroup(); return nil, os.ErrDeadlineExceeded }
++			}
++			_, _, err := s.singleDialContext(ctx, a, m, time.Now())
++			if err == nil {
++				t.Fatal("canceled dial unexpectedly succeeded")
++			}
++			time.Sleep(30 * time.Millisecond)
++			if got := smartDeadlineFailures(s, a, m); got != 0 {
++				t.Fatalf("cancellation penalized the node with %d failures", got)
++			}
++			if got := a.calls.Load(); got != wantCalls {
++				t.Fatalf("dial attempts = %d, want %d", got, wantCalls)
++			}
++		})
++	}
++}
++
++func TestSmartParallelDialCancellationDoesNotPenalizeLoser(t *testing.T) {
++	s, loser, m := smartDeadlineGroup(t)
++	started, stopped := make(chan struct{}), make(chan struct{})
++	loser.dial = func(ctx context.Context) (C.Conn, error) {
++		close(started)
++		<-ctx.Done()
++		defer close(stopped)
++		return nil, os.ErrDeadlineExceeded // adapters may return a socket timeout on cancel
++	}
++	winner := &smartDeadlineProxy{nativeSelectionProxy: nativeSelectionProxy{name: "winner", alive: true}, dial: func(context.Context) (C.Conn, error) { <-started; return nil, nil }}
++	p, _, _, err := s.ParallelDialContext(context.Background(), []C.Proxy{loser, winner}, m, time.Now(), s.singleDialContext)
++	if err != nil || p != winner {
++		t.Fatalf("winner was not returned: %v %v", p, err)
++	}
++	<-stopped
++	time.Sleep(30 * time.Millisecond)
++	if got := smartDeadlineFailures(s, loser, m); got != 0 {
++		t.Fatalf("speculative loser recorded %d failures", got)
++	}
++}
++
++func TestSmartDialDeadlinePreservesManualPin(t *testing.T) {
++	s, a, m := smartDeadlineGroup(t)
++	s.adoptUnwrapWinner(m, s.GetProxies(false)[1])
++	s.ForceSet(a.Name())
++	for i := 0; i < 4; i++ {
++		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
++		_, err := s.DialContext(ctx, m.Clone())
++		cancel()
++		if !errors.Is(err, context.DeadlineExceeded) {
++			t.Fatalf("manual dial changed its target: %v", err)
++		}
++	}
++	if s.Now() != a.Name() {
++		t.Fatal("dial deadline cleared the manual selection")
++	}
++	failNodes, _ := s.store.GetHostStatus(s.Name(), s.configName, m.WildcardTarget, 10)
++	if failNodes[a.Name()] != 0 {
++		t.Fatalf("manual node was automatically excluded: %v", failNodes)
++	}
++	names, _ := s.store.GetUnwrapResult(s.Name(), s.configName, s.unwrapKey(m))
++	if len(names) != 1 || names[0] != "deadline-B" {
++		t.Fatalf("manual failure changed the automatic pin: %v", names)
++	}
++}

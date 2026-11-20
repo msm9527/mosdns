@@ -88,6 +88,19 @@ response. The shared callback implementation and UDP metrics are unchanged.
 The new selection and half-close regressions are required both normally and
 with the race detector before artifact generation.
 
+Smart revision `msm.9` records genuine dial deadline failures in the existing
+node quality and failure policy. Previously, an expired dial context prevented
+recording the failure, so a node that passed generic probes could repeatedly
+stall application handshakes. Subsequent automatic requests can select another
+node. Requests that are already canceled or expired before dialing, canceled
+parallel attempts, and retired groups do not penalize nodes. Manual selections
+remain fixed, and the caller's deadline is never extended.
+
+Meta/Alpha revision `msm.4` and Smart revision `msm.9` also honor
+`max-failed-times: 1` on the first eligible failure. Larger thresholds retain
+their existing short-window counting policy and ignored outbound types.
+Both changes have mandatory behavior and race regression gates.
+
 The marked system-route bypass is a Linux feature. MSM must generate its
 `direct-system` helpers only on Linux; enabling a nonzero TUN
 `system-route-mark` on another OS is rejected. The other release targets retain
@@ -109,13 +122,13 @@ layouts still fail verification instead of claiming unrelated routing rules.
 
 - Meta and Alpha retain the existing `mihomo` release, asset names, archive
   formats, and 15-target platform/CPU matrix. Their binary and release-body
-  versions append `-msm.3` to the official upstream version.
+  versions append `-msm.4` to the official upstream version.
 - Smart uses the independent `mihomo-smart` release. Assets preserve the official
   `mihomo-<os>-<arch>-alpha-smart-<12-character-upstream-SHA>.gz` format. AMD64
   variants explicitly use `amd64-v1` and `amd64-v3`; the baseline always builds
   with `GOAMD64=v1`.
 - Smart covers Linux AMD64 v1/v3, 386, ARM v5/v6/v7, ARM64, and Darwin AMD64
-  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.8`.
+  v1/v3 and ARM64. Its version is `alpha-smart-<12-character-SHA>-msm.9`.
 - Smart sources follow the official `Prerelease-Alpha` release tag, not the
   moving Alpha branch. Release metadata and assets must agree with the resolved
   source commit. All channel checkouts use an immutable full upstream SHA.
