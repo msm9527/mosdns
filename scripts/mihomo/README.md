@@ -41,43 +41,23 @@ configurations using those features require a compatible core or a changed
 home-access deployment. Optional model/ASN preparation and configuration
 integration belong to MSM.
 
-## Meta/Alpha native builds
+## Meta/Alpha unmodified upstream builds
 
-The separate `mihomo` workflow still builds Meta/Alpha with the native
-`direct-system` outbound and `tun.system-route-mark` support used by MSM
-home-access listeners. Ordinary interface bindings are preserved. The release
-keeps its existing names, archive formats and 15-target platform matrix with
-revision `msm.4`.
+The `mihomo` workflow builds Meta and Alpha directly from pinned, unmodified
+[MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo) commits without any MSM
+patches or `-msm.*` version suffixes. It keeps the 15-target platform matrix and
+archive names (`mihomo-meta-*.tar.gz` / `mihomo-alpha-*.tar.gz` / `.exe`) for
+compatibility while verifying clean Git state (`vcs.modified=false`), exact
+`vcs.revision`, and `go mod verify` via `scripts/mihomo/build-upstream.sh`.
 
-The shared patches synchronize manual selection with status and TCP/UDP
-selection. They preserve health-check thresholds above one and make a threshold
-of one trigger the first eligible check. Linux TUN routing supports exact port
-masks and records only owned routes in a journal for crash recovery. Unknown
-dependency layouts fail verification; existing unrelated rules are protected.
-
-Use a disposable upstream checkout because the verifier changes it in place:
+For a clean upstream checkout:
 
 ```sh
-python3 scripts/mihomo/verify-source.py meta /path/to/mihomo-source --sudo-tests
-python3 scripts/mihomo/verify-source.py alpha /path/to/mihomo-source --sudo-tests
-```
-
-Go, Python 3, Git and Linux iproute2 are required. Namespace routing tests need
-CAP_NET_ADMIN, CAP_SYS_ADMIN and CAP_NET_RAW. Required tests must pass without
-skips, including race tests and the non-Linux validation stub. Packaging requires
-a successful verification record matching the source and patch fingerprints;
-`--unit-only` and `--apply-only` cannot authorize packaging.
-
-For a verified checkout:
-
-```sh
-CHANNEL=meta CHANNEL_VERSION='vX.Y.Z-msm.4' \
-  ASSET_SUFFIX=linux-amd64 PACKAGE_FORMAT=tar.gz OUTPUT_DIR=/path/to/artifacts \
+CHANNEL=meta CHANNEL_VERSION='v1.19.34' EXPECTED_COMMIT='<40-char-sha>' \
+  ASSET_SUFFIX=linux-amd64 PACKAGE_FORMAT=tar.gz \
   GOOS=linux GOARCH=amd64 GOAMD64=v1 CGO_ENABLED=0 \
-  bash /path/to/mosdns/scripts/mihomo/build-artifact.sh
+  bash /path/to/mosdns/scripts/mihomo/build-upstream.sh /path/to/upstream /path/to/artifacts
 ```
 
-Legacy Smart patches and their regression fixtures remain available for
-comparison with prior releases; neither the Smart mirror nor its publishing
-workflow invokes them. They do not describe capabilities of the original
-upstream artifacts now distributed by `mihomo-smart`.
+Legacy patch scripts and regression fixtures remain archived for reference with
+prior releases; neither the `mihomo` nor `mihomo-smart` workflows apply them.
